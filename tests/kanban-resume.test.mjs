@@ -222,7 +222,7 @@ for (const [name, html] of [
 check("DASHBOARD_HTML は session 行の halted を描画に使う", () =>
 	assert.ok(/haltText\(s\.halted\)/.test(DASH), "s.halted を haltText に渡していない"));
 check("KANBAN_HTML は halted を変化検知に含める（描き直しのため）", () =>
-	assert.ok(/s\.modes, s\.halted\]/.test(KB), "sessions の signature に halted が無い"));
+	assert.ok(/s\.modes, s\.halted\b/.test(KB), "sessions の signature に halted が無い"));
 
 handlers.get("session_shutdown")({ type: "session_shutdown", reason: "quit" });
 delete process.env.KANBAN_DEBUG;

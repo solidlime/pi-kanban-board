@@ -2344,7 +2344,9 @@ async function dashboardPayload(): Promise<unknown> {
 		// whatever answers the port.
 		version: SERVER_VERSION,
 		startedAt: serverStartedAt,
-		now: new Date().toISOString(),
+		// #65: 分単位に丸める。クライアントの再描画 sig が毎ポーリングで変わり、編集中の
+		// textarea を DOM ごと捨てていた（形は ISO 文字列のまま。相対時刻の粒度は 1 分）。
+		now: new Date(Math.floor(Date.now() / 60000) * 60000).toISOString(),
 		// #40: which session's ctx drives auto-tick. Read-only on purpose: switching is
 		// `/kanban take` only, so the dashboard has no write path to race.
 		driver: activeSessionId,
@@ -3333,7 +3335,11 @@ const DASHBOARD_HTML = `<!doctype html>
   // #62: 開閉だけ localStorage に残す。kb-theme と同じく失敗は握りつぶし、
   // 保存が無いキーは今の既定のまま。ns で 2 テンプレートを分ける（片方が他方を壊さない）。
   var LS_KEY = "kb-collapse", LS_NS = "dash";
-  function uiSig(){ return JSON.stringify([sessOpen, gOpen, collapsed]); }
+  // #65: 描画を止めるのは「ユーザが入力中」のときだけ。編集中の textarea は再描画で
+  // DOM から切り離されると blur が飛ばず、打鍵が無言で消える。
+  function isEditing(){ return typeof document.querySelector === "function" && !!document.querySelector("textarea.ted"); }
+  // sig は「今 DOM に描かれている状態」を記述する（query を落とすと検索語の変化を取り逃す）。
+  function uiSig(){ return JSON.stringify([sessOpen, gOpen, collapsed, query]); }
   function persist(){
     try {
       var all = JSON.parse(localStorage.getItem(LS_KEY) || "{}");
@@ -4075,6 +4081,7 @@ ${KANBAN_MD_JS}
   }
 
   function render(d){
+    if (isEditing()) return; // #65: 編集中は描画しない（sig を進める判断は呼び出し元）
     var nowMs = d.now ? new Date(d.now).getTime() : null;
     if (isNaN(nowMs)) nowMs = null;
     var activeSid = "";
@@ -4113,6 +4120,7 @@ ${KANBAN_MD_JS}
   // 「同じ sig」で描画をスキップしても画面と sig が食い違わない。
   function redraw(){
     if (!lastData) return;
+    if (isEditing()) return; // #65: render() は何もしないので、sig だけ進めてはいけない
     sig = sigOf(lastData) + uiSig();
     render(lastData);
   }
@@ -4125,6 +4133,9 @@ ${KANBAN_MD_JS}
       // re-render when data changes, or once a minute so relative times stay honest
       var s = sigOf(d) + uiSig();
       if (s === sig) return;
+      // #65: 編集中で描画を見送ったら sig は進めない。次に編集が終わったポーリングで
+      // 「変わっていない」と誤判定され、永久に再描画されなくなるため。
+      if (isEditing()) return;
       sig = s;
       render(d);
     }).catch(function(){
@@ -4844,12 +4855,21 @@ ${KANBAN_MD_JS}
     return wrap;
   }
 
+  // #65: 描画を止めるのは「ユーザが入力中」のときだけ。判定は 1 関数にまとめる。
+  function isEditing(){ return typeof document.querySelector === "function" && !!document.querySelector("textarea.ted"); }
+
   function render(globalCards, sessions, gmodes){
     cache = [globalCards, sessions, gmodes];
+    // #65: 編集中は描画しない。打鍵中の textarea.ted が DOM から切り離されると blur が
+    // 飛ばず、編集内容が黙って捨てられる。
+    if (isEditing()) return;
+    // sessions 側はカード本文まで sig に含める（本文だけ変わる rename は件数が変わらず、
+    // 抜くと再描画されない）。now は入れない — 別に毎秒変わる値を混ぜない。
     var sig = JSON.stringify([
       globalCards,
       gmodes,
-      sessions.map(function(s){ return [s.id, s.name, s.counts, s.mine, s.modes, s.halted]; }),
+      sessions.map(function(s){ return [s.id, s.name, s.counts, s.mine, s.modes, s.halted,
+        (s.cards || []).map(function(c){ return [c.id, c.text, c.col]; })]; }),
       open,
       gOpen,
       query
