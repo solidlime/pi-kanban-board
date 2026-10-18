@@ -3002,6 +3002,14 @@ const DASHBOARD_HTML = `<!doctype html>
   .card{background:var(--card);border-radius:6px;padding:6px 8px;margin-bottom:6px;font-size:12px;display:flex;gap:4px;align-items:baseline;flex-wrap:wrap}
   .card .id{color:var(--accent);flex:none}
   .card .t{flex:1;min-width:0;overflow-wrap:anywhere;white-space:pre-wrap}
+  /* #38-5: 60 字超は 3 行で切ってクリック展開（KANBAN_HTML の .card .body.clampable と同じ） */
+  .card .t.clampable:not(.open){display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;cursor:pointer}
+  /* #38-10/#38-11: DOING の経過（「N分前から」）と 2 時間超の ⏳。色は既存トークンのみ */
+  .card .since{color:var(--muted);margin-right:4px;font-variant-numeric:tabular-nums}
+  .card .stale{color:var(--muted);margin-right:4px}
+  /* #38-7: 見出しクリックで列ごと畳む（中身は描画したまま display だけ落とす） */
+  .col h3{cursor:pointer}
+  .col.collapsed .card,.col.collapsed .more,.col.collapsed .addbtn,.col.collapsed .addin{display:none}
   /* 画像/動画サムネはカードの幅いっぱいの次の行。64px は KANBAN_HTML と同じ値
      （.card の padding/margin/font-size も両テンプレートで同一なので高さも揃う）。 */
   .card img,.card video{flex-basis:100%;max-width:100%;max-height:64px;border-radius:4px;display:block;margin-top:4px}
@@ -3161,6 +3169,9 @@ const DASHBOARD_HTML = `<!doctype html>
   // DOM 作り直しを跨いで保持する（localStorage は使わない: 既存の流儀どおり）。
   var query = "";        // 小文字化済みの検索語
   var sessOpen = {};     // sid -> expanded（既定は全開）
+  // #38-7/#38-11: どちらもページ内だけの状態（サーバに保存しない）。
+  var collapsed = {};    // "scope.sid:col" -> true while a column is folded
+  var STALE_GUI_MS = 2 * 60 * 60 * 1000; // DOING over this long gets a ⏳
 ${KANBAN_MD_JS}
 
   // #48: "/" で検索欄へ、Esc でクリア。入力中は横取りしない。
@@ -3453,14 +3464,19 @@ ${KANBAN_MD_JS}
 
   // One kanban (3 columns). Cards go in via textContent — no innerHTML for data.
   function board(cards, nowMs, ctx){
+    if (typeof nowMs !== "number" || !isFinite(nowMs)) nowMs = Date.now(); // #38-10: 経過の基準
     var wrap = el("div", "cols");
-    COLS.forEach(function(pair){
+    COLS.forEach(function(pair, ci){
       var key = pair[0];
       var list = cards.filter(function(c){ return c.col === key; });
-      var box = el("div", "col" + (key === "doing" && list.length ? " doingcol" : ""));
+      // #38-7: 折りたたみのキーは看板ごと（GLOBAL と各セッションで別々に畳める）
+      var ckey = ctx.scope + (ctx.sid ? "." + ctx.sid : "") + ":" + key;
+      var box = el("div", "col" + (key === "doing" && list.length ? " doingcol" : "") + (collapsed[ckey] ? " collapsed" : ""));
       box.setAttribute("data-col", key);
       var h = el("h3", null, pair[1]);
       h.appendChild(el("span", "c", String(list.length)));
+      // #38-7: 見出しクリックで列ごと畳む（状態はこのページ内だけ）
+      h.addEventListener("click", function(){ collapsed[ckey] = !collapsed[ckey]; box.classList.toggle("collapsed"); });
       box.appendChild(h);
       if (ctx && ctx.active) {
         // #30 D&D: same handler on the GLOBAL board and on every session board.
@@ -3539,9 +3555,38 @@ ${KANBAN_MD_JS}
               note(RO_MSG);
             });
           }
+          if (ctx && ctx.active) {
+            // #38-6: Tab でカードに入る。←→ で列移動、Enter で DOING、m でメモ（KANBAN_HTML と同一）。
+            card.tabIndex = 0;
+            card.addEventListener("keydown", function(e){
+              if (e.target !== card) return; // a button or the memo textarea keeps its own keys
+              if (e.key === "ArrowLeft" && ci > 0) { e.preventDefault(); act("/api/move", { id: c.id, col: COLS[ci-1][0] }, ctx); }
+              else if (e.key === "ArrowRight" && ci < COLS.length - 1) { e.preventDefault(); act("/api/move", { id: c.id, col: COLS[ci+1][0] }, ctx); }
+              else if (e.key === "Enter") { e.preventDefault(); act("/api/move", { id: c.id, col: "doing" }, ctx); }
+              else if (e.key === "m") {
+                e.preventDefault();
+                var sp = card.querySelector(".t");
+                if (sp) startEdit(sp, c.text, function(v){ act("/api/rename", { id: c.id, text: v }, ctx); });
+              }
+            });
+          }
           card.appendChild(el("span", "id", "#" + c.id));
           var t = el("span", "t");
-          t.innerHTML = md(c.text); // md escapes first, then expands the whitelisted subset
+          // #38-10/#38-11: DOING の経過を本文の前に出す（2 時間超は ⏳ も）。movedAt の
+          // 無いカードは何も出さない（推測で「0分」を書かない — KANBAN_HTML と同じ規則）。
+          var lead = "";
+          if (c.col === "doing" && typeof c.movedAt === "number") {
+            var ageMs = nowMs - c.movedAt;
+            var mins = Math.max(0, Math.floor(ageMs / 60000));
+            if (ageMs > STALE_GUI_MS) lead += '<span class="stale" title="' + mins + '分前から DOING">\u23f3</span>';
+            lead += '<span class="since">' + mins + '分前から</span>';
+          }
+          t.innerHTML = lead + md(c.text); // md escapes first, then expands the whitelisted subset
+          // #38-5: 60 字超は 3 行で切ってクリック展開（列内の高さを揃える）。
+          if (String(c.text || "").length > 60) {
+            t.classList.add("clampable");
+            t.addEventListener("click", function(){ t.classList.toggle("open"); });
+          }
           card.appendChild(t);
           // #36: 本文のダブルクリックで編集。書き込みは既存の text 系 API（rename）。
           // #44: 当たり判定はカード本体（短いカードだと .t が細く、#id/余白を叩いて無反応に見える）。
