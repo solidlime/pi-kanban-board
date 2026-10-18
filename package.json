@@ -1,0 +1,44 @@
+{
+  "name": "pi-kanban-board",
+  "version": "0.1.0",
+  "description": "Kanban board for pi: a session-scoped board the agent keeps in sync, an HTTP dashboard on port 8789, and an autonomous doing-loop.",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "kanban",
+    "task-board",
+    "agent"
+  ],
+  "license": "MIT",
+  "author": "solidlime",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/solidlime/pi-kanban-board.git"
+  },
+  "homepage": "https://github.com/solidlime/pi-kanban-board#readme",
+  "bugs": {
+    "url": "https://github.com/solidlime/pi-kanban-board/issues"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/kanban.ts"
+    ]
+  },
+  "files": [
+    "extensions/kanban.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "scripts": {
+    "test": "node --test tests/"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^1.2.0",
+    "typebox": "^1.4.2"
+  }
+}
