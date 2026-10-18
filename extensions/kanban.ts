@@ -145,6 +145,10 @@ export const STARVATION_FACTOR = 3;
 // The panel needs a session id before the user touches anything; every handler
 // refreshes this, and the GUI pins whatever it first receives.
 let activeSessionId: string | null = null;
+// A loop halt lives in one extension closure (memory + session JSONL). The HTTP server
+// runs in the same process but outside that closure, so this is the only door for the
+// GUI to learn WHY the loop stopped. Published by paintLoop, cleared by resume.
+const haltedBySid = new Map<string, { halted: "limit" | "stuck"; stuckId: number | null; stuckCount: number }>();
 let server: Server | null = null;
 // "down" is surfaced in the footer: a dead API must never be silent.
 let apiState: "starting" | "up" | "down" = "starting";
@@ -2162,6 +2166,9 @@ type SessionRow = {
 	modified: number;
 	counts: { todo: number; doing: number; done: number };
 	modes: { session: ModePair; global: ModePair };
+	// Why this session's doing-loop is stopped; null = running. Process memory, so it is
+	// read from haltedBySid and not from any file (see the note at that map).
+	halted: { halted: "limit" | "stuck"; stuckId: number | null; stuckCount: number } | null;
 	cards: Card[];
 };
 
@@ -2205,6 +2212,7 @@ async function sessionRows(): Promise<{ activeSessionId: string | null; sessions
 				modified,
 				counts: countCols(b),
 				modes: { session: modesFor(f, id, "session"), global: modesFor(f, id, "global") },
+				halted: haltedBySid.get(id) ?? null,
 				cards: b.cards,
 			};
 		});
@@ -2222,6 +2230,7 @@ async function sessionRows(): Promise<{ activeSessionId: string | null; sessions
 				session: modesFor(f, activeSessionId, "session"),
 				global: modesFor(f, activeSessionId, "global"),
 			},
+			halted: haltedBySid.get(activeSessionId) ?? null,
 			cards: [],
 		});
 	}
@@ -2295,6 +2304,9 @@ async function dashboardPayload(): Promise<unknown> {
 			modes: s.modes,
 			counts: s.counts,
 			cards: s.cards,
+			// null = running. The loop state is process memory, which this module shares;
+			// the GUI's ON/OFF toggle only writes modes.json and cannot clear it.
+			halted: s.halted,
 		})),
 		serve,
 	};
@@ -3075,6 +3087,11 @@ const DASHBOARD_HTML = `<!doctype html>
   .badge.on{border-color:var(--ok);color:var(--ok)}
   .badge.db{border-color:var(--accent);color:var(--accent);background:var(--accent-soft-2)}
   .badge.gone{border-color:var(--danger-bg);background:var(--danger-bg);color:var(--danger-fg)}
+  /* #58: a halted loop is process memory, so the ON/OFF switches below are placebo until
+     it is lifted. The banner is the only place that says so. */
+  .halt{border:1px solid var(--danger-bg);background:var(--danger-bg);color:var(--danger-fg);border-radius:6px;padding:6px 10px;margin-bottom:8px;font-size:12px;line-height:1.5}
+  .halt b{font-weight:600}
+  .halt code{background:none;border:1px solid currentColor;border-radius:4px;padding:0 4px;font-size:11px}
   /* serve */
   .srv{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:8px 12px;margin-bottom:8px;display:flex;gap:6px 16px;align-items:baseline;flex-wrap:wrap}
   /* #50: URL と「● 配信中」が同じインライン行でぶつかり、折返すと重なっていた。u を flex 箱にする。 */
@@ -3316,6 +3333,15 @@ ${KANBAN_MD_JS}
   }
   function prioOf(c){ var v = c && c.priority; return (typeof v === "number" && isFinite(v)) ? v : 0; }
   function intervalOf(m){ var v = m && m.intervalMin; return (typeof v === "number" && isFinite(v) && v > 0) ? v : 5; }
+
+  // #58: why the doing-loop is stopped, and what actually clears it. The loop budget
+  // lives in pi's extension process (survives the file), so only these two paths lift it.
+  function haltText(h){
+    if (!h) return "";
+    if (h.halted === "limit") return "ループ上限（" + ${MAX_LOOPS} + "回）に達して停止 — 再開は kanban ツールの resume、または /kanban loop on（下のスイッチを ON にしても再開しない）";
+    if (h.halted === "stuck") return "同じカード（#" + h.stuckId + "）で " + h.stuckCount + " 回スタックして停止 — カードを直してから kanban ツールの resume、または /kanban loop on（下のスイッチを ON にしても再開しない）";
+    return "";
+  }
   var PRIO_MAX = 99, PRIO_MIN = -99; // same range the server enforces
   var dragging = null;               // {scope, sid, id} of the card being dragged
 
@@ -3632,6 +3658,9 @@ ${KANBAN_MD_JS}
         toggle(e);
       });
       art.appendChild(hd);
+      // #58: reason + way back. Without it the ctl switches below look like they work.
+      var halt = haltText(s.halted);
+      if (halt) art.appendChild(el("div", "halt", halt));
       if (!expanded) { box.appendChild(art); return; }
       var ctx = boardCtx("session", s.id, s.isActive);
       // #48: 検索してヒット 0 件のセッションは「該当なし」だけ出す（ヘッダは残す）。
@@ -3940,6 +3969,8 @@ const KANBAN_HTML = `<!doctype html>
   .sess-c{font-size:11px;color:var(--accent);white-space:nowrap;font-variant-numeric:tabular-nums}
   .sess.ro .sess-t{color:var(--muted)}
   .sess.ro .col{opacity:.5}
+  /* #58: halted reason. The ON/OFF buttons below cannot clear it (process memory). */
+  .halt{font-size:11px;line-height:1.5;color:var(--warn-fg,var(--accent));border:1px solid currentColor;border-radius:5px;padding:4px 8px;margin:0 0 6px}
   .modes{display:flex;gap:6px;align-items:center;margin:0 0 6px;flex-wrap:wrap}
   .modes .mt{font-size:11px;color:var(--muted)}
   .modes .iv,.modes .st,.card .pr{width:3.2em;background:var(--card);border:1px solid var(--border-strong);color:var(--text);border-radius:4px;font-size:11px;padding:2px 4px}
@@ -4380,6 +4411,15 @@ ${KANBAN_MD_JS}
     return open[row.id] === undefined ? !!row.mine : open[row.id];
   }
 
+  // #58: same text as the dashboard's haltText — keep the two in step.
+  function haltText(h){
+    if (!h) return "";
+    if (h.halted === "limit") return "ループ上限（" + ${MAX_LOOPS} + "回）に達して停止。再開は kanban ツールの resume か /kanban loop on（下の modes を ON にしても再開しない）";
+    if (h.halted === "stuck") return "同じカード（#" + h.stuckId + "）で " + h.stuckCount + " 回スタックして停止。カードを直してから kanban ツールの resume か /kanban loop on（下の modes を ON にしても再開しない）";
+    if (h.halted) return "ループ停止中（" + h.halted + "）。kanban ツールの resume か /kanban loop on で再開";
+    return "";
+  }
+
   function session(row){
     var wrap = document.createElement("div");
     wrap.className = "sess" + (row.mine ? "" : " ro");
@@ -4399,6 +4439,15 @@ ${KANBAN_MD_JS}
       reload();
     };
     wrap.appendChild(head);
+    // #58: why it stopped + how to restart. Silence here is what makes the toggles
+    // below look broken: they write modes.json, the halt lives in the extension process.
+    var why = haltText(row.halted);
+    if (why) {
+      var hb = document.createElement("div");
+      hb.className = "halt";
+      hb.textContent = why;
+      wrap.appendChild(hb);
+    }
     if (expanded(row)) {
       // Another session's board is read-only: its own pi rewrites it whenever it likes.
       wrap.appendChild(columns(
@@ -4414,7 +4463,7 @@ ${KANBAN_MD_JS}
     var sig = JSON.stringify([
       globalCards,
       gmodes,
-      sessions.map(function(s){ return [s.id, s.name, s.counts, s.mine, s.modes]; }),
+      sessions.map(function(s){ return [s.id, s.name, s.counts, s.mine, s.modes, s.halted]; }),
       open,
       query
     ]);
@@ -4553,7 +4602,25 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 			loopRest.delete(tagKey(sid, s));
 		}
 		if (loop.count > 0) loopRest.set(tagKey(sid, scope), ` ${Math.max(0, MAX_LOOPS - loop.count)}/${MAX_LOOPS}`);
+		// Same value the footer shows, published for the HTTP dashboard (see haltedBySid).
+		if (loop.halted === null) haltedBySid.delete(sid);
+		else haltedBySid.set(sid, { halted: loop.halted, stuckId: loop.stuckId, stuckCount: loop.stuckCount });
 		refresh(ctx, sid);
+	};
+
+	/**
+	 * Clear the halt and give the loop its budget back. Both doingLoop switches go ON
+	 * because turning them off is what caused a `limit` halt; a `stuck` halt is lifted
+	 * too, since a resume is the user saying "try again". Shared by `/kanban loop on`
+	 * and the `kanban` tool's resume so the two can never drift.
+	 */
+	const resetLoopForResume = (): void => {
+		loop = { count: 0, halted: null, scope: null, stuckId: null, stuckCount: 0, lastActivityAt: 0 };
+		lastTickAt = 0; // resume must fire on the next poll, not after the interval
+		pollSnapshot = null; // force the next poll to redraw
+		warnedDeadCtx = false;
+		deadCtxStrikes = 0;
+		persistLoop();
 	};
 
 	/**
@@ -4572,11 +4639,7 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 			setMode(f, sid, scope, key, sub === "on");
 			writeModesFile(f);
 			// Only `loop` owns the budget and the halt: `pick` must not clear a LOOP HALTED banner.
-			if (key === "doingLoop") {
-				loop = { count: 0, halted: null, scope: null, stuckId: null, stuckCount: 0, lastActivityAt: 0 };
-				lastTickAt = 0; // ON must be able to fire on the next poll, not after the interval
-				persistLoop();
-			}
+			if (key === "doingLoop") resetLoopForResume();
 		}
 		ctx.ui.notify(statusText(modesFor(readModesFile(), sid, scope), loop, scope));
 		paintLoop(ctx, sid);
@@ -5086,7 +5149,7 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 		name: "kanban",
 		label: "Kanban board",
 		description:
-			"Manage a 3-column kanban board (todo/doing/done). action=list shows the board, add creates a card, move changes its column, remove deletes it, check runs the board/serve/media/modes self-test and returns its JSON. scope selects the board: 'session' (default, this conversation's board) or 'global' (shared by every session). Card IDs are unique only within one board — global #7 and session #7 are different cards. The board is shared with the user's GUI and persisted under ~/.pi/kanban/.",
+			"Manage a 3-column kanban board (todo/doing/done). action=list shows the board, add creates a card, move changes its column, remove deletes it, check runs the board/serve/media/modes self-test and returns its JSON, resume clears a doing-loop halt (same reset as /kanban loop on: budget back to 10, doingLoop ON in both scopes) — the GUI's loop switch cannot clear it, because the halt lives in the extension process, not in modes.json. scope selects the board: 'session' (default, this conversation's board) or 'global' (shared by every session). Card IDs are unique only within one board — global #7 and session #7 are different cards. The board is shared with the user's GUI and persisted under ~/.pi/kanban/.",
 		parameters: Type.Object({
 			action: Type.Union([
 				Type.Literal("list"),
@@ -5094,6 +5157,7 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 				Type.Literal("move"),
 				Type.Literal("remove"),
 				Type.Literal("check"),
+				Type.Literal("resume"),
 			]),
 			scope: Type.Optional(Type.Union([Type.Literal("session"), Type.Literal("global")])),
 			text: Type.Optional(Type.String()),
@@ -5186,6 +5250,22 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 					const report = runSelfTest();
 					if (!report.ok) return fail(JSON.stringify(report));
 					message = JSON.stringify(report);
+					break;
+				}
+				case "resume": {
+					// #58: a halt is process memory + one JSONL entry; no HTTP call can lift it,
+					// so the agent (and a human through it) gets the same reset `/kanban loop on` does.
+					const was = loop.halted === null ? "なし" : `halted:${loop.halted}`;
+					const oldCount = loop.count;
+					resetLoopForResume();
+					const f = readModesFile();
+					// The cap achieved its stop by switching both scopes off: lifting the halt
+					// while they stay off would resume a loop that still cannot run.
+					setMode(f, sid, "session", "doingLoop", true);
+					setMode(f, sid, "global", "doingLoop", true);
+					writeModesFile(f);
+					paintLoop(ctx, sid); // clears the footer tag and the dashboard's halted row
+					message = `resumed: ${was} / count ${oldCount} → 0 / doingLoop ON (session+global) / 残り ${MAX_LOOPS}/${MAX_LOOPS}`;
 					break;
 				}
 				default:
