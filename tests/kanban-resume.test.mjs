@@ -198,7 +198,8 @@ check("resume 後は 1 件送る", () => assert.equal(sent.length, 1, `sent=${se
 
 // --- 5. GUI: halted の理由と復帰手段が出ている（両テンプレート） ------------------
 const DASH = await (await fetch(`${BASE}/`)).text();
-const KB = await (await fetch(`${BASE}/api/kanban.html`)).text();
+// #67: /api/kanban.html is gone; the template is exported for the tests that pin it.
+const KB = mod.KANBAN_HTML;
 for (const [name, html] of [
 	["DASHBOARD_HTML", DASH],
 	["KANBAN_HTML", KB],

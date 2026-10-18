@@ -2614,7 +2614,17 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
 		return;
 	}
 	if (url.pathname === "/api/kanban") {
-		const sid = q.get("sid") ?? activeSessionId;
+		// #67: no activeSessionId fallback for the session board — that let another session's
+		// board be read with no sid at all. Same rule as writeBoardPath: an explicit
+		// scope=session demands a sid, scope=global reads GLOBAL with no sid. A bare call
+		// (no scope) stays a 200 global-only read: it is the readiness probe every caller
+		// and test uses, and sid===null already means "no session board", never someone else's.
+		const sidRaw = q.get("sid");
+		const sid = sidRaw === null || sidRaw === "" ? null : sidRaw;
+		if (q.get("scope") === "session" && sid === null) {
+			sendJson(res, 400, { ok: false, error: "scope=session requires sid" });
+			return;
+		}
 		const f = readModesFile();
 		// #38-14: absent fields = the unchanged payload; present = cards are projected.
 		const fieldsRaw = q.get("fields");
@@ -2632,11 +2642,6 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
 				global: modesFor(f, activeSessionId ?? "", "global"),
 			},
 		});
-		return;
-	}
-	if (url.pathname === "/api/kanban.html") {
-		res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-		res.end(KANBAN_HTML);
 		return;
 	}
 	if (url.pathname === "/api/sessions") {
@@ -2678,6 +2683,14 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
 		// the target, i.e. any <img src> on any page could delete a file. Deregistration
 		// is all the dashboard may do; deleting is a local filesystem action.
 		sendJson(res, 200, { ok: true, id: removed.id });
+		return;
+	}
+
+	// #67: the only non-board path that lived past this point was /api/kanban.html, deleted
+	// with the pi-web split. A stale caller gets a real 404 instead of the board gate's sid
+	// 400 (KANBAN_HTML itself stays: writeBoardHtml still mirrors it to ~/.pi/kanban).
+	if (url.pathname === "/api/kanban.html") {
+		sendJson(res, 404, { ok: false, error: "not found" });
 		return;
 	}
 
@@ -2748,6 +2761,9 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
 		case "/api/modes": {
 			// scope=global may omit sid (it falls back to the driver); a session write must
 			// name one. Any sid is accepted — there is no per-session write lock.
+			// #67: the fallback stays on purpose. A global switch is *keyed* by session, and
+			// the dashboard writes the global panel without a sid, so demanding one here
+			// would only break the UI; nothing is read from another session by it.
 			const sid = q.get("sid") ?? (parseScope(q.get("scope")) === "global" ? activeSessionId : null);
 			if (sid === null || sid === "") {
 				sendJson(res, 400, { ok: false, error: "scope=session requires sid" });
@@ -4191,7 +4207,8 @@ ${KANBAN_MD_JS}
 // Self-contained kanban.html (no CDN, dark, 1.5s poll, card DnD + image drop)
 // ---------------------------------------------------------------------------
 
-const KANBAN_HTML = `<!doctype html>
+// #67: the /api/kanban.html route is gone, so tests read the template from the export.
+export const KANBAN_HTML = `<!doctype html>
 <html lang="ja">
 <head>
 <meta charset="utf-8">

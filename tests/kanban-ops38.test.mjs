@@ -56,13 +56,14 @@ const pi = {
 mod.default(pi);
 for (let i = 0; i < 40; i++) {
 	try {
-		if ((await fetch(`${BASE}/api/kanban.html`)).ok) break;
+		if ((await fetch(`${BASE}/api/kanban`)).ok) break;
 	} catch {
 		// まだ listen していない
 	}
 	await new Promise((r) => setTimeout(r, 100));
 }
-const html = await (await fetch(`${BASE}/api/kanban.html`)).text();
+// #67: /api/kanban.html is gone; the template is exported for the tests that pin it.
+const html = mod.KANBAN_HTML;
 
 // --- 3. インライン追加: + ボタン → 入力欄 → Enter で add ----------------------
 await check("#38-3 + ボタンで入力欄を開き、Enter で add を送る", () => {

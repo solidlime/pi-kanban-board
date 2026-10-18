@@ -69,7 +69,8 @@ for (let i = 0; i < 40; i++) {
 	}
 	await new Promise((r) => setTimeout(r, 100));
 }
-const kanbanHtml = await (await fetch(`${BASE}/api/kanban.html`)).text();
+// #67: /api/kanban.html is gone; the template is exported for the tests that pin it.
+const kanbanHtml = mod.KANBAN_HTML;
 
 // --- 最小 DOM ------------------------------------------------------------------
 function makeEl(tag) {
@@ -173,7 +174,7 @@ async function runKanban() {
 	const byId = {};
 	const calls = [];
 	const document = {
-		baseURI: `${BASE}/api/kanban.html`,
+		baseURI: `${BASE}/`,
 		getElementById: (id) => byId[id] || (byId[id] = makeEl("div")),
 		createElement: (t) => makeEl(t),
 		documentElement: makeEl("html"),

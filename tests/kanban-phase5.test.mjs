@@ -42,6 +42,8 @@ function check(name, fn) {
 	}
 }
 const eq = (a, b) => assert.deepEqual(a, b);
+const { readFileSync } = await import("node:fs");
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // --- B1/B2: 引数解釈（要求の実測例をそのまま） ---------------------------------
 check("［買い物］ -> add", () => eq(parseKanbanArgs(["買い物"]), { kind: "add", text: "買い物" }));
@@ -152,9 +154,22 @@ for (let i = 0; i < 40; i++) {
 }
 
 // --- B4: KANBAN_HTML の <script> が構文として妥当 --------------------------------
+// #67: the /api/kanban.html route is deleted (pi-web split). The template is still
+// exported and still written to ~/.pi/kanban/kanban.html, so the checks stay — they
+// just read the export instead of the removed route.
 {
-	const res = await fetch(`http://127.0.0.1:${PORT}/api/kanban.html`);
-	const html = await res.text();
+	// #67: read the file writeBoardHtml() mirrors — no route, and it pins what actually
+	// lands on disk. It appears at activate/session_start, so wait for it.
+	let html = "";
+	for (let i = 0; i < 60; i++) {
+		try {
+			html = readFileSync(`${HOME_DIR}/.pi/kanban/kanban.html`, "utf8");
+			if (html.length > 0) break;
+		} catch {
+			// まだ書かれていない
+		}
+		await sleep(100);
+	}
 	const m = html.match(/<script>([\s\S]*?)<\/script>/);
 	check("kanban.html に <script> がある", () => assert.ok(m, "no <script> block"));
 	check("kanban.html の script が構文 OK", () => {
@@ -164,6 +179,18 @@ for (let i = 0; i < 40; i++) {
 	check("kanban.html に interval の書き込み経路がある", () => {
 		assert.match(html, /interval\?min=/);
 	});
+	check("kanban.html は ~/.pi/kanban に書かれている（定数は残っている）", () => {
+		assert.ok(html.length > 1000, "kanban.html が空");
+		assert.equal(typeof mod.KANBAN_HTML, "string");
+		assert.ok(mod.KANBAN_HTML.length > 1000);
+	});
+}
+
+// #67: the removed route must stay removed. Await first, then check(), because
+// check() is synchronous and would count a rejected promise as a pass.
+{
+	const res = await fetch(`http://127.0.0.1:${PORT}/api/kanban.html`);
+	check("/api/kanban.html は 404", () => assert.equal(res.status, 404));
 }
 
 // --- B1/B2: ハンドラ実測（add は session TODO に入り、無言でないこと） ------------
@@ -171,8 +198,6 @@ const SID = "tree-test-sid";
 // #40: the panel's default sid is now pinned by the first session_start instead
 // of by a sidOf side effect. Drive the real event so the write gate has a sid.
 handlers.get("session_start")({}, mkCtx());
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const { readFileSync } = await import("node:fs");
 const readJson = (p) => JSON.parse(readFileSync(p, "utf8"));
 const boardFile = `${HOME_DIR}/.pi/kanban/sessions/${SID}.json`;
 const modesFile = `${HOME_DIR}/.pi/kanban/modes.json`;

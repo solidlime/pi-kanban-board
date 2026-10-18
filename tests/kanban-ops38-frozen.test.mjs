@@ -71,13 +71,14 @@ const pi = {
 mod.default(pi);
 for (let i = 0; i < 40; i++) {
 	try {
-		if ((await fetch(`${BASE}/api/kanban.html`)).ok) break;
+		if ((await fetch(`${BASE}/api/kanban`)).ok) break;
 	} catch {
 		// まだ listen していない
 	}
 	await new Promise((r) => setTimeout(r, 100));
 }
-const kanbanHtml = await (await fetch(`${BASE}/api/kanban.html`)).text();
+// #67: /api/kanban.html is gone; the template is exported for the tests that pin it.
+const kanbanHtml = mod.KANBAN_HTML;
 const dashboardHtml = await (await fetch(`${BASE}/`)).text();
 
 // ===========================================================================
@@ -225,7 +226,7 @@ await check("#38-9 KANBAN_HTML と DASHBOARD_HTML の .col.doingcol が同一", 
 	};
 	const byId = {};
 	const document = {
-		baseURI: `${BASE}/api/kanban.html`,
+		baseURI: `${BASE}/`,
 		getElementById: (id) => byId[id] || (byId[id] = makeEl("div")),
 		createElement: (t) => makeEl(t),
 		documentElement: makeEl("html"),

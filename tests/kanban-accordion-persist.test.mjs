@@ -77,7 +77,8 @@ for (let i = 0; i < 40; i++) {
 }
 
 const dashboardHtml = await (await fetch(`${BASE}/`)).text();
-const kanbanHtml = await (await fetch(`${BASE}/api/kanban.html`)).text();
+// #67: /api/kanban.html is gone; the template is exported for the tests that pin it.
+const kanbanHtml = mod.KANBAN_HTML;
 
 // ---------------------------------------------------------------------------
 // 共有ハーネス: className と classList が連動する最小 DOM（既存テストと同じ流用元）
@@ -300,7 +301,7 @@ const runKanban = async (storage) => {
 	if (!apiScript) throw new Error("kanban.html の本体スクリプトを取り出せない");
 	const byId = {};
 	const document = {
-		baseURI: `${BASE}/api/kanban.html`,
+		baseURI: `${BASE}/`,
 		getElementById: (id) => byId[id] || (byId[id] = makeEl("div")),
 		createElement: (t) => makeEl(t),
 		createTextNode: (t) => {
