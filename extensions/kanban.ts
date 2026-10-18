@@ -266,7 +266,17 @@ function writeModesFile(f: ModesFile): void {
 function modesFor(f: ModesFile, sid: string, scope: Scope): ModePair {
 	const scoped = scope === "global" ? f.GLOBAL : f.SESSION;
 	// Absent key means ON; only an explicit false turns a switch off.
-	return scoped?.[sid] ?? { doingLoop: f.doingLoop !== false, autoPick: f.autoPick !== false };
+	const base: ModePair = { doingLoop: f.doingLoop !== false, autoPick: f.autoPick !== false };
+	const entry = scoped?.[sid];
+	if (!entry) return base;
+	// #61: a stored entry can be PARTIAL (written by an older build, or hand-edited).
+	// Read as-is, the missing key stayed `undefined` and the GUI renders `!!m.autoPick`
+	// — so the board showed "ピック OFF" while the loop still picked. Fill from base.
+	return {
+		...entry,
+		doingLoop: typeof entry.doingLoop === "boolean" ? entry.doingLoop : base.doingLoop,
+		autoPick: typeof entry.autoPick === "boolean" ? entry.autoPick : base.autoPick,
+	};
 }
 
 /** read-modify-write one (scope, sid) pair. The flat legacy keys are never touched. */
