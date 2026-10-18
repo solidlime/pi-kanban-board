@@ -515,7 +515,8 @@ function cardsIn(b: Board, col: Col): Card[] {
 }
 
 function formatCard(c: Card): string {
-	return `#${c.id} ${c.text ?? ""}${c.img ? "🖼" : ""}`;
+	// #57: `c.img` is already the media/ filename, so show it as-is (no path, no basename).
+	return `#${c.id} ${c.text ?? ""}${c.img ? `🖼${c.img}` : ""}`;
 }
 
 /** Short "[⛔理由 ⏰ISO]" suffix so a tool result shows a gated card's state. */
