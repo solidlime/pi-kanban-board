@@ -4187,6 +4187,13 @@ const KANBAN_HTML = `<!doctype html>
       localStorage.setItem(LS_KEY, JSON.stringify(all));
     } catch (e) {}
   }
+  var drag = null;      // { board:key, id } while a card is in flight
+  var last = "";        // whole-page signature, so an idle reload touches no DOM
+  var query = "";       // #38-8: search box text, lowercase; filters cards in every column
+  var collapsed = {};   // #38-7: "board.key:col" -> true while a column is folded
+  var cache = null;     // last render inputs, so the search box refilters without a fetch
+  var STALE_GUI_MS = 2 * 60 * 60 * 1000; // #38-11: DOING over this long gets a ⏳
+  // #62: 復元は collapsed の宣言より後で行う（宣言前だと var 巻き上げで undefined になる）。
   (function(){
     var all = null;
     try { all = JSON.parse(localStorage.getItem(LS_KEY) || "null"); } catch (e) {}
@@ -4196,12 +4203,6 @@ const KANBAN_HTML = `<!doctype html>
     if (v.cols && typeof v.cols === "object") Object.keys(v.cols).forEach(function(k){ collapsed[k] = v.cols[k] === true; });
     if (typeof v.g === "boolean") gOpen = v.g;
   })();
-  var drag = null;      // { board:key, id } while a card is in flight
-  var last = "";        // whole-page signature, so an idle reload touches no DOM
-  var query = "";       // #38-8: search box text, lowercase; filters cards in every column
-  var collapsed = {};   // #38-7: "board.key:col" -> true while a column is folded
-  var cache = null;     // last render inputs, so the search box refilters without a fetch
-  var STALE_GUI_MS = 2 * 60 * 60 * 1000; // #38-11: DOING over this long gets a ⏳
 
 ${KANBAN_MD_JS}
 

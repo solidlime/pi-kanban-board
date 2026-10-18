@@ -581,7 +581,8 @@ await check("#62 GLOBAL の ckey は active sid を含まない", () => {
 	});
 
 	// 右パネル: board.key "g" + ":" + col = "g:doing"（sid を含まない）
-	const k = await runKanban(makeStorage());
+	const kStorage = makeStorage();
+	const k = await runKanban(kStorage);
 	await check("#62(e) 右パネルの GLOBAL 列キーも sid を含まない（g:doing）", () => {
 		const gcols = walk(k.byId["global"]).filter(byClass("col"));
 		assert.equal(gcols.length, 3, "右パネルの GLOBAL に列が 3 つない");
@@ -589,6 +590,21 @@ await check("#62 GLOBAL の ckey は active sid を含まない", () => {
 		assert.ok(Array.isArray(h2._lis.click), "列見出しに click ハンドラが無い");
 		h2._lis.click[0]();
 		assert.ok(gcols[1].classList.contains("collapsed"), "右パネルで列が畳まれていない");
+		const keys = Object.keys(kStorage.read("kb-collapse").kanban.cols);
+		assert.ok(keys.includes("g:doing"), `g:doing が無い: ${JSON.stringify(keys)}`);
+		assert.ok(
+			!keys.some((x) => x.indexOf("s1") >= 0 || x.indexOf("s2") >= 0),
+			`右パネルの GLOBAL のキーに sid が混ざっている: ${JSON.stringify(keys)}`,
+		);
+	});
+
+	// 復元 IIFE が collapsed の宣言より前にあると var 巻き上げで落ちる（実装中に踏んだ）。
+	await check("#62(e) 右パネルも立て直すと GLOBAL の列は畳まれたまま", async () => {
+		const k2 = await runKanban(kStorage);
+		const gcols2 = walk(k2.byId["global"]).filter(byClass("col"));
+		assert.equal(gcols2.length, 3, "右パネルの再訪で列が壊れた");
+		assert.ok(gcols2[1].classList.contains("collapsed"), "再訪で GLOBAL の列が開いた");
+		assert.ok(!gcols2[0].classList.contains("collapsed"), "別の列まで畳まれている");
 	});
 }
 
