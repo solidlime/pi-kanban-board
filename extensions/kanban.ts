@@ -149,6 +149,9 @@ let server: Server | null = null;
 // "down" is surfaced in the footer: a dead API must never be silent.
 let apiState: "starting" | "up" | "down" = "starting";
 let apiStarting = false;
+// One listen per process: a sibling pi already serving PORT is the normal case, and
+// re-binding on every extension reload only produced EADDRINUSE noise.
+let ensured = false;
 let lastFooter: { ctx: ExtensionContext; sid: string } | null = null;
 // Auto-tick bookkeeping (lastTickAt / tickInFlight) is per session: it lives inside
 // the factory. Module scope made every session share one 5-minute window, so one
@@ -785,10 +788,10 @@ export function tickCardFor(cards: Card[], scope: Scope, sid: string, now: numbe
 }
 
 /**
- * Pure: may the timer wake the agent right now? Kept side-effect free so every gate
- * (idle, switch, work present, halt, interval, starvation) is testable without a timer or disk.
+ * Pure: the gate verdict plus WHY it lost. `shouldAutoTick` is the boolean view of
+ * this, so the KANBAN_DEBUG trace can never disagree with what the timer does.
  */
-export function shouldAutoTick(i: {
+export function autoTickVerdict(i: {
 	isIdle: boolean;
 	doingLoop: boolean;
 	card: Card | undefined;
@@ -798,8 +801,7 @@ export function shouldAutoTick(i: {
 	now: number;
 	intervalMs?: number; // omit -> AUTO_TICK_MS (legacy entries)
 	menuOpen?: boolean; // a /kanban dialog is on screen: never speak behind it
-}): boolean {
-	if (i.menuOpen === true) return false;
+}): { fire: boolean; reason: string; quiet: boolean } {
 	const interval = i.intervalMs ?? AUTO_TICK_MS;
 	// Starvation guard: lastActivityAt is a heuristic. If something keeps stamping it,
 	// the quiet gate below would never open and the loop would stall forever. Silence
@@ -807,17 +809,34 @@ export function shouldAutoTick(i: {
 	const starved = i.now - i.lastTickAt >= interval * STARVATION_FACTOR;
 	// Unknown activity means the user may be right here: skipping one wake is far
 	// cheaper than talking over them, so an absent clock never fires (unless starved).
-	const activityQuiet = starved || (i.lastActivityAt !== undefined && i.now - i.lastActivityAt >= interval);
+	const quiet = starved || (i.lastActivityAt !== undefined && i.now - i.lastActivityAt >= interval);
 	// Both clocks must be silent for a full interval. lastTickAt alone only proves the
 	// last injection is old; a user message a second ago would still pass it.
-	return (
-		i.isIdle &&
-		i.doingLoop &&
-		i.card !== undefined &&
-		i.halted === null &&
-		i.now - i.lastTickAt >= interval &&
-		activityQuiet
-	);
+	const reason =
+		i.menuOpen === true
+			? "menu"
+			: !i.doingLoop
+				? "loop-off"
+				: i.card === undefined
+					? "no-card"
+					: !i.isIdle
+						? "busy"
+						: i.halted !== null
+							? `halted:${i.halted}`
+							: i.now - i.lastTickAt < interval
+								? "interval"
+								: !quiet
+									? "not-quiet"
+									: "";
+	return { fire: reason === "", reason, quiet };
+}
+
+/**
+ * Pure: may the timer wake the agent right now? Kept side-effect free so every gate
+ * (idle, switch, work present, halt, interval, starvation) is testable without a timer or disk.
+ */
+export function shouldAutoTick(i: Parameters<typeof autoTickVerdict>[0]): boolean {
+	return autoTickVerdict(i).fire;
 }
 
 /**
@@ -1022,6 +1041,9 @@ const PORT = process.env.KANBAN_PORT === undefined ? 8789 : Number(process.env.K
 const HOST = "0.0.0.0";
 const LISTEN_ATTEMPTS = 4;
 const LISTEN_RETRY_MS = 250; // 250 + 500 + 750ms of backoff between the 4 attempts
+// Gate trace for the auto-loop. Read per call so a test (and KANBAN_DEBUG=1) can toggle it;
+// off by default because this runs every 1.5s.
+const pollDebugEnabled = (): boolean => /^(1|true|yes)$/i.test(process.env.KANBAN_DEBUG ?? "");
 
 const CORS_HEADERS: Record<string, string> = {
 	"Access-Control-Allow-Origin": "*",
@@ -2817,7 +2839,8 @@ async function apiReachable(): Promise<boolean> {
 
 /** Start the shared server once. Later sessions (server non-null) reuse it. */
 function ensureServer(): void {
-	if (server !== null || apiStarting) return;
+	if (ensured || server !== null || apiStarting) return;
+	ensured = true;
 	apiStarting = true;
 	migrateLegacyBoard();
 	sweepSessions();
@@ -2846,6 +2869,9 @@ async function startListening(): Promise<void> {
 		} catch (err) {
 			s.close();
 			const e = err as NodeJS.ErrnoException;
+			// Another pi already holds the port: retrying only buys 3 more EADDRINUSE
+			// lines per subagent start. Fall through to the reuse probe below instead.
+			if (e.code === "EADDRINUSE" && (await apiReachable())) break;
 			logServer(
 				`listen attempt ${attempt}/${LISTEN_ATTEMPTS} failed on ${HOST}:${PORT}: ${e.code ?? "error"} ${e.message}`,
 			);
@@ -4619,42 +4645,52 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 				// Read the switch first: with doingLoop off this costs one
 				// modes.json read per poll and no board reads at all.
 				const m = modesFor(f, sid, scope);
-				if (!m.doingLoop) continue;
-				const cards = readBoard(boardPath(scope, sid)).cards;
+				const cards = m.doingLoop ? readBoard(boardPath(scope, sid)).cards : [];
 				// Phase 10: DOING empty + autoPick ON wakes on the first TODO instead of
 				// staying silent forever. The wake only asks for the move; the board is never
 				// written here (pickFirstTodo runs in the settle that follows this turn).
-				const card = tickCardFor(cards, scope, sid) ?? (m.autoPick ? nextTodo(cards, scope, sid) : undefined);
-				if (card === undefined) continue;
-				let isIdle: boolean;
-				try {
-					isIdle = ownCtx.isIdle(); // outside shouldAutoTick so a throw skips one tick
-					deadCtxStrikes = 0; // a ctx that just answered is not dead
-				} catch (err) {
-					deadCtx(err);
-					return;
+				const card = m.doingLoop
+					? (tickCardFor(cards, scope, sid) ?? (m.autoPick ? nextTodo(cards, scope, sid) : undefined))
+					: undefined;
+				let isIdle: boolean | null = null; // null = not asked (no card to wake for)
+				if (card !== undefined) {
+					try {
+						isIdle = ownCtx.isIdle(); // outside shouldAutoTick so a throw skips one tick
+						deadCtxStrikes = 0; // a ctx that just answered is not dead
+					} catch (err) {
+						deadCtx(err);
+						return;
+					}
 				}
-				if (
-					!shouldAutoTick({
-						isIdle,
-						doingLoop: m.doingLoop,
-						card,
-						halted: loop.halted,
-						lastTickAt,
-						lastActivityAt: loop.lastActivityAt ?? 0,
-						now: Date.now(),
-						intervalMs: intervalMsOf(m),
-						menuOpen: uiGuard.menuOpen,
-					})
-				)
-					continue;
+				const now = Date.now();
+				const v = autoTickVerdict({
+					isIdle: isIdle === true,
+					doingLoop: m.doingLoop,
+					card,
+					halted: loop.halted,
+					lastTickAt,
+					// undefined (never active) stays undefined: 0 would read as "long ago".
+					lastActivityAt: loop.lastActivityAt || undefined,
+					now,
+					intervalMs: intervalMsOf(m),
+					menuOpen: uiGuard.menuOpen,
+				});
+				if (pollDebugEnabled()) {
+					const why = v.fire ? "fire" : `skip:${v.reason}`;
+					process.stderr.write(
+						`kanban: poll sid=${sid} idle=${isIdle ?? "n/a"} doingLoop=${m.doingLoop} card=${card?.id ?? "null"} halted=${loop.halted ?? "null"} sinceLastTick=${now - lastTickAt} quiet=${v.quiet} => ${why}\n`,
+					);
+				}
+				if (!v.fire) continue;
+				if (card === undefined) continue; // v.fire implies a card; this only narrows for TS
 				tickInFlight = true;
-				lastTickAt = Date.now();
+				lastTickAt = now;
 				try {
-					// sendUserMessage is a synchronous dispatch (returns void): the guard is
-					// released as soon as the turn has been queued. lastTickAt is the real
-					// double-fire net, since it advances before the dispatch.
-					pi.sendUserMessage(continuationPrompt(card, scope));
+					// The declared return is void, but every runtime hands back a promise: without
+					// a catch, a rejected wake ("Agent is already processing...") vanished.
+					void Promise.resolve(pi.sendUserMessage(continuationPrompt(card, scope)) as unknown).catch(
+						(err: unknown) => logServer(`wake rejected: ${err instanceof Error ? err.message : String(err)}`),
+					);
 					// firedFor goes in AFTER the dispatch returned: a throw leaves the schedule
 					// unfired so the next settle retries, instead of going silent forever.
 					// A failed writeBoard here only buys one extra wake - loud beats a hole.
@@ -5211,6 +5247,8 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 		}
 		if (pollTimer === null) {
 			// Same period as kanban.html's poll so the footer and the right panel converge.
+			// Started unconditionally: the HTTP server is shared with a sibling pi, but the
+			// loop is this session's, so no listen result may gate it.
 			pollTimer = setInterval(poll, 1500);
 			pollTimer.unref(); // a stray timer must never hold the process open
 		}
