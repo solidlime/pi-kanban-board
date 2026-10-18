@@ -85,6 +85,10 @@ Served entries expire after 7 days by default. Mark one `permanent` to keep it. 
 
 State is plain JSON on disk. Nothing leaves the machine.
 
+## Debugging the loop
+
+The autonomous loop decides once every 1.5s whether to wake the agent. Set `KANBAN_DEBUG=1` to get one `kanban: poll ... => fire|skip:<reason>` line per tick on stderr; unset, the loop stays silent. `~/.pi/kanban/server.log` keeps the HTTP side (bind, reuse, API down); a rejected wake shows up there as `wake rejected: ...`.
+
 ## Security notes
 
 The HTTP server binds `0.0.0.0` and sends `Access-Control-Allow-Origin: *`. Mutating endpoints are `GET`-reachable so the board works from a plain browser tab and from inside an `iframe srcdoc`. It is designed for a trusted LAN, not the public internet — do not expose port 8789.
