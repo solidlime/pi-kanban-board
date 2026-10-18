@@ -42,9 +42,13 @@ async function check(name, fn) {
 }
 
 // --- サーバ起動 (このテスト専用ポート) ----------------------------------------
+// board ツールの check アクションを実際に叩くため、registerTool の spec を保持する。
+const toolSpecs = [];
 const pi = {
 	registerCommand() {},
-	registerTool() {},
+	registerTool(spec) {
+		toolSpecs.push(spec);
+	},
 	appendEntry() {},
 	on() {},
 	sendUserMessage() {},
@@ -200,6 +204,33 @@ await check("#38-1 /api/selftest は {ok, checks:[{name,ok,detail}]} を返す",
 	}
 	const names = j.checks.map((c) => c.name).sort();
 	assert.deepEqual(names, ["board", "media", "modes", "serve"], `層の名前: ${names}`);
+});
+
+// --- 1/2. selftest: API とツール check が同じ JSON を返す ---------------------
+// ツール名は実装上 "kanban"（"board" ではない）。戻り値は content[0].text に JSON 文字列で
+// 入る（details は scope/cards/nextId でレポートを含まない）。
+await check("#38-2 board ツール check は /api/selftest と同じ JSON を返す", async () => {
+	const spec = toolSpecs.find((s) => s.name === "kanban");
+	assert.ok(spec, `kanban ツールが登録されていない: ${toolSpecs.map((s) => s.name).join(",")}`);
+	const ctx = {
+		hasUI: false,
+		isIdle: () => true,
+		ui: { notify() {}, setWidget() {} },
+		sessionManager: {
+			getSessionId: () => SID,
+			getSessionName: () => "ops38",
+			getEntries: () => [],
+		},
+	};
+	const res = await spec.execute("test-call", { action: "check", scope: "session" }, undefined, undefined, ctx);
+	assert.ok(!res.isError, `check が失敗した: ${res.content[0].text}`);
+	const fromTool = JSON.parse(res.content[0].text);
+	const fromApi = await (await fetch(`${BASE}/api/selftest`, { method: "POST" })).json();
+	// 除外キーなし: selftest の detail に時刻・乱数は含まれない（board=activeSessionId と
+	// ファイル数、modes/serve=パスと件数、media=パスと件数）。全て同じプロセス状態を見るので
+	// 厳密一致で固定できる。
+	assert.deepEqual(fromTool, fromApi, "ツール check と /api/selftest の JSON が違う");
+	assert.equal(fromTool.ok, true, `selftest が落ちている: ${JSON.stringify(fromTool)}`);
 });
 
 // --- 結果 ---------------------------------------------------------------------

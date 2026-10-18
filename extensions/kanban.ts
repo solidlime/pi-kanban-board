@@ -3005,6 +3005,8 @@ const DASHBOARD_HTML = `<!doctype html>
   .col h3{margin:0 0 6px;font-size:11px;letter-spacing:.08em;color:var(--muted);font-weight:600}
   .col h3 .c{color:var(--accent);margin-left:4px}
   .col.doingcol h3{color:var(--accent)}
+  /* #38-9: KANBAN_HTML の .col.doingcol と同じ見た目（左ボーダー＋淡い背景で「今これ」と分かる） */
+  .col.doingcol{border-left:3px solid var(--accent);background:var(--accent-soft-2)}
   .card{background:var(--card);border-radius:6px;padding:6px 8px;margin-bottom:6px;font-size:12px;display:flex;gap:4px;align-items:baseline;flex-wrap:wrap}
   .card .id{color:var(--accent);flex:none}
   .card .t{flex:1;min-width:0;overflow-wrap:anywhere;white-space:pre-wrap}
