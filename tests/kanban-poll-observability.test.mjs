@@ -213,6 +213,19 @@ function mkCtx(sid) {
 	check("再起動後の初回 tick が wake を 1 件出す", () => assert.equal(sent.length, 1, `sent=${sent.length}`));
 }
 
+// 4e: ownCtx が無い tick も debug 時だけは 1 行出す（黙って死ぬ経路を可視化する）。
+{
+	process.env.KANBAN_DEBUG = "1";
+	const { pi } = mkPi();
+	const t = mod.default(pi).__test; // session_start を一度も呼ばない = ownCtx null
+	pollLines.length = 0;
+	capture();
+	t.poll();
+	restore();
+	delete process.env.KANBAN_DEBUG;
+	check("ownCtx 無しの tick は skip:no-ctx を出す", () => eq(pollLines, ["kanban: poll => skip:no-ctx"]));
+}
+
 console.log(`${passed} passed, ${failures.length} failed`);
 for (const failure of failures) console.log(`  FAIL ${failure}`);
 process.exit(failures.length === 0 ? 0 : 1);

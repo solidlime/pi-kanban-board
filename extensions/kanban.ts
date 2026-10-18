@@ -4629,7 +4629,12 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 
 	const poll = (): void => {
 		sweepServeThrottled(); // 1 時間に 1 回だけ実際に走る
-		if (ownCtx === null) return;
+		// #46: a restart that never delivers session_start leaves ownCtx null and this
+		// tick returns silently. That is the one case the trace below cannot show.
+		if (ownCtx === null) {
+			if (pollDebugEnabled()) process.stderr.write("kanban: poll => skip:no-ctx\n");
+			return;
+		}
 		let sid: string;
 		try {
 			sid = sidOf(ownCtx);
