@@ -2991,6 +2991,13 @@ const DASHBOARD_HTML = `<!doctype html>
   button.mini{font:inherit;font-size:10px;line-height:1.5;color:var(--muted);background:var(--panel);border:1px solid var(--border-strong);border-radius:4px;padding:0 5px;cursor:pointer}
   button.mini:hover{color:var(--accent);border-color:var(--accent)}
   button.mini[disabled]{opacity:.45;cursor:default}
+  /* #45 列末尾の追加 UI とカード削除（色は既存トークンのみ） */
+  /* 読み取り専用は aria-disabled: ネイティブ disabled はクリックを飲んで理由を出せない */
+  .col .addbtn{width:100%;margin-top:2px}
+  .col .addin{width:100%;font:inherit;font-size:11px;background:var(--card);color:var(--text);border:1px solid var(--accent);border-radius:4px;padding:2px 4px}
+  button.mini[aria-disabled="true"]{opacity:.45;cursor:default}
+  .card .ops button.del{color:var(--danger-soft-fg);border-color:var(--danger-border)}
+  .card .ops button.del:hover{color:var(--danger-fg);border-color:var(--danger-border)}
   /* #36 任意時刻の発火指定（datetime-local 直入力） */
   .card .ops input[type=datetime-local]{font:inherit;font-size:10px;background:var(--panel);color:var(--text);border:1px solid var(--border-strong);border-radius:4px;padding:1px 3px}
   /* #31 board switches: doingLoop / autoPick / interval / DOING stop */
@@ -3274,6 +3281,19 @@ ${KANBAN_MD_JS}
       if (prioOf(c) > PRIO_MIN) act("/api/priority", { id: c.id, n: prioOf(c) - 1 }, ctx);
     }, !ctx.active || prioOf(c) <= PRIO_MIN));
     ops.appendChild(pair);
+    // #45: 削除。読み取り専用は aria-disabled（ネイティブ disabled だとクリックが
+    // 発火せず、押せない理由を返せない）。
+    var del = el("button", "mini del", "\\u00d7");
+    del.type = "button";
+    del.setAttribute("aria-disabled", ctx.active ? "false" : "true");
+    del.title = ctx.active ? "このカードを削除" : RO_TITLE;
+    del.setAttribute("aria-label", "このカードを削除");
+    del.addEventListener("click", function(){
+      if (!ctx.active) { note(RO_MSG); return; }
+      if (!window.confirm("「" + String(c.text || "").slice(0, 40) + "」を削除しますか？")) return;
+      act("/api/remove", { id: c.id }, ctx);
+    });
+    ops.appendChild(del);
     return ops;
   }
 
@@ -3389,6 +3409,41 @@ ${KANBAN_MD_JS}
         });
         if (list.length > MAX_PER_COL) box.appendChild(el("div", "more", "他 " + (list.length - MAX_PER_COL) + " 枚"));
       }
+      // #45: 列の最後尾でその場に追加。Enter=確定 / Escape=取消 / blur=閉じる。
+      // 読み取り専用は aria-disabled（理由を返すためクリックは受ける）。
+      var addBtn = el("button", "mini addbtn", "+");
+      addBtn.type = "button";
+      addBtn.setAttribute("aria-disabled", ctx.active ? "false" : "true");
+      addBtn.title = ctx.active ? "この列にカードを追加" : RO_TITLE;
+      addBtn.setAttribute("aria-label", "この列にカードを追加");
+      var addIn = el("input", "addin");
+      addIn.placeholder = "追加して Enter";
+      addIn.setAttribute("aria-label", "この列にカードを追加");
+      var sending = false;
+      function showAdd(on){
+        addBtn.style.display = on ? "none" : "";
+        addIn.style.display = on ? "" : "none";
+        if (on) addIn.focus();
+      }
+      showAdd(false);
+      addBtn.addEventListener("click", function(){
+        if (!ctx.active) { note(RO_MSG); return; }
+        showAdd(true);
+      });
+      addIn.addEventListener("keydown", function(e){
+        if (e.key === "Escape") { e.preventDefault(); addIn.value = ""; showAdd(false); return; }
+        if (e.key !== "Enter") return;
+        var v = addIn.value.trim();
+        addIn.value = "";
+        if (!v) { showAdd(false); return; }
+        sending = true;
+        act("/api/add", { col: key, text: v }, ctx).then(function(){ sending = false; });
+        showAdd(false);
+      });
+      // 送信中（act の往復中）の blur では閉じない: reload 由来の blur で二重に閉じるのを防ぐ
+      addIn.addEventListener("blur", function(){ if (!sending) showAdd(false); });
+      box.appendChild(addBtn);
+      box.appendChild(addIn);
       wrap.appendChild(box);
     });
     return wrap;

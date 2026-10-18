@@ -178,6 +178,7 @@ await check("CSS は既存トークンのみ（新色を発明していない）
 			addEventListener(t, fn) {
 				(e._lis[t] = e._lis[t] || []).push(fn);
 			},
+			focus() {},
 			removeEventListener() {},
 			classList: { add() {}, remove() {}, toggle() {}, contains: () => false },
 		};
