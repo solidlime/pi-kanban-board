@@ -134,10 +134,11 @@ await check("#38-9 KANBAN_HTML と DASHBOARD_HTML の .col.doingcol が同一", 
 		entries = loopEntry({ count: 3, halted: "stuck", scope: "session", stuckId: 5, stuckCount: 3 });
 		handlers.get("session_start")({}, ctx);
 		assert.ok(footer().includes("HALTED:stuck #5"), `stuck の card id が無い: ${footer()}`);
-		// stuckId 未設定 -> #0（現状の挙動を固定。意図的かは未確認）
+		// stuckId 未設定 -> 理由だけ出す。カード id 0 は存在し得ないので #0 は嘘になる。
 		entries = loopEntry({ count: 3, halted: "stuck", scope: "session" });
 		handlers.get("session_start")({}, ctx);
-		assert.ok(footer().includes("HALTED:stuck #0"), `stuckId 未設定で #0 にならない: ${footer()}`);
+		assert.ok(footer().includes("HALTED:stuck"), `stuck の理由が無い: ${footer()}`);
+		assert.ok(!footer().includes("HALTED:stuck #"), `stuckId 未設定なのに id が出た: ${footer()}`);
 		// null -> タグを出さない
 		entries = loopEntry({ count: 0, halted: null, scope: null });
 		handlers.get("session_start")({}, ctx);

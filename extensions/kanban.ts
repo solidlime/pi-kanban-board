@@ -587,7 +587,10 @@ function refresh(ctx: ExtensionContext, sessionId: string): void {
 
 /** " HALTED:limit" / " HALTED:stuck #n" — the leading space lets callers append it directly. */
 function haltTag(l: LoopState): string {
-	return l.halted === "limit" ? " HALTED:limit" : l.halted === "stuck" ? ` HALTED:stuck #${l.stuckId ?? 0}` : "";
+	if (l.halted === "limit") return " HALTED:limit";
+	if (l.halted !== "stuck") return "";
+	// Card id 0 never exists, so a missing id means it was lost on restore (#4502). Show the reason only.
+	return typeof l.stuckId === "number" ? ` HALTED:stuck #${l.stuckId}` : " HALTED:stuck";
 }
 
 const loopTags = new Map<string, string>();
