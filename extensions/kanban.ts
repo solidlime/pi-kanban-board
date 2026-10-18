@@ -3076,6 +3076,8 @@ const DASHBOARD_HTML = `<!doctype html>
   .sess-hd[role="button"]{cursor:pointer;border-radius:6px;margin:-4px -6px 8px;padding:4px 6px;user-select:none;-webkit-user-select:none}
   .sess-hd[role="button"]:hover{background:var(--accent-soft)}
   .sess .caret{flex:none;font-size:13px;line-height:1;color:var(--text);width:1em;text-align:center;margin-right:4px}
+  /* #62: GLOBAL のヘッダも同じ caret を使う（.sess の外にあるので別セレクタ） */
+  .sess-hd>.caret{flex:none;font-size:13px;line-height:1;color:var(--text);width:1em;text-align:center;margin-right:4px}
   .sess-empty{border:1px dashed var(--border-strong);border-radius:6px;padding:10px;text-align:center;color:var(--muted);font-size:12px}
   /* #48: カード検索（列の絞り込み。色は既存トークンのみ） */
   .q{width:100%;max-width:320px;font:inherit;font-size:12px;background:var(--panel);color:var(--text);border:1px solid var(--border-strong);border-radius:6px;padding:3px 6px;margin-bottom:8px}
@@ -3179,8 +3181,31 @@ const DASHBOARD_HTML = `<!doctype html>
   // DOM 作り直しを跨いで保持する（localStorage は使わない: 既存の流儀どおり）。
   var query = "";        // 小文字化済みの検索語
   var sessOpen = {};     // sid -> expanded（既定は全開）
-  // #38-7/#38-11: どちらもページ内だけの状態（サーバに保存しない）。
-  var collapsed = {};    // "scope.sid:col" -> true while a column is folded
+  // #38-7/#38-11: どちらもクライアントだけの状態（サーバには保存しない）。
+  // #62: 列のキーは "session.<sid>:col" / "global:col"（GLOBAL に active sid を混ぜない）。
+  var collapsed = {};    // ckey -> true while a column is folded
+  var gOpen = true;      // #62: GLOBAL 看板の開閉（既定は開）
+  // #62: 開閉だけ localStorage に残す。kb-theme と同じく失敗は握りつぶし、
+  // 保存が無いキーは今の既定のまま。ns で 2 テンプレートを分ける（片方が他方を壊さない）。
+  var LS_KEY = "kb-collapse", LS_NS = "dash";
+  function uiSig(){ return JSON.stringify([sessOpen, gOpen, collapsed]); }
+  function persist(){
+    try {
+      var all = JSON.parse(localStorage.getItem(LS_KEY) || "{}");
+      if (!all || typeof all !== "object") all = {};
+      all[LS_NS] = { sess: sessOpen, g: gOpen, cols: collapsed };
+      localStorage.setItem(LS_KEY, JSON.stringify(all));
+    } catch (e) {}
+  }
+  (function(){
+    var all = null;
+    try { all = JSON.parse(localStorage.getItem(LS_KEY) || "null"); } catch (e) {}
+    var v = all && all[LS_NS];
+    if (!v || typeof v !== "object") return;
+    if (v.sess && typeof v.sess === "object") Object.keys(v.sess).forEach(function(k){ sessOpen[k] = v.sess[k] === true; });
+    if (v.cols && typeof v.cols === "object") Object.keys(v.cols).forEach(function(k){ collapsed[k] = v.cols[k] === true; });
+    if (typeof v.g === "boolean") gOpen = v.g;
+  })();
   var STALE_GUI_MS = 2 * 60 * 60 * 1000; // DOING over this long gets a ⏳
 ${KANBAN_MD_JS}
 
@@ -3480,13 +3505,14 @@ ${KANBAN_MD_JS}
       var key = pair[0];
       var list = cards.filter(function(c){ return c.col === key; });
       // #38-7: 折りたたみのキーは看板ごと（GLOBAL と各セッションで別々に畳める）
-      var ckey = ctx.scope + (ctx.sid ? "." + ctx.sid : "") + ":" + key;
+      // #62: GLOBAL に active sid を混ぜない（切り替わるたびに別キーになって勝手に開いていた）。
+      var ckey = ctx.scope === "global" ? "global:" + key : ctx.scope + "." + ctx.sid + ":" + key;
       var box = el("div", "col" + (key === "doing" && list.length ? " doingcol" : "") + (collapsed[ckey] ? " collapsed" : ""));
       box.setAttribute("data-col", key);
       var h = el("h3", null, pair[1]);
       h.appendChild(el("span", "c", String(list.length)));
       // #38-7: 見出しクリックで列ごと畳む（状態はこのページ内だけ）
-      h.addEventListener("click", function(){ collapsed[ckey] = !collapsed[ckey]; box.classList.toggle("collapsed"); });
+      h.addEventListener("click", function(){ collapsed[ckey] = !collapsed[ckey]; box.classList.toggle("collapsed"); persist(); });
       box.appendChild(h);
       if (ctx && ctx.active) {
         // #30 D&D: same handler on the GLOBAL board and on every session board.
@@ -3749,6 +3775,7 @@ ${KANBAN_MD_JS}
         var tgt = e && e.target;
         if (tgt && tgt.closest && (tgt.closest(".ops") || tgt.closest("button") || tgt.closest("a") || tgt.closest("input"))) return;
         sessOpen[s.id] = !expanded;
+        persist();
         redraw();
       }
       hd.addEventListener("click", toggle);
@@ -3787,9 +3814,32 @@ ${KANBAN_MD_JS}
     var cards = all.filter(function(x){
       return !search || String(x.text || "").toLowerCase().indexOf(query) >= 0;
     });
+    // #62: GLOBAL もセッション見出しと同じ操作感で畳める（既定は開。検索中は強制展開）。
+    var gexpanded = gOpen || search;
     var head = el("div", "sess-hd");
+    head.title = "クリックで折りたたみ";
+    head.setAttribute("role", "button");
+    head.setAttribute("tabindex", "0");
+    head.setAttribute("aria-expanded", gexpanded ? "true" : "false");
+    head.appendChild(el("span", "caret", gexpanded ? "\u25BE" : "\u25B8"));
     head.appendChild(el("span", "sess-cwd", countsText(c, cards, search) + " ・ 計 " + cards.length + " 枚"));
     box.appendChild(head);
+    // ヘッダ内の操作は畳まない（セッション見出しと同じ除外）。
+    function toggleGlobal(e){
+      var tgt = e && e.target;
+      if (tgt && tgt.closest && (tgt.closest(".ops") || tgt.closest("button") || tgt.closest("a") || tgt.closest("input"))) return;
+      gOpen = !gexpanded;
+      persist();
+      redraw();
+    }
+    head.addEventListener("click", toggleGlobal);
+    head.addEventListener("keydown", function(e){
+      var k = e && e.key;
+      if (k !== "Enter" && k !== " " && k !== "Spacebar") return;
+      if (e.preventDefault) e.preventDefault();
+      toggleGlobal(e);
+    });
+    if (!gexpanded) return;
     // GLOBAL writes carry scope=global; the modes key still needs the active sid.
     // 操作系は従来どおり絞り込み前の全カード（サーバの件数）を見る。
     var ctx = boardCtx("global", sid, true);
@@ -3919,7 +3969,7 @@ ${KANBAN_MD_JS}
   // 「同じ sig」で描画をスキップしても画面と sig が食い違わない。
   function redraw(){
     if (!lastData) return;
-    sig = sigOf(lastData);
+    sig = sigOf(lastData) + uiSig();
     render(lastData);
   }
   function reload(){
@@ -3929,7 +3979,7 @@ ${KANBAN_MD_JS}
       setConn(true);
       fails = 0;
       // re-render when data changes, or once a minute so relative times stay honest
-      var s = sigOf(d);
+      var s = sigOf(d) + uiSig();
       if (s === sig) return;
       sig = s;
       render(d);

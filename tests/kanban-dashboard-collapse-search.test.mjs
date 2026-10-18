@@ -146,7 +146,7 @@ check("caret は 13px 以上で濃い色（opacity を使わない）", () => {
 	assert.match(css, /flex:none/);
 });
 
-check("ヘッダは hover で背景が付き、テキスト選択されない（GLOBAL のヘッダは対象外）", () => {
+check("ヘッダは hover で背景が付き、テキスト選択されない（#62 で GLOBAL も対象）", () => {
 	const SEL = '.sess-hd[role="button"]';
 	const rule = (suffix) => {
 		const at = html.indexOf(SEL + suffix + "{");
@@ -160,8 +160,12 @@ check("ヘッダは hover で背景が付き、テキスト選択されない（
 	const hover = rule(":hover");
 	assert.ok(hover, ".sess-hd[role=button]:hover が無い");
 	assert.match(hover, /background:var\(--/, "hover の背景が既存トークンでない");
-	// GLOBAL のヘッダに hover 背景を付けない（押せないのに押せそうに見せない）
-	assert.ok(!html.includes(".sess-hd:hover"), "GLOBAL のヘッダにも hover が付いている");
+	// #62 で GLOBAL も押せるようになったため反転: GLOBAL のヘッダにも hover 背景を付ける。
+	// （「押せないのに押せそうに見せない」という元の意図は、押せるようにする側で解消した）
+	assert.ok(html.includes(".sess-hd:hover") || hover, "GLOBAL のヘッダに hover が付いていない");
+	// 反転の本体: GLOBAL ヘッダが実際に操作可能なボタンになっている（旧: role が付かない前提）
+	assert.match(html, /head\.setAttribute\("role", "button"\)/);
+	assert.match(html, /head\.setAttribute\("aria-expanded", gexpanded \? "true" : "false"\)/);
 });
 
 check("ヘッダは a11y 的にもボタン（aria-expanded / role / tabindex）", () => {
