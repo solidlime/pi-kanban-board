@@ -150,12 +150,32 @@ let activeSessionId: string | null = null;
 // GUI to learn WHY the loop stopped. Published by paintLoop, cleared by resume.
 const haltedBySid = new Map<string, { halted: "limit" | "stuck"; stuckId: number | null; stuckCount: number }>();
 let server: Server | null = null;
-// "down" is surfaced in the footer: a dead API must never be silent.
-let apiState: "starting" | "up" | "down" = "starting";
+// Every non-starting state is surfaced in the footer: a dead API must never be silent.
+//   up    - this process owns the port, or a process of OUR version does.
+//   down  - nothing answers the port.
+//   stale - a kanban server of ANOTHER version owns the port; reuse is refused.
+//   fatal - the bind can never succeed as configured (EACCES/EPERM/bad port). No retry.
+let apiState: "starting" | "up" | "down" | "stale" | "fatal" = "starting";
 let apiStarting = false;
-// One listen per process: a sibling pi already serving PORT is the normal case, and
-// re-binding on every extension reload only produced EADDRINUSE noise.
-let ensured = false;
+// #64: one pending retry while "stale" (the old server dies -> the port frees up).
+let staleRetryTimer: NodeJS.Timeout | null = null;
+// #64: no `ensured` flag. It was set BEFORE listen succeeded, so one failed bind
+// silenced the server for the rest of the process. The guards below are the state
+// itself (server/apiStarting/apiState), and apiStarting is released in a finally.
+// #66: identity, so a reuse can be checked instead of assumed. package.json is read
+// at load; if the loader hides it (bundled/jailed) we fall back to a constant, which
+// has to be kept in sync with package.json by hand.
+const SERVER_VERSION: string = (() => {
+	try {
+		const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version?: unknown };
+		if (typeof pkg.version === "string" && pkg.version.length > 0) return pkg.version;
+	} catch {
+		// fall through to the constant
+	}
+	return "0.2.0"; // must match package.json when it cannot be read at runtime
+})();
+// #66: set once we actually own the port (a reused server has someone else's clock).
+let serverStartedAt: number = 0;
 let lastFooter: { ctx: ExtensionContext; sid: string } | null = null;
 // Auto-tick bookkeeping (lastTickAt / tickInFlight) is per session: it lives inside
 // the factory. Module scope made every session share one 5-minute window, so one
@@ -588,7 +608,15 @@ function refresh(ctx: ExtensionContext, sessionId: string): void {
 	const global = readBoard(GLOBAL_JSON);
 	const f = readModesFile();
 	// Appended to the existing GLOBAL line: still exactly two lines, no third.
-	const apiTag = apiState === "down" ? " API DOWN" : "";
+	// #64: `stale` and `fatal` are states the human must see, not just "DOWN".
+	const apiTag =
+		apiState === "down"
+			? " API DOWN"
+			: apiState === "stale"
+				? " STALE"
+				: apiState === "fatal"
+					? " PORT BLOCKED"
+					: "";
 	// Same line again: a loop halt is a status tag, not a third row.
 	ctx.ui.setWidget(
 		WIDGET_KEY,
@@ -1059,10 +1087,24 @@ function markFired(card: Card, sid: string, scope: Scope): void {
 // ---------------------------------------------------------------------------
 
 // KANBAN_PORT keeps the API testable when a running pi-web already owns 8789.
-const PORT = process.env.KANBAN_PORT === undefined ? 8789 : Number(process.env.KANBAN_PORT);
+// #66: validate it. `listen(NaN)` throws ERR_SOCKET_BAD_PORT with no hint about the
+// cause, so a typo would look like an outage. Junk -> default + one warning.
+const PORT_VALID = (() => {
+	const raw = process.env.KANBAN_PORT;
+	if (raw === undefined) return 8789;
+	const n = Number(raw);
+	if (Number.isInteger(n) && n >= 1 && n <= 65535) return n;
+	process.stderr.write(`kanban: KANBAN_PORT=${JSON.stringify(raw)} is not a port (1-65535); using 8789\n`);
+	return 8789;
+})();
+const PORT = PORT_VALID;
 const HOST = "0.0.0.0";
 const LISTEN_ATTEMPTS = 4;
 const LISTEN_RETRY_MS = 250; // 250 + 500 + 750ms of backoff between the 4 attempts
+// #64: after "stale", keep probing for the port to free up, but slowly: a sibling
+// pi that never exits must not turn this into a spin. unref() so it never holds the
+// process open (pi calls process.exit() anyway; this is for the test harness).
+const STALE_RETRY_MS = 30000;
 // Gate trace for the auto-loop. Read per call so a test (and KANBAN_DEBUG=1) can toggle it;
 // off by default because this runs every 1.5s.
 const pollDebugEnabled = (): boolean => /^(1|true|yes)$/i.test(process.env.KANBAN_DEBUG ?? "");
@@ -1203,7 +1245,7 @@ function realOrSelf(p: string): string {
 	}
 }
 
-/** A10: ~/workspace and ~/.pi/kanban by default; serve-allow.json overrides wholesale. */
+/** A10: ~/workspace by default; serve-allow.json overrides wholesale. */
 function serveAllowRoots(): string[] {
 	const defaults = [join(homedir(), "workspace"), KANBAN_DIR];
 	try {
@@ -2295,6 +2337,10 @@ async function dashboardPayload(): Promise<unknown> {
 	}));
 	return {
 		host: learnedServeHost() ?? hostname(),
+		// #66: identity, so the dashboard can name a stale server instead of rendering
+		// whatever answers the port.
+		version: SERVER_VERSION,
+		startedAt: serverStartedAt,
 		now: new Date().toISOString(),
 		// #40: which session's ctx drives auto-tick. Read-only on purpose: switching is
 		// `/kanban take` only, so the dashboard has no write path to race.
@@ -2398,6 +2444,9 @@ const MEDIA_PREFIX = "/api/media/";
 // ---------------------------------------------------------------------------
 
 type SelfTestCheck = { name: string; ok: boolean; detail: string };
+// #66: display-only. `pid` is never fed to process.kill(): any listener on 127.0.0.1
+// could claim any pid, and this API has no auth.
+type SelfTestIdentity = { version: string; startedAt: number; pid: number };
 
 /** One row: run the probe, keep the thrown message as the detail when it fails. */
 function selfTestLayer(name: string, probe: () => string): SelfTestCheck {
@@ -2413,7 +2462,15 @@ function selfTestLayer(name: string, probe: () => string): SelfTestCheck {
  * registry and media/. Each probe parses the real file (rather than going through the
  * forgiving readers, which turn a corrupt file into an empty board and hide the cause).
  */
-function runSelfTest(): { ok: boolean; checks: SelfTestCheck[] } {
+/**
+ * #66: identity of the process behind the port. `pid` is display-only - nothing may
+ * signal a probed pid (any listener on 127.0.0.1 could claim one).
+ */
+function serverIdentity(): SelfTestIdentity {
+	return { version: SERVER_VERSION, startedAt: serverStartedAt, pid: process.pid };
+}
+
+function runSelfTest(): { ok: boolean; checks: SelfTestCheck[]; identity: SelfTestIdentity } {
 	const checks = [
 		selfTestLayer("board", () => {
 			const paths = [GLOBAL_JSON, activeSessionId === null ? null : boardPath("session", activeSessionId)];
@@ -2443,8 +2500,9 @@ function runSelfTest(): { ok: boolean; checks: SelfTestCheck[] } {
 			return `${MEDIA_DIR} (${readdirSync(MEDIA_DIR).length} file(s))`;
 		}),
 	];
-	return { ok: checks.every((c) => c.ok), checks };
+	return { ok: checks.every((c) => c.ok), checks, identity: serverIdentity() };
 }
+
 
 /**
  * #38-14: `?fields=id,col,text` projects each card down to those keys. No fields =
@@ -2583,7 +2641,7 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
 	if (url.pathname === "/api/serve") {
 		// Serve registry is not board-scoped: no sid. There is no per-entry process to
 		// stop, so "停止" is deregistration (the shared server keeps running and
-		// /serve/<id>/ starts 404ing). del=1 additionally drops the served file.
+		// /serve/<id>/ starts 404ing). Deleting the file is NOT an HTTP action.
 		const id = q.get("id");
 		const action = q.get("action");
 		if (id === null || id === "") {
@@ -2839,28 +2897,65 @@ function logServer(line: string): void {
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-/** True when something already answers the kanban API on the port we want. */
-async function apiReachable(): Promise<boolean> {
+/**
+ * #66: what the process on our port says about itself. Reading the identity is what
+ * separates "our sibling pi" (reuse) from "an old kanban left running" (stale).
+ * `startedAt`/`pid` are display-only: nothing here ever signal()s a probed pid.
+ */
+type Probe = { reachable: boolean; version?: string; pid?: number; startedAt?: number };
+
+/**
+ * Ask whatever answers PORT who it is. A /api/selftest that 404s (or has no identity)
+ * is an older build: reachable, version unknown. Only a non-404 answer with a readable
+ * body proves *this* API is behind the port, so an unrelated listener is not reused.
+ */
+async function probeServer(): Promise<Probe> {
+	let res: Response;
 	try {
-		const res = await fetch(`http://127.0.0.1:${PORT}/api/kanban`, {
-			signal: AbortSignal.timeout(1000),
+		res = await fetch(`http://127.0.0.1:${PORT}/api/selftest`, {
+			method: "POST",
+			signal: AbortSignal.timeout(1500),
 		});
-		return res.ok;
 	} catch {
-		return false;
+		return { reachable: false };
+	}
+	if (res.status === 404) return { reachable: true }; // pre-#66 kanban: identity unknown
+	try {
+		const body = (await res.json()) as { identity?: { version?: unknown; pid?: unknown; startedAt?: unknown } };
+		const id = body.identity;
+		if (id === undefined) return { reachable: false }; // answered, but not our API
+		return {
+			reachable: true,
+			...(typeof id.version === "string" ? { version: id.version } : {}),
+			...(typeof id.pid === "number" ? { pid: id.pid } : {}),
+			...(typeof id.startedAt === "number" ? { startedAt: id.startedAt } : {}),
+		};
+	} catch {
+		return { reachable: false };
 	}
 }
 
-/** Start the shared server once. Later sessions (server non-null) reuse it. */
+/**
+ * Start the shared server once. Later sessions (server non-null) reuse it.
+ * #64: the guard is the state itself. There is no one-shot flag, so a bind that failed
+ * earlier can still be retried, and a "stale" server keeps looking for the port to free up.
+ */
 function ensureServer(): void {
-	if (ensured || server !== null || apiStarting) return;
-	ensured = true;
+	if (server !== null || apiStarting) return;
+	// "up" means our own server or a same-version sibling; either way, nothing to do.
+	if (apiState === "up") return;
+	// A bind error is permanent until the config changes - retrying would only log noise.
+	if (apiState === "fatal") return;
+	if (staleRetryTimer !== null) return; // a stale retry is already queued
 	apiStarting = true;
-	migrateLegacyBoard();
-	sweepSessions();
-	sweepServe(); // 起動時に一度。以降は poll が 1 時間 throttle で回す。
-	lastServeSweep = Date.now();
-	writeBoardHtml();
+	if (server === null && serverStartedAt === 0) {
+		// Startup work belongs to a real attempt, not to a retry that may never run.
+		migrateLegacyBoard();
+		sweepSessions();
+		sweepServe(); // 起動時に一度。以降は poll が 1 時間 throttle で回す。
+		lastServeSweep = Date.now();
+		writeBoardHtml();
+	}
 	void startListening();
 }
 
@@ -2868,8 +2963,18 @@ function ensureServer(): void {
  * Bind PORT, retrying a few times: the port can be busy for a second while a
  * test process exits. Never swallow the failure - log it, and if nothing
  * answers the API afterwards mark it down so the footer says "API DOWN".
+ * #64: apiStarting is released in a finally - an exception must not brick the server.
  */
 async function startListening(): Promise<void> {
+	try {
+		await listenLoop();
+	} finally {
+		apiStarting = false;
+		redrawFooter();
+	}
+}
+
+async function listenLoop(): Promise<void> {
 	for (let attempt = 1; attempt <= LISTEN_ATTEMPTS; attempt++) {
 		const s = createServer(handle);
 		try {
@@ -2883,9 +2988,24 @@ async function startListening(): Promise<void> {
 		} catch (err) {
 			s.close();
 			const e = err as NodeJS.ErrnoException;
+			// #66: a permission error is not a race - another 3 attempts cannot fix it.
+			// 8789 is baked into the right panel and the serve URLs, so we never move ports.
+			if (e.code === "EACCES" || e.code === "EPERM") {
+				apiState = "fatal";
+				logServer(
+					`listen failed on ${HOST}:${PORT}: ${e.code}. Port may be in a Windows excluded range. Run: netsh int ipv4 show excludedportrange protocol=tcp`,
+				);
+				return;
+			}
 			// Another pi already holds the port: retrying only buys 3 more EADDRINUSE
 			// lines per subagent start. Fall through to the reuse probe below instead.
-			if (e.code === "EADDRINUSE" && (await apiReachable())) break;
+			if (e.code === "EADDRINUSE") {
+				const p = await probeServer();
+				if (p.reachable) {
+					await decideReuse(p);
+					return;
+				}
+			}
 			logServer(
 				`listen attempt ${attempt}/${LISTEN_ATTEMPTS} failed on ${HOST}:${PORT}: ${e.code ?? "error"} ${e.message}`,
 			);
@@ -2893,6 +3013,7 @@ async function startListening(): Promise<void> {
 			continue;
 		}
 		server = s;
+		serverStartedAt = Date.now();
 		// Errors after a successful bind have no promise to reject into.
 		s.on("error", (err: NodeJS.ErrnoException) => {
 			apiState = "down";
@@ -2900,21 +3021,46 @@ async function startListening(): Promise<void> {
 			redrawFooter();
 		});
 		apiState = "up";
-		apiStarting = false;
 		logServer(`listening on ${HOST}:${PORT} (attempt ${attempt})`);
 		return;
 	}
-	// Every attempt failed. If another process (a sibling pi) answers
+	// Every attempt failed without a usable probe answer. If something still answers
 	// the API the board is reachable, so this is not an outage; otherwise say so.
-	apiStarting = false;
-	if (await apiReachable()) {
-		apiState = "up";
-		logServer(`${HOST}:${PORT} already served by another process; reusing it`);
+	const p = await probeServer();
+	if (p.reachable) {
+		await decideReuse(p);
 		return;
 	}
 	apiState = "down";
 	logServer(`API DOWN: no listener on ${HOST}:${PORT} after ${LISTEN_ATTEMPTS} attempts`);
-	redrawFooter();
+}
+
+/**
+ * #66: reuse only a server of OUR version. Anything else is an old process squatting
+ * on the port - reusing it means the dashboard silently talks to stale code.
+ */
+async function decideReuse(p: Probe): Promise<void> {
+	if (p.version === SERVER_VERSION) {
+		apiState = "up";
+		if (p.startedAt !== undefined && p.pid !== undefined) {
+			logServer(`${HOST}:${PORT} already served by another process (v${p.version}, pid ${p.pid}); reusing it`);
+		} else {
+			logServer(`${HOST}:${PORT} already served by another process (v${p.version}); reusing it`);
+		}
+		return;
+	}
+	apiState = "stale";
+	logServer(
+		`refusing to reuse stale server: expected v${SERVER_VERSION}, got v${p.version ?? "unknown"}. Restart the owning pi process.`,
+	);
+	// The old process may exit later. Keep looking for the freed port, slowly.
+	if (staleRetryTimer === null) {
+		staleRetryTimer = setTimeout(() => {
+			staleRetryTimer = null;
+			ensureServer();
+		}, STALE_RETRY_MS);
+		staleRetryTimer.unref();
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -5779,6 +5925,9 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 
 	// The HTTP server stays up across session_shutdown: it is shared by all
 	// sessions in the process, so only the per-session poll timer is torn down.
+	// #64: do NOT add server.unref() here. pi ends with process.exit(0)
+	// (interactive-mode.js), which ends the process regardless of open handles;
+	// unref() would buy nothing and would hide a real leak from the tests.
 
 	// Test hook for the closure state above (pi ignores the factory's return value).
 	return {

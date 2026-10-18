@@ -70,10 +70,14 @@ check("poll ゲートのトレースが KANBAN_DEBUG を参照している", () 
 	assert.match(SOURCE, /process\.env\.KANBAN_DEBUG/);
 	assert.match(SOURCE, /kanban: poll sid=\$\{sid\} idle=/);
 });
-check("listen は ensured でプロセス内 1 回に制限されている", () => {
-	assert.match(SOURCE, /let ensured = false;/);
-	assert.match(SOURCE, /if \(ensured \|\| server !== null \|\| apiStarting\) return;/);
-	assert.match(SOURCE, /if \(e\.code === "EADDRINUSE" && \(await apiReachable\(\)\)\) break;/);
+// #64: 旧 "ensured でプロセス内 1 回" は廃止。一度の失敗が寿命中ずっと listen を殺していた。
+// 今は状態自体（server/apiStarting/apiState）がガードで、apiStarting は finally で戻る。
+check("listen は状態ガードで再試行でき、apiStarting は finally で戻る", () => {
+	assert.doesNotMatch(SOURCE, /let ensured = false;/);
+	assert.match(SOURCE, /if \(server !== null \|\| apiStarting\) return;/);
+	assert.match(SOURCE, /\} finally \{\s*apiStarting = false;/);
+	assert.match(SOURCE, /if \(e\.code === "EADDRINUSE"\) \{/);
+	assert.match(SOURCE, /await probeServer\(\)/);
 });
 
 // --- 4: poll を直接叩いてトレース出力を数える ----------------------------------
