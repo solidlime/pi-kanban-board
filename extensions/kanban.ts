@@ -882,6 +882,7 @@ export type KanbanArgs =
 	// id/value undefined = bare `/kanban priority` = list; id only = show one card.
 	| { kind: "priority"; id: number | undefined; value: number | undefined }
 	| { kind: "img"; id: number; path: string }
+	| { kind: "take" }
 	| { kind: "reject"; reason: string };
 
 const KANBAN_HELP =
@@ -892,16 +893,19 @@ const KANBAN_HELP =
 	"/kanban interval [global] <分>  自動再開の間隔（無指定で現在値）\n" +
 	"/kanban stuck [global] <回>  スタック判定の閾値（無指定で現在値）\n" +
 	"/kanban loop on|off|status [global] / pick on|off\n" +
+	"/kanban take  auto-tick の駆動元をこのセッションに切り替える\n" +
 	"/kanban  メニュー";
 
 /**
- * Reserved first words: loop / pick / interval / add / help. Anything else is a card.
+ * Reserved first words: loop / pick / interval / add / take / help. Anything else is a card.
  * `add` is stripped, so `/kanban 買い物` and `/kanban add 買い物` classify identically.
  */
 export function parseKanbanArgs(argv: string[]): KanbanArgs {
 	const head = argv[0];
 	if (head === undefined) return { kind: "menu" };
 	if (head === "help") return { kind: "help" };
+	// `/kanban take`: ownership is process-global, so any scope word after it is ignored.
+	if (head === "take") return { kind: "take" };
 	if (head === "add") {
 		const text = argv.slice(1).join(" ").trim();
 		return text.length === 0 ? { kind: "reject", reason: "使い方: /kanban add <タスク内容>（空のカードは作りません）" } : { kind: "add", text };
@@ -2266,6 +2270,9 @@ async function dashboardPayload(): Promise<unknown> {
 	return {
 		host: learnedServeHost() ?? hostname(),
 		now: new Date().toISOString(),
+		// #40: which session's ctx drives auto-tick. Read-only on purpose: switching is
+		// `/kanban take` only, so the dashboard has no write path to race.
+		driver: activeSessionId,
 		stats: {
 			sessions: sessions.length,
 			active: sessions.filter((s) => s.mine).length,
@@ -4794,6 +4801,9 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 				}
 				if (!v.fire) continue;
 				if (card === undefined) continue; // v.fire implies a card; this only narrows for TS
+				// Set and cleared inside one synchronous block, so this is effectively dead today:
+				// sendUserMessage does not re-enter poll(). It guards the day it starts to, and the
+				// `/kanban take` handler reads it to refuse a switch mid-wake.
 				tickInFlight = true;
 				lastTickAt = now;
 				try {
@@ -4839,6 +4849,28 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 			}
 			if (parsed.kind === "reject") {
 				ctx.ui.notify(parsed.reason);
+				return;
+			}
+			if (parsed.kind === "take") {
+				// #40: ownCtx is the FIRST session_start in this process; a session opened later
+				// would never drive the loop. This is the explicit handover. The handler's ctx is
+				// by definition the live one for this session, so no liveness probe is needed.
+				if (tickInFlight) {
+					ctx.ui.notify("kanban: ループ実行中。1回待ってから再実行して");
+					return;
+				}
+				const prev = ownCtx === null ? null : sidOf(ownCtx);
+				ownCtx = ctx;
+				activeSessionId = sid;
+				lastTickAt = 0; // judge immediately in the new session, not after the interval
+				pollSnapshot = null; // force the next poll to redraw
+				warnedDeadCtx = false;
+				deadCtxStrikes = 0;
+				// loop is process state, not per-session: only clear the stop condition and the
+				// activity clock, so the previous owner's quiet window cannot block the new one.
+				loop.halted = null;
+				loop.lastActivityAt = 0;
+				ctx.ui.notify(`kanban: 駆動元を ${prev ?? "なし"} → ${sid} に切り替えた`);
 				return;
 			}
 			if (parsed.kind === "mode" || parsed.kind === "modeStatus") {
