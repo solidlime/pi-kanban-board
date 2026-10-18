@@ -4178,7 +4178,6 @@ const KANBAN_HTML = `<!doctype html>
   // #62: 開閉だけ localStorage に残す（kb-theme と同じ流儀。失敗は握りつぶし、
   // 保存が無いキーは今の既定のまま）。ns でダッシュボードとキー空間を分ける。
   var LS_KEY = "kb-collapse", LS_NS = "kanban";
-  function uiSig(){ return JSON.stringify([open, gOpen, collapsed]); }
   function persist(){
     try {
       var all = JSON.parse(localStorage.getItem(LS_KEY) || "{}");
