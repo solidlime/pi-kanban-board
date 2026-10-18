@@ -3013,7 +3013,10 @@ const DASHBOARD_HTML = `<!doctype html>
   .card{background:var(--card);border-radius:6px;padding:6px 8px;margin-bottom:6px;font-size:12px;display:flex;gap:4px;align-items:baseline;flex-wrap:wrap}
   .card .id{color:var(--accent);flex:none}
   .card .t{flex:1;min-width:0;overflow-wrap:anywhere;white-space:pre-wrap}
-  .card .pic{flex:none;color:var(--muted);font-size:11px}
+  /* 画像/動画サムネはカードの幅いっぱいの次の行。64px は KANBAN_HTML と同じ値
+     （.card の padding/margin/font-size も両テンプレートで同一なので高さも揃う）。 */
+  .card img,.card video{flex-basis:100%;max-width:100%;max-height:64px;border-radius:4px;display:block;margin-top:4px}
+  .card .badimg{flex-basis:100%;font-size:11px;color:var(--muted);margin-top:4px}
   /* #36 前半: 掴んでいる手応え（派手にしない）+ ドロップ先の強調 */
   .card[draggable="true"]{cursor:grab}
   .card.dragging{opacity:.4;box-shadow:0 10px 22px rgba(0,0,0,.4);cursor:grabbing}
@@ -3152,6 +3155,7 @@ const DASHBOARD_HTML = `<!doctype html>
 <script>
 (function(){
   var API = "/api/dashboard";           // relative on purpose: same origin, no host assumptions
+  var MEDIA = "/api/media/";             // mirrors MEDIA_PREFIX (server side), same as KANBAN_HTML
   var MAX_PER_COL = 10;
   var COLS = [["todo","TODO"],["doing","DOING"],["done","DONE"]];
   var STAT_KEYS = [["sessions","sessions"],["active","active"],["todo","todo"],["doing","doing"],["done","done"],["serve","serve"],["media","media"]];
@@ -3478,7 +3482,27 @@ ${KANBAN_MD_JS}
             var span = card.querySelector(".t");
             if (span) startEdit(span, c.text, function(v){ act("/api/rename", { id: c.id, text: v }, ctx); });
           });
-          if (c.img) card.appendChild(el("span", "pic", "\\uD83D\\uDDBC")); // shortcut: thumbnail not rendered, presence marker only
+          if (c.img) {
+            // Only images decode in an img element; video bytes need a real video element.
+            var mediaExt = c.img.slice(c.img.lastIndexOf(".") + 1).toLowerCase();
+            var isVid = mediaExt === "mp4" || mediaExt === "webm";
+            var im;
+            if (isVid) {
+              // No autoplay: the card is a preview, so only metadata loads until play.
+              im = document.createElement("video");
+              im.controls = true;
+              im.preload = "metadata";
+            } else {
+              im = document.createElement("img");
+              im.alt = "";
+            }
+            im.src = MEDIA + encodeURIComponent(c.img);
+            im.onerror = function(){
+              var s = el("span", "badimg", "\\uD83D\\uDDBC?");
+              if (im.parentNode) im.parentNode.replaceChild(s, im);
+            };
+            card.appendChild(im);
+          }
           if (prioOf(c)) card.appendChild(el("span", "prio", "P" + prioOf(c)));
           if (c.blocked) card.appendChild(el("span", "blocked", "停止中"));
           if (ctx) card.appendChild(cardOps(c, ctx));
