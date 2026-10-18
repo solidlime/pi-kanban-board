@@ -3041,8 +3041,12 @@ const DASHBOARD_HTML = `<!doctype html>
   .sess-cwd{font-size:11px;color:var(--muted);overflow-wrap:anywhere}
   .sess-meta{font-size:11px;color:var(--muted);margin-left:auto;white-space:nowrap;font-variant-numeric:tabular-nums}
   /* #48: セッションはヘッダのクリックで畳める（既定は全開） */
-  .sess-hd{cursor:pointer}
-  .sess .caret{flex:none;font-size:10px;color:var(--muted);width:1em}
+  /* #49: 10px/var(--muted) の ▾ は見えなかった。本文色 + 13px + hover で「畳める」ことを示す。
+     caret は文字のまま差し替える（回転より読み上げ・コピーに強い）。
+     GLOBAL のヘッダは .sess-hd をレイアウト流用しているだけなので role で限定する。*/
+  .sess-hd[role="button"]{cursor:pointer;border-radius:6px;margin:-4px -6px 8px;padding:4px 6px;user-select:none;-webkit-user-select:none}
+  .sess-hd[role="button"]:hover{background:var(--accent-soft)}
+  .sess .caret{flex:none;font-size:13px;line-height:1;color:var(--text);width:1em;text-align:center;margin-right:4px}
   .sess-empty{border:1px dashed var(--border-strong);border-radius:6px;padding:10px;text-align:center;color:var(--muted);font-size:12px}
   /* #48: カード検索（列の絞り込み。色は既存トークンのみ） */
   .q{width:100%;max-width:320px;font:inherit;font-size:12px;background:var(--panel);color:var(--text);border:1px solid var(--border-strong);border-radius:6px;padding:3px 6px;margin-bottom:8px}
@@ -3555,6 +3559,10 @@ ${KANBAN_MD_JS}
       });
       var hd = el("header", "sess-hd");
       hd.title = "クリックで折りたたみ";
+      // #49: 見た目だけでなくキーボードでも畳める（aria-expanded は実際の開閉状態）。
+      hd.setAttribute("role", "button");
+      hd.setAttribute("tabindex", "0");
+      hd.setAttribute("aria-expanded", expanded ? "true" : "false");
       hd.appendChild(el("span", "caret", expanded ? "\\u25BE" : "\\u25B8"));
       var t = el("span", "sess-t");
       t.appendChild(el("span", null, s.name));
@@ -3566,12 +3574,19 @@ ${KANBAN_MD_JS}
       meta.textContent = countsText(s.counts, cards, search) + " ・ 更新 " + ago(s.updatedAt, nowMs);
       meta.title = full(s.updatedAt);
       hd.appendChild(meta);
-      // ヘッダ内の操作（ops / ボタン / リンク / 入力）は畳まない
-      hd.addEventListener("click", function(e){
+      // ヘッダ内の操作（ops / ボタン / リンク / 入力）は畳まない。click と keydown で共有。
+      function toggle(e){
         var tgt = e && e.target;
         if (tgt && tgt.closest && (tgt.closest(".ops") || tgt.closest("button") || tgt.closest("a") || tgt.closest("input"))) return;
         sessOpen[s.id] = !expanded;
         redraw();
+      }
+      hd.addEventListener("click", toggle);
+      hd.addEventListener("keydown", function(e){
+        var k = e && e.key;
+        if (k !== "Enter" && k !== " " && k !== "Spacebar") return;
+        if (e.preventDefault) e.preventDefault();
+        toggle(e);
       });
       art.appendChild(hd);
       if (!expanded) { box.appendChild(art); return; }
@@ -3591,16 +3606,24 @@ ${KANBAN_MD_JS}
   function renderGlobal(g, nowMs, sid){
     var box = document.getElementById("global");
     box.innerHTML = "";
-    var cards = (g && g.cards) || [];
+    var all = (g && g.cards) || [];
     var c = (g && g.counts) || {todo:0, doing:0, done:0};
+    // #49: GLOBAL も検索で絞る。絞らないと SESSIONS だけ減って GLOBAL が残り、
+    // ヒットしていないカードが検索結果に混ざる（実ブラウザ検証で発見）。
+    var search = query !== "";
+    var cards = all.filter(function(x){
+      return !search || String(x.text || "").toLowerCase().indexOf(query) >= 0;
+    });
     var head = el("div", "sess-hd");
-    head.appendChild(el("span", "sess-cwd", "TODO " + c.todo + " / DOING " + c.doing + " / DONE " + c.done + " ・ 計 " + cards.length + " 枚"));
+    head.appendChild(el("span", "sess-cwd", countsText(c, cards, search) + " ・ 計 " + cards.length + " 枚"));
     box.appendChild(head);
     // GLOBAL writes carry scope=global; the modes key still needs the active sid.
+    // 操作系は従来どおり絞り込み前の全カード（サーバの件数）を見る。
     var ctx = boardCtx("global", sid, true);
-    box.appendChild(boardCtl(ctx, g ? g.modes : null, cards));
+    box.appendChild(boardCtl(ctx, g ? g.modes : null, all));
     if (!cards.length) {
-      empty(box, "\\u25A1", "<b>GLOBAL 看板は空</b> — 全セッション共有のカードを置くとここに現れるよ");
+      if (search) box.appendChild(el("div", "sess-empty", "該当なし"));
+      else empty(box, "\\u25A1", "<b>GLOBAL 看板は空</b> — 全セッション共有のカードを置くとここに現れるよ");
       return;
     }
     box.appendChild(board(cards, nowMs, ctx));
