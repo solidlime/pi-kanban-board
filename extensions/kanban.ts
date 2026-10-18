@@ -4066,6 +4066,10 @@ const KANBAN_HTML = `<!doctype html>
   #err{display:none;background:var(--danger-bg);color:var(--danger-fg);padding:6px 10px;border-radius:6px;margin-bottom:8px;font-size:12px}
   #err.on{display:block}
   .hd{margin:0 0 6px;font-size:11px;letter-spacing:.08em;color:var(--accent);display:flex;align-items:center;gap:8px}
+  /* #62: GLOBAL の見出しも押せる（色は既存トークンのみ）。前の静的な .hd と同じ見た目を保つ。 */
+  .hd[role="button"]{cursor:pointer;border-radius:6px;user-select:none;-webkit-user-select:none}
+  .hd[role="button"]:hover{background:var(--accent-soft)}
+  .hd .caret{flex:none;font-size:13px;line-height:1;color:var(--text);width:1em;text-align:center;margin-right:4px}
   /* theme toggle: icon shows the theme it switches TO */
   #theme{flex:none;margin-left:auto;width:24px;height:24px;display:inline-flex;align-items:center;justify-content:center;background:transparent;border:1px solid var(--border-strong);border-radius:6px;color:var(--muted);cursor:pointer;padding:0}
   #theme:hover{border-color:var(--accent);color:var(--accent)}
@@ -4170,6 +4174,28 @@ const KANBAN_HTML = `<!doctype html>
   var listEl = document.getElementById("sessions");
   var errEl = document.getElementById("err");
   var open = {};        // sid -> expanded; a session defaults to its own (mine) state
+  var gOpen = true;     // #62: GLOBAL 看板の開閉（既定は開）
+  // #62: 開閉だけ localStorage に残す（kb-theme と同じ流儀。失敗は握りつぶし、
+  // 保存が無いキーは今の既定のまま）。ns でダッシュボードとキー空間を分ける。
+  var LS_KEY = "kb-collapse", LS_NS = "kanban";
+  function uiSig(){ return JSON.stringify([open, gOpen, collapsed]); }
+  function persist(){
+    try {
+      var all = JSON.parse(localStorage.getItem(LS_KEY) || "{}");
+      if (!all || typeof all !== "object") all = {};
+      all[LS_NS] = { sess: open, g: gOpen, cols: collapsed };
+      localStorage.setItem(LS_KEY, JSON.stringify(all));
+    } catch (e) {}
+  }
+  (function(){
+    var all = null;
+    try { all = JSON.parse(localStorage.getItem(LS_KEY) || "null"); } catch (e) {}
+    var v = all && all[LS_NS];
+    if (!v || typeof v !== "object") return;
+    if (v.sess && typeof v.sess === "object") Object.keys(v.sess).forEach(function(k){ open[k] = v.sess[k] === true; });
+    if (v.cols && typeof v.cols === "object") Object.keys(v.cols).forEach(function(k){ collapsed[k] = v.cols[k] === true; });
+    if (typeof v.g === "boolean") gOpen = v.g;
+  })();
   var drag = null;      // { board:key, id } while a card is in flight
   var last = "";        // whole-page signature, so an idle reload touches no DOM
   var query = "";       // #38-8: search box text, lowercase; filters cards in every column
@@ -4500,8 +4526,8 @@ ${KANBAN_MD_JS}
       cnt.className = "c";
       cnt.textContent = String(list.length);
       h.appendChild(cnt);
-      // #38-7: 見出しクリックで列ごと畳む（状態はこのページ内だけ）。
-      h.addEventListener("click", function(){ collapsed[ckey] = !collapsed[ckey]; box.classList.toggle("collapsed"); });
+      // #38-7: 見出しクリックで列ごと畳む（状態はクライアントだけ。#62: 保存もする）。
+      h.addEventListener("click", function(){ collapsed[ckey] = !collapsed[ckey]; box.classList.toggle("collapsed"); persist(); });
       box.appendChild(h);
       var deck = document.createElement("div");
       deck.className = "cards";
@@ -4586,11 +4612,49 @@ ${KANBAN_MD_JS}
     return "";
   }
 
+  // #62: GLOBAL の見出しもセッション見出しと同じ操作感で畳める。
+  function globalHead(){
+    var head = document.createElement("div");
+    head.className = "hd";
+    head.title = "クリックで折りたたみ";
+    head.setAttribute("role", "button");
+    head.setAttribute("tabindex", "0");
+    head.setAttribute("aria-expanded", gOpen ? "true" : "false");
+    var caret = document.createElement("span");
+    caret.className = "caret";
+    caret.textContent = gOpen ? "\u25be" : "\u25b8";
+    head.appendChild(caret);
+    var label = document.createElement("span");
+    label.textContent = "GLOBAL（全セッション共有）";
+    head.appendChild(label);
+    function toggle(e){
+      var tgt = e && e.target;
+      if (tgt && tgt.closest && (tgt.closest("button") || tgt.closest("a") || tgt.closest("input"))) return;
+      gOpen = !gOpen;
+      persist();
+      last = "";
+      reload();
+    }
+    head.addEventListener("click", toggle);
+    head.addEventListener("keydown", function(e){
+      var k = e && e.key;
+      if (k !== "Enter" && k !== " " && k !== "Spacebar") return;
+      if (e.preventDefault) e.preventDefault();
+      toggle(e);
+    });
+    return head;
+  }
+
   function session(row){
     var wrap = document.createElement("div");
     wrap.className = "sess" + (row.mine ? "" : " ro");
     var head = document.createElement("div");
     head.className = "sess-hd";
+    // #62: ダッシュボードと同じく a11y 属性を付ける（見た目だけでなくキーボードでも畳める）。
+    head.title = "クリックで折りたたみ";
+    head.setAttribute("role", "button");
+    head.setAttribute("tabindex", "0");
+    head.setAttribute("aria-expanded", expanded(row) ? "true" : "false");
     var t = document.createElement("span");
     t.className = "sess-t";
     t.textContent = (expanded(row) ? "\\u25be " : "\\u25b8 ") + row.name;
@@ -4599,11 +4663,22 @@ ${KANBAN_MD_JS}
     meta.textContent = counts(row.counts) + (row.mine ? "" : " \\ud83d\\udd12");
     head.appendChild(t);
     head.appendChild(meta);
-    head.onclick = function(){
+    // ヘッダ内の操作（button / a / input）は畳まない。click と keydown で共有。
+    function toggle(e){
+      var tgt = e && e.target;
+      if (tgt && tgt.closest && (tgt.closest("button") || tgt.closest("a") || tgt.closest("input"))) return;
       open[row.id] = !expanded(row);
+      persist();
       last = "";
       reload();
-    };
+    }
+    head.addEventListener("click", toggle);
+    head.addEventListener("keydown", function(e){
+      var k = e && e.key;
+      if (k !== "Enter" && k !== " " && k !== "Spacebar") return;
+      if (e.preventDefault) e.preventDefault();
+      toggle(e);
+    });
     wrap.appendChild(head);
     // #58: why it stopped + how to restart. Silence here is what makes the toggles
     // below look broken: they write modes.json, the halt lives in the extension process.
@@ -4631,12 +4706,15 @@ ${KANBAN_MD_JS}
       gmodes,
       sessions.map(function(s){ return [s.id, s.name, s.counts, s.mine, s.modes, s.halted]; }),
       open,
+      gOpen,
       query
     ]);
     if (sig === last) return;
     last = sig;
     globalEl.innerHTML = "";
-    globalEl.appendChild(columns({ key: "g", scope: "global", sid: null, editable: true, modes: gmodes }, globalCards));
+    globalEl.appendChild(globalHead());
+    // #62: 畳んでいたら中身（列）を DOM に作らない。ダッシュボードと同じ方式。
+    if (gOpen) globalEl.appendChild(columns({ key: "g", scope: "global", sid: null, editable: true, modes: gmodes }, globalCards));
     listEl.innerHTML = "";
     sessions.forEach(function(row){ listEl.appendChild(session(row)); });
   }
