@@ -3033,6 +3033,8 @@ const DASHBOARD_HTML = `<!doctype html>
   .card[draggable="true"]{cursor:grab}
   .card.dragging{opacity:.4;box-shadow:0 10px 22px rgba(0,0,0,.4);cursor:grabbing}
   .col.over{outline:2px dashed var(--accent);outline-offset:-2px}
+  /* #52: ファイルを掴んでカードの上に来たとき（KANBAN_HTML の同名規則と同じ） */
+  .card.fileover{outline:2px dashed var(--accent);outline-offset:-2px}
   @media (prefers-reduced-motion: no-preference){
     .card.dragging{transform:rotate(2.5deg) scale(.98)}
   }
@@ -3278,7 +3280,7 @@ ${KANBAN_MD_JS}
 
   // #30/#31: the one fetch site. The dashboard poll and every write go through it, so a
   // write always carries scope (+ sid: #33 makes scope=session without sid a 400).
-  function api(path, params){
+  function api(path, params, init){
     var u = path;
     if (params) {
       var qs = [], keys = Object.keys(params), i;
@@ -3287,7 +3289,8 @@ ${KANBAN_MD_JS}
       }
       if (qs.length) u += (u.indexOf("?") < 0 ? "?" : "&") + qs.join("&");
     }
-    return fetch(u).then(function(r){
+    // #52: 生ボディの POST（/api/upload）もこの 1 つの fetch 点を通す。
+    return fetch(u, init).then(function(r){
       if (!r.ok) throw new Error("http " + r.status);
       return r.json();
     });
@@ -3309,6 +3312,29 @@ ${KANBAN_MD_JS}
     return b;
   }
   function boardCtx(scope, sid, active){ return { scope: scope, sid: sid || "", active: active !== false }; }
+  // #52: ファイルを列（id 無し = 新規カード）かカード（id あり = そのカードに添付）へ送る。
+  // サーバは ext クエリ必須で OK_EXTS 以外は 415 なので、送る前に同じ集合で弾いて知らせる。
+  var OK_EXTS = ["png", "jpg", "gif", "webp", "avif", "mp4", "webm"]; // mirrors server OK_EXTS
+  function uploadHere(ctx, col, file, id){
+    var name = String((file && file.name) || "");
+    var dot = name.lastIndexOf(".");
+    var ext = dot >= 0 ? name.slice(dot + 1).toLowerCase() : "";
+    if (OK_EXTS.indexOf(ext) < 0) {
+      note("非対応のファイル: " + (name || "(無名)") + " — " + OK_EXTS.join("/") + " のみ");
+      return;
+    }
+    var params = { scope: ctx.scope, ext: ext, col: col };
+    if (ctx.sid) params.sid = ctx.sid;
+    if (id !== undefined) params.id = id;
+    // 生ボディ (application/octet-stream)。api() に init を渡して同じ fetch 点を通す。
+    file.arrayBuffer().then(function(buf){
+      return api("/api/upload", params, { method: "POST", body: buf, headers: { "Content-Type": "application/octet-stream" } });
+    }).then(function(){
+      reload(); // サーバが返した新しい img / 新規カードを反映
+    }).catch(function(err){
+      note("アップロード失敗: " + (err && err.message ? err.message : "network error"));
+    });
+  }
   // #36: カード本文のダブルクリック編集。Enter=確定 / Shift+Enter=改行 / Escape=取消。
   // 取消後の blur で二重発火しないよう done で一回限りに制限する。
   function startEdit(tspan, raw, apply){
@@ -3460,9 +3486,16 @@ ${KANBAN_MD_JS}
       box.appendChild(h);
       if (ctx && ctx.active) {
         // #30 D&D: same handler on the GLOBAL board and on every session board.
+        // #52: ファイルも受ける。掴んでいるカードがあれば従来の移動経路を優先する。
         box.addEventListener("dragover", function(ev){
-          if (!dragging || dragging.scope !== ctx.scope || dragging.sid !== ctx.sid) return;
-          if (ev && ev.preventDefault) ev.preventDefault();
+          if (dragging && dragging.scope === ctx.scope && dragging.sid === ctx.sid) {
+            if (ev && ev.preventDefault) ev.preventDefault();
+            box.classList.add("over");
+            return;
+          }
+          if (!ev || !ev.dataTransfer || !ev.dataTransfer.types || ev.dataTransfer.types.indexOf("Files") < 0) return;
+          if (ev.preventDefault) ev.preventDefault(); // 既定の「ファイルを開く」に落とさない
+          ev.dataTransfer.dropEffect = "copy";
           box.classList.add("over");
         });
         box.addEventListener("dragleave", function(){ box.classList.remove("over"); });
@@ -3471,8 +3504,15 @@ ${KANBAN_MD_JS}
           box.classList.remove("over");
           var d = dragging;
           dragging = null;
-          if (!d || d.scope !== ctx.scope || d.sid !== ctx.sid) return;
-          act("/api/move", { id: d.id, col: key }, ctx);
+          if (d) {
+            if (d.scope !== ctx.scope || d.sid !== ctx.sid) return;
+            act("/api/move", { id: d.id, col: key }, ctx);
+            return;
+          }
+          var f = ev && ev.dataTransfer && ev.dataTransfer.files && ev.dataTransfer.files[0];
+          if (!f) return;
+          if (ev.stopPropagation) ev.stopPropagation();
+          uploadHere(ctx, key, f, undefined); // 列の先頭に新規カード
         });
       }
       if (!list.length) {
@@ -3488,10 +3528,38 @@ ${KANBAN_MD_JS}
               if (ev.dataTransfer) { ev.dataTransfer.effectAllowed = "move"; ev.dataTransfer.setData("text/plain", String(c.id)); }
             });
             card.addEventListener("dragend", function(){ card.classList.remove("dragging"); });
+            // #52: カードにファイルを落とすとそのカードに添付（KANBAN_HTML の #38-4 と同じ）。
+            // カード移動の drag（text/plain）は素通しして列の drop に任せる。
+            card.addEventListener("dragover", function(ev){
+              if (!ev || !ev.dataTransfer || !ev.dataTransfer.types || ev.dataTransfer.types.indexOf("Files") < 0) return;
+              if (ev.preventDefault) ev.preventDefault();
+              ev.dataTransfer.dropEffect = "copy";
+              card.classList.add("fileover");
+            });
+            card.addEventListener("dragleave", function(){ card.classList.remove("fileover"); });
+            card.addEventListener("drop", function(ev){
+              var f = ev && ev.dataTransfer && ev.dataTransfer.files && ev.dataTransfer.files[0];
+              if (!f) return; // カード移動なら列の drop に任せる
+              if (ev.preventDefault) ev.preventDefault();
+              if (ev.stopPropagation) ev.stopPropagation();
+              card.classList.remove("fileover");
+              uploadHere(ctx, c.col, f, c.id);
+            });
           } else if (ctx) {
             // #44: 読み取り専用の看板。ダブルクリックしても書けない理由をホバーで先に示す
             // （ドラッグ不可のまま。移動できないのは正しい挙動）。
             card.title = RO_TITLE;
+            // #52: ファイルを落としてもブラウザに開かせない。理由を出す。
+            card.addEventListener("dragover", function(ev){
+              if (!ev || !ev.dataTransfer || !ev.dataTransfer.types || ev.dataTransfer.types.indexOf("Files") < 0) return;
+              if (ev.preventDefault) ev.preventDefault();
+            });
+            card.addEventListener("drop", function(ev){
+              if (!ev || !ev.dataTransfer || !ev.dataTransfer.files || !ev.dataTransfer.files[0]) return;
+              if (ev.preventDefault) ev.preventDefault();
+              if (ev.stopPropagation) ev.stopPropagation();
+              note(RO_MSG);
+            });
           }
           card.appendChild(el("span", "id", "#" + c.id));
           var t = el("span", "t");

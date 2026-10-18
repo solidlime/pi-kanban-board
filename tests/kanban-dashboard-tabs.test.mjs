@@ -144,7 +144,7 @@ check("タブは常に上部の横並び（#50 でサイドバー廃止）", () 
 check("fetch( は 1 箇所のみ（#30/#31 の書き込みも共通の api() を通る）", () => {
 	assert.equal((html.match(/\bfetch\(/g) || []).length, 1);
 	assert.ok(html.includes("api(API)"), "ポーリングは api(API) を通る");
-	assert.ok(html.includes("return fetch(u)"), "唯一の fetch は api() の中");
+	assert.ok(html.includes("return fetch(u"), "唯一の fetch は api() の中");
 });
 
 // --- 2. ブラウザ側 JS を vm で走らせて挙動を確認 -----------------------------
