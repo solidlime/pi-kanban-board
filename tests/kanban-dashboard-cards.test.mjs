@@ -84,7 +84,8 @@ await check("#30 D&D は 1 つの board() にあり、GLOBAL と SESSION の両�
 	assert.ok(html.includes("d.scope !== ctx.scope || d.sid !== ctx.sid"), "ボード間ドロップのガードが無い");
 	// 同じ board() が GLOBAL と各セッションの両方から呼ばれる
 	assert.ok(html.includes("box.appendChild(board(cards, nowMs, ctx))"), "GLOBAL に board() が無い");
-	assert.ok(html.includes("board(s.cards || [], nowMs, ctx)"), "セッション看板に board() が無い");
+	// #48: セッション側は検索で絞った cards を渡す（名前だけ変わり、同じ board() を通る）
+	assert.ok(html.includes("art.appendChild(board(cards, nowMs, ctx))"), "セッション看板に board() が無い");
 });
 
 await check("#30 優先度は表示・変更でき、大きいほど先（降順）が維持される", () => {

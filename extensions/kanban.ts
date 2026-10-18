@@ -3040,6 +3040,13 @@ const DASHBOARD_HTML = `<!doctype html>
   .sess-t{font-size:13px;font-weight:600;overflow-wrap:anywhere;display:inline-flex;align-items:center;gap:6px}
   .sess-cwd{font-size:11px;color:var(--muted);overflow-wrap:anywhere}
   .sess-meta{font-size:11px;color:var(--muted);margin-left:auto;white-space:nowrap;font-variant-numeric:tabular-nums}
+  /* #48: セッションはヘッダのクリックで畳める（既定は全開） */
+  .sess-hd{cursor:pointer}
+  .sess .caret{flex:none;font-size:10px;color:var(--muted);width:1em}
+  .sess-empty{border:1px dashed var(--border-strong);border-radius:6px;padding:10px;text-align:center;color:var(--muted);font-size:12px}
+  /* #48: カード検索（列の絞り込み。色は既存トークンのみ） */
+  .q{width:100%;max-width:320px;font:inherit;font-size:12px;background:var(--panel);color:var(--text);border:1px solid var(--border-strong);border-radius:6px;padding:3px 6px;margin-bottom:8px}
+  .q:focus{border-color:var(--accent)}
   .badge{font-size:10px;letter-spacing:.06em;border-radius:999px;padding:1px 8px;border:1px solid var(--border-strong);color:var(--muted);flex:none}
   .badge.on{border-color:var(--ok);color:var(--ok)}
   .badge.db{border-color:var(--accent);color:var(--accent);background:var(--accent-soft-2)}
@@ -3105,6 +3112,7 @@ const DASHBOARD_HTML = `<!doctype html>
         </section>
         <section aria-labelledby="h-sessions">
           <div class="hd" id="h-sessions">SESSIONS</div>
+          <input id="q" class="q" type="search" placeholder="検索（/ でフォーカス, Esc でクリア）" autocomplete="off">
           <div id="sessions"></div>
         </section>
       </div>
@@ -3126,7 +3134,27 @@ const DASHBOARD_HTML = `<!doctype html>
   var STAT_KEYS = [["sessions","sessions"],["active","active"],["todo","todo"],["doing","doing"],["done","done"],["serve","serve"],["media","media"]];
   var lastData = null;   // keep previous payload when the server blinks
   var sig = "";
+  // #48: 検索語とセッションの開閉はクライアント側の状態。ポーリングの再描画と
+  // DOM 作り直しを跨いで保持する（localStorage は使わない: 既存の流儀どおり）。
+  var query = "";        // 小文字化済みの検索語
+  var sessOpen = {};     // sid -> expanded（既定は全開）
 ${KANBAN_MD_JS}
+
+  // #48: "/" で検索欄へ、Esc でクリア。入力中は横取りしない。
+  if (document.addEventListener) document.addEventListener("keydown", function(e){
+    var qe = document.getElementById("q");
+    if (!qe || !e) return;
+    var tag = e.target && e.target.tagName ? String(e.target.tagName).toLowerCase() : "";
+    if (e.key === "/" && tag !== "input" && tag !== "textarea") {
+      e.preventDefault();
+      qe.focus();
+    } else if (e.key === "Escape" && document.activeElement === qe) {
+      qe.value = "";
+      query = "";
+      redraw();
+      qe.blur();
+    }
+  });
 
   // #29 tabs: the sidebar only toggles the hidden attribute — no navigation.
   // activeTab survives the 5s re-render because render() re-applies it.
@@ -3496,6 +3524,18 @@ ${KANBAN_MD_JS}
     if (sec) sec.hidden = !st || allZero;
   }
 
+  // #48: 検索中は「TODO ヒット/総数」で出す。畳んだり絞ったりして見えていない
+  // カードで件数が水増しされないよう、表示中のカードだけで数える。
+  function countsText(counts, cards, search){
+    var all = counts || {};
+    function n(k){
+      var total = all[k] || 0;
+      if (!search) return String(total);
+      return cards.filter(function(c){ return c.col === k; }).length + "/" + total;
+    }
+    return "TODO " + n("todo") + " / DOING " + n("doing") + " / DONE " + n("done");
+  }
+
   function renderSessions(sessions, nowMs){
     var box = document.getElementById("sessions");
     box.innerHTML = "";
@@ -3503,11 +3543,19 @@ ${KANBAN_MD_JS}
       empty(box, "\\u25A1", "<b>セッションなし</b> — pi が起動すると、各セッションの看板がここに並ぶよ");
       return;
     }
+    var search = query !== "";
     sessions.forEach(function(s){
       var doing = (s.counts && s.counts.doing) || 0;
       var art = el("article", "sess" + (doing ? " doing" : ""));
       if (doing) art.setAttribute("aria-label", "DOING あり: " + s.name);
+      // #48: 既定は全開。検索中は畳んでいても中身を見せる（ヒットを隠さない）。
+      var expanded = (sessOpen[s.id] === undefined ? true : sessOpen[s.id]) || search;
+      var cards = (s.cards || []).filter(function(c){
+        return !search || String(c.text || "").toLowerCase().indexOf(query) >= 0;
+      });
       var hd = el("header", "sess-hd");
+      hd.title = "クリックで折りたたみ";
+      hd.appendChild(el("span", "caret", expanded ? "\\u25BE" : "\\u25B8"));
       var t = el("span", "sess-t");
       t.appendChild(el("span", null, s.name));
       if (s.isActive) t.appendChild(el("span", "badge on", "\\u25CF ACTIVE"));
@@ -3515,14 +3563,27 @@ ${KANBAN_MD_JS}
       hd.appendChild(t);
       hd.appendChild(el("span", "sess-cwd", s.cwd || ""));
       var meta = el("span", "sess-meta");
-      meta.textContent = "TODO " + (s.counts ? s.counts.todo : 0) + " / DOING " + (s.counts ? s.counts.doing : 0) +
-        " / DONE " + (s.counts ? s.counts.done : 0) + " ・ 更新 " + ago(s.updatedAt, nowMs);
+      meta.textContent = countsText(s.counts, cards, search) + " ・ 更新 " + ago(s.updatedAt, nowMs);
       meta.title = full(s.updatedAt);
       hd.appendChild(meta);
+      // ヘッダ内の操作（ops / ボタン / リンク / 入力）は畳まない
+      hd.addEventListener("click", function(e){
+        var tgt = e && e.target;
+        if (tgt && tgt.closest && (tgt.closest(".ops") || tgt.closest("button") || tgt.closest("a") || tgt.closest("input"))) return;
+        sessOpen[s.id] = !expanded;
+        redraw();
+      });
       art.appendChild(hd);
+      if (!expanded) { box.appendChild(art); return; }
       var ctx = boardCtx("session", s.id, s.isActive);
-      art.appendChild(boardCtl(ctx, s.modes ? s.modes.session : null, s.cards || []));
-      art.appendChild(board(s.cards || [], nowMs, ctx));
+      // #48: 検索してヒット 0 件のセッションは「該当なし」だけ出す（ヘッダは残す）。
+      // それ以外は今までどおり。操作系は絞り込み前の全カードを見る。
+      if (search && !cards.length) {
+        art.appendChild(el("div", "sess-empty", "該当なし"));
+      } else {
+        art.appendChild(boardCtl(ctx, s.modes ? s.modes.session : null, s.cards || []));
+        art.appendChild(board(cards, nowMs, ctx));
+      }
       box.appendChild(art);
     });
   }
@@ -3656,6 +3717,14 @@ ${KANBAN_MD_JS}
     clearTimeout(timer);
     timer = setTimeout(reload, nextDelay());
   }
+  function sigOf(d){ return JSON.stringify(d) + ":" + Math.floor(Date.now() / 60000); }
+  // #48: 開閉・検索語を変えたら即描画。sig も更新するので、次のポーリングが
+  // 「同じ sig」で描画をスキップしても画面と sig が食い違わない。
+  function redraw(){
+    if (!lastData) return;
+    sig = sigOf(lastData);
+    render(lastData);
+  }
   function reload(){
     api(API).then(function(d){
       if (!d || typeof d !== "object") throw new Error("bad payload");
@@ -3663,7 +3732,7 @@ ${KANBAN_MD_JS}
       setConn(true);
       fails = 0;
       // re-render when data changes, or once a minute so relative times stay honest
-      var s = JSON.stringify(d) + ":" + Math.floor(Date.now() / 60000);
+      var s = sigOf(d);
       if (s === sig) return;
       sig = s;
       render(d);
@@ -3677,6 +3746,12 @@ ${KANBAN_MD_JS}
       }
     }).then(schedule);
   }
+  // #48: 入力のたびに再描画（fetch はしない。lastData を使い回す）
+  var qEl = document.getElementById("q");
+  if (qEl) qEl.addEventListener("input", function(){
+    query = qEl.value.trim().toLowerCase();
+    redraw();
+  });
   reload();
 })();
 </script>
