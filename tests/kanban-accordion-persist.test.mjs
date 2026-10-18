@@ -520,13 +520,16 @@ await check("#62 GLOBAL の ckey は active sid を含まない", () => {
 	// 右パネル側の GLOBAL も同じ
 	const k = await runKanban(makeStorage());
 	const kHead = () => walk(k.byId["global"]).filter(byClass("hd"))[0];
-	await check("#62(d) 右パネルの GLOBAL 見出しも a11y 付きのボタン", () => {
+	await check("#62(d) 右パネルの GLOBAL 見出しも a11y 付きのボタン（名前は 1 回だけ）", () => {
 		const h = kHead();
 		assert.ok(h, "右パネルに GLOBAL 見出しが無い");
 		assert.equal(h.getAttribute("role"), "button", "role=button が無い");
 		assert.equal(h.getAttribute("tabindex"), "0", "tabindex=0 が無い");
 		assert.equal(h.getAttribute("aria-expanded"), "true", "aria-expanded が true でない");
 		assert.equal(walk(k.byId["global"]).filter(byClass("cols")).length, 1, "既定で列が出ていない");
+		// 静的な .hd と動的な見出しで GLOBAL の名前が二重に出ていない
+		const labels = walk(k.byId["global"]).filter((n) => String(n.textContent).includes("GLOBAL"));
+		assert.equal(labels.length, 1, `GLOBAL の見出しが ${labels.length} 個ある`);
 	});
 	await check("#62(d) 右パネルの GLOBAL もキーボードで畳める（Enter -> Space）", () => {
 		const kkey = (kk) => {

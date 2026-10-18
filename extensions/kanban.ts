@@ -4145,7 +4145,7 @@ const KANBAN_HTML = `<!doctype html>
 </head>
 <body>
 <div id="err" role="alert">サーバに接続できません（拡張が停止中?）</div>
-<div class="hd">GLOBAL（全セッション共有）<input id="q" class="q" type="search" placeholder="検索" aria-label="カードを検索"><button id="theme" type="button" aria-label="ライトテーマに切り替え" title="ライトテーマに切り替え"><svg class="ic-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ic-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8"/></svg></button></div>
+<div class="hd"><input id="q" class="q" type="search" placeholder="検索" aria-label="カードを検索"><button id="theme" type="button" aria-label="ライトテーマに切り替え" title="ライトテーマに切り替え"><svg class="ic-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ic-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8"/></svg></button></div>
 <div id="global"></div>
 <div class="hd">SESSIONS（クリックで開閉 / 🔒 は閲覧のみ）</div>
 <div id="sessions"></div>
@@ -4614,6 +4614,7 @@ ${KANBAN_MD_JS}
   }
 
   // #62: GLOBAL の見出しもセッション見出しと同じ操作感で畳める。
+  // 上の静的な .hd は検索/テーマのツールバーにしたので、名前はここが出す（二重表示を避ける）。
   function globalHead(){
     var head = document.createElement("div");
     head.className = "hd";
