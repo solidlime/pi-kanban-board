@@ -2208,6 +2208,7 @@ async function sessionRows(): Promise<{ activeSessionId: string | null; sessions
 				id,
 				name: labelOf(meta?.name, meta?.firstMessage, id),
 				cwd: meta?.cwd ?? "",
+				// driver (auto-tick の駆動元) を示す。編集可否とは無関係。
 				mine: id === activeSessionId,
 				modified,
 				counts: countCols(b),
@@ -2223,7 +2224,9 @@ async function sessionRows(): Promise<{ activeSessionId: string | null; sessions
 			id: activeSessionId,
 			name: labelOf(meta?.name, meta?.firstMessage, activeSessionId),
 			cwd: meta?.cwd ?? "",
-			mine: true,
+			// Not `driver`: this sid has no board file, so its pi may already be gone.
+			// Listing it is enough; the ACTIVE badge would outlive the session.
+			mine: false,
 			modified: Date.now(),
 			counts: { todo: 0, doing: 0, done: 0 },
 			modes: {
@@ -2299,7 +2302,7 @@ async function dashboardPayload(): Promise<unknown> {
 			id: s.id,
 			name: s.name, // raw on purpose: the dashboard sets it with textContent
 			cwd: s.cwd,
-			isActive: s.mine,
+			isActive: s.mine, // driver か。もう書き込みロックの印ではない
 			updatedAt: new Date(s.modified).toISOString(),
 			modes: s.modes,
 			counts: s.counts,
@@ -2313,14 +2316,14 @@ async function dashboardPayload(): Promise<unknown> {
 }
 
 /**
- * Board file for a write. "denied" = a different session is active: moving
- * another session's cards races that session's own pi, which then overwrites us.
+ * Board file for a write. Any session's board is writable: the caller names it with sid.
+ * A concurrent write from that session's own pi can still overwrite us, but that is the
+ * same condition GLOBAL writes already accept — so it is not a reason to refuse here.
  */
-function writeBoardPath(q: URLSearchParams): string | "denied" | null {
+function writeBoardPath(q: URLSearchParams): string | null {
 	if (parseScope(q.get("scope")) === "global") return GLOBAL_JSON;
 	const sid = q.get("sid");
 	if (sid === null || sid === "") return null; // sid required: no activeSession fallback
-	if (sid !== activeSessionId) return "denied";
 	return boardPath("session", sid);
 }
 
@@ -2342,11 +2345,6 @@ function handleUpload(req: IncomingMessage, res: ServerResponse, q: URLSearchPar
 		return;
 	}
 	const path = writeBoardPath(q);
-	if (path === "denied") {
-		sendJson(res, 403, { ok: false, error: "read-only session (another session is active)" });
-		req.resume();
-		return;
-	}
 	if (path === null) {
 		sendJson(res, 400, { ok: false, error: "scope=session requires sid" });
 		req.resume();
@@ -2614,10 +2612,6 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
 	}
 
 	const path = writeBoardPath(q);
-	if (path === "denied") {
-		sendJson(res, 403, { ok: false, error: "read-only session (another session is active)" });
-		return;
-	}
 	if (path === null) {
 		sendJson(res, 400, { ok: false, error: "scope=session requires sid" });
 		return;
@@ -2682,17 +2676,11 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
 			return;
 		}
 		case "/api/modes": {
-			// Session writes are already gated by writeBoardPath above: an omitted sid
-			// 400s there and a sibling sid 403s. This gate still covers scope=global,
-			// which writeBoardPath lets through, and keeps the active-session guard on
-			// the modes key. A sibling sid can therefore never write here.
+			// scope=global may omit sid (it falls back to the driver); a session write must
+			// name one. Any sid is accepted — there is no per-session write lock.
 			const sid = q.get("sid") ?? (parseScope(q.get("scope")) === "global" ? activeSessionId : null);
 			if (sid === null || sid === "") {
 				sendJson(res, 400, { ok: false, error: "scope=session requires sid" });
-				return;
-			}
-			if (sid !== activeSessionId) {
-				sendJson(res, 403, { ok: false, error: "read-only session (another session is active)" });
 				return;
 			}
 			const key = q.get("key");
@@ -2718,14 +2706,10 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
 			return;
 		}
 		case "/api/interval": {
-			// Same gate as every other write (writeBoardPath above); names only the interval.
+			// Same sid rule as every other write (writeBoardPath above); names only the interval.
 			const sid = q.get("sid") ?? (parseScope(q.get("scope")) === "global" ? activeSessionId : null);
 			if (sid === null || sid === "") {
 				sendJson(res, 400, { ok: false, error: "scope=session requires sid" });
-				return;
-			}
-			if (sid !== activeSessionId) {
-				sendJson(res, 403, { ok: false, error: "read-only session (another session is active)" });
 				return;
 			}
 			const minutes = Number(q.get("min"));
@@ -2745,14 +2729,10 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
 			return;
 		}
 		case "/api/stuck": {
-			// Same gate and naming as /api/interval; n is a settle COUNT, not minutes.
+			// Same sid rule and naming as /api/interval; n is a settle COUNT, not minutes.
 			const sid = q.get("sid") ?? (parseScope(q.get("scope")) === "global" ? activeSessionId : null);
 			if (sid === null || sid === "") {
 				sendJson(res, 400, { ok: false, error: "scope=session requires sid" });
-				return;
-			}
-			if (sid !== activeSessionId) {
-				sendJson(res, 403, { ok: false, error: "read-only session (another session is active)" });
 				return;
 			}
 			const n = Number(q.get("n"));
@@ -2772,14 +2752,10 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
 			return;
 		}
 		case "/api/priority": {
-			// Same gate and naming as /api/stuck; n is a card's autoPick priority (not minutes).
+			// Same sid rule and naming as /api/stuck; n is a card's autoPick priority (not minutes).
 			const sid = q.get("sid") ?? (parseScope(q.get("scope")) === "global" ? activeSessionId : null);
 			if (sid === null || sid === "") {
 				sendJson(res, 400, { ok: false, error: "scope=session requires sid" });
-				return;
-			}
-			if (sid !== activeSessionId) {
-				sendJson(res, 403, { ok: false, error: "read-only session (another session is active)" });
 				return;
 			}
 			const n = Number(q.get("n"));
@@ -2800,7 +2776,7 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
 			return;
 		}
 		case "/api/schedule": {
-			// Same GET+query write path (and 403 gate) as every other card edit.
+			// Same GET+query write path (and sid rule) as every other card edit.
 			// Nothing to set = a caller typo; 400 instead of a silent no-op write.
 			if (q.get("at") === null && q.get("blocked") === null) {
 				sendJson(res, 400, { ok: false, error: "at or blocked is required" });
@@ -3229,7 +3205,8 @@ ${KANBAN_MD_JS}
     if (text !== undefined) e.textContent = text;
     return e;
   }
-  // #44: 読み取り専用（非アクティブ）セッションのカードだけ編集できない。理由を必ず出す。
+  // #55: どのセッションの看板も編集できる（セッション単位の書き込みロックは無い）。
+  // ctx.active は常に true なので RO_MSG / RO_TITLE は発火しない。
   var RO_MSG = "この看板は読み取り専用 — 編集するにはそのセッションをアクティブにして";
   var RO_TITLE = "読み取り専用（編集するにはセッションをアクティブに）";
   var noteTimer = null;
@@ -3730,7 +3707,7 @@ ${KANBAN_MD_JS}
       var halt = haltText(s.halted);
       if (halt) art.appendChild(el("div", "halt", halt));
       if (!expanded) { box.appendChild(art); return; }
-      var ctx = boardCtx("session", s.id, s.isActive);
+      var ctx = boardCtx("session", s.id);
       // #48: 検索してヒット 0 件のセッションは「該当なし」だけ出す（ヘッダは残す）。
       // それ以外は今までどおり。操作系は絞り込み前の全カードを見る。
       if (search && !cards.length) {
@@ -4475,6 +4452,7 @@ ${KANBAN_MD_JS}
     return root;
   }
 
+  // #55: row.mine = driver かどうか。編集可否とは無関係。
   function expanded(row){
     return open[row.id] === undefined ? !!row.mine : open[row.id];
   }
@@ -4517,9 +4495,9 @@ ${KANBAN_MD_JS}
       wrap.appendChild(hb);
     }
     if (expanded(row)) {
-      // Another session's board is read-only: its own pi rewrites it whenever it likes.
+      // #55: 他セッションのボードも書ける（サーバ側のロックを外した）。
       wrap.appendChild(columns(
-        { key: "s:" + row.id, scope: "session", sid: row.id, editable: !!row.mine, modes: row.modes && row.modes.session },
+        { key: "s:" + row.id, scope: "session", sid: row.id, editable: true, modes: row.modes && row.modes.session },
         row.cards
       ));
     }
@@ -5578,7 +5556,16 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 	pi.on("session_tree", (_event, ctx) => sync(ctx, true));
 
 	pi.on("session_shutdown", () => {
+		// #55: the driver pin must not outlive the session that pinned it. Read the sid
+		// before stopPoll() releases ownCtx; release only our own pin, never a handover.
+		let pinned: string | null = null;
+		try {
+			pinned = ownCtx === null ? null : sidOf(ownCtx);
+		} catch {
+			// disposed ownCtx cannot answer; that session is gone either way
+		}
 		stopPoll();
+		if (pinned !== null && activeSessionId === pinned) activeSessionId = null;
 	});
 
 	// Per-turn injection: attach the session board as a request-only trailing message.

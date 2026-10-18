@@ -54,7 +54,7 @@ const pi = {
 };
 mod.default(pi);
 // #40: activeSessionId はプロセス最初の session_start で固定される。
-// 書き込み可のセッションを先に起こし、読み取り専用は後から足す。
+// #55: デフォルトでないセッション（driver ではない）も同じく書き込める。
 const ctxFor = (sid) => ({
 	hasUI: false,
 	isIdle: () => true,
@@ -62,7 +62,7 @@ const ctxFor = (sid) => ({
 	sessionManager: { getSessionId: () => sid, getEntries: () => [] },
 });
 const ACTIVE = "addremove-active";
-const RO = "addremove-readonly";
+const OTHER = "addremove-readonly"; // driver ではないセッション（#55: これでも書ける）
 handlers.get("session_start")({}, ctxFor(ACTIVE));
 for (let i = 0; i < 40; i++) {
 	try {
@@ -78,7 +78,6 @@ const SRC = await (await fetch(`${BASE}/`)).text();
 // --- 1. 配信 HTML の文字列レベル ---------------------------------------------
 await check("DASHBOARD_HTML: 各列の + ボタン（addbtn）を持つ", () => {
 	assert.ok(SRC.includes('el("button", "mini addbtn", "+")'), "addbtn クラスが無い");
-	assert.ok(SRC.includes('el("button", "mini addbtn", "+")'), "+ の文字が無い");
 	assert.ok(SRC.includes('addBtn.title = ctx.active ? "この列にカードを追加" : RO_TITLE'), "title が仕様と違う");
 });
 
@@ -119,27 +118,21 @@ await check("DASHBOARD_HTML: 削除は confirm() で確認し、false なら何�
 	assert.ok(h.includes('act("/api/remove", { id: c.id }, ctx)'), "remove が confirm の後に無い");
 });
 
-await check("DASHBOARD_HTML: 読み取り専用の分岐で note(RO_MSG) を呼ぶ（追加・削除）", () => {
-	const add = SRC.indexOf('addBtn.addEventListener("click"');
-	assert.ok(add > 0, "+ のハンドラが無い");
-	assert.ok(
-		/if \(!ctx\.active\) \{ note\(RO_MSG\); return; \}/.test(SRC.slice(add, add + 600)),
-		"+ の読み取り専用分岐が無い",
-	);
-	const del = SRC.indexOf('el("button", "mini del"');
-	assert.ok(del > 0, "× のハンドラが無い");
-	assert.ok(
-		/if \(!ctx\.active\) \{ note\(RO_MSG\); return; \}/.test(SRC.slice(del, del + 600)),
-		"× の読み取り専用分岐が無い",
-	);
-	assert.ok(/RO_MSG = "この看板は読み取り専用/.test(SRC), "RO_MSG の文言が違う");
-	assert.ok(/RO_TITLE = "読み取り専用（編集するにはセッションをアクティブに）"/.test(SRC), "RO_TITLE の文言が違う");
+await check("DASHBOARD_HTML: RO 分岐は残るが ctx.active は常に true（#55 で発火しない）", () => {
+	// #55: セッション単位の書き込みロックを外したので boardCtx は active を落とさない。
+	assert.ok(/function boardCtx\(scope, sid, active\)\{ return \{ scope: scope, sid: sid \|\| "", active: active !== false \}; \}/.test(SRC), "boardCtx の既定 active:true が崩れている");
+	assert.ok(!/boardCtx\("session", row\.id, row\.mine\)/.test(SRC), "session ボードに mine を渡している");
+	// 分岐コードと文言の定義自体は残す（他用途で参照されうる）。
+	assert.ok(/RO_MSG = "この看板は読み取り専用/.test(SRC), "RO_MSG が消えている");
+	assert.ok(/RO_TITLE = "読み取り専用（編集するにはセッションをアクティブに）"/.test(SRC), "RO_TITLE が消えている");
 });
 
-await check("DASHBOARD_HTML: 読み取り専用は aria-disabled + title", () => {
-	// ネイティブ disabled だと click が発火せず、押せない理由を返せない。
-	assert.ok(/addBtn\.setAttribute\("aria-disabled", ctx\.active \? "false" : "true"\)/.test(SRC), "+ が aria-disabled にならない");
-	assert.ok(/addBtn\.title = ctx\.active \? "この列にカードを追加" : RO_TITLE/.test(SRC), "+ の title が RO_TITLE でない");
+await check("DASHBOARD_HTML: + は ctx.active だけで分岐し、その active は常に true", () => {
+	// #55: session ボードの ctx は isActive/mine ではなく常時 true の active。
+	assert.ok(/addBtn\.setAttribute\("aria-disabled", ctx\.active \? "false" : "true"\)/.test(SRC));
+	assert.ok(/addBtn\.title = ctx\.active \? "この列にカードを追加" : RO_TITLE/.test(SRC));
+	assert.ok(SRC.includes('boardCtx("session", s.id)'), "session ボードの ctx に isActive が渡されている");
+	assert.ok(!SRC.includes('boardCtx("session", s.id, s.isActive)'), "isActive がまだ渡されている");
 });
 
 // --- 2. ブラウザ側 JS の構文検査 ---------------------------------------------
@@ -168,10 +161,14 @@ await check("/api/add: 空 text は 400", async () => {
 	assert.equal(res.status, 400, `status=${res.status}`);
 });
 
-await check("/api/add: 読み取り専用セッションは 403", async () => {
-	handlers.get("session_start")({}, ctxFor(RO)); // activeSessionId は #40 で固定なので ACTIVE のまま
-	const res = await fetch(`${BASE}/api/add?scope=session&sid=${RO}&text=x`);
-	assert.equal(res.status, 403, `status=${res.status}`);
+await check("/api/add: driver でないセッションでも 200 で、そのボードに入る", async () => {
+	handlers.get("session_start")({}, ctxFor(OTHER)); // activeSessionId は #40 で固定なので ACTIVE のまま
+	const res = await fetch(`${BASE}/api/add?scope=session&sid=${OTHER}&text=${q("他セッション追加")}`);
+	assert.equal(res.status, 200, `status=${res.status}`);
+	// 実際にその sid のボードファイルに書かれていること
+	const d = await dash();
+	const card = d.sessions.find((s) => s.id === OTHER)?.cards.find((c) => c.text === "他セッション追加");
+	assert.ok(card, "他セッションのボードにカードが無い");
 });
 
 await check("/api/remove: カードが消え、dashboard からも消える", async () => {
@@ -249,7 +246,7 @@ await check("/api/remove: 存在しない id は 404", async () => {
 		return e;
 	};
 	const byId = {};
-	const noteEl = (byId.note = makeEl());
+	byId.note = makeEl(); // note() の行き先（#55 で出番は減ったが DOM には残る）
 	const document = {
 		getElementById: (id) => byId[id] || (byId[id] = makeEl()),
 		createElement: () => makeEl(),
@@ -324,16 +321,15 @@ await check("/api/remove: 存在しない id は 404", async () => {
 		assert.ok(findBtn(() => true), "要素が作られていない");
 	});
 
-	// 読み取り専用は aria-disabled="true"（DOM の disabled は click を飲むため使わない）
+	// #55: ロックが無いので aria-disabled は常に false（DOM の disabled も使わない）
 	const roOf = (b) => b.attrs["aria-disabled"] === "true";
 	const activeOf = (b) => b.attrs["aria-disabled"] !== "true";
 
-	await check("vm: 読み取り専用の + は aria-disabled で title が RO_TITLE", () => {
+	await check("vm: 全セッションの + が有効（aria-disabled は付かない）", () => {
 		const ro = addBtns.filter(roOf);
-		assert.equal(ro.length, 3, `読み取り専用の + が ${ro.length}`);
-		for (const b of ro) assert.equal(b.title, "読み取り専用（編集するにはセッションをアクティブに）");
+		assert.equal(ro.length, 0, `aria-disabled の + が ${ro.length}`);
 		const on = addBtns.filter(activeOf);
-		assert.equal(on.length, 3, `有効な + が ${on.length}`);
+		assert.equal(on.length, 6, `有効な + が ${on.length}`);
 		for (const b of on) assert.equal(b.title, "この列にカードを追加");
 	});
 
@@ -437,21 +433,38 @@ await check("/api/remove: 存在しない id は 404", async () => {
 		assert.ok(!urls.some((u) => u.includes("/api/remove")), `confirm 無視で飛んだ: ${JSON.stringify(urls)}`);
 	});
 
-	await check("vm: 読み取り専用の × は aria-disabled + title", () => {
-		// カードは active 1 枚 + readonly 1 枚（GLOBAL は空）なので × は 2 つ。
-		assert.equal(delBtns.length, 2, `del=${delBtns.length}`);
-		const ro = delBtns.filter(roOf);
-		assert.equal(ro.length, 1, `読み取り専用の × が ${ro.length}`);
-		for (const b of ro) assert.equal(b.title, "読み取り専用（編集するにはセッションをアクティブに）");
+	await check("vm: driver でないセッションの + からも /api/add が飛ぶ", async () => {
+		// 2 枚目のセッション（isActive:false）の todo 列の + を探す。
+		const other = addBtns.filter(activeOf)[3];
+		assert.ok(other, "2 枚目のセッションの + が無い");
+		clearUrls();
+		other.lis.click[0]();
+		const input = inputOf(other);
+		assert.ok(input, "input.addin が作られていない");
+		input.value = "vm 他セッション追加";
+		input.lis.keydown[0]({ key: "Enter", preventDefault() {} });
+		for (let i = 0; i < 4; i++) await flush();
+		const hit = urls.find((u) => u.includes("/api/add"));
+		assert.ok(hit, `add が飛んでいない: ${JSON.stringify(urls)}`);
+		assert.ok(hit.includes("sid=01a1266c"), hit);
 	});
 
-	await check("vm: 読み取り専用の × クリックで理由が出て、remove は飛ばない", async () => {
+	await check("vm: 全セッションの × が有効（aria-disabled は付かない）", () => {
+		// カードは active 1 枚 + 他セッション 1 枚（GLOBAL は空）なので × は 2 つ。
+		assert.equal(delBtns.length, 2, `del=${delBtns.length}`);
+		assert.equal(delBtns.filter(roOf).length, 0, "aria-disabled の × がある");
+	});
+
+	await check("vm: 他セッションの × クリックでも /api/remove が飛ぶ", async () => {
 		clearUrls();
-		const ro = delBtns.find(roOf);
-		ro.lis.click[0]();
+		sandbox.window.confirm = () => true; // 前のテストが false にしたままなので戻す
+		const del = delBtns.filter(activeOf)[1];
+		assert.ok(del, "2 枚目の × が無い");
+		del.lis.click[0]();
 		for (let i = 0; i < 4; i++) await flush();
-		assert.ok(!urls.some((u) => u.includes("/api/remove")), `読み取り専用なのに飛んだ: ${JSON.stringify(urls)}`);
-		assert.ok(noteEl && noteEl.textContent.includes("読み取り専用"), `note が出ていない: ${noteEl && noteEl.textContent}`);
+		const hit = urls.find((u) => u.includes("/api/remove"));
+		assert.ok(hit, `remove が飛んでいない: ${JSON.stringify(urls)}`);
+		assert.ok(hit.includes("id=8") && hit.includes("sid=01a1266c"), hit);
 	});
 }
 

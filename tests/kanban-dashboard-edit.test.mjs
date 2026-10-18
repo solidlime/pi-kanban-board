@@ -67,7 +67,8 @@ for (let i = 0; i < 40; i++) {
 	check("GET / は 200 を返す", () => assert.equal(res.status, 200));
 	check("配信 HTML にカード本体の dblclick が含まれる", () =>
 		assert.ok(html.includes('card.addEventListener("dblclick"'), "カード本体のリスナが無い"));
-	check("配信 HTML に読み取り専用の注記が含まれる", () => {
+	check("配信 HTML に RO 注記の定義が含まれる（#55 では発火しない）", () => {
+		// #55: セッション単位ロック撤去で ctx.active は常に true。分岐と文言の定義だけ残る。
 		assert.ok(html.includes("読み取り専用"), "読み取り専用の文言が無い");
 		assert.ok(html.includes('id="note"'), "#note 要素が無い");
 	});
@@ -83,12 +84,14 @@ check("DASHBOARD_HTML: dblclick はカード本体に付く（1 本だけ）", (
 	assert.ok(!SRC.includes('t.addEventListener("dblclick"'), ".t 側の登録が残っている（二重発火）");
 });
 
-check("DASHBOARD_HTML: 読み取り専用の分岐で note( を呼ぶ", () => {
+check("DASHBOARD_HTML: RO 分岐は残るが ctx.active は常に true（#55）", () => {
 	const at = SRC.indexOf('card.addEventListener("dblclick"');
 	assert.ok(at > 0, "リスナが無い");
-	const h = SRC.slice(at, at + 900);
-	assert.ok(/if \(!ctx \|\| !ctx\.active\) \{ note\(RO_MSG\); return; \}/.test(h), "分岐が無い");
+	assert.ok(/if \(!ctx \|\| !ctx\.active\) \{ note\(RO_MSG\); return; \}/.test(SRC.slice(at, at + 900)), "分岐が無い");
 	assert.ok(/RO_MSG = "この看板は読み取り専用/.test(SRC), "文言が違う");
+	// 常に true を渡すので RO 分岐は到達しない
+	assert.ok(SRC.includes('boardCtx("session", s.id)'), "session ボードの ctx に isActive を渡している");
+	assert.ok(!SRC.includes('boardCtx("session", s.id, s.isActive)'), "isActive がまだ渡されている");
 });
 
 check("DASHBOARD_HTML: .ops / a / textarea を除外する", () => {
@@ -99,12 +102,10 @@ check("DASHBOARD_HTML: .ops / a / textarea を除外する", () => {
 	assert.ok(h.includes('closest("textarea")'), "編集中 textarea の除外が無い");
 });
 
-check("DASHBOARD_HTML: 読み取り専用カードに title を付ける", () => {
-	assert.ok(
-		/card\.title = RO_TITLE/.test(SRC),
-		"card.title が設定されていない",
-	);
+check("DASHBOARD_HTML: RO_TITLE の定義は残る（#55 では card.title に入らない）", () => {
 	assert.ok(/RO_TITLE = "読み取り専用（編集するにはセッションをアクティブに）"/.test(SRC), "title 文言が違う");
+	// session ボードは常に active:true なので、この代入はどの実セッションでも起きない。
+	assert.ok(/card\.title = RO_TITLE/.test(SRC), "RO_TITLE 代入の分岐自体が消えている");
 });
 
 check("読み取り専用でも draggable は付けない（既存挙動を維持）", () => {
@@ -258,33 +259,39 @@ check("dashboard の <script> は構文として妥当", () => {
 	const noteEl = document.getElementById("note");
 	const RO_TITLE = "読み取り専用（編集するにはセッションをアクティブに）";
 	const idle = { target: { closest: () => null } };
-	check("読み取り専用カードの dblclick は note に理由を出す", () => {
-		const ro = cards.find((c) => c.title === RO_TITLE);
-		assert.ok(ro, "読み取り専用カードに title が無い");
-		noteEl.hidden = true;
-		noteEl.textContent = "";
-		ro.lis.dblclick[0](idle);
-		assert.equal(noteEl.hidden, false, "note が出ていない");
-		assert.ok(noteEl.textContent.includes("読み取り専用"), noteEl.textContent);
+	// dblclick は .t を textarea に置き換えるので、カードの同定は先に済ませる。
+	const cardOf = (text) => cards.find((c) => c.children.some((x) => String(x.innerHTML).includes(text)));
+	const otherCard = cardOf("読むだけのカード");
+	const activeCard = cardOf("書けるカード");
+	check("どちらのカードにも RO_TITLE は付かない（#55: 全セッション編集可）", () => {
+		assert.equal(cards.filter((c) => c.title === RO_TITLE).length, 0, "読み取り専用扱いのカードがある");
 	});
-	check("active カードの dblclick は textarea に置き換える（note は出さない）", () => {
-		const ac = cards.find((c) => c.title !== RO_TITLE);
-		assert.ok(ac, "active カードが無い");
+	check("driver でないセッションのカードも dblclick で textarea になる", () => {
+		assert.ok(otherCard, "他セッションのカードが無い");
 		noteEl.hidden = true;
-		ac.lis.dblclick[0](idle);
+		otherCard.lis.dblclick[0](idle);
 		assert.equal(noteEl.hidden, true, "note が誤発火している");
-		const ta = ac.children.find((x) => x.className === "ted");
+		const ta = otherCard.children.find((x) => x.className === "ted");
 		assert.ok(ta, "textarea.ted に置き換わっていない");
-		assert.equal(ta.value, "書けるカード");
+		assert.equal(ta.value, "読むだけのカード");
 	});
 	check(".ops 内のダブルクリックは無視する", () => {
-		const ac = cards.find((c) => c.title !== RO_TITLE);
+		assert.ok(activeCard, "active カードが無い");
 		noteEl.hidden = true;
-		const before = ac.children.filter((x) => x.className === "ted").length;
-		ac.lis.dblclick[0]({ target: { closest: (s) => (s === ".ops" ? {} : null) } });
+		const before = activeCard.children.filter((x) => x.className === "ted").length;
+		activeCard.lis.dblclick[0]({ target: { closest: (s) => (s === ".ops" ? {} : null) } });
 		assert.equal(noteEl.hidden, true, "note が出ている");
-		const after = ac.children.filter((x) => x.className === "ted").length;
+		const after = activeCard.children.filter((x) => x.className === "ted").length;
 		assert.equal(after, before, "textarea が開いている");
+	});
+	check("active カードの dblclick は textarea に置き換える（note は出さない）", () => {
+		assert.ok(activeCard, "active カードが無い");
+		noteEl.hidden = true;
+		activeCard.lis.dblclick[0](idle);
+		assert.equal(noteEl.hidden, true, "note が誤発火している");
+		const ta = activeCard.children.find((x) => x.className === "ted");
+		assert.ok(ta, "textarea.ted に置き換わっていない");
+		assert.equal(ta.value, "書けるカード");
 	});
 }
 

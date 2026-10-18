@@ -262,9 +262,12 @@ const kanbanCmd = () => commands.get("kanban").handler;
 	});
 	const otherRes = await api(`scope=session&sid=other-session&min=3`);
 	const otherBody = await otherRes.json();
-	check("GET /api/interval 他セッション -> 403（文言不変）", () => {
-		assert.equal(otherRes.status, 403);
-		assert.equal(otherBody.error, "read-only session (another session is active)");
+	check("GET /api/interval 他セッション -> 200 かつ他セッションの interval が書かれる", () => {
+		// #55: セッション単位の書き込みロックは無い。
+		assert.equal(otherRes.status, 200);
+		assert.equal(otherBody.ok, true);
+		assert.equal(readJson(modesFile).SESSION["other-session"].intervalMin, 3);
+		assert.equal(readJson(modesFile).SESSION[SID].intervalMin, 9);
 	});
 }
 

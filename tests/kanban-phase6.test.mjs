@@ -219,10 +219,14 @@ for (const bad of ["0", "21", "abc"]) {
 		`http://127.0.0.1:${PORT}/api/interval?scope=session&sid=other-session&min=3`,
 	);
 	const intervalBody = await intervalRes.json();
-	check("GET /api/stuck 他セッション -> 403（/api/interval と同一文言）", () => {
-		assert.equal(otherRes.status, 403);
-		assert.equal(otherBody.error, "read-only session (another session is active)");
-		assert.equal(otherBody.error, intervalBody.error);
+	check("GET /api/stuck 他セッション -> 200 かつ他セッションの settle 数が書かれる", () => {
+		// #55: セッション単位の書き込みロックは無い。
+		assert.equal(otherRes.status, 200);
+		assert.equal(otherBody.ok, true);
+		assert.equal(readJson(modesFile).SESSION["other-session"].stuckLimit, 3);
+		// 同じゲートを持っていた interval も同じく書ける
+		assert.equal(intervalRes.status, 200);
+		assert.equal(intervalBody.ok, true);
 	});
 }
 

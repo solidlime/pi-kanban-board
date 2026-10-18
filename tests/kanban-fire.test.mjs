@@ -372,7 +372,7 @@ checkA('kanban ツール add: col "done" を尊重', async () => {
 });
 
 // ---------------------------------------------------------------------------
-// 6: /api/schedule（既存の GET+query 規約 / 403 ゲート）
+// 6: /api/schedule（既存の GET+query 規約 / sid 必須）
 // ---------------------------------------------------------------------------
 const api = async (path, sid) => {
 	const res = await fetch(`${API_BASE}${path}${path.includes("?") ? "&" : "?"}sid=${sid}`);
@@ -383,12 +383,22 @@ const API_BASE = (() => {
 	return `http://127.0.0.1:${port}`;
 })();
 
-checkA("/api/schedule: blocked 設定（GET+query）-> 保存される", async () => {
-	// 書き込みゲートは sid === activeSessionId を要求する（既存の 403 規約）。
-	// #40: activeSessionId is pinned by the FIRST session_start in the process
-	// (fire-quiet, from the settle tests above). Release the owned ctx first so
-	// fire-api becomes the pinned session again.
+const sessionsJson = async () => (await fetch(`${API_BASE}/api/sessions`)).json();
+
+checkA("session_shutdown は driver の pin を解放する（#55）", async () => {
+	// ここまでで pin されているのは fire-quiet（プロセス最初の session_start）。
+	const before = await sessionsJson();
+	assert.equal(before.activeSessionId, "fire-quiet", JSON.stringify(before.activeSessionId));
 	handlers.get("session_shutdown")();
+	const after = await sessionsJson();
+	assert.equal(after.activeSessionId, null, "shutdown 後も pin が残っている");
+	assert.equal(after.sessions.filter((s) => s.isActive).length, 0, "ACTIVE の看板が残っている");
+});
+
+checkA("/api/schedule: blocked 設定（GET+query）-> 保存される", async () => {
+	// #40: activeSessionId is pinned by the FIRST session_start in the process
+	// (fire-quiet, released by the shutdown check above). pin it again so
+	// fire-api is the driver for this block.
 	quiet("fire-api");
 	writeSession("fire-api", { cards: [{ id: 1, text: "g", col: "todo" }], nextId: 2 });
 	const { status, body } = await api("/api/schedule?id=1&blocked=%E5%A4%96%E9%83%A8%E5%BE%85%E3%81%A1", "fire-api");

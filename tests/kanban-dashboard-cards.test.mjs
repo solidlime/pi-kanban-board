@@ -114,7 +114,9 @@ await check("#31 ループ/ピックは /api/modes、間隔は /api/interval を
 
 await check("#31 GLOBAL は scope=global、セッションは scope=session + sid", () => {
 	assert.ok(html.includes('boardCtx("global", sid, true)'), "GLOBAL の ctx が無い");
-	assert.ok(html.includes('boardCtx("session", s.id, s.isActive)'), "SESSION の ctx が無い");
+	// #55: session ボードも active を落とさない（boardCtx の既定で true）。
+	assert.ok(html.includes('boardCtx("session", s.id)'), "SESSION の ctx が無い");
+	assert.ok(!html.includes('boardCtx("session", s.id, s.isActive)'), "isActive をまだ渡している");
 	assert.ok(html.includes('if (ctx.sid) params.sid = ctx.sid;'), "sid の付与経路が無い");
 	assert.ok(html.includes('params = { scope: ctx.scope }'), "scope の付与経路が無い");
 });
@@ -285,12 +287,13 @@ await check("CSS は既存トークンのみ（新色を発明していない）
 		assert.ok(textOf(byId["sessions"], "停止中"), "blocked の表示が無い");
 	});
 
-	await check("vm: 非アクティブセッションの操作ボタンは disabled（403 を踏ませない）", () => {
-		const s2ctx = walk(byId["sessions"]).filter((n) => n.className.includes("ctl"))[1];
-		assert.ok(s2ctx, "2 つ目の ctl が無い");
-		const sw = walk(s2ctx).find((n) => n.className.includes("sw"));
-		assert.equal(sw.disabled, true, "s2 のトグルが有効");
-		assert.ok(!(sw._lis.click && sw._lis.click.length), "s2 のトグルにハンドラがある");
+	await check("vm: 全セッションの操作ボタンが enabled（#55: 書き込みロック無し）", () => {
+		const ctls = walk(byId["sessions"]).filter((n) => n.className.includes("ctl"));
+		assert.equal(ctls.length, 2, `ctl=${ctls.length}`);
+		const sw = walk(ctls[1]).find((n) => n.className.includes("sw"));
+		assert.ok(sw, "s2 のトグルが無い");
+		assert.equal(sw.disabled, false, "s2 のトグルが無効のまま");
+		assert.ok(sw._lis.click && sw._lis.click.length, "s2 のトグルにハンドラが無い");
 	});
 
 	// 全ボタンを 1 回ずつ押して、飛んだ URL を集める
@@ -312,7 +315,9 @@ await check("CSS は既存トークンのみ（新色を発明していない）
 			assert.ok(u.includes("scope="), `scope が無い: ${u}`);
 			assert.ok(/[?&]sid=[^&]+/.test(u), `sid が無い: ${u}`);
 		}
-		assert.ok(writes.every((u) => !u.includes("sid=s2")), "非アクティブ s2 が書き込もうとした");
+		assert.ok(writes.some((u) => u.includes("sid=s2")), "s2 のボードに書き込む経路が無い");
+		// #55: s2 の書き込みは s2 自身の sid を使う（driver の sid を使い回さない）。
+		for (const u of writes.filter((x) => x.includes("sid=s2"))) assert.ok(u.includes("scope=session"), u);
 	});
 
 	await check("vm: 各操作が正しい既存 API を叩く", () => {
@@ -331,9 +336,15 @@ await check("CSS は既存トークンのみ（新色を発明していない）
 	});
 
 	await check("vm: 既に blocked の DOING は全停止の対象から外れる", () => {
+		// #55: s2 の操作ボタンも押しているので、s1 と s2 の 1 枚ずつが対象。
 		const stopUrls = writes.filter((u) => u.includes("blocked="));
-		assert.equal(stopUrls.length, 1, `停止対象は 1 枚のはず: ${stopUrls.join(", ")}`);
-		assert.ok(stopUrls[0].includes("id=4"), "停止したのが別のカード");
+		assert.equal(stopUrls.length, 2, `停止対象は 2 枚のはず: ${stopUrls.join(", ")}`);
+		const s1 = stopUrls.filter((u) => u.includes("sid=s1"));
+		const s2 = stopUrls.filter((u) => u.includes("sid=s2"));
+		assert.equal(s1.length, 1, `s1 の停止は 1 枚のはず: ${s1.join(", ")}`);
+		assert.equal(s2.length, 1, `s2 の停止は 1 枚のはず: ${s2.join(", ")}`);
+		assert.ok(s1[0].includes("id=4"), "s1 で停止したのが別のカード");
+		assert.ok(s2[0].includes("id=3"), "s2 で停止したのが別のカード");
 		assert.ok(doingCards().length > 0, "doing 列が描画されていない（D&D 先が無い）");
 	});
 }

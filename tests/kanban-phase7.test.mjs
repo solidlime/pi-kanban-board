@@ -248,14 +248,20 @@ for (const bad of ["100", "-100", "2.5", "abc"]) {
 	});
 }
 {
+	// #55: セッション単位の書き込みロックは無い。他セッションのボードもその sid で書ける。
+	const otherBoardFile = `${HOME_DIR}/.pi/kanban/sessions/other-session.json`;
+	writeFileSync(
+		otherBoardFile,
+		JSON.stringify({ cards: [{ id: 3, text: "other", col: "todo" }], nextId: 4 }),
+	);
 	const otherRes = await api(`sid=other-session&scope=session&id=3&n=3`);
 	const otherBody = await otherRes.json();
-	const cfgRes = await fetch(`http://127.0.0.1:${PORT}/api/stuck?scope=session&sid=other-session&n=3`);
-	const cfgBody = await cfgRes.json();
-	check("GET /api/priority 他セッション -> 403（既存文言と同一）", () => {
-		assert.equal(otherRes.status, 403);
-		assert.equal(otherBody.error, "read-only session (another session is active)");
-		assert.equal(otherBody.error, cfgBody.error);
+	check("GET /api/priority 他セッション -> 200 かつそのボードに書かれる", () => {
+		assert.equal(otherRes.status, 200);
+		assert.equal(otherBody.ok, true);
+		const written = JSON.parse(readFileSync(otherBoardFile, "utf8"));
+		assert.equal(written.cards.find((c) => c.id === 3).priority, 3);
+		// driver 側のボードは変わらない
 		assert.equal(readBoardFile().cards.find((c) => c.id === 3).priority, 7);
 	});
 }

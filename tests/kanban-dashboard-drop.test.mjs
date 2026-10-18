@@ -387,7 +387,7 @@ const hasCls = (el, c) => el.className.split(" ").includes(c);
 	});
 }
 
-// --- 3b. 読み取り専用セッションのカードには添付できない ------------------
+// --- 3b. 全セッションのカードにファイルを添付できる（#55: 書き込みロック無し） -
 {
 	const calls = [];
 	const scripts = [...dashboardHtml.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
@@ -445,8 +445,8 @@ const hasCls = (el, c) => el.className.split(" ").includes(c);
 	for (let i = 0; i < 8; i++) await flush();
 	const roCard = walk(byId.sessions).find((n) => hasCls(n, "card"));
 
-	await check("vm: 読み取り専用カードへのファイルドロップは添付せず note(RO_MSG)", async () => {
-		assert.ok(roCard, "読み取り専用のカードが描画されていない");
+	await check("vm: driver でないセッションのカードにもファイルをドロップできる（#55）", async () => {
+		assert.ok(roCard, "セッションのカードが描画されていない");
 		calls.length = 0;
 		const file = { name: "x.png", arrayBuffer: () => Promise.resolve(new ArrayBuffer(4)) };
 		fire(roCard, "drop", {
@@ -455,8 +455,9 @@ const hasCls = (el, c) => el.className.split(" ").includes(c);
 			stopPropagation() {},
 		});
 		for (let i = 0; i < 4; i++) await flush();
-		assert.ok(!calls.some((u) => u.includes("/api/upload")), `読み取り専用なのに upload した: ${JSON.stringify(calls)}`);
-		assert.ok(String(byId.note.textContent).includes("読み取り専用"), `note が出ていない: ${byId.note.textContent}`);
+		const up = calls.find((u) => u.includes("/api/upload"));
+		assert.ok(up, `upload が飛んでいない: ${JSON.stringify(calls)}`);
+		assert.ok(up.includes("sid=s-ro") && up.includes("id=3"), up);
 	});
 }
 

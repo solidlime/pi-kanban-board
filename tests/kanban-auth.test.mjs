@@ -1,6 +1,6 @@
 // kanban 認可フォールバックの自己検証。`node tests/kanban-auth.test.mjs`。
-// 書き込み端点は sid 必須: 省略/空 -> 400、正しい sid -> 200、他セッション -> 403。
-// scope=global の逃げ道（sid 省略で 200）は今回のスコープ外なので現状維持を固定する。
+// 書き込み端点は sid 必須: 省略/空 -> 400、どのセッションの sid でも 200（#55 でセッション
+// 単位の書き込みロックを撤去した）。scope=global の逃げ道（sid 省略で 200）も現状維持。
 // HOME と KANBAN_PORT を差し替えるので、本番の ~/.pi/kanban と 8789 には触れない。
 import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -66,6 +66,7 @@ const OTHER = "auth-other";
 const modesFile = `${HOME_DIR}/.pi/kanban/modes.json`;
 const globalFile = `${HOME_DIR}/.pi/kanban/global.json`;
 const boardFile = `${HOME_DIR}/.pi/kanban/sessions/${SID}.json`;
+const otherBoardFile = `${HOME_DIR}/.pi/kanban/sessions/${OTHER}.json`;
 const readJson = (p) => JSON.parse(readFileSync(p, "utf8"));
 const writeJson = (p, o) => writeFileSync(p, JSON.stringify(o, null, 2));
 
@@ -81,9 +82,10 @@ handlers.get("session_start")({}, {
 // priority 用にカードを1枚用意（SESSION / GLOBAL 両方）
 writeJson(boardFile, { cards: [{ id: 1, text: "c", col: "todo" }], nextId: 9 });
 writeJson(globalFile, { cards: [{ id: 1, text: "g", col: "todo" }], nextId: 9 });
+// #55: 他セッションのボードも書き込み対象。priority はそのボードのカードを見る。
+writeJson(otherBoardFile, { cards: [{ id: 1, text: "o", col: "todo" }], nextId: 9 });
 
 const status = async (path) => (await fetch(`http://127.0.0.1:${PORT}${path}`)).status;
-const DENY = "read-only session (another session is active)";
 
 const SESSION_WRITES = [
 	["/api/modes", `scope=session&key=autoPick&value=on`],
@@ -105,14 +107,25 @@ for (const [name, q] of SESSION_WRITES) {
 		assert.equal(await status(`${name}?${q}&sid=${SID}`), 200));
 }
 
-// --- 他セッションの sid -> 403（文言不変） -----------------------------------
+// --- 他セッションの sid -> 200 かつ実際に書かれる（#55: セッション単位ロック撤去）---
 for (const [name, q] of SESSION_WRITES) {
-	await check(`${name} 他セッション sid -> 403`, async () => {
-		const res = await fetch(`http://127.0.0.1:${PORT}${name}?${q}&sid=${OTHER}`);
-		assert.equal(res.status, 403);
-		assert.equal((await res.json()).error, DENY);
-	});
+	await check(`${name} 他セッション sid -> 200`, async () =>
+		assert.equal(await status(`${name}?${q}&sid=${OTHER}`), 200));
 }
+// modes.json は sid ごとのバケット: OTHER のキーができていること
+await check("他セッションの modes が modes.json に書かれる", () =>
+	assert.equal(readJson(modesFile).SESSION[OTHER].autoPick, true));
+await check("他セッションの interval が modes.json に書かれる", () =>
+	assert.equal(readJson(modesFile).SESSION[OTHER].intervalMin, 5));
+await check("他セッションの stuck が modes.json に書かれる", () =>
+	assert.equal(readJson(modesFile).SESSION[OTHER].stuckLimit, 5));
+await check("他セッションの priority がそのボードのカードに書かれる", () =>
+	assert.equal(readJson(otherBoardFile).cards[0].priority, 5));
+await check("priority は sid 指定のボードにだけ入る", () => {
+	assert.equal(readJson(otherBoardFile).cards[0].priority, 5);
+	assert.equal(readJson(otherBoardFile).cards[0].text, "o");
+	assert.equal(readJson(boardFile).cards[0].text, "c");
+});
 
 // --- scope=global の逃げ道: sid 省略でも 200（現状維持・スコープ外） ---------
 await check("scope=global sid 省略 -> 200（既存挙動を維持）", async () =>

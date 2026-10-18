@@ -87,8 +87,8 @@ await check("#38-4 カードへのファイル drop は id 付きで upload に�
 // --- 4. サーバ側: id 付き upload は新規カードを作らず既存カードに紐付く -------
 const SID = "ops38-session";
 const boardFile = `${HOME_DIR}/.pi/kanban/sessions/${SID}.json`;
-// upload の書き込みは scope=global を使う: scope=session は「そのセッションが active」で
-// ないと 403 (writeBoardPath) になり、テストから activeSessionId を作れないため。
+// upload の書き込みは scope=global を使う（#55 で scope=session も 403 にならなくなったが、
+// このテストは GLOBAL 側の id 付き upload を見るので分岐を維持する）。
 const globalFile = `${HOME_DIR}/.pi/kanban/global.json`;
 const readCards = () => JSON.parse(readFileSync(boardFile, "utf8")).cards;
 const readGlobal = () => JSON.parse(readFileSync(globalFile, "utf8")).cards;
