@@ -1,0 +1,302 @@
+// #67 phase A (認証なしで今すぐ閉じられる穴) の自己検証。フレームワーク無しで
+// `node tests/kanban-security-phaseA.test.mjs`。HOME と KANBAN_PORT を差し替えるので
+// 本番の ~/.pi/kanban と 8789 には触れない。
+// 固定するもの: (1) /serve の能動型 MIME 降格 + attachment + nosniff / (2) 書き込み系の
+// cross-origin 門前払い（ヘッダ無しは通す）/ (3) /api/kanban の sid 規則 / (4) 死んだルート。
+import assert from "node:assert/strict";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { createServer as netServer } from "node:net";
+import http from "node:http";
+import { createRequire } from "node:module";
+
+const HOME_DIR = "/tmp/kb-security-phaseA-home";
+rmSync(HOME_DIR, { recursive: true, force: true });
+mkdirSync(`${HOME_DIR}/.pi/kanban/sessions`, { recursive: true });
+mkdirSync(`${HOME_DIR}/workspace/site`, { recursive: true });
+process.env.HOME = HOME_DIR;
+
+const PORT = await new Promise((resolve) => {
+	const s = netServer();
+	s.listen(0, "127.0.0.1", () => {
+		const { port } = s.address();
+		s.close(() => resolve(port));
+	});
+});
+process.env.KANBAN_PORT = String(PORT);
+
+const require = createRequire(import.meta.url);
+const { createJiti } = require(
+	"/root/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/jiti/lib/jiti.cjs",
+);
+const jiti = createJiti(import.meta.url);
+const SRC = new URL("../extensions/kanban.ts", import.meta.url).pathname;
+const mod = await jiti.import(SRC);
+
+const failures = [];
+let passed = 0;
+function check(name, fn) {
+	try {
+		fn();
+		passed += 1;
+	} catch (err) {
+		failures.push(`${name}: ${err.message}`);
+	}
+}
+async function checkAsync(name, fn) {
+	try {
+		await fn();
+		passed += 1;
+	} catch (err) {
+		failures.push(`${name}: ${err.message}`);
+	}
+}
+
+// --- server 起動（このテスト専用ポート） --------------------------------------
+const tools = new Map();
+const pi = {
+	registerCommand() {},
+	registerTool(def) {
+		tools.set(def.name, def);
+	},
+	appendEntry() {},
+	on() {},
+	sendUserMessage() {},
+};
+mod.default(pi);
+for (let i = 0; i < 40; i++) {
+	try {
+		if ((await fetch(`http://127.0.0.1:${PORT}/api/kanban`)).ok) break;
+	} catch {
+		// まだ listen していない
+	}
+	await new Promise((r) => setTimeout(r, 100));
+}
+
+const serve = tools.get("serve");
+assert.ok(serve, "serve ツールが registerTool されている");
+const call = (args) => serve.execute("t", args, null, () => {});
+const base = `http://127.0.0.1:${PORT}`;
+const SITE = `${HOME_DIR}/workspace/site`;
+
+/** http.request 直叩き。fetch はヘッダを足すので、無ヘッダの再現にはこちらを使う。 */
+function send(method, path, { headers = {}, body } = {}) {
+	return new Promise((resolve, reject) => {
+		const req = http.request({ host: "127.0.0.1", port: PORT, path, method, headers }, (res) => {
+			let out = "";
+			res.on("data", (c) => (out += c));
+			res.on("end", () => resolve({ status: res.statusCode, headers: res.headers, body: out }));
+		});
+		req.on("error", reject);
+		if (body !== undefined) req.write(body);
+		req.end();
+	});
+}
+
+const add = await call({ action: "add", path: SITE });
+const id = add.details.id;
+assert.ok(id, `serve add が id を返す: ${JSON.stringify(add.details)}`);
+
+writeFileSync(`${SITE}/x.html`, "<script>alert(1)</script>");
+writeFileSync(`${SITE}/x.svg`, '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>');
+writeFileSync(`${SITE}/x.js`, "alert(1)");
+writeFileSync(`${SITE}/x.png`, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+writeFileSync(`${SITE}/x.txt`, "plain note");
+
+// --- 1. 能動型 MIME は落ちる ---------------------------------------------------
+for (const name of ["x.html", "x.svg", "x.js"]) {
+	const res = await send("GET", `/serve/${id}/${name}`);
+	await checkAsync(`${name} は text/plain に降格`, async () => {
+		assert.equal(res.status, 200, `status=${res.status} body=${res.body}`);
+		assert.equal((res.headers["content-type"] ?? "").split(";")[0], "text/plain");
+	});
+	await checkAsync(`${name} は Content-Disposition: attachment`, async () =>
+		assert.equal(res.headers["content-disposition"], "attachment"));
+	await checkAsync(`${name} に X-Content-Type-Options: nosniff`, async () =>
+		assert.equal(res.headers["x-content-type-options"], "nosniff"));
+}
+
+{
+	// 元から text/plain のファイルは降格されていないので attachment は付かない。
+	const res = await send("GET", `/serve/${id}/x.txt`);
+	await checkAsync("x.txt は text/plain のまま attachment 無し", async () => {
+		assert.equal(res.headers["content-type"], "text/plain; charset=utf-8");
+		assert.equal(res.headers["content-disposition"], undefined);
+		assert.equal(res.body, "plain note");
+	});
+}
+
+// --- 2. 画像は壊さない ---------------------------------------------------------
+{
+	const res = await send("GET", `/serve/${id}/x.png`);
+	await checkAsync("x.png は image/png のまま", async () =>
+		assert.equal(res.headers["content-type"], "image/png"));
+	await checkAsync("x.png に attachment は付かない", async () =>
+		assert.equal(res.headers["content-disposition"], undefined));
+	await checkAsync("x.png にも nosniff は付く", async () =>
+		assert.equal(res.headers["x-content-type-options"], "nosniff"));
+}
+{
+	// 一覧・レジストリ・エラー応答も /serve 配下なら nosniff。
+	const listing = await send("GET", `/serve/${id}/`);
+	const missing = await send("GET", `/serve/${id}/nope.png`);
+	const registry = await send("GET", `/serve/`);
+	for (const [label, res] of [
+		["一覧", listing],
+		["404", missing],
+		["レジストリ", registry],
+	]) {
+		await checkAsync(`/serve ${label} 応答にも nosniff`, async () =>
+			assert.equal(res.headers["x-content-type-options"], "nosniff"));
+	}
+}
+
+// --- 3. _inbox POST の cross-origin 門前払い -----------------------------------
+const NOTE = JSON.stringify({ take: 1 });
+{
+	const res = await send("POST", `/serve/${id}/_inbox/cross.json`, {
+		headers: { "Content-Type": "application/octet-stream", "Sec-Fetch-Site": "cross-site" },
+		body: NOTE,
+	});
+	await checkAsync("Sec-Fetch-Site: cross-site の _inbox POST は 403", async () =>
+		assert.equal(res.status, 403, `status=${res.status} body=${res.body}`));
+}
+{
+	const res = await send("POST", `/serve/${id}/_inbox/samesite.json`, {
+		headers: { "Content-Type": "application/octet-stream", "Sec-Fetch-Site": "same-site" },
+		body: NOTE,
+	});
+	await checkAsync("Sec-Fetch-Site: same-site の _inbox POST も 403", async () =>
+		assert.equal(res.status, 403, `status=${res.status} body=${res.body}`));
+}
+{
+	const res = await send("POST", `/serve/${id}/_inbox/ok.json`, {
+		headers: { "Content-Type": "application/octet-stream", "Sec-Fetch-Site": "same-origin" },
+		body: NOTE,
+	});
+	await checkAsync("Sec-Fetch-Site: same-origin の _inbox POST は通る", async () => {
+		assert.equal(res.status, 200, `status=${res.status} body=${res.body}`);
+		assert.equal(JSON.parse(res.body).ok, true);
+	});
+}
+{
+	const res = await send("POST", `/serve/${id}/_inbox/probe.json`, {
+		headers: { "Content-Type": "application/octet-stream" },
+		body: NOTE,
+	});
+	await checkAsync("Sec-Fetch-Site 無しの _inbox POST は通る (curl / 別 pi を壊さない)", async () => {
+		assert.equal(res.status, 200, `status=${res.status} body=${res.body}`);
+		assert.equal(JSON.parse(res.body).ok, true);
+	});
+}
+{
+	// Origin だけ嘘をつくブラウザ（Sec-Fetch-Site を送らない古い実装）も弾く。
+	const res = await send("POST", `/serve/${id}/_inbox/origin.json`, {
+		headers: {
+			"Content-Type": "application/octet-stream",
+			Origin: "http://evil.example",
+			Host: `127.0.0.1:${PORT}`,
+		},
+		body: NOTE,
+	});
+	await checkAsync("Host と合わない Origin の _inbox POST は 403", async () =>
+		assert.equal(res.status, 403, `status=${res.status} body=${res.body}`));
+}
+
+// --- 4. /api/host の cross-origin 門前払い -------------------------------------
+{
+	const res = await send("POST", "/api/host", {
+		headers: { "Content-Type": "application/json", "Sec-Fetch-Site": "cross-site" },
+		body: JSON.stringify({ host: "evil.example" }),
+	});
+	await checkAsync("Sec-Fetch-Site: cross-site の /api/host は 403", async () =>
+		assert.equal(res.status, 403, `status=${res.status} body=${res.body}`));
+}
+{
+	const res = await send("POST", "/api/host", {
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify({ host: "nas.local:8789" }),
+	});
+	await checkAsync("Sec-Fetch-Site 無しの /api/host は通る", async () => {
+		assert.equal(res.status, 200, `status=${res.status} body=${res.body}`);
+		assert.equal(JSON.parse(res.body).host, "nas.local:8789");
+	});
+}
+
+// --- 5. /api/kanban の sid 規則 ------------------------------------------------
+{
+	const res = await send("GET", "/api/kanban?scope=session");
+	await checkAsync("scope=session で sid 無しは 400", async () =>
+		assert.equal(res.status, 400, `status=${res.status} body=${res.body}`));
+}
+{
+	// 別セッションのボードが sid 無しで読めないこと（旧 activeSessionId フォールバックの再発防止）。
+	const other = "other-session-sid";
+	mkdirSync(`${HOME_DIR}/.pi/kanban/sessions`, { recursive: true });
+	writeFileSync(
+		`${HOME_DIR}/.pi/kanban/sessions/${other}.json`,
+		JSON.stringify({ cards: [{ id: 1, text: "secret-other", col: "todo" }], nextId: 2 }),
+	);
+	const bare = await send("GET", "/api/kanban");
+	const leak = await send("GET", `/api/kanban?sid=${other}`);
+	await checkAsync("sid 無しの /api/kanban は他セッションのボードを返さない", async () => {
+		assert.equal(bare.status, 200, `status=${bare.status}`);
+		const j = JSON.parse(bare.body);
+		assert.equal(j.sessionId, null);
+		assert.doesNotMatch(bare.body, /secret-other/);
+		// 明示した sid なら当然読める（GET は読み取りなので許可）。
+		assert.equal(leak.status, 200);
+		assert.match(leak.body, /secret-other/);
+	});
+}
+{
+	const res = await send("GET", "/api/kanban?scope=global");
+	await checkAsync("scope=global は sid 無しでも 200", async () => {
+		assert.equal(res.status, 200, `status=${res.status} body=${res.body}`);
+		assert.equal(JSON.parse(res.body).ok, true);
+	});
+}
+
+// --- 6. 死んだルート -----------------------------------------------------------
+{
+	const res = await send("GET", "/api/kanban.html");
+	await checkAsync("/api/kanban.html は 404", async () =>
+		assert.equal(res.status, 404, `status=${res.status} body=${res.body.slice(0, 80)}`));
+	check("KANBAN_HTML 定数は残っている（writeBoardHtml が使う）", () => {
+		assert.equal(typeof mod.KANBAN_HTML, "string");
+		assert.ok(mod.KANBAN_HTML.length > 1000);
+	});
+}
+
+// --- 7. probeServer を壊していない (ヘッダ無し POST /api/selftest) --------------
+{
+	const res = await send("POST", "/api/selftest");
+	await checkAsync("ヘッダ無し POST /api/selftest は 200 (probeServer 経路)", async () => {
+		assert.equal(res.status, 200, `status=${res.status} body=${res.body.slice(0, 120)}`);
+		assert.equal(JSON.parse(res.body).ok, true);
+	});
+	// probeServer 本体も叩いて identity が読めることまで見る。
+	const probe = await mod.probeServer?.();
+	if (probe !== undefined) {
+		check("probeServer() が reachable を返す", () => assert.equal(probe.reachable, true));
+	}
+}
+
+// --- 8. CORS ヘッダ ------------------------------------------------------------
+{
+	const res = await send("OPTIONS", "/api/kanban", {
+		headers: { Origin: "http://nas.local:8789", "Access-Control-Request-Method": "POST" },
+	});
+	await checkAsync("プリフライトは 204 で ACAO: * を返す", async () => {
+		assert.equal(res.status, 204);
+		assert.equal(res.headers["access-control-allow-origin"], "*");
+	});
+	await checkAsync("Allow-Methods に POST が入っている", async () =>
+		assert.match(res.headers["access-control-allow-methods"] ?? "", /POST/));
+	await checkAsync("Access-Control-Max-Age が 600", async () =>
+		assert.equal(res.headers["access-control-max-age"], "600"));
+}
+
+// --- 結果 ---------------------------------------------------------------------
+for (const f of failures) console.log(`  FAIL ${f}`);
+console.log(`kanban-security-phaseA: ${passed} passed, ${failures.length} failed`);
+process.exit(failures.length === 0 ? 0 : 1);

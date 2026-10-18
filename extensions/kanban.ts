@@ -1113,7 +1113,35 @@ const CORS_HEADERS: Record<string, string> = {
 	"Access-Control-Allow-Origin": "*",
 	"Access-Control-Allow-Methods": "GET, POST, OPTIONS",
 	"Access-Control-Allow-Headers": "Content-Type",
+	"Access-Control-Max-Age": "600",
 };
+
+/**
+ * #67: refuse a browser-originated cross-origin write before it reaches a handler.
+ * Sec-Fetch-* is forbidden header name territory: a page cannot set or omit it, so its
+ * presence means a browser sent it. A request with no Sec-Fetch-Site is not a browser
+ * (curl, a peer pi, probeServer's fetch) and is outside the CSRF threat model, so it is
+ * allowed — making this header mandatory would break every script caller.
+ * Origin is checked only when present and not "null": "null" is what a sandboxed iframe
+ * and some privacy modes send, and it carries no origin to compare against.
+ */
+function crossOriginWriteRefusal(req: IncomingMessage): string | null {
+	const site = req.headers["sec-fetch-site"];
+	if (typeof site === "string") {
+		const v = site.trim().toLowerCase();
+		if (v !== "same-origin" && v !== "none") return `cross-origin write refused (Sec-Fetch-Site: ${v})`;
+	}
+	const origin = req.headers.origin;
+	if (typeof origin !== "string" || origin === "null") return null;
+	let host: string;
+	try {
+		host = new URL(origin).host;
+	} catch {
+		return "cross-origin write refused (unparseable Origin)";
+	}
+	if (host !== (req.headers.host ?? "")) return `cross-origin write refused (Origin: ${origin})`;
+	return null;
+}
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
 	res.writeHead(status, { ...CORS_HEADERS, "Content-Type": "application/json; charset=utf-8" });
@@ -1740,9 +1768,32 @@ function serveExt(name: string): string {
 	return dot < 0 ? "" : name.slice(dot + 1).toLowerCase();
 }
 
+/**
+ * #67: MIMEs a browser would *execute* in our origin. /serve is unauthenticated and
+ * anyone on the LAN can drop a file into a served dir, so these are downgraded to
+ * text/plain + attachment (see serveFileOpts). Images, audio, video, PDF and zip stay
+ * as they are: the dashboard renders them, and none of them run script in our origin.
+ */
+const SERVE_ACTIVE_MIME = new Set([
+	"text/html",
+	"application/xhtml+xml",
+	"image/svg+xml",
+	"text/javascript",
+	"application/javascript",
+	"application/x-javascript",
+	"application/ecmascript",
+	"text/ecmascript",
+	"application/xml",
+	"text/xml",
+	"application/wasm",
+]);
+
 /** B3: text/* needs an explicit charset or the browser guesses (mojibake). */
 function serveMimeOf(name: string): string {
 	const type = SERVE_MIME[serveExt(name)] ?? "application/octet-stream";
+	// #67: an executable type is not merely relabelled here; serveFileOpts also attaches
+	// Content-Disposition: attachment, so the browser downloads instead of rendering.
+	if (SERVE_ACTIVE_MIME.has(type)) return "text/plain; charset=utf-8";
 	return type.startsWith("text/") ? `${type}; charset=utf-8` : type;
 }
 
@@ -1805,7 +1856,7 @@ function serve416(res: ServerResponse, size: number): void {
  * (serveMimeOf vs MIME_BY_EXT) and Cache-Control rule (serveCacheOf vs no-store).
  * Last-Modified stays optional so media keeps the headers it had before.
  */
-type FileServeOpts = { contentType: string; cacheControl: string; lastModified?: string };
+type FileServeOpts = { contentType: string; cacheControl: string; lastModified?: string; download?: boolean };
 
 /**
  * One byte-range serve shared by /serve and /api/media. Single range only; a
@@ -1819,6 +1870,7 @@ function serveFile(req: IncomingMessage, res: ServerResponse, abs: string, st: S
 		"Accept-Ranges": "bytes",
 	};
 	if (opts.lastModified !== undefined) headers["Last-Modified"] = opts.lastModified;
+	if (opts.download === true) headers["Content-Disposition"] = "attachment";
 	let status = 200;
 	let start = 0;
 	let end = size - 1;
@@ -1948,12 +2000,25 @@ function serveInbox(req: IncomingMessage, res: ServerResponse): void {
  */
 function handleServe(req: IncomingMessage, res: ServerResponse, url: URL): void {
 	const isHead = req.method === "HEAD";
+	// #67: every /serve response refuses content sniffing, on every branch (file, dir
+	// listing, registry, _inbox, errors). Set here so no branch can forget it.
+	res.setHeader("X-Content-Type-Options", "nosniff");
 	// #23: listing, file, Range and _inbox POST requests all arrive here with a Host
 	// header; learn before the method checks so even a refused verb teaches the host.
 	learnServeHostFromHeader(req.headers.host);
 	// The only write direction: POST /serve/<id>/_inbox/<name>. Anything else on POST
 	// (or any other verb) is refused before a byte is read.
 	if (req.method === "POST") {
+		// #67: _inbox is the one write direction on /serve, so it is the one place a page
+		// on another origin could push bytes. No Content-Type check here on purpose: the
+		// stored bytes are harmless because every read back through /serve is text/plain +
+		// attachment + nosniff, so an uploaded .html can never execute in this origin.
+		const refusal = crossOriginWriteRefusal(req);
+		if (refusal !== null) {
+			sendJson(res, 403, { ok: false, error: refusal });
+			req.resume();
+			return;
+		}
 		serveInbox(req, res);
 		return;
 	}
@@ -2080,10 +2145,15 @@ function handleServe(req: IncomingMessage, res: ServerResponse, url: URL): void 
 
 /** /serve's MIME + B4 cache rules, kept in one place for both call sites. */
 function serveFileOpts(abs: string, st: Stats): FileServeOpts {
+	const raw = SERVE_MIME[serveExt(abs)] ?? "application/octet-stream";
 	return {
 		contentType: serveMimeOf(abs),
 		cacheControl: serveCacheOf(abs),
 		lastModified: new Date(st.mtimeMs).toUTCString(),
+		// #67: only a *downgraded* type is attached — a plain .txt stays inline. The
+		// downgrade alone is not enough anyway (text/plain is sniffable back into HTML);
+		// attachment keeps the dashboard's <a target=_blank> a download, not a page.
+		download: SERVE_ACTIVE_MIME.has(raw),
 	};
 }
 
@@ -2574,6 +2644,14 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
 	}
 	if (req.method === "POST") {
 		if (url.pathname === "/api/host") {
+			// #67: the host report is a page-originated write (dashboard -> /api/host), so a
+			// page on another origin must not be able to re-point serve-host.json.
+			const refusal = crossOriginWriteRefusal(req);
+			if (refusal !== null) {
+				sendJson(res, 403, { ok: false, error: refusal });
+				req.resume();
+				return;
+			}
 			handleHostReport(req, res);
 			return;
 		}
