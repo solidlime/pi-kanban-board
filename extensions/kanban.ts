@@ -1247,7 +1247,10 @@ function realOrSelf(p: string): string {
 
 /** A10: ~/workspace by default; serve-allow.json overrides wholesale. */
 function serveAllowRoots(): string[] {
-	const defaults = [join(homedir(), "workspace"), KANBAN_DIR];
+	// #66-security: KANBAN_DIR is deliberately NOT a default root. It holds global.json,
+	// sessions/*.json and media/, so allowing it published the whole board unauthenticated
+	// through /serve/. Serving it is still possible by naming it in serve-allow.json.
+	const defaults = [join(homedir(), "workspace")];
 	try {
 		const raw = JSON.parse(readRaw(SERVE_ALLOW_JSON)) as { roots?: unknown };
 		if (Array.isArray(raw.roots)) {
@@ -2481,7 +2484,9 @@ function runSelfTest(): { ok: boolean; checks: SelfTestCheck[]; identity: SelfTe
 				if (!raw || !Array.isArray(raw.cards)) throw new Error(`cards is not an array: ${p}`);
 				seen += 1;
 			}
-			return `session=${activeSessionId ?? "none"} board files=${seen}`;
+			// #66-security: the session id is a secret-free capability for this board; a
+			// unauthenticated selftest must not leak it. The count is enough to debug.
+			return `session=${activeSessionId === null ? "none" : "active"} board files=${seen}`;
 		}),
 		selfTestLayer("modes", () => {
 			if (existsSync(MODES_JSON)) JSON.parse(readFileSync(MODES_JSON, "utf8"));
@@ -2667,15 +2672,9 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
 			sendJson(res, 404, { ok: false, error: "not registered" });
 			return;
 		}
-		if (q.get("del") === "1" && isUnder(realOrSelf(removed.path), serveAllowRoots())) {
-			// Only a regular file, and only inside the serve allowlist: never rmSync a
-			// served directory tree, and never trust a hand-edited registry path.
-			try {
-				if (statSync(removed.path).isFile()) unlinkSync(removed.path);
-			} catch {
-				// already gone: the registry entry was stale, deregistration is enough
-			}
-		}
+		// #66-security: a served file is never deleted over HTTP. `del=1` used to unlink
+		// the target, i.e. any <img src> on any page could delete a file. Deregistration
+		// is all the dashboard may do; deleting is a local filesystem action.
 		sendJson(res, 200, { ok: true, id: removed.id });
 		return;
 	}
@@ -4063,10 +4062,9 @@ ${KANBAN_MD_JS}
       ops.appendChild(btn(gone ? "登録解除" : "停止", gotTitle(gone), function(){
         act("/api/serve", { action: "remove", id: v.id }, sctx);
       }));
-      ops.appendChild(btn("削除", "配信を停止してファイルも削除する", function(){
-        if (typeof window.confirm === "function" && !window.confirm("配信を停止しファイルも削除する: " + (v.path || ""))) return;
-        act("/api/serve", { action: "remove", id: v.id, del: "1" }, sctx);
-      }, gone));
+      // #66-security: no dashboard button deletes a file. A GET that unlinks is
+      // exploitable from any page via <img src>, and this dashboard has no auth.
+      // Deleting a served file is a local filesystem action, not a remote one.
       row.appendChild(ops);
       box.appendChild(row);
     });

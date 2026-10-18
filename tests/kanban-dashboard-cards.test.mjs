@@ -130,9 +130,10 @@ await check("#31 DOING 全停止は blocked を再利用する（新状態なし
 	assert.ok(!html.includes("/api/stop"), "新しい停止端点を発明している");
 });
 
-await check("#31 serve の停止/削除は /api/serve を使う", () => {
+await check("#31 serve の停止は /api/serve を使い、削除は HTTP に無い", () => {
 	assert.ok(html.includes('act("/api/serve", { action: "remove", id: v.id }, sctx)'), "停止が無い");
-	assert.ok(html.includes('action: "remove", id: v.id, del: "1"'), "削除が無い");
+	// #66-security: GET で unlink できてしまうため、ダッシュボードからはファイルを消さない。
+	assert.ok(!html.includes('del: "1"'), "削除（del=1）がまだ UI に残っている");
 	assert.ok(html.includes('btn(gone ? "登録解除" : "停止"'), "ボタンの出し分けが無い");
 });
 
@@ -332,7 +333,8 @@ await check("CSS は既存トークンのみ（新色を発明していない）
 		assert.ok(has("/api/schedule?", "&id=4&", "blocked=%E4%B8%80%E6%99%82%E5%81%9C%E6%AD%A2", "scope=session", "sid=s1"), "DOING 全停止が無い");
 		assert.ok(has("/api/modes?", "key=autoPick", "value=on", "scope=global", "sid=s1"), "GLOBAL のモードが global スコープでない");
 		assert.ok(has("/api/serve", "action=remove", "id=abcdef0123456789", "scope=global", "sid=s1"), "serve 停止が無い");
-		assert.ok(has("/api/serve", "action=remove", "id=abcdef0123456789", "del=1", "scope=global", "sid=s1"), "serve 削除が無い");
+		// #66-security: 元は del=1 (実ファイル削除) も飛ばしていた。削除経路は撤去済み。
+		assert.ok(!writes.some((u) => u.includes("del=1")), "del=1 を飛ばす操作が残っている");
 	});
 
 	await check("vm: 既に blocked の DOING は全停止の対象から外れる", () => {
@@ -368,7 +370,7 @@ await check("writeBoardHtml の dashboard.html に #30/#31 の UI が全部あ�
 		["間隔入力", 'iv.type = "number"'],
 		["DOING 全停止", "DOING 全停止"],
 		["serve 停止", '"停止"'],
-		["serve 削除", '"削除"'],
+		// #66-security: "削除" ボタンは撤去した（GET で unlink できる穴）。
 	]) {
 		assert.ok(disk.includes(frag), `${label} が実ファイルに無い (${frag})`);
 	}
@@ -398,10 +400,10 @@ await check("/api/serve action=remove は登録を外すがファイルは残す
 	assert.ok(existsSync(keep), "ファイルを消してしまった");
 });
 
-await check("/api/serve del=1 は登録とファイルの両方を消す", async () => {
+await check("/api/serve del=1 は登録を外すがファイルは残す（HTTP に unlink は無い）", async () => {
 	assert.equal(await status("action=remove&id=abcdef0123456789&del=1"), 200);
 	assert.ok(!entries().some((e) => e.id === "abcdef0123456789"), "登録が残っている");
-	assert.ok(!existsSync(live), "ファイルが残っている");
+	assert.ok(existsSync(live), "HTTP 経由でファイルが消えた");
 });
 
 await check("/api/serve は id 無し・不正アクションを 400 で弾く", async () => {

@@ -3,7 +3,7 @@
 // 対象 (#46):
 //   1. sendUserMessage の戻り promise に .catch( が付いている（拒否を握り潰さない）
 //   2. KANBAN_DEBUG を参照する poll ゲートのトレースがある
-//   3. listen はプロセス内で 1 回だけ（ensured）。兄弟 pi が 8789 を持つ場合の EADDRINUSE 連打を止める
+//   3. listen は状態ガードで 1 回だけ。兄弟 pi が 8789 を持つ場合の EADDRINUSE 連打を止める
 //   4. poll を直接叩き、KANBAN_DEBUG=1 のときだけ 1 行 stderr に出る
 // HOME と KANBAN_PORT を差し替えるので、本番の ~/.pi/kanban と 8789 には触れない。
 import assert from "node:assert/strict";
