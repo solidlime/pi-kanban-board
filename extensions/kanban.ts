@@ -4060,6 +4060,7 @@ const KANBAN_HTML = `<!doctype html>
   var MEDIA = API + "media/";
   var COLS = [["todo","TODO"],["doing","DOING"],["done","DONE"]];
   var EXT_BY_MIME = {"image/png":"png","image/jpeg":"jpg","image/gif":"gif","image/webp":"webp","image/avif":"avif","video/mp4":"mp4","video/webm":"webm"};
+  var OK_EXTS = ["png", "jpg", "gif", "webp", "avif", "mp4", "webm"]; // mirrors server OK_EXTS
   var globalEl = document.getElementById("global");
   var listEl = document.getElementById("sessions");
   var errEl = document.getElementById("err");
@@ -4163,8 +4164,21 @@ ${KANBAN_MD_JS}
 
   // Image/video drop onto a column -> POST raw bytes to /api/upload (new card in that column).
   // A drop onto a CARD passes its id instead, so the media attaches to that card (#38-4).
+  // #59: some drag sources (curl, some file managers, some OSes) hand over a file
+  // with an empty type. Prefer the MIME map, then fall back to the filename.
+  // ".jpeg" is the same format as ".jpg" but not in OK_EXTS — normalise it here
+  // rather than widening the server's accepted set.
+  function extOfFile(file){
+    var byMime = EXT_BY_MIME[file.type];
+    if (byMime) return byMime;
+    var name = String((file && file.name) || "");
+    var dot = name.lastIndexOf(".");
+    var ext = dot >= 0 ? name.slice(dot + 1).toLowerCase() : "";
+    if (ext === "jpeg") ext = "jpg";
+    return OK_EXTS.indexOf(ext) >= 0 ? ext : "";
+  }
   function upload(board, col, file, id){
-    var ext = EXT_BY_MIME[file.type];
+    var ext = extOfFile(file);
     if (!ext) { note("unsupported media type"); return; }
     file.arrayBuffer().then(function(buf){
       return fetch(API + "upload?" + qs(board) + "&col=" + col + "&ext=" + ext + (id === undefined ? "" : "&id=" + id), {
