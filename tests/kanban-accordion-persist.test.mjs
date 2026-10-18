@@ -648,6 +648,96 @@ await check("#62 GLOBAL の ckey は active sid を含まない", () => {
 	});
 }
 
+// ===========================================================================
+// (#62) 検索中もトグルは「保存値」を反転する（検索の強制展開を保存値に混ぜない）
+//   検索中は expanded = 保存値 || search で強制展開される。トグルがその表示値を
+//   反転すると「画面は変わらないのに保存値だけが反転」し、検索を消すと勝手に畳まれる。
+//   区別できるのは保存値が false（畳み済み）で検索中に開いている場面だけ。
+// ===========================================================================
+{
+	const headsOf = (d, box) => walk(d.byId[box]).filter(byClass("sess-hd"));
+	const bodiesOf = (d, box) => walk(d.byId[box]).filter(byClass("cols")).length;
+	// 検索欄は q.value を読む（e.target ではない）。input を発火する。
+	const type = (d, text) => {
+		d.byId.q.value = text;
+		d.byId.q._lis.input[0]({ target: d.byId.q });
+	};
+
+	// ---- (a)(b) GLOBAL ----
+	{
+		const storage = makeStorage();
+		const d = await runDashboard(storage);
+		const gHead = () => headsOf(d, "global")[0];
+
+		await check("#62(a) 前提: GLOBAL を素で畳んでおく（保存値 g=false）", () => {
+			gHead()._lis.click[0]({ target: null });
+			assert.equal(storage.read("kb-collapse").dash.g, false, "GLOBAL を畳めていない");
+			assert.equal(bodiesOf(d, "global"), 0, "畳んだのに中身が残っている");
+		});
+
+		await check("#62(a) 前提: 検索中は強制展開（g=false でも中身が出る）", () => {
+			type(d, "\u914d\u8272"); // GLOBAL は 1 枚だけヒット
+			assert.equal(gHead().getAttribute("aria-expanded"), "true", "検索中に畳まれている");
+			assert.equal(bodiesOf(d, "global"), 1, "検索中に中身が出ていない");
+		});
+
+		await check("#62(a) GLOBAL: 検索中のクリックで保存値 g が false->true になる", () => {
+			gHead()._lis.click[0]({ target: null });
+			assert.equal(storage.read("kb-collapse").dash.g, true, "検索中にクリックしても保存値が反転しない");
+			// 検索中の表示は強制展開のまま（見た目は変わらない）
+			assert.equal(gHead().getAttribute("aria-expanded"), "true", "検索中の表示が変わってしまった");
+			assert.equal(bodiesOf(d, "global"), 1, "検索中に中身が消えてしまった");
+		});
+
+		await check("#62(b) GLOBAL: 検索を消すと保存値どおり開いている", () => {
+			type(d, "");
+			assert.equal(gHead().getAttribute("aria-expanded"), "true", "検索解除後に開いていない");
+			assert.equal(bodiesOf(d, "global"), 1, "検索解除後に中身が出ていない");
+		});
+
+		await check("#62(b) GLOBAL: もう一度クリックすると畳まれる (true->false)", () => {
+			gHead()._lis.click[0]({ target: null });
+			assert.equal(storage.read("kb-collapse").dash.g, false, "true->false に戻っていない");
+			assert.equal(bodiesOf(d, "global"), 0, "畳んだのに中身が残っている");
+		});
+	}
+
+	// ---- (c) セッション見出し ----
+	{
+		const storage = makeStorage();
+		const d = await runDashboard(storage);
+		const s1 = () => headsOf(d, "sessions")[0];
+
+		await check("#62(c) 前提: s1 を素で畳む（保存値 sess.s1=false）", () => {
+			s1()._lis.click[0]({ target: null });
+			assert.equal(storage.read("kb-collapse").dash.sess.s1, false, "s1 を畳めていない");
+			assert.equal(bodiesOf(d, "sessions"), 1, "畳んだのに s1 の中身が残っている");
+		});
+
+		await check("#62(c) 前提: 検索中は s1 も強制展開される", () => {
+			type(d, "task"); // s1 / s2 ともヒット
+			assert.equal(s1().getAttribute("aria-expanded"), "true", "検索中に s1 が畳まれている");
+			assert.equal(bodiesOf(d, "sessions"), 2, "検索中に s1 の中身が出ていない");
+		});
+
+		await check("#62(c) セッション: 検索中のクリックで保存値 sess[s1] が false->true になる", () => {
+			s1()._lis.click[0]({ target: null });
+			assert.equal(storage.read("kb-collapse").dash.sess.s1, true, "検索中のクリックで保存値が反転しない");
+			assert.equal(s1().getAttribute("aria-expanded"), "true", "検索中の表示が変わってしまった");
+			assert.equal(bodiesOf(d, "sessions"), 2, "検索中に中身が消えてしまった");
+		});
+
+		await check("#62(c) セッション: 検索を消すと s1 が開き、再クリックで畳まれる", () => {
+			type(d, "");
+			assert.equal(s1().getAttribute("aria-expanded"), "true", "検索解除後に s1 が開いていない");
+			assert.equal(bodiesOf(d, "sessions"), 2, "検索解除後の本体数がおかしい");
+			s1()._lis.click[0]({ target: null });
+			assert.equal(storage.read("kb-collapse").dash.sess.s1, false, "再クリックで畳めていない");
+			assert.equal(bodiesOf(d, "sessions"), 1, "再クリックで s1 の中身が消えていない");
+		});
+	}
+}
+
 for (const f of failures) console.error("FAIL", f);
 console.log(`kanban-accordion-persist: ${passed} passed, ${failures.length} failed`);
 // サーバを掴んだままにしない（プロセスを終了させる）

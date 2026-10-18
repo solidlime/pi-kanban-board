@@ -3774,7 +3774,7 @@ ${KANBAN_MD_JS}
       function toggle(e){
         var tgt = e && e.target;
         if (tgt && tgt.closest && (tgt.closest(".ops") || tgt.closest("button") || tgt.closest("a") || tgt.closest("input"))) return;
-        sessOpen[s.id] = !expanded;
+        sessOpen[s.id] = !(sessOpen[s.id] === undefined ? true : sessOpen[s.id]);
         persist();
         redraw();
       }
@@ -3828,7 +3828,7 @@ ${KANBAN_MD_JS}
     function toggleGlobal(e){
       var tgt = e && e.target;
       if (tgt && tgt.closest && (tgt.closest(".ops") || tgt.closest("button") || tgt.closest("a") || tgt.closest("input"))) return;
-      gOpen = !gexpanded;
+      gOpen = !gOpen;
       persist();
       redraw();
     }
