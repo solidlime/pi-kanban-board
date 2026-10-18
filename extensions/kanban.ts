@@ -4490,11 +4490,12 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 	 * navigation. getLeafId() is not used: it changes on every branch move, which
 	 * would split the board into a new file mid-conversation.
 	 */
-	const sidOf = (ctx: ExtensionContext): string => {
-		const sid = ctx.sessionManager.getSessionId();
-		activeSessionId = sid; // default for the panel before it has pinned an id
-		return sid;
-	};
+	const sidOf = (ctx: ExtensionContext): string =>
+		ctx.sessionManager.getSessionId();
+	// #40: sidOf must stay pure. It used to assign activeSessionId on every call,
+	// so any other session's session_start (subagents too) dragged the panel's
+	// default sid over to that session. The default is now set once, where ownCtx
+	// is adopted.
 
 	/** Raw bytes of every board layer plus modes.json; any disk change (ours or a sibling's) flips it. */
 	const diskSnapshot = (sessionId: string): string =>
@@ -5117,6 +5118,9 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 		// session_tree is a branch move inside the SAME session, so it may refresh it.
 		if (ownCtx === null) {
 			ownCtx = ctx;
+			// #40: the first session to start in this process pins the panel's default
+			// sid. Later starts (siblings, subagents) must not move it.
+			activeSessionId = sid;
 			warnedDeadCtx = false;
 			deadCtxStrikes = 0;
 		} else if (isTree) {

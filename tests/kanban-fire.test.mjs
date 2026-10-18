@@ -385,6 +385,10 @@ const API_BASE = (() => {
 
 checkA("/api/schedule: blocked 設定（GET+query）-> 保存される", async () => {
 	// 書き込みゲートは sid === activeSessionId を要求する（既存の 403 規約）。
+	// #40: activeSessionId is pinned by the FIRST session_start in the process
+	// (fire-quiet, from the settle tests above). Release the owned ctx first so
+	// fire-api becomes the pinned session again.
+	handlers.get("session_shutdown")();
 	quiet("fire-api");
 	writeSession("fire-api", { cards: [{ id: 1, text: "g", col: "todo" }], nextId: 2 });
 	const { status, body } = await api("/api/schedule?id=1&blocked=%E5%A4%96%E9%83%A8%E5%BE%85%E3%81%A1", "fire-api");

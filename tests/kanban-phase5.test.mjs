@@ -168,6 +168,9 @@ for (let i = 0; i < 40; i++) {
 
 // --- B1/B2: ハンドラ実測（add は session TODO に入り、無言でないこと） ------------
 const SID = "tree-test-sid";
+// #40: the panel's default sid is now pinned by the first session_start instead
+// of by a sidOf side effect. Drive the real event so the write gate has a sid.
+handlers.get("session_start")({}, mkCtx());
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const { readFileSync } = await import("node:fs");
 const readJson = (p) => JSON.parse(readFileSync(p, "utf8"));

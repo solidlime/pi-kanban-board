@@ -69,8 +69,9 @@ const boardFile = `${HOME_DIR}/.pi/kanban/sessions/${SID}.json`;
 const readJson = (p) => JSON.parse(readFileSync(p, "utf8"));
 const writeJson = (p, o) => writeFileSync(p, JSON.stringify(o, null, 2));
 
-// activeSessionId は sidOf(ctx) が設定する。どのコマンドでも先頭で通る。
-await commands.get("kanban").handler("help", {
+// #40: the panel's default sid is pinned by the first session_start, not by a
+// sidOf side effect. Drive the real event instead of relying on /kanban help.
+handlers.get("session_start")({}, {
 	hasUI: false,
 	isIdle: () => false,
 	ui: { notify() {}, setWidget() {} },

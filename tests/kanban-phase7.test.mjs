@@ -175,10 +175,11 @@ for (let i = 0; i < 40; i++) {
 	await new Promise((r) => setTimeout(r, 100));
 }
 
-// activeSessionId は sidOf(ctx) が設定する。どのコマンドでも先頭で通る。
+// #40: the panel's default sid is pinned by the first session_start, not by a
+// sidOf side effect. Drive the real event instead of relying on /kanban help.
 {
 	const notes = [];
-	await commands.get("kanban").handler("help", {
+	handlers.get("session_start")({}, {
 		hasUI: false,
 		isIdle: () => false,
 		ui: { notify(m) { notes.push(m); }, setWidget() {} },
