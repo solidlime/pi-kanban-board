@@ -131,10 +131,13 @@ check("activeTab を保持し、render() が復元する", () => {
 	assert.match(html, /selectTab\(activeTab\);\s*\/\/ a poll re-render/);
 });
 
-check("モバイル 640px 以下はタブ横並び・サイドバーを上", () => {
+check("タブは常に上部の横並び（#50 でサイドバー廃止）", () => {
+	// #50 以前は .dash が row + .tabs が縦カラムで、640px 以下だけ column に切り替える形だった。
+	// 今はベースが column でタブは常に横並びなので、メディアクエリではなくベースを見る。
+	assert.match(html, /\.dash\{display:flex;flex-direction:column/);
+	assert.match(html, /\.tabs\{display:flex;flex-direction:row/);
 	assert.match(html, /@media \(max-width:640px\)\{/);
 	const mq = html.slice(html.indexOf("@media (max-width:640px)"));
-	assert.match(mq, /\.dash\{flex-direction:column\}/);
 	assert.match(mq, /\.tabs\{flex-direction:row/);
 });
 

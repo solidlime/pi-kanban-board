@@ -96,7 +96,7 @@ writeFileSync(
 	`${KB}/serve.json`,
 	JSON.stringify({
 		entries: [
-			{ id: LIVE_ID, path: LIVE_PATH, createdAt: "2026-01-02T03:04:05.000Z" },
+			{ id: LIVE_ID, path: LIVE_PATH, title: "配信テスト用", createdAt: "2026-01-02T03:04:05.000Z" },
 			{ id: GONE_ID, path: GONE_PATH },
 		],
 	}),
@@ -177,6 +177,8 @@ check("exists=true のエントリ", () => {
 	assert.match(e.url, new RegExp(`/serve/${LIVE_ID}/$`));
 	assert.match(e.url, /^https?:\/\//);
 	assert.equal(e.createdAt, "2026-01-02T03:04:05.000Z");
+	// #50: エージェントが付けた表示名が payload に乗る
+	assert.equal(e.title, "配信テスト用");
 });
 check("exists=false のエントリも一覧に残る", () => {
 	const e = data.serve.find((x) => x.id === GONE_ID);
@@ -185,6 +187,8 @@ check("exists=false のエントリも一覧に残る", () => {
 	assert.equal(e.exists, false);
 	assert.equal(typeof e.createdAt, "string");
 	assert.equal(e.createdAt, "");
+	// #50: title 未設定は空文字（undefined ではなく）で返す
+	assert.equal(e.title, "");
 });
 
 // --- 4. / は DASHBOARD_HTML を返す -------------------------------------------

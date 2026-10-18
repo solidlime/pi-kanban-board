@@ -1060,7 +1060,7 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
 // Local path serving (/serve/<id>/...) on the existing 8789 server (A11/A14)
 // ---------------------------------------------------------------------------
 
-type ServeEntry = { id: string; path: string; createdAt?: string; permanent?: boolean; expiresAt?: string };
+type ServeEntry = { id: string; path: string; title?: string; createdAt?: string; permanent?: boolean; expiresAt?: string };
 type DirEntry = { name: string; type: "dir" | "file"; size: number; mtime: number };
 
 const SERVE_PREFIX = "/serve";
@@ -1078,9 +1078,10 @@ function readServeFile(): ServeEntry[] {
 		const out: ServeEntry[] = [];
 		for (const item of raw.entries) {
 			if (item === null || typeof item !== "object") continue;
-			const e = item as { id?: unknown; path?: unknown; createdAt?: unknown; permanent?: unknown; expiresAt?: unknown };
+			const e = item as { id?: unknown; path?: unknown; title?: unknown; createdAt?: unknown; permanent?: unknown; expiresAt?: unknown };
 			if (typeof e.id === "string" && e.id.length > 0 && typeof e.path === "string" && isAbsolute(e.path)) {
 				const entry: ServeEntry = { id: e.id, path: e.path };
+				if (typeof e.title === "string" && e.title.length > 0) entry.title = e.title;
 				if (typeof e.createdAt === "string") entry.createdAt = e.createdAt;
 				if (e.permanent === true) entry.permanent = true;
 				if (typeof e.expiresAt === "string") entry.expiresAt = e.expiresAt;
@@ -1389,7 +1390,7 @@ type ServeAddResult = { ok: true; entry: ServeEntry } | { ok: false; status: num
  * C1: one absolute path in, one URL's worth of registry out. Allowlist is checked
  * here (A10) on the realpath, so a symlink can't smuggle an outside target past it.
  */
-function serveAdd(input: string, permanent = false): ServeAddResult {
+function serveAdd(input: string, permanent = false, title?: string): ServeAddResult {
 	if (!isAbsolute(input)) return { ok: false, status: 400, error: "path must be absolute" };
 	const abs = resolve(input);
 	// #19: the allowlist decides before the filesystem does. A denial must look the same
@@ -1418,6 +1419,9 @@ function serveAdd(input: string, permanent = false): ServeAddResult {
 	}
 	const entry: ServeEntry = { id, path: abs, createdAt: new Date().toISOString() };
 	if (permanent) entry.permanent = true;
+	// #50: 人間が読む名前。省略可（無ければダッシュボードは URL だけ出す）。
+	const named = typeof title === "string" ? title.trim().slice(0, 200) : "";
+	if (named.length > 0) entry.title = named;
 	const persist = writeServeFile([...entries, entry]);
 	if (persist !== null) return { ok: false, status: 500, error: `write failed: ${persist}` };
 	return { ok: true, entry };
@@ -2253,6 +2257,7 @@ async function dashboardPayload(): Promise<unknown> {
 		id: e.id,
 		url: serveUrlFor(e),
 		path: e.path,
+		title: e.title ?? "",
 		createdAt: e.createdAt ?? "",
 		permanent: e.permanent === true,
 		expiresAt: serveExpiresAtIso(e),
@@ -3057,7 +3062,10 @@ const DASHBOARD_HTML = `<!doctype html>
   .badge.gone{border-color:var(--danger-bg);background:var(--danger-bg);color:var(--danger-fg)}
   /* serve */
   .srv{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:8px 12px;margin-bottom:8px;display:flex;gap:6px 16px;align-items:baseline;flex-wrap:wrap}
-  .srv .u{font-size:13px;overflow-wrap:anywhere}
+  /* #50: URL と「● 配信中」が同じインライン行でぶつかり、折返すと重なっていた。u を flex 箱にする。 */
+  .srv .u{font-size:13px;overflow-wrap:anywhere;display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0}
+  .srv .u>a{overflow-wrap:anywhere;min-width:0}
+  .srv .n{flex:1 1 100%;font-size:12px;font-weight:600;color:var(--text);overflow-wrap:anywhere}
   .srv .p{font-size:11px;color:var(--muted);overflow-wrap:anywhere;font-family:ui-monospace,monospace}
   .srv .t{font-size:11px;color:var(--muted);margin-left:auto;white-space:nowrap;font-variant-numeric:tabular-nums}
   .srv .x{font-size:11px;color:var(--muted);white-space:nowrap;font-variant-numeric:tabular-nums}
@@ -3070,10 +3078,10 @@ const DASHBOARD_HTML = `<!doctype html>
   .empty .big{display:block;font-size:20px;margin-bottom:4px;color:var(--empty-big)}
   .empty b{color:var(--text);font-weight:600}
   section{margin-bottom:4px}
-  /* #29 tabs: left sidebar + right content, existing tokens only */
-  .dash{display:flex;gap:14px;align-items:flex-start}
-  .tabs{display:flex;flex-direction:column;gap:4px;flex:0 0 150px}
-  .tab{font:inherit;font-size:12px;letter-spacing:.04em;text-align:left;color:var(--muted);background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:8px 10px;cursor:pointer}
+  /* #50: タブは上部の横並び。左の縦カラムは中身の幅を削っていた。 */
+  .dash{display:flex;flex-direction:column;gap:12px}
+  .tabs{display:flex;flex-direction:row;gap:4px;flex:0 0 auto;overflow-x:auto}
+  .tab{font:inherit;font-size:12px;letter-spacing:.04em;text-align:center;color:var(--muted);background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:8px 14px;cursor:pointer;white-space:nowrap;flex:0 0 auto}
   .tab:hover{color:var(--text);border-color:var(--border-strong)}
   .tab.active{color:var(--accent);border-color:var(--accent);background:var(--accent-soft)}
   .panes{flex:1;min-width:0}
@@ -3084,9 +3092,8 @@ const DASHBOARD_HTML = `<!doctype html>
     .sess-meta{margin-left:0;white-space:normal}
   }
   @media (max-width:640px){
-    .dash{flex-direction:column}
-    .tabs{flex-direction:row;width:100%;flex:1 1 auto;overflow-x:auto}
-    .tab{flex:1 1 auto;text-align:center;white-space:nowrap}
+    .tabs{flex-direction:row;width:100%}
+    .tab{flex:1 1 auto}
   }
   @media (max-width:479px){ .stats{grid-template-columns:repeat(2,1fr)} }
   @media (prefers-reduced-motion: reduce){ *{transition:none!important;animation:none!important} }
@@ -3654,6 +3661,7 @@ ${KANBAN_MD_JS}
     list.forEach(function(v){
       var gone = !v.exists;
       var row = el("div", "srv" + (gone ? " gone" : ""));
+      if (v.title) row.appendChild(el("span", "n", v.title));
       var u = el("span", "u");
       var href = safeHref(v.url);
       if (href && !gone) {
@@ -5135,7 +5143,7 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 		name: "serve",
 		label: "Serve local path",
 		description:
-			"Expose a local file or directory over the existing kanban HTTP server (port 8789) as /serve/<id>/, and return the URL to hand to the user. add takes one absolute path; the path is referenced, not copied, so files created after registration are visible immediately. remove accepts the id or the path, list shows what is currently served. add takes permanent=true to opt a path out of the default 7-day expiry (registration without it now expires 7 days after createdAt). A served page can POST raw bytes to /serve/<id>/_inbox/<name> (one path segment) and ack marks those files read for the per-turn INBOX line: id+name acks one file, id alone acks that path's inbox, no arguments acks everything. ack never deletes. Only paths under the allowlist (default ~/workspace and ~/.pi/kanban) can be added.",
+			"Expose a local file or directory over the existing kanban HTTP server (port 8789) as /serve/<id>/, and return the URL to hand to the user. add takes one absolute path; the path is referenced, not copied, so files created after registration are visible immediately. remove accepts the id or the path, list shows what is currently served. add takes permanent=true to opt a path out of the default 7-day expiry (registration without it now expires 7 days after createdAt), plus an optional title that the dashboard shows above the URL. A served page can POST raw bytes to /serve/<id>/_inbox/<name> (one path segment) and ack marks those files read for the per-turn INBOX line: id+name acks one file, id alone acks that path's inbox, no arguments acks everything. ack never deletes. Only paths under the allowlist (default ~/workspace and ~/.pi/kanban) can be added.",
 		parameters: Type.Object({
 			action: Type.Union([
 				Type.Literal("add"),
@@ -5146,6 +5154,7 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 			path: Type.Optional(Type.String()),
 			id: Type.Optional(Type.String()),
 			name: Type.Optional(Type.String()),
+			title: Type.Optional(Type.String()),
 			permanent: Type.Optional(Type.Boolean()),
 		}),
 		async execute(_toolCallId, params) {
@@ -5172,7 +5181,7 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 			if (params.action === "add") {
 				const input = (params.path ?? "").trim();
 				if (input.length === 0) return fail("serve add failed: path is required", { ok: false, error: "path is required" });
-				const result = serveAdd(input, params.permanent === true);
+				const result = serveAdd(input, params.permanent === true, params.title);
 				if (!result.ok) {
 					return fail(`serve add failed (${result.status}): ${result.error}`, {
 						ok: false,

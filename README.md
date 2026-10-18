@@ -69,6 +69,8 @@ Files can be published through the board and fetched over the same server:
 
 Served entries expire after 7 days by default. Mark one `permanent` to keep it. Expired entries answer `410 Gone` rather than `404`, so a client can tell "removed" from "never existed".
 
+The `serve` tool also takes an optional `title`, which the dashboard shows above the URL. It is free-form and may be omitted — an entry without one renders as URL only.
+
 ## Where state lives
 
 ```
