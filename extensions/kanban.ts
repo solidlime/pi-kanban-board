@@ -2954,6 +2954,7 @@ const DASHBOARD_HTML = `<!doctype html>
   #conn.bad::before{background:var(--bad-dot)}
   #banner{display:none;background:var(--danger-bg);color:var(--danger-fg);padding:6px 10px;border-radius:6px;margin-bottom:10px;font-size:12px}
   #banner.on{display:block}
+  #note{background:var(--panel);border:1px solid var(--border-strong);color:var(--text);padding:6px 10px;border-radius:6px;margin-bottom:10px;font-size:12px}
   /* stats */
   .stats{display:grid;grid-template-columns:repeat(7,1fr);gap:8px;margin-bottom:6px}
   .stat{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:10px 12px}
@@ -3051,6 +3052,7 @@ const DASHBOARD_HTML = `<!doctype html>
 <div class="wrap">
   <h1>KANBAN - __KB_HOST__ <span id="conn" class="ok" role="status">接続中</span><button id="theme" type="button" aria-label="ライトテーマに切り替え" title="ライトテーマに切り替え"><svg class="ic-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ic-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8"/></svg></button></h1>
   <div id="banner" role="alert">サーバに接続できません。前回の表示を維持しています…</div>
+  <div id="note" role="status" hidden></div>
 
   <div class="dash">
     <nav class="tabs" role="tablist" aria-label="ダッシュボード">
@@ -3119,6 +3121,19 @@ ${KANBAN_MD_JS}
     if (cls) e.className = cls;
     if (text !== undefined) e.textContent = text;
     return e;
+  }
+  // #44: 読み取り専用（非アクティブ）セッションのカードだけ編集できない。理由を必ず出す。
+  var RO_MSG = "この看板は読み取り専用 — 編集するにはそのセッションをアクティブにして";
+  var RO_TITLE = "読み取り専用（編集するにはセッションをアクティブに）";
+  var noteTimer = null;
+  // #44/#39: 一時的なお知らせ行。#banner は接続断専用なので相乗りしない。
+  function note(msg){
+    var n = document.getElementById("note");
+    if (!n) return;
+    n.textContent = msg;
+    n.hidden = !msg;
+    clearTimeout(noteTimer);
+    if (msg) noteTimer = setTimeout(function(){ n.hidden = true; }, 4000);
   }
   function empty(parent, icon, html){
     var d = el("div", "empty");
@@ -3346,17 +3361,26 @@ ${KANBAN_MD_JS}
               if (ev.dataTransfer) { ev.dataTransfer.effectAllowed = "move"; ev.dataTransfer.setData("text/plain", String(c.id)); }
             });
             card.addEventListener("dragend", function(){ card.classList.remove("dragging"); });
+          } else if (ctx) {
+            // #44: 読み取り専用の看板。ダブルクリックしても書けない理由をホバーで先に示す
+            // （ドラッグ不可のまま。移動できないのは正しい挙動）。
+            card.title = RO_TITLE;
           }
           card.appendChild(el("span", "id", "#" + c.id));
           var t = el("span", "t");
           t.innerHTML = md(c.text); // md escapes first, then expands the whitelisted subset
           card.appendChild(t);
-          if (ctx && ctx.active) {
-            // #36: 本文のダブルクリックで編集。書き込みは既存の text 系 API（rename）。
-            t.addEventListener("dblclick", function(){
-              startEdit(t, c.text, function(v){ act("/api/rename", { id: c.id, text: v }, ctx); });
-            });
-          }
+          // #36: 本文のダブルクリックで編集。書き込みは既存の text 系 API（rename）。
+          // #44: 当たり判定はカード本体（短いカードだと .t が細く、#id/余白を叩いて無反応に見える）。
+          // .t 側にも登録すると二重発火するので、ここ 1 本に統一する。
+          card.addEventListener("dblclick", function(e){
+            var tgt = e.target;
+            // ボタン・リンク・編集中 textarea の誤爆は無視
+            if (tgt && tgt.closest && (tgt.closest(".ops") || tgt.closest("a") || tgt.closest("textarea"))) return;
+            if (!ctx || !ctx.active) { note(RO_MSG); return; }
+            var span = card.querySelector(".t");
+            if (span) startEdit(span, c.text, function(v){ act("/api/rename", { id: c.id, text: v }, ctx); });
+          });
           if (c.img) card.appendChild(el("span", "pic", "\\uD83D\\uDDBC")); // shortcut: thumbnail not rendered, presence marker only
           if (prioOf(c)) card.appendChild(el("span", "prio", "P" + prioOf(c)));
           if (c.blocked) card.appendChild(el("span", "blocked", "停止中"));
