@@ -180,6 +180,39 @@ function mkCtx(sid) {
 	);
 }
 
+// 4d: 再起動（loop エントリから count=9 / halted=null を復元）後の経路でも pollTimer が立ち、
+// 初回 tick で発火する。#46 の「再起動後に一度も動かない」をゲート側で押さえる。
+{
+	process.env.KANBAN_DEBUG = "1";
+	writeFileSync(
+		`${SESSIONS}/${SID}.json`,
+		JSON.stringify({ cards: [{ id: 46, text: "t", col: "doing", movedBy: SID }], nextId: 47 }),
+	);
+	const { pi, handlers, sent } = mkPi();
+	const loopEntry = {
+		type: "custom",
+		customType: "kanban-loop",
+		data: { count: 9, halted: null, stuckId: 46, stuckCount: 1, lastActivityAt: Date.now() - 20 * 60_000 },
+	};
+	const ctx = mkCtx(SID);
+	ctx.sessionManager.getEntries = () => [loopEntry];
+	const t = mod.default(pi).__test;
+	pollLines.length = 0;
+	capture();
+	handlers.get("session_start")({ type: "session_start" }, ctx);
+	const timerArmed = t.hasTimer();
+	const beforeTick = pollLines.length;
+	t.poll();
+	restore();
+	delete process.env.KANBAN_DEBUG;
+	check("session_start で pollTimer が立つ", () => assert.equal(timerArmed, true));
+	check("session_start 自体は tick しない（初回は interval 待ち）", () => assert.equal(beforeTick, 0));
+	check("再起動（count=9 復元）後の初回 tick で発火する", () =>
+		assert.match(pollLines[0] ?? "", /card=46 .*=> fire$/),
+	);
+	check("再起動後の初回 tick が wake を 1 件出す", () => assert.equal(sent.length, 1, `sent=${sent.length}`));
+}
+
 console.log(`${passed} passed, ${failures.length} failed`);
 for (const failure of failures) console.log(`  FAIL ${failure}`);
 process.exit(failures.length === 0 ? 0 : 1);
