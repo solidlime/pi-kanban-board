@@ -7,7 +7,7 @@ Long sessions lose the thread: the goal drifts, an earlier decision gets forgott
 ## What you get
 
 - **A board the model maintains.** The `kanban` tool is the model's handle: add, move, remove, schedule, attach images, record why something is blocked.
-- **Two views.** A right-panel board for the session you are in, and an HTTP dashboard at `http://<host>:8789/` covering every session on the machine.
+- **A live dashboard.** An HTTP dashboard at `http://<host>:8789/` covering every session on the machine, with per-board loop and pick toggles.
 - **An autonomous loop.** With the loop on, pi wakes itself when a card sits in DOING, continues the work, and moves the card when it is done. Optional auto-pick pulls the next TODO in when nothing is in flight.
 - **Two layers.** A per-session board and a GLOBAL board shared by every session, so work handed between sessions survives.
 
@@ -56,7 +56,7 @@ The model calls this directly. Actions include `list`, `add`, `move`, `remove`, 
 
 ### Dashboard
 
-The extension starts an HTTP server on port 8789 the first time a session begins. Open `http://<host>:8789/` for the dashboard, or `http://<host>:8789/api/kanban.html` for the single-board view.
+The extension starts an HTTP server on port 8789 the first time a session begins. Open `http://<host>:8789/` for the dashboard — it is the only view.
 
 The dashboard shows sessions, agents, and served files in tabs, with per-board loop and pick toggles, live counters, and inline card editing (double-click the body; `Shift+Enter` inserts a newline).
 
@@ -82,7 +82,6 @@ The `serve` tool also takes an optional `title`, which the dashboard shows above
 ├── serve.json           published files
 ├── media/               images attached to cards
 ├── server.log           HTTP server log
-├── kanban.html          generated right-panel view
 └── dashboard.html       generated dashboard
 ```
 
@@ -98,7 +97,7 @@ The HTTP server binds `0.0.0.0` and sends `Access-Control-Allow-Origin: *`. Muta
 
 ## Nothing here is a service
 
-There is no daemon. The HTTP server lives inside the pi process, so board state is available exactly as long as pi is running. The generated HTML is rewritten on each render; edit the `KANBAN_HTML` / `DASHBOARD_HTML` constants in `extensions/kanban.ts`, not the generated files.
+There is no daemon. The HTTP server lives inside the pi process, so board state is available exactly as long as pi is running. The generated HTML is rewritten on each render; edit the `DASHBOARD_HTML` constant in `extensions/kanban.ts`, not the generated file.
 
 ## License
 

@@ -9,8 +9,7 @@
  *   Mode A `/kanban`  - select/input drilldown (dialog primitives only).
  *   Mode B `kanban`  - model-facing CRUD tool with a `scope` parameter.
  *   Mode C GUI       - a local HTTP server on 0.0.0.0:8789 serving /api/* plus
- *                      a self-contained dark kanban.html for the pi-web file panel
- *                      iframe (sandbox=allow-scripts, origin=null -> needs CORS).
+ *                      a self-contained dark dashboard.html.
  *
  * Sharing: pi-web runs many sessions in one process and calls `export default`
  * once per session. Only the HTTP server lives in MODULE scope (the first
@@ -204,7 +203,6 @@ const GLOBAL_JSON = join(KANBAN_DIR, "global.json");
 const MODES_JSON = join(KANBAN_DIR, "modes.json");
 const SESSIONS_DIR = join(KANBAN_DIR, "sessions");
 const LEGACY_JSON = join(KANBAN_DIR, "board.json");
-const KANBAN_HTML_PATH = join(KANBAN_DIR, "kanban.html");
 const DASHBOARD_HTML_PATH = join(KANBAN_DIR, "dashboard.html");
 const SERVER_LOG = join(KANBAN_DIR, "server.log");
 const MEDIA_DIR = join(KANBAN_DIR, "media");
@@ -510,13 +508,12 @@ export function nextStuckState(
 function writeBoardHtml(): void {
 	try {
 		mkdirSync(KANBAN_DIR, { recursive: true });
-		writeFileSync(KANBAN_HTML_PATH, KANBAN_HTML);
 		writeFileSync(DASHBOARD_HTML_PATH, DASHBOARD_HTML);
 	} catch (err) {
 		// best-effort mirror; the JSON remains the source of truth
 		const e = err as NodeJS.ErrnoException;
 		process.stderr.write(
-			`kanban: html write failed (${KANBAN_HTML_PATH}, ${DASHBOARD_HTML_PATH}): ${e.code ?? "error"}: ${e.message}\n`,
+			`kanban: html write failed (${DASHBOARD_HTML_PATH}): ${e.code ?? "error"}: ${e.message}\n`,
 		);
 	}
 }
@@ -675,7 +672,7 @@ function staleTag(b: Board, now = Date.now()): string {
  * board; the cost is two small reads per draw.
  *
  * Two lines, fixed: the footer is a summary plus a stale warning, never a board.
- * Cards themselves belong to /kanban, the `kanban` tool and kanban.html.
+ * Cards themselves belong to /kanban, the `kanban` tool and the dashboard.
  */
 function refresh(ctx: ExtensionContext, sessionId: string): void {
 	if (!ctx.hasUI) return;
@@ -828,7 +825,7 @@ export function renderInjectionText(b: Board): string | null {
 		line("doing"),
 		line("done"),
 		...(inbox === null ? [] : [inbox]),
-		"GUI: open ~/.pi/kanban/kanban.html in the pi-web file panel.",
+		`GUI: open http://${hostname()}:${PORT}/ in a browser.`,
 		"Use the `kanban` tool to add/move/remove cards and keep them in sync with the user's real tasks.",
 		"=== END KANBAN ===",
 	].join("\n");
@@ -1223,9 +1220,9 @@ const CORS_HEADERS: Record<string, string> = {
  * Hostname of a browser-supplied Origin, or null when there is none to compare. "" is the
  * sentinel for "present but origin-less" (literal null, or unparseable), never matching.
  *
- * #76: hostname, not host — the right panel serves KANBAN_HTML from its own port and builds
- * an absolute `http://<host>:8789/api/` URL, so Origin and Host carry DIFFERENT ports by
- * construction. Comparing host (port included) would 403 the panel's own fetches.
+ * #76: hostname, not host — the dashboard builds an absolute `http://<host>:8789/api/`
+ * URL, so Origin and Host carry DIFFERENT ports by construction. Comparing host (port
+ * included) would 403 the dashboard's own fetches.
  */
 function originHostname(req: IncomingMessage): string | null {
 	const origin = req.headers.origin;
@@ -2993,13 +2990,9 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
 		return;
 	}
 
-	// #67: the only non-board path that lived past this point was /api/kanban.html, deleted
-	// with the pi-web split. A stale caller gets a real 404 instead of the board gate's sid
-	// 400 (KANBAN_HTML itself stays: writeBoardHtml still mirrors it to ~/.pi/kanban).
-	if (url.pathname === "/api/kanban.html") {
-		sendJson(res, 404, { ok: false, error: "not found" });
-		return;
-	}
+	// #84: the right-panel template was retired, so its 404 guard went with it. A stale
+	// caller now falls through to the board gate's sid 400 — still "no such document"
+	// for the #83 probe, which only needs "not served".
 
 	const path = writeBoardPath(q);
 	if (path === null) {
@@ -3511,11 +3504,12 @@ async function decideReuse(p: Probe): Promise<void> {
 
 // ---------------------------------------------------------------------------
 // Dashboard shell (GET /). The constant is the original; ~/.pi/kanban/dashboard.html
-// is the generated mirror, same rule as KANBAN_HTML. #057 replaces the body.
+// is the generated mirror. #84: the old right-panel template was retired; this is the
+// only one left.
 // ---------------------------------------------------------------------------
 
-// Card-body markdown (view only). ONE definition, injected into BOTH the kanban
-// and the dashboard scripts. Card text is stored raw; md() escapes FIRST and only
+// Card-body markdown (view only). ONE definition, injected into the dashboard script.
+// Card text is stored raw; md() escapes FIRST and only
 // then expands the whitelisted subset, and links are restricted to http(s).
 export const KANBAN_MD_JS = `
   function esc(s){return String(s).replace(/[&<>\"]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'\"':"&quot;"}[c];});}
@@ -3541,8 +3535,9 @@ export const KANBAN_MD_JS = `
 `;
 
 // #76: リロードを跨ぐ記憶（列のスクロール位置 / 展開中のカード）。ONE definition,
-// injected into BOTH the dashboard and the right panel. 列のスクロール位置は画面ごとに
-// 別物なので、キーは LS_NS（dash / kanban）で分ける = kb-scroll/{ns} / kb-open/{ns}。
+// injected into the dashboard。列のスクロール位置は画面ごとに別物なので、キーは
+// LS_NS で分ける = kb-scroll/{ns} / kb-open/{ns}。#84 で右パネルが消えたので、今
+// 書き込むのは dash だけ（関数は純関数テスト用にそのまま残す）。
 // 既存の kb-collapse は形もキーも触らない（#72/#73 の再描画越しの復元はそのまま残す）。
 export const KANBAN_MEMORY_JS = `
   var LS_SCROLL = "kb-scroll", LS_OPEN = "kb-open";
@@ -3667,12 +3662,12 @@ const DASHBOARD_HTML = `<!doctype html>
   .col h3{margin:0 0 6px;font-size:11px;letter-spacing:.08em;color:var(--muted);font-weight:600}
   .col h3 .c{color:var(--accent);margin-left:4px}
   .col.doingcol h3{color:var(--accent)}
-  /* #38-9: KANBAN_HTML の .col.doingcol と同じ見た目（左ボーダー＋淡い背景で「今これ」と分かる） */
+  /* #38-9: DOING 列の強調（左ボーダー＋淡い背景で「今これ」と分かる） */
   .col.doingcol{border-left:3px solid var(--accent);background:var(--accent-soft-2)}
   .card{background:var(--card);border-radius:6px;padding:6px 8px;margin-bottom:6px;font-size:12px;display:flex;gap:4px;align-items:baseline;flex-wrap:wrap}
   .card .id{color:var(--accent);flex:none}
   .card .t{flex:1;min-width:0;overflow-wrap:anywhere;white-space:pre-wrap}
-  /* #38-5: 60 字超は 3 行で切ってクリック展開（KANBAN_HTML の .card .body.clampable と同じ） */
+  /* #38-5: 60 字超は 3 行で切ってクリック展開 */
   .card .t.clampable:not(.open){display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;cursor:pointer}
   /* #38-10/#38-11: DOING の経過（「N分前から」）と 2 時間超の ⏳。色は既存トークンのみ */
   .card .since{color:var(--muted);margin-right:4px;font-variant-numeric:tabular-nums}
@@ -3682,15 +3677,14 @@ const DASHBOARD_HTML = `<!doctype html>
   /* #38-7: 見出しクリックで列ごと畳む（中身は描画したまま display だけ落とす） */
   .col h3{cursor:pointer}
   .col.collapsed .card,.col.collapsed .more,.col.collapsed .addbtn,.col.collapsed .addin{display:none}
-  /* 画像/動画サムネはカードの幅いっぱいの次の行。64px は KANBAN_HTML と同じ値
-     （.card の padding/margin/font-size も両テンプレートで同一なので高さも揃う）。 */
+  /* 画像/動画サムネはカードの幅いっぱいの次の行。64px に抑えて 1 行の高さに収める。 */
   .card img,.card video{flex-basis:100%;max-width:100%;max-height:64px;border-radius:4px;display:block;margin-top:4px}
   .card .badimg{flex-basis:100%;font-size:11px;color:var(--muted);margin-top:4px}
   /* #36 前半: 掴んでいる手応え（派手にしない）+ ドロップ先の強調 */
   .card[draggable="true"]{cursor:grab}
   .card.dragging{opacity:.4;box-shadow:0 10px 22px rgba(0,0,0,.4);cursor:grabbing}
   .col.over{outline:2px dashed var(--accent);outline-offset:-2px}
-  /* #52: ファイルを掴んでカードの上に来たとき（KANBAN_HTML の同名規則と同じ） */
+  /* #52: ファイルを掴んでカードの上に来たとき */
   .card.fileover{outline:2px dashed var(--accent);outline-offset:-2px}
   @media (prefers-reduced-motion: no-preference){
     .card.dragging{transform:rotate(2.5deg) scale(.98)}
@@ -3844,7 +3838,7 @@ const DASHBOARD_HTML = `<!doctype html>
 <script>
 (function(){
   var API = "/api/dashboard";           // relative on purpose: same origin, no host assumptions
-  var MEDIA = "/api/media/";             // mirrors MEDIA_PREFIX (server side), same as KANBAN_HTML
+  var MEDIA = "/api/media/";             // mirrors MEDIA_PREFIX (server side)
   var MAX_PER_COL = 10;
   var COLS = [["todo","TODO"],["doing","DOING"],["done","DONE"]];
   var STAT_KEYS = [["sessions","sessions"],["active","active"],["todo","todo"],["doing","doing"],["done","done"],["serve","serve"],["media","media"]];
@@ -3868,7 +3862,7 @@ const DASHBOARD_HTML = `<!doctype html>
   var addDraft = {};     // ckey -> 打ちかけの文字列（キーがある = 開いている）
   var gOpen = true;      // #62: GLOBAL 看板の開閉（既定は開）
   // #62: 開閉だけ localStorage に残す。kb-theme と同じく失敗は握りつぶし、
-  // 保存が無いキーは今の既定のまま。ns で 2 テンプレートを分ける（片方が他方を壊さない）。
+  // 保存が無いキーは今の既定のまま。ns は dash のみ（#84 で右パネルは消えた）。
   var LS_KEY = "kb-collapse", LS_NS = "dash";
   // #76: リロード越しの記憶。kb-scroll/dash = 列のスクロール位置、kb-open/dash = 展開中の
   // カード（DONE は対象外・上限 40）。再描画越しの cardOpen の上に「保存層」を足す形。
@@ -4056,7 +4050,7 @@ ${KANBAN_MD_JS}
     var p = function(n){ return (n < 10 ? "0" : "") + n; };
     return p(d.getMonth() + 1) + "/" + p(d.getDate()) + " " + p(d.getHours()) + ":" + p(d.getMinutes());
   }
-  // #36: datetime-local の値はローカル壁時計（タイムゾーン無し）。KANBAN_HTML と同じ書式。
+  // #36: datetime-local の値はローカル壁時計（タイムゾーン無し）。
   function dtLocal(iso){
     var d = iso ? new Date(iso) : null;
     if (!d || isNaN(d.getTime())) return "";
@@ -4132,11 +4126,22 @@ ${KANBAN_MD_JS}
   // #52: ファイルを列（id 無し = 新規カード）かカード（id あり = そのカードに添付）へ送る。
   // サーバは ext クエリ必須で OK_EXTS 以外は 415 なので、送る前に同じ集合で弾いて知らせる。
   var OK_EXTS = ["png", "jpg", "gif", "webp", "avif", "mp4", "webm"]; // mirrors server OK_EXTS
-  function uploadHere(ctx, col, file, id){
+  var EXT_BY_MIME = {"image/png":"png","image/jpeg":"jpg","image/gif":"gif","image/webp":"webp","image/avif":"avif","video/mp4":"mp4","video/webm":"webm"};
+  // #59: #84 で旧テンプレートを落とした際にこの分岐も一緒に消えていた。drag 元（curl・一部 OS）は
+  // file.type が空で来るので、MIME -> ファイル名の順で引く。.jpeg は .jpg と同じ形式。
+  function extOfFile(file){
+    var byMime = file && EXT_BY_MIME[file.type];
+    if (byMime) return byMime;
     var name = String((file && file.name) || "");
     var dot = name.lastIndexOf(".");
     var ext = dot >= 0 ? name.slice(dot + 1).toLowerCase() : "";
-    if (OK_EXTS.indexOf(ext) < 0) {
+    if (ext === "jpeg") ext = "jpg";
+    return OK_EXTS.indexOf(ext) >= 0 ? ext : "";
+  }
+  function uploadHere(ctx, col, file, id){
+    var name = String((file && file.name) || "");
+    var ext = extOfFile(file);
+    if (!ext) {
       note("非対応のファイル: " + (name || "(無名)") + " — " + OK_EXTS.join("/") + " のみ");
       return;
     }
@@ -4327,7 +4332,7 @@ ${KANBAN_MD_JS}
     // 保存済みの上限を出すときは intervalOf と同じ「無ければ既定」の読み方をする。
     var cap = maxLoopsOf(m);
     var mlg = el("span", "grp");
-    // 上限ラベルは右パネル（KANBAN_HTML）と同じ表記に揃える。0 = 無制限。
+    // 上限ラベルの表記。0 = 無制限。
     mlg.appendChild(el("span", null, cap > 0 ? "上限" : "上限（無制限）"));
     var ml = el("input");
     ml.type = "number";
@@ -4433,7 +4438,7 @@ ${KANBAN_MD_JS}
               if (ev.dataTransfer) { ev.dataTransfer.effectAllowed = "move"; ev.dataTransfer.setData("text/plain", String(c.id)); }
             });
             card.addEventListener("dragend", function(){ card.classList.remove("dragging"); });
-            // #52: カードにファイルを落とすとそのカードに添付（KANBAN_HTML の #38-4 と同じ）。
+            // #52: カードにファイルを落とすとそのカードに添付。
             // カード移動の drag（text/plain）は素通しして列の drop に任せる。
             card.addEventListener("dragover", function(ev){
               if (!ev || !ev.dataTransfer || !ev.dataTransfer.types || ev.dataTransfer.types.indexOf("Files") < 0) return;
@@ -4467,7 +4472,7 @@ ${KANBAN_MD_JS}
             });
           }
           if (ctx && ctx.active) {
-            // #38-6: Tab でカードに入る。←→ で列移動、Enter で DOING、m でメモ（KANBAN_HTML と同一）。
+            // #38-6: Tab でカードに入る。←→ で列移動、Enter で DOING、m でメモ。
             card.tabIndex = 0;
             card.addEventListener("keydown", function(e){
               if (e.target !== card) return; // a button or the memo textarea keeps its own keys
@@ -4484,7 +4489,7 @@ ${KANBAN_MD_JS}
           card.appendChild(el("span", "id", "#" + c.id));
           var t = el("span", "t");
           // #38-10/#38-11: DOING の経過を本文の前に出す（2 時間超は ⏳ も）。movedAt の
-          // 無いカードは何も出さない（推測で「0分」を書かない — KANBAN_HTML と同じ規則）。
+          // 無いカードは何も出さない（推測で「0分」を書かない）。
           // #74: 経過分と ⏳ は lead で作っておき、台帳に載せて tick() が文字だけ書き換える。
           var lead = "";
           var movedAt = c.movedAt;
@@ -4584,7 +4589,7 @@ ${KANBAN_MD_JS}
         showAdd(false);
       });
       // 送信中（act の往復中）の blur では閉じない: reload 由来の blur で二重に閉じるのを防ぐ。
-      // 値が入っているなら閉じない（KANBAN_HTML の .add と同じ流儀）。打鍵中の再描画や
+      // 値が入っているなら閉じない。打鍵中の再描画や
       // 別要素のクリックで打ちかけを失わせないため（#75）。
       addIn.addEventListener("blur", function(){
         if (sending || addIn.value.trim()) return;
@@ -5020,939 +5025,6 @@ ${KANBAN_MD_JS}
 </body>
 </html>
 `.replace(/__KB_HOST__/g, hostname);
-
-// ---------------------------------------------------------------------------
-// Self-contained kanban.html (no CDN, dark, 1.5s poll, card DnD + image drop)
-// ---------------------------------------------------------------------------
-
-// #67: the /api/kanban.html route is gone, so tests read the template from the export.
-export const KANBAN_HTML = `<!doctype html>
-<html lang="ja">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>KANBAN</title>
-<script>
-(function(){
-  // before any CSS: no FOUC. explicit pick wins; otherwise follow the OS scheme.
-  // served as <iframe srcdoc>: storage may be shared with the parent page or throw
-  // (opaque origin) — both are fine, the page works either way.
-  var t = "dark";
-  try {
-    var sv = localStorage.getItem("kb-theme");
-    if (sv === "light" || sv === "dark") t = sv;
-    else if (window.matchMedia && matchMedia("(prefers-color-scheme: light)").matches) t = "light";
-  } catch (e) {}
-  if (t === "light") document.documentElement.setAttribute("data-theme", "light");
-})();
-</script>
-<style>
-  /* dark tokens = the existing palette, untouched; light tokens override the same names */
-  :root{color-scheme:dark;--bg:#18181b;--panel:#1f1f23;--card:#27272a;--border:#27272a;--border-strong:#3f3f46;--text:#e4e4e7;--muted:#a1a1aa;--accent:#a78bfa;--accent-hover:#c4b5fd;--accent-soft:#241f38;--accent-soft-2:#1e1b2e;--ok:#4ade80;--bad-dot:#f87171;--danger-bg:#7f1d1d;--danger-fg:#fee2e2;--danger-soft-fg:#fecaca;--danger-border:#7f1d1d;--empty-big:#52525b}
-  :root[data-theme="light"]{color-scheme:light;--bg:#fafafa;--panel:#ffffff;--card:#ececf1;--border:#e4e4e7;--border-strong:#d4d4d8;--text:#18181b;--muted:#62626b;--accent:#6d28d9;--accent-hover:#7c3aed;--accent-soft:#ede9fa;--accent-soft-2:#e4e0f7;--ok:#15803d;--bad-dot:#dc2626;--danger-bg:#b91c1c;--danger-fg:#fef2f2;--danger-soft-fg:#b91c1c;--danger-border:#dc2626;--empty-big:#a1a1aa}
-  *{box-sizing:border-box}
-  body{margin:0;padding:10px;background:var(--bg);color:var(--text);font:13px/1.5 system-ui,-apple-system,sans-serif}
-  :focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
-  #err{display:none;background:var(--danger-bg);color:var(--danger-fg);padding:6px 10px;border-radius:6px;margin-bottom:8px;font-size:12px}
-  #err.on{display:block}
-  .hd{margin:0 0 6px;font-size:11px;letter-spacing:.08em;color:var(--accent);display:flex;align-items:center;gap:8px}
-  /* #62: GLOBAL の見出しも押せる（色は既存トークンのみ）。前の静的な .hd と同じ見た目を保つ。 */
-  .hd[role="button"]{cursor:pointer;border-radius:6px;user-select:none;-webkit-user-select:none}
-  .hd[role="button"]:hover{background:var(--accent-soft)}
-  .hd .caret{flex:none;font-size:13px;line-height:1;color:var(--text);width:1em;text-align:center;margin-right:4px}
-  /* theme toggle: icon shows the theme it switches TO */
-  #theme{flex:none;margin-left:auto;width:24px;height:24px;display:inline-flex;align-items:center;justify-content:center;background:transparent;border:1px solid var(--border-strong);border-radius:6px;color:var(--muted);cursor:pointer;padding:0}
-  #theme:hover{border-color:var(--accent);color:var(--accent)}
-  #theme svg{width:13px;height:13px;display:block;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
-  #theme .ic-moon{display:none}
-  :root[data-theme="light"] #theme .ic-sun{display:none}
-  :root[data-theme="light"] #theme .ic-moon{display:block}
-  /* column = fixed header + scrollable card deck; header never scrolls away */
-  .cols{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:14px}
-  .col{display:flex;flex-direction:column;background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:8px;min-height:72px;max-height:min(420px,60vh)}
-  .col h2{margin:0 0 6px;font-size:11px;letter-spacing:.08em;color:var(--muted);font-weight:600;flex:none;cursor:pointer}
-  .col h2 .c{color:var(--accent);margin-left:6px;font-variant-numeric:tabular-nums}
-  .col.doingcol h2{color:var(--accent)}
-  /* #38-9: DOING を左ボーダー＋淡い背景で「今これ」と一目で分かるようにする。 */
-  .col.doingcol{border-left:3px solid var(--accent);background:var(--accent-soft-2)}
-  /* #38-7: 見出しクリックで列ごと畳む（DONE が長い時のための折りたたみ）。 */
-  .col.collapsed{min-height:0;max-height:none}
-  .col.collapsed .cards,.col.collapsed .addwrap{display:none}
-  .q{flex:0 1 16ch;min-width:6ch;background:var(--card);border:1px solid var(--border-strong);color:var(--text);border-radius:6px;font-size:11px;padding:3px 6px}
-  .q:focus{border-color:var(--accent)}
-  .cards{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain}
-  .col-empty{border:1px dashed var(--border-strong);border-radius:6px;padding:14px 8px;text-align:center;color:var(--muted);font-size:11px;margin-bottom:6px}
-  .card{background:var(--card);border:1px solid transparent;border-radius:6px;padding:6px 8px;margin-bottom:6px;display:flex;gap:3px;align-items:center;flex-wrap:wrap;transition:background .1s,border-color .1s}
-  .card:hover{border-color:var(--border-strong)}
-  .card.pri-hi{border-color:var(--accent);background:var(--accent-soft)}
-  .card.pri-lo{opacity:.65}
-  .card.blocked{border-color:var(--danger-border);opacity:.55}
-  .card .t{flex:1;min-width:12ch;overflow-wrap:anywhere;white-space:pre-wrap}
-  /* #38-5: 長い本文は 3 行で切ってクリック展開。60 字以下はそのまま。 */
-  .card .body.clampable:not(.open){display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;cursor:pointer}
-  .card .stale{color:var(--muted);margin-right:4px}
-  .card.fileover{outline:2px dashed var(--accent);outline-offset:-2px}
-  .card .id{color:var(--accent);margin-right:4px}
-  .card img,.card video{flex-basis:100%;max-width:100%;max-height:64px;border-radius:4px;display:block;margin-top:4px}
-  .card .badimg{flex-basis:100%;font-size:11px;color:var(--muted);margin-top:4px}
-  .col.over{outline:2px dashed var(--accent);outline-offset:-2px;background:var(--accent-soft)}
-  button{background:transparent;border:1px solid var(--border-strong);color:var(--text);border-radius:4px;cursor:pointer;font-size:12px;line-height:1;padding:2px 5px;min-width:24px;min-height:24px}
-  button:hover{border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}
-  .add{flex:none;width:100%;margin-top:4px;background:transparent;border:1px dashed var(--border-strong);color:var(--text);border-radius:6px;padding:6px 8px;font-size:12px}
-  .add:focus{border-color:var(--accent)}
-  /* #38-3: 常時表示だった入力を + ボタンで開く形に（画面遷移なしでその場追加）。 */
-  .addbtn{flex:none;width:100%;margin-top:4px;border:1px dashed var(--border-strong);border-radius:6px;padding:4px 8px;color:var(--muted)}
-  .card.dragging{opacity:.4;box-shadow:0 8px 18px rgba(0,0,0,.35)}
-  @media (prefers-reduced-motion: no-preference){
-    .card.dragging{transform:rotate(2deg) scale(.98)}
-  }
-  .card .ted{flex:1 1 100%;width:100%;min-height:3.5em;font:inherit;font-size:12px;line-height:1.5;color:var(--text);background:var(--card);border:1px solid var(--accent);border-radius:4px;resize:vertical}
-  .sess{margin-bottom:10px}
-  .sess-hd{display:flex;gap:8px;align-items:baseline;justify-content:space-between;cursor:pointer;padding:5px 8px;border-radius:6px;background:var(--panel);border:1px solid var(--border)}
-  .sess-hd:hover{border-color:var(--accent)}
-  .sess-t{font-size:12px;font-weight:600;overflow-wrap:anywhere}
-  .sess-c{font-size:11px;color:var(--accent);white-space:nowrap;font-variant-numeric:tabular-nums}
-  .sess.ro .sess-t{color:var(--muted)}
-  .sess.ro .col{opacity:.5}
-  /* #58: halted reason. The ON/OFF buttons below cannot clear it (process memory). */
-  .halt{font-size:11px;line-height:1.5;color:var(--warn-fg,var(--accent));border:1px solid currentColor;border-radius:5px;padding:4px 8px;margin:0 0 6px}
-  .modes{display:flex;gap:6px;align-items:center;margin:0 0 6px;flex-wrap:wrap}
-  .modes .mt{font-size:11px;color:var(--muted)}
-  .modes .iv,.modes .st,.modes .ml,.card .pr{width:3.2em;background:var(--card);border:1px solid var(--border-strong);color:var(--text);border-radius:4px;font-size:11px;padding:2px 4px}
-  /* #66: 390px でもラベルと入力欄を 1 行に保つ（泣き別れさせない） */
-  @media (max-width:479px){
-    .modes{gap:4px}
-    .modes .mt{font-size:10px;white-space:nowrap}
-    .modes .iv,.modes .st,.modes .ml{width:2.6em;padding:2px 2px}
-  }
-  .card .pr{text-align:center}
-  .card .pr.hp{color:var(--accent);border-color:var(--accent);background:var(--accent-soft)}
-  .card .pr.lp{color:var(--muted)}
-  .card .dt,.card .blk{background:var(--card);border:1px solid var(--border-strong);color:var(--text);border-radius:4px;font-size:11px;padding:2px 4px}
-  .card .dt{width:12em}
-  .card .dt.set{color:var(--accent);border-color:var(--accent)}
-  .card .blk{width:8em}
-  @media (max-width:639px){
-    .cols{grid-template-columns:1fr}
-    .col{max-height:320px}
-  }
-  @media (prefers-reduced-motion: reduce){ *{transition:none!important;animation:none!important} }
-</style>
-</head>
-<body>
-<div id="err" role="alert">サーバに接続できません（拡張が停止中?）</div>
-<div class="hd"><input id="q" class="q" type="search" placeholder="検索" aria-label="カードを検索"><button id="theme" type="button" aria-label="ライトテーマに切り替え" title="ライトテーマに切り替え"><svg class="ic-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ic-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8"/></svg></button></div>
-<div id="global"></div>
-<div class="hd">SESSIONS（クリックで開閉 / 🔒 は閲覧のみ）</div>
-<div id="sessions"></div>
-<script>
-(function(){
-  // served as <iframe srcdoc> inside pi-web: origin/host are empty but baseURI
-  // is inherited from the parent page, so derive the board API host from it.
-  var B = null; try { B = new URL(document.baseURI); } catch (e) {}
-  var BH = (B && B.hostname) ? B.hostname : "127.0.0.1";
-  var BP = (B && B.protocol) ? B.protocol : "http:";
-  var API = BP + "//" + BH + ":${PORT}/api/";
-  // #20 one-shot: inside pi-web's iframe, location.hostname is the host the user's
-  // browser actually used. The server has no other way to know it (its hostname is
-  // the container id). A file: page has no host to report.
-  if (location.protocol !== "file:") {
-    try {
-      fetch(API + "host", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ host: location.hostname }) }).catch(function(){});
-    } catch (e) {}
-  }
-  var MEDIA = API + "media/";
-  var COLS = [["todo","TODO"],["doing","DOING"],["done","DONE"]];
-  var EXT_BY_MIME = {"image/png":"png","image/jpeg":"jpg","image/gif":"gif","image/webp":"webp","image/avif":"avif","video/mp4":"mp4","video/webm":"webm"};
-  var OK_EXTS = ["png", "jpg", "gif", "webp", "avif", "mp4", "webm"]; // mirrors server OK_EXTS
-  var globalEl = document.getElementById("global");
-  var listEl = document.getElementById("sessions");
-  var errEl = document.getElementById("err");
-  var open = {};        // sid -> expanded; a session defaults to its own (mine) state
-  var gOpen = true;     // #62: GLOBAL 看板の開閉（既定は開）
-  // #62: 開閉だけ localStorage に残す（kb-theme と同じ流儀。失敗は握りつぶし、
-  // 保存が無いキーは今の既定のまま）。ns でダッシュボードとキー空間を分ける。
-  var LS_KEY = "kb-collapse", LS_NS = "kanban";
-  // #76: 右パネルも同じ記憶層を使う。列のスクロール位置は画面ごとに別物なので
-  // キーは LS_NS で分ける（kb-scroll/kanban, kb-open/kanban）。ダッシュボードとは混ざらない。
-${KANBAN_MEMORY_JS}
-  var scrollTimer = null;
-  // #76: DONE はリロードで閉じた状態に戻す。kb-collapse（#72 の残骸）にも載せない。
-  function keptOpen(){
-    return memCompactCards(cardOpen, MAX_CARD_OPEN);
-  }
-  function memoCards(){
-    // 保存のたびに掃除する（毎描画ではない）。DONE と上限超過はここで落ちる。
-    memSave(LS_OPEN, LS_NS, keptOpen());
-  }
-  function persistCore(){
-    try {
-      var all = JSON.parse(localStorage.getItem(LS_KEY) || "{}");
-      if (!all || typeof all !== "object") all = {};
-      all[LS_NS] = { sess: open, g: gOpen, cols: collapsed, open: keptOpen() };
-      localStorage.setItem(LS_KEY, JSON.stringify(all));
-    } catch (e) {}
-  }
-  function saveScrollPos(deck){
-    var k = deck && deck.getAttribute("data-ckey");
-    if (!k || !(deck.clientHeight > 0)) return;
-    var m = memLoad(LS_SCROLL, LS_NS) || {};
-    m[k] = deck.scrollTop;
-    memSave(LS_SCROLL, LS_NS, m);
-  }
-  function onScroll(e){
-    var t = e && e.target;
-    if (!t || !t.getAttribute) return;
-    clearTimeout(scrollTimer);
-    scrollTimer = setTimeout(function(){ saveScrollPos(t); }, SCROLL_DEBOUNCE_MS);
-  }
-  function restoreScrollPos(root){
-    if (!root || !root.querySelectorAll) return;
-    var m = memLoad(LS_SCROLL, LS_NS);
-    if (!m) return;
-    var ds = root.querySelectorAll(".cards[data-ckey]");
-    for (var i = 0; i < ds.length; i++){
-      var k = ds[i].getAttribute("data-ckey");
-      var v = Object.prototype.hasOwnProperty.call(m, k) ? m[k] : null;
-      if (v == null) continue;
-      var y = memClamp(v, ds[i].scrollHeight, ds[i].clientHeight);
-      if (y > 0) ds[i].scrollTop = y;
-    }
-  }
-  function persist(){ persistCore(); }
-  var drag = null;      // { board:key, id } while a card is in flight
-  var last = "";        // whole-page signature, so an idle reload touches no DOM
-  var query = "";       // #38-8: search box text, lowercase; filters cards in every column
-  var collapsed = {};   // #38-7: "board.key:col" -> true while a column is folded
-  // #72: 60 字超の本文のクリック展開（.open）は表示状態なので、sig ではなくここで保持する。
-  // sig に載せるとクリックのたびに描画が走る（描画時にここから引くだけにする）。
-  var cardOpen = {};    // "board.key:col#id" -> true while the card's body is expanded
-  // #75: その場追加の入力欄（.add）の開閉と打ちかけの文字。dashboard と同形で、
-  // 列単位（board.key:col）に持つ。sig には載せない。捨てるのは明示的な操作だけ。
-  var addDraft = {};    // "board.key:col" -> 打ちかけの文字列（キーがある = 開いている）
-  // #73: 列ごとのスクロール位置。.cards は描画のたびに作り直されるので、sig ではなく
-  // ここで保持し、描画後に data-ckey で引き当てて戻す。#76 で localStorage にも残す
-  // （リロード越しの分は上の KANBAN_MEMORY_JS が kb-scroll/<ns> で担当）。
-  var colScroll = {};   // "board.key:col" -> scrollTop
-  // 畳んだ列は clientHeight 0 で位置を測れない。測れた値だけ覚える（0 で潰さない）。
-  function saveScroll(root){
-    if (!root) return;
-    var ds = root.querySelectorAll(".cards[data-ckey]");
-    for (var i = 0; i < ds.length; i++){
-      if (ds[i].clientHeight > 0) colScroll[ds[i].getAttribute("data-ckey")] = ds[i].scrollTop;
-    }
-  }
-  function restoreScroll(root){
-    if (!root) return;
-    var ds = root.querySelectorAll(".cards[data-ckey]");
-    for (var i = 0; i < ds.length; i++){
-      var v = colScroll[ds[i].getAttribute("data-ckey")];
-      if (v && ds[i].clientHeight > 0) ds[i].scrollTop = v;
-    }
-  }
-  // #72: 展開状態の読み直し + 消えたカードの掃除（右パネル側、dashboard と同形）。
-  // 掃除が起きたときだけ書き戻すので、保存も痩せる。
-  function loadOpen(ckey, list){
-    try {
-      var all = JSON.parse(localStorage.getItem(LS_KEY) || "null");
-      var v = all && all[LS_NS];
-      if (v && v.open && typeof v.open === "object") Object.keys(v.open).forEach(function(k){ cardOpen[k] = v.open[k] === true; });
-    } catch (e) {}
-    var present = {}, pruned = false;
-    list.forEach(function(c){ present[ckey + "#" + c.id] = true; });
-    Object.keys(cardOpen).forEach(function(k){
-      if (k.indexOf(ckey + "#") === 0 && !present[k]) { delete cardOpen[k]; pruned = true; }
-    });
-    if (pruned) { persist(); memoCards(); }
-  }
-  // #76: リロード越しの展開状態（DONE は保存対象外なので拾うのは TODO/DOING だけ）。
-  var memoOpen = memLoad(LS_OPEN, LS_NS);
-  if (memoOpen) Object.keys(memoOpen).forEach(function(k){ if (memoOpen[k] === true) cardOpen[k] = true; });
-  var cache = null;     // last render inputs, so the search box refilters without a fetch
-  var STALE_GUI_MS = 2 * 60 * 60 * 1000; // #38-11: DOING over this long gets a ⏳
-  // #62: 復元は collapsed の宣言より後で行う（宣言前だと var 巻き上げで undefined になる）。
-  (function(){
-    var all = null;
-    try { all = JSON.parse(localStorage.getItem(LS_KEY) || "null"); } catch (e) {}
-    var v = all && all[LS_NS];
-    if (!v || typeof v !== "object") return;
-    if (v.sess && typeof v.sess === "object") Object.keys(v.sess).forEach(function(k){ open[k] = v.sess[k] === true; });
-    if (v.cols && typeof v.cols === "object") Object.keys(v.cols).forEach(function(k){ collapsed[k] = v.cols[k] === true; });
-    if (v.open && typeof v.open === "object") Object.keys(v.open).forEach(function(k){ cardOpen[k] = v.open[k] === true; });
-    if (typeof v.g === "boolean") gOpen = v.g;
-  })();
-
-${KANBAN_MD_JS}
-
-  // ISO -> the value datetime-local wants (local wall clock, no offset).
-  function dtLocal(iso){
-    var d = iso ? new Date(iso) : null;
-    if (!d || isNaN(d.getTime())) return "";
-    var p = function(n){ return (n < 10 ? "0" : "") + n; };
-    return d.getFullYear() + "-" + p(d.getMonth()+1) + "-" + p(d.getDate()) + "T" + p(d.getHours()) + ":" + p(d.getMinutes());
-  }
-
-  function qs(board){
-    return "scope=" + board.scope + (board.sid ? "&sid=" + encodeURIComponent(board.sid) : "");
-  }
-
-  function counts(c){ return "TODO " + c.todo + " / DOING " + c.doing + " / DONE " + c.done; }
-
-  function note(msg){
-    if (msg) { errEl.textContent = msg; errEl.classList.add("on"); }
-    else { errEl.classList.remove("on"); }
-  }
-
-  function clearOver(){
-    var els = document.querySelectorAll(".col.over");
-    for (var i = 0; i < els.length; i++) els[i].classList.remove("over");
-  }
-
-  function btn(label, board, path){
-    var b = document.createElement("button");
-    b.textContent = label;
-    b.onclick = function(){ send(board, path); };
-    return b;
-  }
-
-  // Per-board mode toggles. Same send() path (and thus the same 403 gate) as every
-  // other write; a read-only board draws none, matching its .ro cards.
-  function modeBtns(board){
-    if (!board.editable || !board.modes) return null;
-    var wrap = document.createElement("div");
-    wrap.className = "modes";
-    var lab = document.createElement("span");
-    lab.className = "mt";
-    // GLOBAL cards are shared but GLOBAL mode is keyed by session: say so.
-    lab.textContent = board.scope === "global" ? "modes (このセッション)" : "modes";
-    wrap.appendChild(lab);
-    [["loop","doingLoop"],["pick","autoPick"]].forEach(function(p){
-      var on = !!board.modes[p[1]];
-      var b = document.createElement("button");
-      b.textContent = p[0] + ":" + (on ? "ON" : "OFF");
-      b.onclick = function(){ send(board, "modes?key=" + p[1] + "&value=" + (on ? "off" : "on")); };
-      wrap.appendChild(b);
-    });
-    // intervalMin: absent in pre-Phase-5 modes.json -> 5, the extension's own default.
-    // Same GET+query write gate as the toggles above; a refusal shows the error banner.
-    var iv = document.createElement("input");
-    iv.className = "iv";
-    iv.type = "number";
-    iv.min = "1";
-    iv.title = "自動再開の間隔（分）";
-    iv.value = board.modes.intervalMin > 0 ? board.modes.intervalMin : 5;
-    iv.onchange = function(){
-      var v = Number(iv.value);
-      if (!(v > 0)) { iv.value = board.modes.intervalMin > 0 ? board.modes.intervalMin : 5; return; }
-      send(board, "interval?min=" + v);
-    };
-    wrap.appendChild(iv);
-    var unit = document.createElement("span");
-    unit.className = "mt";
-    unit.textContent = "分";
-    wrap.appendChild(unit);
-    // stuckLimit is a settle COUNT (not minutes): same row, same GET+query gate.
-    var st = document.createElement("input");
-    st.className = "st";
-    st.type = "number";
-    st.min = "1";
-    st.max = "20";
-    st.title = "スタック判定（settle 回数）";
-    st.value = board.modes.stuckLimit > 0 ? board.modes.stuckLimit : 3;
-    st.onchange = function(){
-      var v = Number(st.value);
-      if (!(v >= 1 && v <= 20 && v % 1 === 0)) { st.value = board.modes.stuckLimit > 0 ? board.modes.stuckLimit : 3; return; }
-      send(board, "stuck?n=" + v);
-    };
-    wrap.appendChild(st);
-    var sunit = document.createElement("span");
-    sunit.className = "mt";
-    sunit.textContent = "回";
-    wrap.appendChild(sunit);
-    // #67: maxLoops is the doing-loop budget (0 = 無制限). Same row, same GET+query gate.
-    // 1000 is the server's cap; the GUI refuses the same range instead of round-tripping a 400.
-    var ml = document.createElement("input");
-    ml.className = "ml";
-    ml.type = "number";
-    ml.min = "0";
-    ml.max = "1000";
-    ml.title = "ループ上限（0 = 無制限）";
-    ml.value = String(maxLoopsOf(board.modes));
-    ml.onchange = function(){
-      var v = Number(ml.value);
-      if (!(v >= 0 && v <= 1000 && v % 1 === 0)) { ml.value = String(maxLoopsOf(board.modes)); return; }
-      send(board, "maxloops?n=" + v);
-    };
-    wrap.appendChild(ml);
-    var munit = document.createElement("span");
-    munit.className = "mt";
-    munit.textContent = maxLoopsOf(board.modes) > 0 ? "上限" : "上限（無制限）";
-    wrap.appendChild(munit);
-    return wrap;
-  }
-
-  // Image/video drop onto a column -> POST raw bytes to /api/upload (new card in that column).
-  // A drop onto a CARD passes its id instead, so the media attaches to that card (#38-4).
-  // #59: some drag sources (curl, some file managers, some OSes) hand over a file
-  // with an empty type. Prefer the MIME map, then fall back to the filename.
-  // ".jpeg" is the same format as ".jpg" but not in OK_EXTS — normalise it here
-  // rather than widening the server's accepted set.
-  function extOfFile(file){
-    var byMime = EXT_BY_MIME[file.type];
-    if (byMime) return byMime;
-    var name = String((file && file.name) || "");
-    var dot = name.lastIndexOf(".");
-    var ext = dot >= 0 ? name.slice(dot + 1).toLowerCase() : "";
-    if (ext === "jpeg") ext = "jpg";
-    return OK_EXTS.indexOf(ext) >= 0 ? ext : "";
-  }
-  function upload(board, col, file, id){
-    var ext = extOfFile(file);
-    if (!ext) { note("unsupported media type"); return; }
-    file.arrayBuffer().then(function(buf){
-      return fetch(API + "upload?" + qs(board) + "&col=" + col + "&ext=" + ext + (id === undefined ? "" : "&id=" + id), {
-        method: "POST",
-        body: buf,
-        headers: { "Content-Type": "application/octet-stream" }
-      });
-    }).then(function(r){ return r.json(); }).then(function(j){
-      reload(j && j.ok ? null : "upload failed");
-    }).catch(function(){ reload("upload failed"); });
-  }
-
-  // #67: 再開ボタン。halt は拡張プロセスのメモリなので、この書き込みはそのセッションの
-  // poll が拾って実行する（サーバは 202 を返すだけ）。send() が "&scope=.." を足すので
-  // パス側に "?" を置いておく。
-  function resumeBtn(board){
-    var b = document.createElement("button");
-    b.type = "button";
-    b.className = "mini";
-    b.textContent = "再開";
-    b.title = "停止を解除して回数を 0 に戻す（doingLoop も ON に戻る）";
-    b.onclick = function(){ send(board, "resume?"); };
-    return b;
-  }
-
-  function send(board, path){
-    fetch(API + path + "&" + qs(board)).then(function(r){ return r.json(); }).then(function(j){
-      // Never leave the page showing a move the server refused.
-      reload(j && j.ok ? null : (j && j.error) || "write rejected");
-    }).catch(function(){ reload("network error"); });
-  }
-
-  // #36: カード本文のダブルクリック編集。Enter=確定 / Shift+Enter=改行 / Escape=取消。
-  // 取消後の blur で二重発火しないよう done で一回限りに制限する。
-  function startEdit(tspan, raw, apply){
-    var ta = document.createElement("textarea");
-    ta.className = "ted";
-    ta.value = raw;
-    var done = false;
-    function finish(cancel){
-      if (done) return;
-      done = true;
-      if (ta.parentNode) ta.parentNode.replaceChild(tspan, ta);
-      var v = ta.value;
-      if (!cancel && v.trim().length > 0 && v !== raw) apply(v);
-    }
-    ta.addEventListener("keydown", function(e){
-      if (e.key === "Escape") { e.preventDefault(); finish(true); }
-      else if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); finish(false); }
-    });
-    ta.addEventListener("blur", function(){ finish(false); });
-    tspan.parentNode.replaceChild(ta, tspan);
-    ta.focus();
-  }
-
-  function card(board, c, ci){
-    var el = document.createElement("div");
-    var pri = typeof c.priority === "number" ? c.priority : 0;
-    el.className = "card" + (pri > 0 ? " pri-hi" : pri < 0 ? " pri-lo" : "") + (c.blocked ? " blocked" : "");
-    var t = document.createElement("span");
-    t.className = "t";
-    var tid = document.createElement("span");
-    tid.className = "id";
-    tid.textContent = "#" + c.id;
-    t.appendChild(tid);
-    // #38-11: 2 時間超の DOING に ⏳ を付ける（見えるだけ。削除はしない）。
-    if (c.col === "doing" && typeof c.movedAt === "number" && Date.now() - c.movedAt > STALE_GUI_MS) {
-      var st = document.createElement("span");
-      st.className = "stale";
-      st.title = Math.floor((Date.now() - c.movedAt) / 60000) + "分前から DOING";
-      st.textContent = "\u23f3";
-      t.appendChild(st);
-    }
-    // #36: 本文を独立スパンに分け、ダブルクリックで編集（改行 = Shift+Enter）。
-    var tt = document.createElement("span");
-    tt.className = "body";
-    tt.innerHTML = md(c.text); // md escapes first, then expands the whitelisted subset
-    // #38-5: 長い本文は 3 行で切ってクリック展開（列内の高さを揃える）。
-    if ((c.text || "").length > 60) {
-      tt.classList.add("clampable");
-      // #72: 展開状態は cardOpen（localStorage 永続）。sig には載せない。
-      // キーは列の折りたたみ（ckey = board.key + ":" + col）と同じ形に揃える。
-      var okey = board.key + ":" + c.col + "#" + c.id;
-      if (cardOpen[okey]) tt.classList.add("open");
-      tt.addEventListener("click", function(){
-        if (tt.classList.toggle("open")) cardOpen[okey] = true; else delete cardOpen[okey];
-        persist();
-        memoCards(); // #76: DONE は memCompactCards が落とす（画面の開閉はそのまま）
-      });
-    }
-    t.appendChild(tt);
-    el.appendChild(t);
-    if (board.editable) {
-      tt.addEventListener("dblclick", function(){
-        startEdit(tt, c.text, function(v){ send(board, "rename?id=" + c.id + "&text=" + encodeURIComponent(v)); });
-      });
-    }
-    // Priority input sits next to the card's text; 0 = no priority (the default).
-    if (board.editable) {
-      var pr = document.createElement("input");
-      pr.className = "pr" + (pri > 0 ? " hp" : pri < 0 ? " lp" : "");
-      pr.type = "number";
-      pr.min = "-99";
-      pr.max = "99";
-      pr.title = "優先度（大きいほど先に autoPick）";
-      pr.value = typeof c.priority === "number" ? c.priority : 0;
-      pr.onchange = function(){
-        var v = Number(pr.value);
-        if (!(v >= -99 && v <= 99 && v % 1 === 0)) { pr.value = typeof c.priority === "number" ? c.priority : 0; return; }
-        // Same GET+query write path (and 403 gate) as every other card edit.
-        send(board, "priority?id=" + c.id + "&n=" + v);
-      };
-      el.appendChild(pr);
-      // Blank = no restriction (the old behavior). datetime-local has no timezone, so
-      // it is turned into an absolute UTC ISO string before sending.
-      var dt = document.createElement("input");
-      dt.className = "dt" + (c.nextFireAt ? " set" : "");
-      dt.type = "datetime-local";
-      dt.title = "この時刻まで注入しない（空なら従来どおり）";
-      dt.value = dtLocal(c.nextFireAt);
-      dt.onchange = function(){
-        if (dt.value === "") { send(board, "schedule?id=" + c.id + "&at="); return; }
-        var t = new Date(dt.value).getTime();
-        if (isNaN(t)) { dt.value = dtLocal(c.nextFireAt); return; }
-        send(board, "schedule?id=" + c.id + "&at=" + encodeURIComponent(new Date(t).toISOString()));
-      };
-      el.appendChild(dt);
-      // blocked: any text excludes the card from autoPick and injection; blank clears it.
-      var blk = document.createElement("input");
-      blk.className = "blk";
-      blk.type = "text";
-      blk.placeholder = "blocked理由";
-      blk.title = "理由を入れると autoPick と注入から外れる（空で解除）";
-      blk.value = typeof c.blocked === "string" ? c.blocked : "";
-      blk.onchange = function(){
-        send(board, "schedule?id=" + c.id + "&blocked=" + encodeURIComponent(blk.value.trim()));
-      };
-      el.appendChild(blk);
-    }
-    if (c.img) {
-      // Only images decode in an img element; video bytes need a real video element.
-      var mediaExt = c.img.slice(c.img.lastIndexOf(".") + 1).toLowerCase();
-      var isVid = mediaExt === "mp4" || mediaExt === "webm";
-      var im;
-      if (isVid) {
-        // No autoplay: the card is a preview, so only metadata loads until play. The
-        // temp div is discarded, so the bare video element lands in the card and reuses
-        // the .card img layout rule.
-        var tmp = document.createElement("div");
-        tmp.innerHTML = '<video controls preload="metadata"></video>';
-        im = tmp.firstChild;
-      } else {
-        im = document.createElement("img");
-        im.alt = "";
-      }
-      im.src = MEDIA + encodeURIComponent(c.img);
-      im.onerror = function(){
-        var s = document.createElement("span");
-        s.className = "badimg";
-        s.textContent = "🖼?";
-        if (im.parentNode) im.parentNode.replaceChild(s, im);
-      };
-      el.appendChild(im);
-    }
-    if (board.editable) {
-      el.tabIndex = 0;
-      // #38-6: Tab でカードに入る。←→ で列移動、Enter で DOING、m でメモ。
-      el.addEventListener("keydown", function(e){
-        if (e.target !== el) return; // a button or the memo textarea keeps its own keys
-        if (e.key === "ArrowLeft" && ci > 0) { e.preventDefault(); send(board, "move?id=" + c.id + "&col=" + COLS[ci-1][0]); }
-        else if (e.key === "ArrowRight" && ci < COLS.length - 1) { e.preventDefault(); send(board, "move?id=" + c.id + "&col=" + COLS[ci+1][0]); }
-        else if (e.key === "Enter") { e.preventDefault(); send(board, "move?id=" + c.id + "&col=doing"); }
-        else if (e.key === "m") {
-          e.preventDefault();
-          startEdit(tt, c.text, function(v){ send(board, "rename?id=" + c.id + "&text=" + encodeURIComponent(v)); });
-        }
-      });
-      // #38-4: カードにファイルを落とすと、そのカードに紐付く（新規カードは作らない）。
-      // カード移動の drag（text/plain）は素通しして列の drop に任せる。
-      el.addEventListener("dragover", function(e){
-        if (!e.dataTransfer || !e.dataTransfer.types || e.dataTransfer.types.indexOf("Files") < 0) return;
-        e.preventDefault();
-        e.dataTransfer.dropEffect = "copy";
-        el.classList.add("fileover");
-      });
-      el.addEventListener("dragleave", function(){ el.classList.remove("fileover"); });
-      el.addEventListener("drop", function(e){
-        var f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
-        if (!f) return; // card move -> the column handles it
-        e.preventDefault();
-        e.stopPropagation();
-        el.classList.remove("fileover");
-        upload(board, c.col, f, c.id);
-      });
-      if (ci > 0) el.appendChild(btn("\\u2190", board, "move?id=" + c.id + "&col=" + COLS[ci-1][0]));
-      if (ci < COLS.length - 1) el.appendChild(btn("\\u2192", board, "move?id=" + c.id + "&col=" + COLS[ci+1][0]));
-      el.appendChild(btn("\\u00d7", board, "remove?id=" + c.id));
-      el.draggable = true;
-      el.addEventListener("dragstart", function(e){
-        drag = { board: board.key, id: c.id };
-        el.classList.add("dragging");
-        if (e.dataTransfer) {
-          e.dataTransfer.effectAllowed = "move";
-          e.dataTransfer.setData("text/plain", String(c.id));
-        }
-      });
-      el.addEventListener("dragend", function(){
-        drag = null;
-        el.classList.remove("dragging");
-        clearOver();
-      });
-    }
-    return el;
-  }
-
-  function columns(board, cards){
-    var root = document.createElement("div");
-    var hdr = modeBtns(board);
-    if (hdr) root.appendChild(hdr);
-    var grid = document.createElement("div");
-    grid.className = "cols";
-    COLS.forEach(function(pair, ci){
-      var col = pair[0];
-      var list = cards.filter(function(c){
-        if (c.col !== col) return false;
-        // #38-8: 検索語は text の部分一致。DOM だけの絞り込みで状態は保存しない。
-        return query === "" || String(c.text || "").toLowerCase().indexOf(query) >= 0;
-      });
-      var ckey = board.key + ":" + col;
-      var box = document.createElement("div");
-      box.className = "col" + (col === "doing" && list.length ? " doingcol" : "") + (collapsed[ckey] ? " collapsed" : "");
-      var h = document.createElement("h2");
-      h.textContent = pair[1];
-      var cnt = document.createElement("span");
-      cnt.className = "c";
-      cnt.textContent = String(list.length);
-      h.appendChild(cnt);
-      // #38-7: 見出しクリックで列ごと畳む（状態はクライアントだけ。#62: 保存もする）。
-      h.addEventListener("click", function(){ collapsed[ckey] = !collapsed[ckey]; box.classList.toggle("collapsed"); persist(); });
-      box.appendChild(h);
-      // #76: 列スクロールはリロード越しにも覚える（描画越しの #73 saveScroll はそのまま）
-      var deck = document.createElement("div");
-      deck.className = "cards";
-      deck.setAttribute("data-ckey", ckey);
-      deck.addEventListener("scroll", onScroll); // 止まってから kb-scroll/kanban に書く
-      loadOpen(ckey, list); // #72: 描画のたびに読み直し、消えたカードの分を掃除する
-      list.forEach(function(c){ deck.appendChild(card(board, c, ci)); });
-      if (!list.length) {
-        var emp = document.createElement("div");
-        emp.className = "col-empty";
-        emp.textContent = query !== "" ? "該当なし" : board.editable ? "空 — ドロップか入力で追加" : "空";
-        deck.appendChild(emp);
-      }
-      box.appendChild(deck);
-      restoreScrollPos(box); // #76: 作法はダッシュボードと同じ（描画直後にクランプして戻す）
-      if (board.editable) {
-        // A dragged card only ever lands on its OWN board; cross-board moves are not a thing.
-        box.addEventListener("dragover", function(e){
-          if (!drag || drag.board !== board.key) return;
-          e.preventDefault();
-          if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
-          clearOver();
-          box.classList.add("over");
-        });
-        box.addEventListener("dragleave", function(){ box.classList.remove("over"); });
-        box.addEventListener("drop", function(e){
-          var f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
-          if (f) { e.preventDefault(); clearOver(); upload(board, col, f); return; }
-          if (!drag || drag.board !== board.key) return;
-          e.preventDefault();
-          clearOver();
-          var id = drag.id;
-          drag = null;
-          send(board, "move?id=" + id + "&col=" + col);
-        });
-        // #38-3: + ボタン → その場で入力欄 → Enter で確定（読み込みも画面遷移も挿まない）。
-        var wrap = document.createElement("div");
-        wrap.className = "addwrap";
-        var addBtn = document.createElement("button");
-        addBtn.type = "button";
-        addBtn.className = "addbtn";
-        addBtn.textContent = "+";
-        addBtn.title = pair[1] + " に追加";
-        addBtn.setAttribute("aria-label", pair[1] + " に追加");
-        var input = document.createElement("input");
-        input.className = "add";
-        input.placeholder = "+ \\u8ffd\\u52a0";
-        // 表示の切替だけを行う。打ちかけの破棄は clearInput() に分離する（#75）。
-        var showInput = function(on){
-          addBtn.style.display = on ? "none" : "";
-          input.style.display = on ? "" : "none";
-          if (on) input.focus();
-        };
-        var clearInput = function(){
-          delete addDraft[ckey];
-          input.value = "";
-        };
-        // #75: 再描画を跨いで開いたまま・打ちかけの文字も残す（描画のたびにここで戻す）。
-        if (addDraft[ckey] != null) input.value = addDraft[ckey];
-        showInput(addDraft[ckey] != null);
-        input.addEventListener("input", function(){ addDraft[ckey] = input.value; });
-        addBtn.onclick = function(){ showInput(true); };
-        input.onkeydown = function(e){
-          if (e.key === "Escape") { e.preventDefault(); clearInput(); showInput(false); return; }
-          if (e.key !== "Enter") return;
-          var v = input.value.trim();
-          clearInput();
-          showInput(false);
-          if (!v) return;
-          send(board, "add?col=" + col + "&text=" + encodeURIComponent(v));
-        };
-        input.addEventListener("blur", function(){
-          if (input.value.trim()) return;
-          clearInput();
-          showInput(false);
-        });
-        wrap.appendChild(addBtn);
-        wrap.appendChild(input);
-        box.appendChild(wrap);
-      }
-      grid.appendChild(box);
-    });
-    root.appendChild(grid);
-    return root;
-  }
-
-  // #55: row.mine = driver かどうか。編集可否とは無関係。
-  function expanded(row){
-    return open[row.id] === undefined ? !!row.mine : open[row.id];
-  }
-
-  // #67: the doing-loop budget. Absent/invalid = 10 (the old hard-coded cap); 0 = unlimited.
-  // Mirrors maxLoopsOf on the server, so the GUI never shows a cap the loop does not use.
-  function maxLoopsOf(m){
-    var v = m && m.maxLoops;
-    if (typeof v !== "number" || v !== Math.floor(v)) return 10;
-    if (v <= 0) return 0;
-    return v <= 1000 ? v : 10;
-  }
-
-  // #58: same text as the dashboard's haltText — keep the two in step.
-  function haltText(h, cap){
-    if (!h) return "";
-    var c = (cap === undefined || cap === null) ? 10 : cap;
-    if (h.halted === "limit") return "ループ上限（" + (c > 0 ? c + "回" : "無制限") + "）に達して停止。下の「再開」か kanban ツールの resume、/kanban loop on（modes を ON にしても再開しない）";
-    if (h.halted === "stuck") return "同じカード（#" + h.stuckId + "）で " + h.stuckCount + " 回スタックして停止。カードを直してから下の「再開」か kanban ツールの resume、/kanban loop on（modes を ON にしても再開しない）";
-    if (h.halted) return "ループ停止中（" + h.halted + "）。下の「再開」か kanban ツールの resume、/kanban loop on で再開";
-    return "";
-  }
-
-  // #62: GLOBAL の見出しもセッション見出しと同じ操作感で畳める。
-  // 上の静的な .hd は検索/テーマのツールバーにしたので、名前はここが出す（二重表示を避ける）。
-  function globalHead(){
-    var head = document.createElement("div");
-    head.className = "hd";
-    head.title = "クリックで折りたたみ";
-    head.setAttribute("role", "button");
-    head.setAttribute("tabindex", "0");
-    head.setAttribute("aria-expanded", gOpen ? "true" : "false");
-    var caret = document.createElement("span");
-    caret.className = "caret";
-    caret.textContent = gOpen ? "\u25be" : "\u25b8";
-    head.appendChild(caret);
-    var label = document.createElement("span");
-    label.textContent = "GLOBAL（全セッション共有）";
-    head.appendChild(label);
-    function toggle(e){
-      var tgt = e && e.target;
-      if (tgt && tgt.closest && (tgt.closest("button") || tgt.closest("a") || tgt.closest("input"))) return;
-      gOpen = !gOpen;
-      persist();
-      last = "";
-      reload();
-    }
-    head.addEventListener("click", toggle);
-    head.addEventListener("keydown", function(e){
-      var k = e && e.key;
-      if (k !== "Enter" && k !== " " && k !== "Spacebar") return;
-      if (e.preventDefault) e.preventDefault();
-      toggle(e);
-    });
-    return head;
-  }
-
-  function session(row){
-    var wrap = document.createElement("div");
-    wrap.className = "sess" + (row.mine ? "" : " ro");
-    var head = document.createElement("div");
-    head.className = "sess-hd";
-    // #62: ダッシュボードと同じく a11y 属性を付ける（見た目だけでなくキーボードでも畳める）。
-    head.title = "クリックで折りたたみ";
-    head.setAttribute("role", "button");
-    head.setAttribute("tabindex", "0");
-    head.setAttribute("aria-expanded", expanded(row) ? "true" : "false");
-    var t = document.createElement("span");
-    t.className = "sess-t";
-    t.textContent = (expanded(row) ? "\\u25be " : "\\u25b8 ") + row.name;
-    var meta = document.createElement("span");
-    meta.className = "sess-c";
-    meta.textContent = counts(row.counts) + (row.mine ? "" : " \\ud83d\\udd12");
-    head.appendChild(t);
-    head.appendChild(meta);
-    // ヘッダ内の操作（button / a / input）は畳まない。click と keydown で共有。
-    function toggle(e){
-      var tgt = e && e.target;
-      if (tgt && tgt.closest && (tgt.closest("button") || tgt.closest("a") || tgt.closest("input"))) return;
-      open[row.id] = !expanded(row);
-      persist();
-      last = "";
-      reload();
-    }
-    head.addEventListener("click", toggle);
-    head.addEventListener("keydown", function(e){
-      var k = e && e.key;
-      if (k !== "Enter" && k !== " " && k !== "Spacebar") return;
-      if (e.preventDefault) e.preventDefault();
-      toggle(e);
-    });
-    wrap.appendChild(head);
-    // #58: why it stopped + how to restart. Silence here is what makes the toggles
-    // below look broken: they write modes.json, the halt lives in the extension process.
-    var why = haltText(row.halted, maxLoopsOf(row.modes && row.modes.session));
-    if (why) {
-      var hb = document.createElement("div");
-      hb.className = "halt";
-      hb.textContent = why;
-      // #67: a limit halt is liftable from here; a stuck halt needs the card fixed first,
-      // which a button cannot do — so the 再開 button is drawn for a limit halt only.
-      if (row.halted && row.halted.halted === "limit") {
-        var rctx = { key: "s:" + row.id, scope: "session", sid: row.id, editable: true, modes: row.modes && row.modes.session };
-        hb.appendChild(document.createTextNode(" "));
-        hb.appendChild(resumeBtn(rctx));
-      }
-      wrap.appendChild(hb);
-    }
-    if (expanded(row)) {
-      // #55: 他セッションのボードも書ける（サーバ側のロックを外した）。
-      wrap.appendChild(columns(
-        { key: "s:" + row.id, scope: "session", sid: row.id, editable: true, modes: row.modes && row.modes.session },
-        row.cards
-      ));
-    }
-    return wrap;
-  }
-
-  // #65: 描画を止めるのは「ユーザが入力中」のときだけ。判定は 1 関数にまとめる。
-  // 再描画で作り直される領域（#global/#sessions）の中で、値を受け付ける要素に
-  // フォーカスがある間は描かない（DOM から切り離されると blur が飛ばず打鍵が消える）。
-  // - #q（検索ボックス）は領域外の静的ノードなので対象外。含めると検索打鍵中に
-  //   redraw() が early return し、絞り込みが描画されず画面が凍る。
-  // - button / checkbox は含めない。Chrome はクリックした button にフォーカスを残すので、
-  //   含めるとモード切替ボタンを押した後ずっと更新が止まる。
-  var NO_TYPE_INPUT = /^(checkbox|radio|button|submit|reset|file|image|range|color)$/;
-  function isEditing(){
-    var a = document.activeElement;
-    if (!a || a === document.body) return false;
-    var tg = a.tagName;
-    var typing = tg === "TEXTAREA" || a.isContentEditable === true ||
-      (tg === "INPUT" && !NO_TYPE_INPUT.test(a.type || "text"));
-    if (!typing) return false;
-    return !!(a.closest && a.closest("#stats, #sessions, #global, #serve"));
-  }
-
-  function render(globalCards, sessions, gmodes){
-    cache = [globalCards, sessions, gmodes];
-    // #65: 編集中は描画しない。打鍵中の textarea.ted が DOM から切り離されると blur が
-    // 飛ばず、編集内容が黙って捨てられる。
-    if (isEditing()) return;
-    // sessions 側はカード本文まで sig に含める（本文だけ変わる rename は件数が変わらず、
-    // 抜くと再描画されない）。now は入れない — 別に毎秒変わる値を混ぜない。
-    var sig = JSON.stringify([
-      globalCards,
-      gmodes,
-      sessions.map(function(s){ return [s.id, s.name, s.counts, s.mine, s.modes, s.halted,
-        (s.cards || []).map(function(c){ return [c.id, c.text, c.col]; })]; }),
-      open,
-      gOpen,
-      query
-    ]);
-    if (sig === last) return;
-    last = sig;
-    saveScroll(globalEl); // #73: 消す前に今の位置を控える（再描画越し。リロード越しは #76 が担当）
-    saveScroll(listEl);
-    globalEl.innerHTML = "";
-    globalEl.appendChild(globalHead());
-    // #62: 畳んでいたら中身（列）を DOM に作らない。ダッシュボードと同じ方式。
-    if (gOpen) globalEl.appendChild(columns({ key: "g", scope: "global", sid: null, editable: true, modes: gmodes }, globalCards));
-    listEl.innerHTML = "";
-    sessions.forEach(function(row){ listEl.appendChild(session(row)); });
-    restoreScroll(globalEl); // #73: 差し替え後に戻す（detached だと測れない）
-    restoreScroll(listEl);
-  }
-
-  function reload(msg){
-    fetch(API + "kanban").then(function(r){ return r.json(); }).then(function(j){
-      if (!j || !j.ok) throw new Error("bad");
-      return fetch(API + "sessions").then(function(r){ return r.json(); }).then(function(k){
-        if (!k || !k.ok) throw new Error("bad");
-        note(msg);
-        render(j.global.cards, k.sessions, j.modes && j.modes.global);
-      });
-    }).catch(function(){ note(msg || "connection lost"); });
-  }
-
-  // #38-8: 検索欄。キャッシュ済みのデータをその場で絞るだけで、サーバも状態も触らない。
-  var qEl = document.getElementById("q");
-  if (qEl) qEl.addEventListener("input", function(){
-    query = qEl.value.trim().toLowerCase();
-    if (cache) render(cache[0], cache[1], cache[2]);
-  });
-
-  reload();
-  setInterval(function(){ reload(); }, 1500);
-})();
-</script>
-<script>
-(function(){
-  // theme toggle: click -> opposite theme + explicit pick in localStorage (kb-theme);
-  // while no explicit pick exists, live-updates with the OS color-scheme.
-  var btn = document.getElementById("theme");
-  var pick = false;
-  try { pick = localStorage.getItem("kb-theme") != null; } catch (e) {}
-  function label(){ return document.documentElement.dataset.theme === "light" ? "ダークテーマに切り替え" : "ライトテーマに切り替え"; }
-  function refreshLabel(){ var l = label(); btn.setAttribute("aria-label", l); btn.title = l; }
-  function setTheme(t, save){
-    document.documentElement.setAttribute("data-theme", t);
-    if (save) { pick = true; try { localStorage.setItem("kb-theme", t); } catch (e) {} }
-    refreshLabel();
-  }
-  btn.addEventListener("click", function(){
-    setTheme(document.documentElement.dataset.theme === "light" ? "dark" : "light", true);
-  });
-  if (window.matchMedia) {
-    var mq = matchMedia("(prefers-color-scheme: light)");
-    var onChange = function(){ if (!pick) setTheme(mq.matches ? "light" : "dark", false); };
-    if (mq.addEventListener) mq.addEventListener("change", onChange);
-    else if (mq.addListener) mq.addListener(onChange);
-  }
-  refreshLabel();
-})();
-</script>
-</body>
-</html>
-`;
 
 // ---------------------------------------------------------------------------
 // Extension body
@@ -6487,7 +5559,7 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 			}
 			let scope: Scope = "session";
 			refresh(ctx, sid);
-			const guiOption = "🖥 右パネル用 HTML の場所";
+			const guiOption = "🖥 ダッシュボードの URL";
 			// Every dialog of this drilldown runs under the guard, so auto-tick stays off
 			// while the user is reading a menu (A3). withMenuGuard clears it in `finally`.
 			return withMenuGuard(uiGuard, async () => {
@@ -6515,7 +5587,7 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 				]);
 				if (picked === undefined || picked === "終了") return;
 				if (picked === guiOption) {
-					ctx.ui.notify("右パネルで開くファイル: ~/.pi/kanban/kanban.html");
+					ctx.ui.notify(`ダッシュボード: http://${hostname()}:${PORT}/`);
 					continue;
 				}
 				if (picked === switchOption) {
@@ -6982,7 +6054,7 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 			}
 		}
 		if (pollTimer === null) {
-			// Same period as kanban.html's poll so the footer and the right panel converge.
+			// Same period as the dashboard's poll so the footer and the page converge.
 			// Started unconditionally: the HTTP server is shared with a sibling pi, but the
 			// loop is this session's, so no listen result may gate it.
 			pollTimer = setInterval(poll, 1500);

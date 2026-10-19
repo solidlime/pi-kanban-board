@@ -75,7 +75,6 @@ for (let i = 0; i < 40; i++) {
 	await new Promise((r) => setTimeout(r, 100));
 }
 const dashboardHtml = await (await fetch(`${BASE}/`)).text();
-const kanbanHtml = mod.KANBAN_HTML;
 const scriptsOf = (html) => [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
 
 // ---------------------------------------------------------------------------
@@ -88,15 +87,12 @@ return { MAX_CARD_OPEN: MAX_CARD_OPEN, SCROLL_DEBOUNCE_MS: SCROLL_DEBOUNCE_MS,
   memCompactCards: memCompactCards, memPruneColumn: memPruneColumn };`,
 )();
 
-await check("#76 両テンプレートが共有 JS を注入している", () => {
+await check("#76 dashboard が共有 JS を注入している", () => {
 	assert.ok(dashboardHtml.includes("function memClamp("), "ダッシュボードに記憶層が無い");
-	assert.ok(kanbanHtml.includes("function memClamp("), "右パネルに記憶層が無い");
 	assert.ok(dashboardHtml.includes('LS_NS = "dash"'), "ダッシュボードの名前空間が変わっている");
-	assert.ok(kanbanHtml.includes('LS_NS = "kanban"'), "右パネルの名前空間が変わっている");
 	// キーは分ける（列のスクロール位置は画面ごとに別物）
 	assert.ok(dashboardHtml.includes('LS_SCROLL = "kb-scroll"'), "kb-scroll が無い");
-	assert.ok(kanbanHtml.includes('LS_SCROLL = "kb-scroll"'), "右パネルに kb-scroll が無い");
-	assert.ok(!/LS_SCROLL = "kb-scroll-panel"/.test(kanbanHtml), "旧案のキー名が残っている");
+	assert.ok(!/LS_SCROLL = "kb-scroll-panel"/.test(dashboardHtml), "旧案のキー名が残っている");
 	// 既存の保存はそのまま（スキーマ不変）
 	assert.ok(dashboardHtml.includes('var LS_KEY = "kb-collapse"'), "kb-collapse が壊れている");
 });

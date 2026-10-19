@@ -263,11 +263,13 @@ const NOTE = JSON.stringify({ take: 1 });
 // --- 6. 死んだルート -----------------------------------------------------------
 {
 	const res = await send("GET", "/api/kanban.html");
-	await checkAsync("/api/kanban.html は 404", async () =>
-		assert.equal(res.status, 404, `status=${res.status} body=${res.body.slice(0, 80)}`));
-	check("KANBAN_HTML 定数は残っている（writeBoardHtml が使う）", () => {
-		assert.equal(typeof mod.KANBAN_HTML, "string");
-		assert.ok(mod.KANBAN_HTML.length > 1000);
+	// #84: the template is gone, so the 404 branch went with it. A stale caller now falls
+	// through to the board gate (400, sid required) — still "not served", which is all the
+	// #83 generation probe needs.
+	await checkAsync("/api/kanban.html は 404 ではなくボードゲートの 400", async () =>
+		assert.equal(res.status, 400, `status=${res.status} body=${res.body.slice(0, 80)}`));
+	check("KANBAN_HTML 定数は消えている（#84 の削除対象）", () => {
+		assert.equal(typeof mod.KANBAN_HTML, "undefined");
 	});
 }
 

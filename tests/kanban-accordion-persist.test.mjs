@@ -1,6 +1,6 @@
 // #62 アコーディオンの開閉状態の維持 + GLOBAL の折りたたみ の自己検証 (#011)。
 //   (a) ダッシュボード: セッションを畳む -> kb-collapse に書かれる -> vm を立て直すと畳まれたまま
-//   (b) 右パネル: 同じこと（テンプレートごとに独立したキー名前空間）
+//   (b) #84: 統合後は名前空間が dash だけであること（kanban 側は消えた）
 //   (c) GLOBAL ボードが role/tabindex/aria-expanded を持ち、クリックで閉じて中身が消える
 //   (d) キーボード（Enter / Space）でも GLOBAL が畳める
 //   (e) GLOBAL の列折りたたみのキーに active sid が混ざらない（"global:todo" 形式）
@@ -77,8 +77,7 @@ for (let i = 0; i < 40; i++) {
 }
 
 const dashboardHtml = await (await fetch(`${BASE}/`)).text();
-// #67: /api/kanban.html is gone; the template is exported for the tests that pin it.
-const kanbanHtml = mod.KANBAN_HTML;
+// #84: KANBAN_HTML retired — the dashboard is the only template left.
 
 // ---------------------------------------------------------------------------
 // 共有ハーネス: className と classList が連動する最小 DOM（既存テストと同じ流用元）
@@ -292,67 +291,16 @@ const runDashboard = async (storage) => {
 	return { byId, timers, sandbox, document };
 };
 
-// ---------------------------------------------------------------------------
-// 右パネル用の sandbox
-// ---------------------------------------------------------------------------
-const runKanban = async (storage) => {
-	const scripts = scriptsOf(kanbanHtml);
-	const apiScript = scripts.find((s) => s.includes('var API = BP + "//"'));
-	if (!apiScript) throw new Error("kanban.html の本体スクリプトを取り出せない");
-	const byId = {};
-	const document = {
-		baseURI: `${BASE}/`,
-		getElementById: (id) => byId[id] || (byId[id] = makeEl("div")),
-		createElement: (t) => makeEl(t),
-		createTextNode: (t) => {
-			const n = makeEl("#text");
-			n.textContent = String(t);
-			return n;
-		},
-		documentElement: makeEl("html"),
-		querySelectorAll: () => [],
-	};
-	const fetchStub = (u) => {
-		let body = { ok: true };
-		if (String(u).includes("/api/kanban"))
-			body = { ok: true, global: { cards: globalCards() }, modes: { session: {}, global: {} } };
-		else if (String(u).includes("/api/sessions")) body = { ok: true, sessions: sessionPayload() };
-		return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(body) });
-	};
-	const timers = [];
-	const sandbox = {
-		document,
-		location: { protocol: "http:", hostname: "127.0.0.1" },
-		URL,
-		localStorage: storage,
-		matchMedia: () => ({ matches: false, addEventListener() {} }),
-		fetch: fetchStub,
-		setInterval: (fn) => {
-			timers.push(fn);
-			return 0;
-		},
-		clearInterval() {},
-		Date,
-		console,
-	};
-	vm.createContext(sandbox);
-	vm.runInContext(apiScript, sandbox);
-	await flushN(10);
-	return { byId, timers, sandbox };
-};
-
 // ===========================================================================
 // 文字列レベル: 実装の入口が両テンプレートにある
 // ===========================================================================
-await check("#62 両テンプレートが同じキー kb-collapse を使う", () => {
+await check("#62 ダッシュボードが既存のキー kb-collapse を使う", () => {
 	assert.ok(dashboardHtml.includes('var LS_KEY = "kb-collapse"'), "dashboard に kb-collapse が無い");
-	assert.ok(kanbanHtml.includes('var LS_KEY = "kb-collapse"'), "kanban.html に kb-collapse が無い");
-	// キー名前空間はテンプレートごとに独立（片方の開閉が他方を壊さない）
+	// #84: 名前空間は dash だけ。kanban 側は消えたので、残骸が出てきたらここで落とす
 	assert.ok(dashboardHtml.includes('LS_NS = "dash"'), "dashboard の名前空間が無い");
-	assert.ok(kanbanHtml.includes('LS_NS = "kanban"'), "kanban.html の名前空間が無い");
+	assert.ok(!dashboardHtml.includes('LS_NS = "kanban"'), "消えた kanban 名前空間が復活している");
 	// 既存の kb-theme は触っていない
 	assert.ok(dashboardHtml.includes('localStorage.getItem("kb-theme")'), "kb-theme が壊れている");
-	assert.ok(kanbanHtml.includes('localStorage.getItem("kb-theme")'), "kb-theme が壊れている");
 });
 
 await check("#62 GLOBAL の ckey は active sid を含まない", () => {
@@ -412,42 +360,6 @@ await check("#62 GLOBAL の ckey は active sid を含まない", () => {
 			.filter(byClass("caret"))
 			.map((n) => n.textContent);
 		assert.deepEqual(carets, ["\u25B8", "\u25BE"], `caret が復元されていない: ${JSON.stringify(carets)}`);
-	});
-}
-
-// ===========================================================================
-// (b) 右パネル: 同じことを独立した名前空間で
-// ===========================================================================
-{
-	const storage = makeStorage();
-	const k1 = await runKanban(storage);
-	const sessHeads = (byId) => walk(byId["sessions"]).filter(byClass("sess-hd"));
-
-	await check("#62(b) 前提: 既定は mine だけ開（s1 開 / s2 閉）", () => {
-		const hs = sessHeads(k1.byId);
-		assert.equal(hs.length, 2, "セッションが 2 つない");
-		assert.equal(hs[0].getAttribute("aria-expanded"), "true", "mine の既定が開でない");
-		assert.equal(hs[1].getAttribute("aria-expanded"), "false", "他セッションの既定が閉でない");
-	});
-
-	await check("#62(b) クリックで畳むと kanban 名前空間に保存される", () => {
-		const hs = sessHeads(k1.byId);
-		assert.ok(hs[0]._lis.click && hs[0]._lis.click.length, "click リスナが無い");
-		hs[0]._lis.click[0]({ target: null });
-		const saved = storage.read("kb-collapse");
-		assert.ok(saved && saved.kanban, "kanban の名前空間が保存されていない");
-		assert.equal(saved.kanban.sess.s1, false, "s1 が false で保存されていない");
-		assert.ok(!saved.dash, "右パネルが dashboard の名前空間を作っている");
-	});
-
-	const k2 = await runKanban(storage);
-	await check("#62(b) 立て直しても畳まれたまま（s1 閉 / s2 は既定の閉）", () => {
-		const hs = sessHeads(k2.byId);
-		assert.equal(hs[0].getAttribute("aria-expanded"), "false", "s1 が復元されていない");
-		assert.equal(hs[1].getAttribute("aria-expanded"), "false", "s2 の既定が壊れている");
-		// aria-expanded が付いた = a11y 属性も入っている
-		assert.equal(hs[0].getAttribute("role"), "button", "role が無い");
-		assert.equal(hs[0].getAttribute("tabindex"), "0", "tabindex が無い");
 	});
 }
 
@@ -518,38 +430,6 @@ await check("#62 GLOBAL の ckey は active sid を含まない", () => {
 		assert.equal(gHead().getAttribute("aria-expanded"), "true", "矢印キーで畳まれた");
 	});
 
-	// 右パネル側の GLOBAL も同じ
-	const k = await runKanban(makeStorage());
-	const kHead = () => walk(k.byId["global"]).filter(byClass("hd"))[0];
-	await check("#62(d) 右パネルの GLOBAL 見出しも a11y 付きのボタン（名前は 1 回だけ）", () => {
-		const h = kHead();
-		assert.ok(h, "右パネルに GLOBAL 見出しが無い");
-		assert.equal(h.getAttribute("role"), "button", "role=button が無い");
-		assert.equal(h.getAttribute("tabindex"), "0", "tabindex=0 が無い");
-		assert.equal(h.getAttribute("aria-expanded"), "true", "aria-expanded が true でない");
-		assert.equal(walk(k.byId["global"]).filter(byClass("cols")).length, 1, "既定で列が出ていない");
-		// 静的な .hd と動的な見出しで GLOBAL の名前が二重に出ていない
-		const labels = walk(k.byId["global"]).filter((n) => String(n.textContent).includes("GLOBAL"));
-		assert.equal(labels.length, 1, `GLOBAL の見出しが ${labels.length} 個ある`);
-	});
-	await check("#62(d) 右パネルの GLOBAL もキーボードで畳める（Enter -> Space）", () => {
-		const kkey = (kk) => {
-			const h = kHead();
-			assert.ok(h._lis.keydown && h._lis.keydown.length, "GLOBAL に keydown リスナが無い");
-			h._lis.keydown[0]({ key: kk, target: null, preventDefault() {} });
-		};
-		kkey("Enter");
-		// 右パネルは reload() 経由の非同期再描画なので、描画を待ってから確かめる
-		return flushN(10).then(() => {
-			assert.equal(walk(k.byId["global"]).filter(byClass("cols")).length, 0, "Enter で中身が消えていない");
-			assert.equal(kHead().getAttribute("aria-expanded"), "false", "Enter で aria-expanded が false でない");
-			kkey(" ");
-			return flushN(10);
-		}).then(() => {
-			assert.equal(walk(k.byId["global"]).filter(byClass("cols")).length, 1, "Space で中身が戻らない");
-			assert.equal(kHead().getAttribute("aria-expanded"), "true", "Space で aria-expanded が true でない");
-		});
-	});
 }
 
 // ===========================================================================
@@ -584,32 +464,6 @@ await check("#62 GLOBAL の ckey は active sid を含まない", () => {
 		assert.ok(!cols2[0].classList.contains("collapsed"), "別の列まで畳まれている");
 	});
 
-	// 右パネル: board.key "g" + ":" + col = "g:doing"（sid を含まない）
-	const kStorage = makeStorage();
-	const k = await runKanban(kStorage);
-	await check("#62(e) 右パネルの GLOBAL 列キーも sid を含まない（g:doing）", () => {
-		const gcols = walk(k.byId["global"]).filter(byClass("col"));
-		assert.equal(gcols.length, 3, "右パネルの GLOBAL に列が 3 つない");
-		const h2 = gcols[1].children[0];
-		assert.ok(Array.isArray(h2._lis.click), "列見出しに click ハンドラが無い");
-		h2._lis.click[0]();
-		assert.ok(gcols[1].classList.contains("collapsed"), "右パネルで列が畳まれていない");
-		const keys = Object.keys(kStorage.read("kb-collapse").kanban.cols);
-		assert.ok(keys.includes("g:doing"), `g:doing が無い: ${JSON.stringify(keys)}`);
-		assert.ok(
-			!keys.some((x) => x.indexOf("s1") >= 0 || x.indexOf("s2") >= 0),
-			`右パネルの GLOBAL のキーに sid が混ざっている: ${JSON.stringify(keys)}`,
-		);
-	});
-
-	// 復元 IIFE が collapsed の宣言より前にあると var 巻き上げで落ちる（実装中に踏んだ）。
-	await check("#62(e) 右パネルも立て直すと GLOBAL の列は畳まれたまま", async () => {
-		const k2 = await runKanban(kStorage);
-		const gcols2 = walk(k2.byId["global"]).filter(byClass("col"));
-		assert.equal(gcols2.length, 3, "右パネルの再訪で列が壊れた");
-		assert.ok(gcols2[1].classList.contains("collapsed"), "再訪で GLOBAL の列が開いた");
-		assert.ok(!gcols2[0].classList.contains("collapsed"), "別の列まで畳まれている");
-	});
 }
 
 // ===========================================================================
@@ -636,17 +490,6 @@ await check("#62 GLOBAL の ckey は active sid を含まない", () => {
 		assert.equal(walk(d.byId["global"]).filter(byClass("cols")).length, 1, "GLOBAL の既定が壊れている");
 	});
 
-	await check("#62(f) 右パネル: getItem/setItem が throw しても描画が壊れない", async () => {
-		const broken = makeStorage();
-		broken.throwOnEverything();
-		const k = await runKanban(broken);
-		const hs = walk(k.byId["sessions"]).filter(byClass("sess-hd"));
-		assert.equal(hs.length, 2, "セッションが描画されていない");
-		assert.equal(hs[0].getAttribute("aria-expanded"), "true", "mine の既定が壊れている");
-		assert.equal(hs[1].getAttribute("aria-expanded"), "false", "他セッションの既定が壊れている");
-		hs[0]._lis.click[0]({ target: null }); // persist -> throw -> 握りつぶし
-		assert.equal(walk(k.byId["global"]).filter(byClass("cols")).length, 1, "GLOBAL が壊れている");
-	});
 }
 
 // ===========================================================================

@@ -87,7 +87,6 @@ for (let i = 0; i < 40; i++) {
 	await new Promise((r) => setTimeout(r, 100));
 }
 const dashboardHtml = await (await fetch(`${BASE}/`)).text();
-const kanbanHtml = mod.KANBAN_HTML;
 const scriptsOf = (html) => [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
 
 const get = async (path) => {
@@ -177,7 +176,6 @@ await check("#71 loopRestLine: 文字列長を固定する（CSS の折返しに
 	assert.equal(loopRestLine(1000, 999).length, 11, loopRestLine(1000, 999));
 	// ラベルは両テンプレートで同じ表記（片方だけ直る事故を防ぐ）
 	assert.ok(dashboardHtml.includes('"上限（無制限）"'), "ダッシュボードの無制限ラベルが無い");
-	assert.ok(kanbanHtml.includes('"上限（無制限）"'), "右パネルの無制限ラベルが無い");
 	// 無制限ラベルの「無制限」と残り行の「無制限」は同じ語
 	assert.ok(loopRestLine(0, 1).includes("無制限"));
 });

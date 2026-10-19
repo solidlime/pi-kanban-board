@@ -187,24 +187,22 @@ const serveId = add.details.id;
 	});
 }
 
-// --- 10: KANBAN_HTML の描画分岐（静的検証） -----------------------------------
+// --- 10: dashboard の描画分岐（静的検証。 #84 でテンプレートは 1 枚） ---------
 {
 	const src = readFileSync(SRC, "utf8");
-	check("HTML に <video の描画が入っている", () => assert.match(src, /<video /));
+	check("動画は <video> 要素で描画する（img では再生できない）", () =>
+		assert.match(src, /createElement\("video"\)/));
 	check("<video> に controls / preload=metadata が付き、autoplay は無い", () => {
-		const tag = (src.match(/<video controls[^>]*>/) ?? [""])[0];
-		assert.ok(tag.length > 0, "controls 付きの <video> が無い");
-		assert.match(tag, /preload="metadata"/);
-		assert.ok(!/autoplay/i.test(tag), `autoplay が付いている: ${tag}`);
+		const block = (src.match(/im = document\.createElement\("video"\);[\s\S]{0,200}/) ?? [""])[0];
+		assert.ok(block.length > 0, "video 生成ブロックが無い");
+		assert.match(block, /im\.controls = true/);
+		assert.match(block, /im\.preload = "metadata"/);
+		assert.ok(!/autoplay/i.test(block), `autoplay が付いている: ${block}`);
 	});
 	check("<img> 経路も残っている（画像は今のまま）", () =>
 		assert.match(src, /createElement\("img"\)/));
 	check("動画の拡張子分岐が mp4/webm を見ている", () => {
 		assert.match(src, /mediaExt === "mp4" \|\| mediaExt === "webm"/);
-	});
-	check("ドロップ経路の EXT_BY_MIME にも動画が入っている", () => {
-		assert.match(src, /"video\/mp4":"mp4"/);
-		assert.match(src, /"video\/webm":"webm"/);
 	});
 }
 

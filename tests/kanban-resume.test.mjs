@@ -198,32 +198,24 @@ check("resume 後は 1 件送る", () => assert.equal(sent.length, 1, `sent=${se
 
 // --- 5. GUI: halted の理由と復帰手段が出ている（両テンプレート） ------------------
 const DASH = await (await fetch(`${BASE}/`)).text();
-// #67: /api/kanban.html is gone; the template is exported for the tests that pin it.
-const KB = mod.KANBAN_HTML;
-for (const [name, html] of [
-	["DASHBOARD_HTML", DASH],
-	["KANBAN_HTML", KB],
-]) {
-	check(`${name} は両方の停止理由を持つ`, () => {
-		assert.ok(html.includes("ループ上限（"), `${name}: limit の文言が無い`);
-		assert.ok(html.includes("回スタックして停止"), `${name}: stuck の文言が無い`);
-	});
-	check(`${name} は復帰手段（resume / loop on）を案内する`, () => {
-		assert.ok(html.includes("resume"), `${name}: resume の案内が無い`);
-		assert.ok(html.includes("/kanban loop on"), `${name}: loop on の案内が無い`);
-		// GUI のトグルでは直らないことを明記しているか（placebo の防止）
-		assert.ok(/ON にしても再開しない|スイッチを ON にしても再開しない/.test(html), `${name}: トグル無効の注記が無い`);
-	});
-	check(`${name} の <script> は構文として通る`, () => {
-		const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
-		assert.ok(scripts.length > 0, `${name}: script が無い`);
-		for (const src of scripts) new Function(src);
-	});
-}
+// #84: 右パネルのテンプレートは廃止。ダッシュボード 1 枚だけを固定する。
+check("DASHBOARD_HTML は両方の停止理由を持つ", () => {
+	assert.ok(DASH.includes("ループ上限（"), "limit の文言が無い");
+	assert.ok(DASH.includes("回スタックして停止"), "stuck の文言が無い");
+});
+check("DASHBOARD_HTML は復帰手段（resume / loop on）を案内する", () => {
+	assert.ok(DASH.includes("resume"), "resume の案内が無い");
+	assert.ok(DASH.includes("/kanban loop on"), "loop on の案内が無い");
+	// GUI のトグルでは直らないことを明記しているか（placebo の防止）
+	assert.ok(/ON にしても再開しない|スイッチを ON にしても再開しない/.test(DASH), "トグル無効の注記が無い");
+});
+check("DASHBOARD_HTML の <script> はすべて構文として通る", () => {
+	const scripts = [...DASH.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
+	assert.ok(scripts.length > 0, "script が無い");
+	for (const src of scripts) new Function(src);
+});
 check("DASHBOARD_HTML は session 行の halted を描画に使う", () =>
 	assert.ok(/haltText\(s\.halted[,)]/.test(DASH), "s.halted を haltText に渡していない"));
-check("KANBAN_HTML は halted を変化検知に含める（描き直しのため）", () =>
-	assert.ok(/s\.modes, s\.halted\b/.test(KB), "sessions の signature に halted が無い"));
 
 handlers.get("session_shutdown")({ type: "session_shutdown", reason: "quit" });
 delete process.env.KANBAN_DEBUG;

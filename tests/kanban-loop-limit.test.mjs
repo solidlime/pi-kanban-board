@@ -302,7 +302,6 @@ check("parseKanbanArgs: maxloops 範囲外は reject", () =>
 
 // --- 8. テンプレート: 上限 UI と再開が両方にある ------------------------------
 const DASH = await (await fetch(`${BASE}/`)).text();
-const KB = mod.KANBAN_HTML;
 check("DASHBOARD_HTML に上限値の入力欄（/api/maxloops 経由）がある", () => {
 	assert.ok(/\/api\/maxloops/.test(DASH), "maxloops の保存経路が無い");
 	assert.ok(/上限/.test(DASH), "上限のラベルが無い");
@@ -321,20 +320,11 @@ check("DASHBOARD_HTML の停止理由は可変の上限値を出す（リテラ�
 	assert.ok(!/\$\{MAX_LOOPS\}/.test(DASH), "${MAX_LOOPS} が残っている");
 	assert.ok(/haltText\(s\.halted, maxLoopsOf/.test(DASH), "haltText に上限値を渡していない");
 });
-check("KANBAN_HTML にも停止理由と再開の導線がある", () => {
-	assert.ok(/ループ上限（/.test(KB), "limit の文言が無い");
-	assert.ok(/resumeBtn/.test(KB), "再開ボタンが無い");
+check("DASHBOARD_HTML の <script> はすべて構文として通る", () => {
+	const scripts = [...DASH.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
+	assert.ok(scripts.length > 0, "DASHBOARD_HTML: script が無い");
+	for (const src of scripts) new Function(src);
 });
-for (const [name, html] of [
-	["DASHBOARD_HTML", DASH],
-	["KANBAN_HTML", KB],
-]) {
-	check(`${name} の <script> は構文として通る`, () => {
-		const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
-		assert.ok(scripts.length > 0, `${name}: script が無い`);
-		for (const src of scripts) new Function(src);
-	});
-}
 
 for (const h of [first, lim, free, rp]) h.handlers.get("session_shutdown")({ type: "session_shutdown", reason: "quit" });
 delete process.env.KANBAN_DEBUG;

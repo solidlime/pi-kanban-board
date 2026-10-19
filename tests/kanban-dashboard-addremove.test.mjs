@@ -83,8 +83,8 @@ await check("DASHBOARD_HTML: 各列の + ボタン（addbtn）を持つ", () => 
 
 await check("DASHBOARD_HTML: + は /api/add を act() 経由で叩く", () => {
 	assert.ok(SRC.includes('act("/api/add", { col: key, text: v }, ctx)'), "/api/add の呼び出しが無い");
-	// 移植元 KANBAN_HTML の send() ではなく act() であること
-	assert.ok(!SRC.includes('send(board, "add?col='), "KANBAN_HTML の send() が混ざっている");
+	// 移植元の右パネル版 send() ではなく act() であること（#84 で右パネルは廃止）
+	assert.ok(!SRC.includes('send(board, "add?col='), "廃止した右パネルの send() が混ざっている");
 });
 
 await check("DASHBOARD_HTML: 入力欄は Enter / Escape / blur を扱う", () => {

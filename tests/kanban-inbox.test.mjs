@@ -288,7 +288,7 @@ const board = (cards) => ({ cards, nextId: 99 });
 	check("A6 既存 KANBAN ブロックの行は不変", () => {
 		assert.match(line, /^=== KANBAN \(this session\) ===$/m);
 		assert.match(line, /^TODO\s+#1 x$/m);
-		assert.match(line, /GUI: open ~\/\.pi\/kanban\/kanban\.html in the pi-web file panel\./);
+		assert.match(line, /GUI: open http:\/\/[^\s/]+:\d+\/ in a browser\./);
 		assert.match(line, /^=== END KANBAN ===$/m);
 	});
 	await call({ action: "ack", id });

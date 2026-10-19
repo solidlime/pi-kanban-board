@@ -1,6 +1,6 @@
 // #60 ダッシュボード (#38 機能群) の移植漏れの自己検証 (#011)。
 // フレームワーク無しで `node tests/kanban-dashboard-ops38.test.mjs`。
-// DASHBOARD_HTML の実装だけを見る（KANBAN_HTML は別テストの担当）。
+// DASHBOARD_HTML が唯一のテンプレート（#84 で右パネルを廃止）。
 // HOME と KANBAN_PORT を差し替えるので本番の ~/.pi/kanban と 8789 には触れない。
 import assert from "node:assert/strict";
 import { mkdirSync, rmSync } from "node:fs";
@@ -66,9 +66,9 @@ const res = await fetch(`${BASE}/`);
 const html = await res.text();
 const { DASHBOARD_HTML } = mod.__test_exports ?? {};
 await check("GET / は 200", () => assert.equal(res.status, 200));
-await check("// 0. 前提: 応答はダッシュボード（KANBAN_HTML ではない）", () => {
+await check("// 0. 前提: 応答はダッシュボード（別テンプレートを掴んでいない）", () => {
 	assert.ok(html.includes('var API = "/api/dashboard"'), "dashboard のポーリング JS が無い");
-	assert.ok(!html.includes('id="board"'), "kanban.html を掴んでいる");
+	assert.ok(!html.includes('id="board"'), "別テンプレート（右パネル）を掴んでいる");
 });
 // 文字列で見るのは CSS だけ（DOM の挙動は下の vm で叩く）
 await check("#38-5 CSS: .card .t.clampable が 3 行クランプ", () => {

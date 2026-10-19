@@ -1,6 +1,6 @@
 // #53 ダッシュボードのサムネイル描画の自己検証 (#011)。
-// DASHBOARD_HTML の画像付きカードが実サムネ（img/video）を出すこと、
-// KANBAN_HTML の既存実装が壊れていないことを両方固定する。
+// DASHBOARD_HTML の画像付きカードが実サムネ（img/video）を出すことを固定する。
+// #84: 右パネルのテンプレートは廃止され、この経路の回帰は消えた。
 // フレームワーク無しで `node tests/kanban-dashboard-img.test.mjs`。
 // HOME と KANBAN_PORT を差し替えるので本番の ~/.pi/kanban と 8789 には触れない。
 import assert from "node:assert/strict";
@@ -70,8 +70,6 @@ for (let i = 0; i < 40; i++) {
 	await new Promise((r) => setTimeout(r, 100));
 }
 const dashboardHtml = await (await fetch(`${BASE}/`)).text();
-// #67: /api/kanban.html is gone; the template is exported for the tests that pin it.
-const kanbanHtml = mod.KANBAN_HTML;
 
 // --- 最小 DOM（className / classList 連動、parentNode / replaceChild 付き） ----
 function makeEl(tag) {
@@ -116,8 +114,8 @@ function makeEl(tag) {
 		set innerHTML(v) {
 			e._html = String(v);
 			e.children.length = 0;
-			// 実 DOM と同じく、先頭のタグ 1 つ分だけ子要素を作る（KANBAN_HTML の
-			// `tmp.innerHTML = '<video ...>'` 経由の生成を観測するため）。
+			// 実 DOM と同じく、先頭のタグ 1 つ分だけ子要素を作る
+			// （`tmp.innerHTML = '<video ...>'` 経由の生成を観測するため）。
 			const m = /^<([a-zA-Z]+)/.exec(e._html);
 			if (m) e.appendChild(makeEl(m[1].toLowerCase()));
 		},
@@ -213,9 +211,8 @@ const cards = [
 const cardById = (root) => walk(root).filter((n) => n.className.split(" ").includes("card"));
 const mediaIn = (card) => walk(card).filter((n) => n.tagName === "img" || n.tagName === "video");
 
-// 期待する src。KANBAN_HTML の MEDIA は origin 付き絶対 URL、ダッシュボードは相対。
+// 期待する src。ダッシュボードの MEDIA は相対 URL。
 const EXPECT_DASH = `/api/media/${encodeURIComponent(PNG)}`;
-const EXPECT_KANBAN = `${BASE}/api/media/${encodeURIComponent(PNG)}`;
 
 // ===========================================================================
 // DASHBOARD_HTML
@@ -285,59 +282,6 @@ const EXPECT_KANBAN = `${BASE}/api/media/${encodeURIComponent(PNG)}`;
 			dashboardHtml.indexOf("}", dashboardHtml.indexOf(".card img,.card video{")),
 		);
 		assert.ok(rule.includes("var(--") || !/#[0-9a-fA-F]{3,8}\b/.test(rule), "新しい色を発明している");
-	});
-}
-
-// ===========================================================================
-// KANBAN_HTML（既存動作の回帰）
-// ===========================================================================
-{
-	const byId = await run(kanbanHtml, 'var API = BP + "//"', (u) => {
-		if (u.includes("/api/kanban"))
-			return { ok: true, global: { cards }, modes: { session: {}, global: {} } };
-		if (u.includes("/api/sessions"))
-			return {
-				ok: true,
-				sessions: [
-					{
-						id: "s1",
-						name: "me",
-						cwd: "",
-						mine: true,
-						isActive: true,
-						modified: 0,
-						counts: { todo: 4, doing: 0, done: 0 },
-						modes: { session: {}, global: {} },
-						cards: [],
-					},
-				],
-			};
-		return { ok: true };
-	});
-	const root = byId["global"];
-	const cs = cardById(root);
-
-	await check("kanban: png は img、mp4/webm は video で描画される", () => {
-		assert.ok(cs.length >= 4, `カードが描画されていない: ${cs.length}`);
-		assert.equal(mediaIn(cs[0])[0].tagName, "img", "png が img でない");
-		assert.equal(mediaIn(cs[1])[0].tagName, "video", "mp4 が video でない");
-		assert.equal(mediaIn(cs[2])[0].tagName, "video", "webm が video でない");
-	});
-
-	await check("kanban: src は <origin>/api/media/<urlencoded>", () => {
-		assert.equal(mediaIn(cs[0])[0].src, EXPECT_KANBAN, `src が違う: ${mediaIn(cs[0])[0].src}`);
-	});
-
-	await check("kanban: img 無しカードには img/video を作らない", () => {
-		assert.equal(mediaIn(cs[3]).length, 0, "img 無しカードにメディア要素が付いた");
-	});
-
-	await check("kanban: onerror で .badimg / 🖼? に差し替わる", () => {
-		const im = mediaIn(cs[0])[0];
-		im.onerror();
-		const bad = walk(root).find((n) => n.className.split(" ").includes("badimg"));
-		assert.ok(bad, ".badimg に差し替わっていない");
-		assert.equal(bad.textContent, "🖼?", `差し替え文言が違う: ${bad.textContent}`);
 	});
 }
 

@@ -32,11 +32,11 @@ const CASES = [
   ["activeElement null", null, false],
 ];
 
-test("#70 isEditing: 両テンプレートに定義がある", () => {
-  assert.equal(defs.length, 2, "DASHBOARD_HTML と KANBAN_HTML の2つ");
+test("#70 isEditing: テンプレートに定義がある（#84 でダッシュボードのみ）", () => {
+  assert.equal(defs.length, 1, "DASHBOARD_HTML の1つ");
 });
 
-test("#70 isEditing: 打鍵要素だけを編集中と判定する（両テンプレート）", () => {
+test("#70 isEditing: 打鍵要素だけを編集中と判定する", () => {
   for (const [i, body] of defs.entries()) {
     for (const [name, active, want] of CASES) {
       assert.equal(evalTpl(body, active), want, `template${i + 1}: ${name}`);

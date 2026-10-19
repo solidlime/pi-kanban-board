@@ -62,28 +62,9 @@ for (let i = 0; i < 40; i++) {
 	}
 	await new Promise((r) => setTimeout(r, 100));
 }
-// #67: /api/kanban.html is gone; the template is exported for the tests that pin it.
-const html = mod.KANBAN_HTML;
-
-// --- 3. インライン追加: + ボタン → 入力欄 → Enter で add ----------------------
-await check("#38-3 + ボタンで入力欄を開き、Enter で add を送る", () => {
-	assert.ok(html.includes('addBtn.className = "addbtn"'), "+ ボタン生成が無い");
-	assert.ok(html.includes("addBtn.onclick = function(){ showInput(true); }"), "+ クリックで入力欄を開かない");
-	assert.ok(html.includes("showInput(false);"), "初期状態で入力欄を閉じていない");
-	assert.ok(html.includes('input.style.display = on ? "" : "none"'), "入力欄の表示切替が無い");
-	assert.ok(html.includes('send(board, "add?col=" + col + "&text=" + encodeURIComponent(v))'), "Enter の add 送信が無い");
-	assert.ok(html.includes('input.placeholder = "+ \\u8ffd\\u52a0"'), "追加プレースホルダが無い");
-	assert.ok(html.includes('addBtn.setAttribute("aria-label"'), "+ ボタンの aria-label が無い");
-});
-
-// --- 4. カードに画像を落とす (クライアント側の配線) ---------------------------
-await check("#38-4 カードへのファイル drop は id 付きで upload に渡す", () => {
-	assert.ok(html.includes("function upload(board, col, file, id)"), "upload が id を受けていない");
-	assert.ok(html.includes('(id === undefined ? "" : "&id=" + id)'), "upload が id を URL に付けていない");
-	assert.ok(html.includes("upload(board, c.col, f, c.id);"), "カード drop がカード id を渡していない");
-	assert.ok(html.includes('e.dataTransfer.types.indexOf("Files") < 0'), "ファイル以外の drop を弾いていない");
-	assert.ok(html.includes("if (!f) return; // card move"), "カード移動 drag を素通ししていない");
-});
+// #84: KANBAN_HTML retired. #38-3〜#38-6 / #38-11 の GUI 側は
+// tests/kanban-dashboard-ops38.test.mjs がダッシュボードを実際に動かして検証する。
+// ここに残るのはサーバ API と純関数だけ。
 
 // --- 4. サーバ側: id 付き upload は新規カードを作らず既存カードに紐付く -------
 const SID = "ops38-session";
@@ -122,25 +103,6 @@ await check("#38-4 /api/upload?id= は既存カードに紐付き、新規カー
 	assert.equal(card.text, "既存カード", "id 指定で本文が書き換わった");
 });
 
-// --- 5. 本文折り畳み ----------------------------------------------------------
-await check("#38-5 60 字超は 3 行クランプ + クリックで開閉", () => {
-	assert.ok(html.includes("-webkit-line-clamp:3"), "3 行クランプ CSS が無い");
-	assert.ok(html.includes('tt.classList.add("clampable")'), "clampable 付与が無い");
-	assert.ok(html.includes('(c.text || "").length > 60'), "長文判定が無い");
-	assert.ok(html.includes('tt.classList.toggle("open")'), "クリック開閉が無い");
-});
-
-// --- 6. キーボード操作 --------------------------------------------------------
-await check("#38-6 Tab で入り ←→ / Enter / m が効く", () => {
-	assert.ok(html.includes("el.tabIndex = 0"), "カードが focus 可能でない");
-	assert.ok(html.includes('e.key === "ArrowLeft" && ci > 0'), "← の列移動が無い");
-	assert.ok(html.includes('e.key === "ArrowRight" && ci < COLS.length - 1'), "→ の列移動が無い");
-	assert.ok(html.includes('e.key === "Enter"'), "Enter の処理が無い");
-	assert.ok(html.includes('"move?id=" + c.id + "&col=doing"'), "Enter で DOING へ行かない");
-	assert.ok(html.includes('e.key === "m"'), "m のメモ起動が無い");
-	assert.ok(html.includes("if (e.target !== el) return;"), "子要素のキーを奪っている");
-});
-
 // --- 10. 注入の DOING 経過時間 (renderInjectionText は純関数) -----------------
 await check("#38-10 DOING 行に movedAt から「N分前から」が出る", () => {
 	const now = Date.now();
@@ -163,15 +125,6 @@ await check("#38-10 movedAt 無しの DOING は何も足さない (「0分」を
 	const out = renderInjectionText({ cards: [{ id: 1, text: "x", col: "doing" }], nextId: 2 });
 	const doingLine = out.split("\n").find((l) => l.startsWith("DOING"));
 	assert.ok(!doingLine.includes("分前から"), `未スタンプなのに経過が出た: ${doingLine}`);
-});
-
-// --- 11. GUI の stale ⏳ ------------------------------------------------------
-await check("#38-11 2 時間超の DOING に ⏳ を付ける (削除はしない)", () => {
-	assert.ok(html.includes("STALE_GUI_MS = 2 * 60 * 60 * 1000"), "stale 閾値が無い");
-	assert.ok(html.includes('c.col === "doing" && typeof c.movedAt === "number"'), "DOING 判定が無い");
-	assert.ok(html.includes("Date.now() - c.movedAt > STALE_GUI_MS"), "経過判定が無い");
-	assert.ok(html.includes('st.textContent = "\u23f3"'), "⏳ の表示が無い");
-	assert.ok(!/if \(.*STALE_GUI_MS.*\)\s*\{[^}]*remove/i.test(html), "stale カードを消している");
 });
 
 // --- 14. /api/kanban?fields= の射影 (既存呼び出しは無指定で不変) --------------

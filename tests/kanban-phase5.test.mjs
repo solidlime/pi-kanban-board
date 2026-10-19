@@ -1,7 +1,7 @@
 // kanban Phase 5 の自己検証。フレームワーク無しで `node tests/kanban-phase5.test.mjs`。
 // 対象: parseKanbanArgs（純関数）/ intervalMinOf / shouldAutoTick(menuOpen, intervalMs) /
 // withMenuGuard の finally / A1: session_tree 後 poll が新しい ctx を見ること /
-// KANBAN_HTML の <script> が構文として妥当なこと。
+// ダッシュボードの <script> が構文として妥当なこと。
 // HOME と KANBAN_PORT を差し替えるので、本番の ~/.pi/kanban と 8789 には触れない。
 import assert from "node:assert/strict";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
@@ -153,44 +153,44 @@ for (let i = 0; i < 40; i++) {
 	await new Promise((r) => setTimeout(r, 100));
 }
 
-// --- B4: KANBAN_HTML の <script> が構文として妥当 --------------------------------
-// #67: the /api/kanban.html route is deleted (pi-web split). The template is still
-// exported and still written to ~/.pi/kanban/kanban.html, so the checks stay — they
-// just read the export instead of the removed route.
+// --- B4: ダッシュボードの <script> が構文として妥当 ------------------------------
+// #84: 右パネルのテンプレートは廃止。writeBoardHtml() が ~/.pi/kanban/dashboard.html に
+// 書く 1 枚だけを検証する（ディスクに降りた実物を見るので、定数と書き出しの両方を固定する）。
 {
-	// #67: read the file writeBoardHtml() mirrors — no route, and it pins what actually
-	// lands on disk. It appears at activate/session_start, so wait for it.
 	let html = "";
 	for (let i = 0; i < 60; i++) {
 		try {
-			html = readFileSync(`${HOME_DIR}/.pi/kanban/kanban.html`, "utf8");
+			html = readFileSync(`${HOME_DIR}/.pi/kanban/dashboard.html`, "utf8");
 			if (html.length > 0) break;
 		} catch {
 			// まだ書かれていない
 		}
 		await sleep(100);
 	}
-	const m = html.match(/<script>([\s\S]*?)<\/script>/);
-	check("kanban.html に <script> がある", () => assert.ok(m, "no <script> block"));
-	check("kanban.html の script が構文 OK", () => {
+	const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
+	check("dashboard.html に <script> がある", () => assert.ok(scripts.length > 0, "no <script> block"));
+	check("dashboard.html の script がすべて構文 OK", () => {
 		// new Function は実行せず構文検査だけ（document は呼ばれた時に初めて要る）。
-		new Function(m[1]);
+		for (const src of scripts) new Function(src);
 	});
-	check("kanban.html に interval の書き込み経路がある", () => {
-		assert.match(html, /interval\?min=/);
+	check("dashboard.html に interval の書き込み経路がある", () => {
+		assert.match(html, /interval\?min=|\/api\/interval/);
 	});
-	check("kanban.html は ~/.pi/kanban に書かれている（定数は残っている）", () => {
-		assert.ok(html.length > 1000, "kanban.html が空");
-		assert.equal(typeof mod.KANBAN_HTML, "string");
-		assert.ok(mod.KANBAN_HTML.length > 1000);
+	// DASHBOARD_HTML は export されていないので、ディスクと GET / の一致で固定する。
+	// check() は同期なので、fetch はここで await してから渡す。
+	const served = await (await fetch(`http://127.0.0.1:${PORT}/`)).text();
+	check("dashboard.html は ~/.pi/kanban に書かれ、GET / と同じものが降りている", () => {
+		assert.ok(html.length > 1000, "dashboard.html が空");
+		assert.equal(served, html, "ディスクの dashboard.html と GET / の応答が違う");
 	});
 }
 
-// #67: the removed route must stay removed. Await first, then check(), because
-// check() is synchronous and would count a rejected promise as a pass.
+// #84: the template is gone, so the 404 guard went with it — a stale caller hits the
+// board gate (400). Await first, then check(), because check() is synchronous and would
+// count a rejected promise as a pass.
 {
 	const res = await fetch(`http://127.0.0.1:${PORT}/api/kanban.html`);
-	check("/api/kanban.html は 404", () => assert.equal(res.status, 404));
+	check("/api/kanban.html は配信されない（ボードゲートの 400）", () => assert.equal(res.status, 400));
 }
 
 // --- B1/B2: ハンドラ実測（add は session TODO に入り、無言でないこと） ------------

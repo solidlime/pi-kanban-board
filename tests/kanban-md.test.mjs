@@ -78,15 +78,15 @@ check("生の HTML は常にエスケープ (< が残らない)", () => {
 	assert.ok(!out.includes("<a href"), out);
 });
 
-// --- 適用範囲 (両 HTML が同じ md を使う / esc(c.text) は消えている) ----------
+// --- 適用範囲 (dashboard だけが md を使う / esc(c.text) は消えている) -----------
 const SRC = readFileSync(new URL("../extensions/kanban.ts", import.meta.url).pathname, "utf8");
-check("カード本文は両 HTML で md(c.text)", () => {
-	assert.equal((SRC.match(/md\(c\.text\)/g) || []).length, 2);
+check("カード本文は md(c.text) （#84: テンプレートは dashboard のみ）", () => {
+	assert.equal((SRC.match(/md\(c\.text\)/g) || []).length, 1);
 	assert.ok(!SRC.includes("esc(c.text)"));
 });
 check("md() の定義は KANBAN_MD_JS の 1 箇所だけ", () => {
 	assert.equal((SRC.match(/function md\(s\)/g) || []).length, 1);
-	assert.equal((SRC.match(/KANBAN_MD_JS/g) || []).length, 3); // 定義1 + 注入2
+	assert.equal((SRC.match(/KANBAN_MD_JS/g) || []).length, 2); // 定義1 + 注入1
 });
 
 if (failures.length) {

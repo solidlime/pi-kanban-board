@@ -1,6 +1,7 @@
-// #59 右パネル（KANBAN_HTML）の upload() が `file.type` だけを見て拡張子を決めて
-// いたため、type が空になるドラッグ元（curl・一部 OS・一部ファイルマネージャ）で
-// "unsupported media type" に落ちていた問題の自己検証。
+// #59 upload() が `file.type` だけを見て拡張子を決めていたため、type が空になる
+// ドラッグ元（curl・一部 OS・一部ファイルマネージャ）で "unsupported media type" に
+// 落ちていた問題の自己検証。#84 でテンプレートはダッシュボード 1 枚になったので、
+// 不変条件（type だけで拡張子を決めない）は配信される DASHBOARD_HTML 側で固定する。
 // フレームワーク無しで `node tests/kanban-upload-ext.test.mjs`。
 // HOME と KANBAN_PORT を差し替えるので本番の ~/.pi/kanban と 8789 には触れない。
 import assert from "node:assert/strict";
@@ -69,8 +70,7 @@ for (let i = 0; i < 40; i++) {
 	}
 	await new Promise((r) => setTimeout(r, 100));
 }
-// #67: /api/kanban.html is gone; the template is exported for the tests that pin it.
-const kanbanHtml = mod.KANBAN_HTML;
+const dashboardHtml = await (await fetch(`${BASE}/`)).text();
 
 // --- 最小 DOM ------------------------------------------------------------------
 function makeEl(tag) {
@@ -165,12 +165,13 @@ function walk(node, out = []) {
 }
 
 const fire = (el, type, ev) => (el._lis[type] || []).forEach((fn) => fn(ev));
+const hasCls = (el, c) => String(el.className).split(" ").includes(c);
 
-/** KANBAN_HTML の本体スクリプトを vm で走らせ、byId と fetch の URL 記録を返す。 */
-async function runKanban() {
-	const scripts = [...kanbanHtml.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
-	const apiScript = scripts.find((s) => s.includes('var API = BP + "//"'));
-	assert.ok(apiScript, "KANBAN_HTML の本体スクリプトが見つからない");
+/** 配信されるダッシュボードの本体スクリプトを vm で走らせ、byId と fetch の URL 記録を返す。 */
+async function runDashboard() {
+	const scripts = [...dashboardHtml.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
+	const apiScript = scripts.find((s) => s.includes('var API = "/api/dashboard"'));
+	assert.ok(apiScript, "dashboard の本体スクリプトが見つからない");
 	const byId = {};
 	const calls = [];
 	const document = {
@@ -190,39 +191,21 @@ async function runKanban() {
 		fetch: (u) => {
 			const url = String(u);
 			calls.push(url);
-			if (url.includes("/api/kanban"))
+			if (url.includes("/api/dashboard"))
 				return Promise.resolve({
 					ok: true,
 					status: 200,
 					json: () =>
 						Promise.resolve({
-							ok: true,
-							global: { cards: [{ id: 1, text: "g", col: "todo" }] },
-							modes: { global: { doingLoop: true, autoPick: false, intervalMin: 5 } },
-						}),
-				});
-			if (url.includes("/api/sessions"))
-				return Promise.resolve({
-					ok: true,
-					status: 200,
-					json: () =>
-						Promise.resolve({
-							ok: true,
+							host: "test-host",
 							now: "2026-01-01T00:00:00.000Z",
 							stats: { sessions: 1, active: 1, todo: 1, doing: 0, done: 0, serve: 0, media: 0 },
-							sessions: [
-								{
-									id: "s1",
-									name: "me",
-									cwd: "",
-									mine: true,
-									isActive: true,
-									updatedAt: "2026-01-01T00:00:00.000Z",
-									counts: { todo: 1, doing: 0, done: 0 },
-									modes: { session: {}, global: {} },
-									cards: [{ id: 7, text: "mine card", col: "todo" }],
-								},
-							],
+							global: {
+								counts: { todo: 1, doing: 0, done: 0 },
+								modes: { doingLoop: true, autoPick: false, intervalMin: 5 },
+								cards: [{ id: 7, text: "global card", col: "todo" }],
+							},
+							sessions: [],
 							serve: [],
 						}),
 				});
@@ -241,7 +224,7 @@ async function runKanban() {
 	return { byId, calls };
 }
 
-const { byId, calls } = await runKanban();
+const { byId, calls } = await runDashboard();
 
 /** 指定カードへファイルを落とし、飛んだ /api/upload の URL を返す（無ければ null）。 */
 async function dropOn(card, file) {
@@ -255,10 +238,10 @@ async function dropOn(card, file) {
 	return calls.find((u) => u.includes("/api/upload")) || null;
 }
 
-const mineCard = () => walk(byId["sessions"]).find((n) => n.className.split(" ").includes("card"));
+const mineCard = () => walk(byId["global"]).find((n) => hasCls(n, "card"));
 
 await check("前提: カードが描画されている", () => {
-	assert.ok(mineCard(), "セッション看板のカードが無い");
+	assert.ok(mineCard(), "GLOBAL 看板のカードが無い");
 });
 
 await check("#59 type が空でもファイル名から拡張子を引いて送る（x.png）", async () => {
@@ -298,9 +281,9 @@ await check("#59 type も名前の拡張子も駄目なら送らずに理由を�
 		arrayBuffer: () => Promise.resolve(new ArrayBuffer(4)),
 	});
 	assert.equal(up, null, `非対応拡張子なのに upload が飛んだ: ${up}`);
-	const err = byId["err"];
+	const note = byId["note"];
 	assert.ok(
-		String(err && err.textContent).length > 0,
+		String(note && note.textContent).includes("非対応"),
 		"非対応ファイルの理由が画面に出ていない（無言で失敗）",
 	);
 });
