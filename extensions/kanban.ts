@@ -4719,6 +4719,26 @@ export const KANBAN_HTML = `<!doctype html>
   // #72: 60 字超の本文のクリック展開（.open）は表示状態なので、sig ではなくここで保持する。
   // sig に載せるとクリックのたびに描画が走る（描画時にここから引くだけにする）。
   var cardOpen = {};    // "board.key:col#id" -> true while the card's body is expanded
+  // #73: 列ごとのスクロール位置。.cards は描画のたびに作り直されるので、sig ではなく
+  // ここで保持し、描画後に data-ckey で引き当てて戻す。リロードで先頭に戻るのが自然な
+  // 挙動なので localStorage には残さない。
+  var colScroll = {};   // "board.key:col" -> scrollTop
+  // 畳んだ列は clientHeight 0 で位置を測れない。測れた値だけ覚える（0 で潰さない）。
+  function saveScroll(root){
+    if (!root) return;
+    var ds = root.querySelectorAll(".cards[data-ckey]");
+    for (var i = 0; i < ds.length; i++){
+      if (ds[i].clientHeight > 0) colScroll[ds[i].getAttribute("data-ckey")] = ds[i].scrollTop;
+    }
+  }
+  function restoreScroll(root){
+    if (!root) return;
+    var ds = root.querySelectorAll(".cards[data-ckey]");
+    for (var i = 0; i < ds.length; i++){
+      var v = colScroll[ds[i].getAttribute("data-ckey")];
+      if (v && ds[i].clientHeight > 0) ds[i].scrollTop = v;
+    }
+  }
   // #72: 展開状態の読み直し + 消えたカードの掃除（右パネル側、dashboard と同形）。
   // 掃除が起きたときだけ書き戻すので、保存も痩せる。
   function loadOpen(ckey, list){
@@ -5115,6 +5135,7 @@ ${KANBAN_MD_JS}
       box.appendChild(h);
       var deck = document.createElement("div");
       deck.className = "cards";
+      deck.setAttribute("data-ckey", ckey);
       loadOpen(ckey, list); // #72: 描画のたびに読み直し、消えたカードの分を掃除する
       list.forEach(function(c){ deck.appendChild(card(board, c, ci)); });
       if (!list.length) {
@@ -5338,12 +5359,16 @@ ${KANBAN_MD_JS}
     ]);
     if (sig === last) return;
     last = sig;
+    saveScroll(globalEl); // #73: 消す前に今の位置を控える
+    saveScroll(listEl);
     globalEl.innerHTML = "";
     globalEl.appendChild(globalHead());
     // #62: 畳んでいたら中身（列）を DOM に作らない。ダッシュボードと同じ方式。
     if (gOpen) globalEl.appendChild(columns({ key: "g", scope: "global", sid: null, editable: true, modes: gmodes }, globalCards));
     listEl.innerHTML = "";
     sessions.forEach(function(row){ listEl.appendChild(session(row)); });
+    restoreScroll(globalEl); // #73: 差し替え後に戻す（detached だと測れない）
+    restoreScroll(listEl);
   }
 
   function reload(msg){
