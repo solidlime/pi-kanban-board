@@ -5195,10 +5195,11 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 	};
 
 	const statusText = (m: ModePair, l: LoopState, scope: Scope): string => {
-		const rest = Math.max(0, MAX_LOOPS - l.count);
+		// #67: the cap is per (scope, sid) now; the footer shows the one that is in force.
+		const cap = maxLoopsOf(m);
 		// #38-12: the footer says WHY it stopped, not only that it did.
 		const halt = ` /${haltTag(l)}`;
-		return `[${scope}] doingLoop ${m.doingLoop ? "ON" : "OFF"} / autoPick ${m.autoPick ? "ON" : "OFF"} / 残り ${rest}/${MAX_LOOPS}${halt}`;
+		return `[${scope}] doingLoop ${m.doingLoop ? "ON" : "OFF"} / autoPick ${m.autoPick ? "ON" : "OFF"} / ${loopBudgetText(cap, l.count)}${halt}`;
 	};
 
 	/** Set this session's footer tag, then redraw (the tag lives on the driving board's line). */
@@ -5230,13 +5231,32 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 	 * too, since a resume is the user saying "try again". Shared by `/kanban loop on`
 	 * and the `kanban` tool's resume so the two can never drift.
 	 */
-	const resetLoopForResume = (): void => {
+	const resetLoopForResume = (): { was: string; oldCount: number } => {
+		const was = loop.halted === null ? "なし" : `halted:${loop.halted}`;
+		const oldCount = loop.count;
 		loop = { count: 0, halted: null, scope: null, stuckId: null, stuckCount: 0, lastActivityAt: 0 };
 		lastTickAt = 0; // resume must fire on the next poll, not after the interval
 		pollSnapshot = null; // force the next poll to redraw
 		warnedDeadCtx = false;
 		deadCtxStrikes = 0;
 		persistLoop();
+		return { was, oldCount };
+	};
+
+	/**
+	 * #67: the one resume. resetLoopForResume alone is not a resume — the cap achieved its
+	 * stop by switching BOTH scopes' doingLoop off, so lifting the halt while they stay off
+	 * would resume a loop that still cannot run. Shared by `/kanban loop on`, the `kanban`
+	 * tool's resume and the dashboard's 再開 (via /api/resume -> resumeRequests).
+	 */
+	const resumeWithModes = (ctx: ExtensionContext, sid: string): { was: string; oldCount: number } => {
+		const before = resetLoopForResume();
+		const f = readModesFile();
+		setMode(f, sid, "session", "doingLoop", true);
+		setMode(f, sid, "global", "doingLoop", true);
+		writeModesFile(f);
+		paintLoop(ctx, sid); // clears the footer tag and the dashboard's halted row
+		return before;
 	};
 
 	/**
@@ -5295,6 +5315,25 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 		setStuckLimit(f, sid, scope, count);
 		writeModesFile(f);
 		ctx.ui.notify(`[${scope}] スタック判定を ${count}回 に設定`);
+		refresh(ctx, sid);
+	};
+
+	/** #67: `/kanban maxloops [global] [回]`。0 = 無制限。無指定で現在値。stuck と同じ形。 */
+	const runMaxLoopsCommand = (ctx: ExtensionContext, sid: string, scope: Scope, n: number | undefined): void => {
+		const f = readModesFile();
+		if (n === undefined) {
+			const cur = maxLoopsOf(modesFor(f, sid, scope));
+			ctx.ui.notify(`[${scope}] ループ上限: ${cur > 0 ? `${cur}回` : "無制限"}`);
+			return;
+		}
+		if (!isValidMaxLoops(n)) {
+			ctx.ui.notify(`不正な値: ${n}。現状維持（0〜${MAX_LOOPS_CAP}の整数、0 = 無制限）`);
+			return;
+		}
+		ensureSessionBoard(sid);
+		setMaxLoops(f, sid, scope, n);
+		writeModesFile(f);
+		ctx.ui.notify(`[${scope}] ループ上限を ${n > 0 ? `${n}回` : "無制限"} に設定`);
 		refresh(ctx, sid);
 	};
 
@@ -5463,6 +5502,17 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 			deadCtx(err); // disposed ctx: skip this tick
 			return;
 		}
+		// #67: the dashboard's 再開 lands here. The request is a token, so one poll tick
+		// consumes it: a stale request can never resume twice, and a resume for a session
+		// whose process is gone simply stays parked.
+		if (resumeRequests.delete(sid)) {
+			try {
+				resumeWithModes(ownCtx, sid);
+				logServer(`resume from dashboard sid=${sid}`);
+			} catch (err) {
+				deadCtx(err);
+			}
+		}
 		// Before the snapshot shortcut: time passes even when no board file changes,
 		// so a still board would never wake the agent.
 		if (!tickInFlight) {
@@ -5587,6 +5637,10 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 			}
 			if (parsed.kind === "interval" || parsed.kind === "intervalStatus") {
 				runIntervalCommand(ctx, sid, parsed.scope, parsed.kind === "interval" ? parsed.minutes : undefined);
+				return;
+			}
+			if (parsed.kind === "maxLoops" || parsed.kind === "maxLoopsStatus") {
+				runMaxLoopsCommand(ctx, sid, parsed.scope, parsed.kind === "maxLoops" ? parsed.n : undefined);
 				return;
 			}
 			if (parsed.kind === "stuck" || parsed.kind === "stuckStatus") {
@@ -5871,17 +5925,12 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 				case "resume": {
 					// #58: a halt is process memory + one JSONL entry; no HTTP call can lift it,
 					// so the agent (and a human through it) gets the same reset `/kanban loop on` does.
+					// #67: the reset itself lives in resumeWithModes, shared with /api/resume.
 					const was = loop.halted === null ? "なし" : `halted:${loop.halted}`;
 					const oldCount = loop.count;
-					resetLoopForResume();
-					const f = readModesFile();
-					// The cap achieved its stop by switching both scopes off: lifting the halt
-					// while they stay off would resume a loop that still cannot run.
-					setMode(f, sid, "session", "doingLoop", true);
-					setMode(f, sid, "global", "doingLoop", true);
-					writeModesFile(f);
-					paintLoop(ctx, sid); // clears the footer tag and the dashboard's halted row
-					message = `resumed: ${was} / count ${oldCount} → 0 / doingLoop ON (session+global) / 残り ${MAX_LOOPS}/${MAX_LOOPS}`;
+					resumeWithModes(ctx, sid);
+					const capNow = maxLoopsOf(modesFor(readModesFile(), sid, "session"));
+					message = `resumed: ${was} / count ${oldCount} → 0 / doingLoop ON (session+global) / ${loopBudgetText(capNow, 0)}`;
 					break;
 				}
 				default:
@@ -6054,7 +6103,9 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 
 		// (3) the cap: turn doingLoop off so the NEXT settle is a real stop. Both scopes,
 		// or the other one keeps running on the next settle and the cap is no cap.
-		if (loop.count >= MAX_LOOPS) {
+		// #67: the cap is stored per (scope, sid); 0 means unlimited, so no halt at all.
+		const cap = maxLoopsOf(modesFor(f, sid, loop.scope ?? scope));
+		if (cap > 0 && loop.count >= cap) {
 			loop.halted = "limit";
 			setMode(f, sid, "session", "doingLoop", false);
 			setMode(f, sid, "global", "doingLoop", false);
@@ -6161,6 +6212,14 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 			hasTimer: () => pollTimer !== null,
 			poll,
 			sweepServe,
+			// #67: the dashboard's 再開 is exercised through the real poll hand-off
+			// (/api/resume parks a token, poll consumes it); these let a test assert
+			// the parked state instead of sleeping on a timer.
+			resumeRequests,
+			resumeNow: (sid: string) => {
+				if (ownCtx === null) throw new Error("no session ctx");
+				return resumeWithModes(ownCtx, sid);
+			},
 		},
 	};
 }
