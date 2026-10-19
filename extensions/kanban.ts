@@ -3656,6 +3656,11 @@ const DASHBOARD_HTML = `<!doctype html>
   // isEditing() では守れず、分境界の再描画で必ず畳まれる。sig には載せない（載せると
   // クリックのたびに描画が走ってフォーカスが飛ぶ）— 描画時にここから引くだけ。
   var cardOpen = {};     // ckey + "#" + id -> true while the card's body is expanded
+  // #75: その場追加の入力欄（.addin）は再描画で列ごと作り直される。開閉と打ちかけの文字を
+  // 列（ckey）単位で持つ。sig には載せない（載せると打鍵のたびに描画が走ってフォーカスが飛ぶ）。
+  // 捨てるのは明示的な操作（Escape / Enter 確定 / 空のまま blur）だけ。blur で無条件に
+  // 捨てると、再描画前の一瞬のフォーカス移動で打ちかけが消える（#75 の不具合そのもの）。
+  var addDraft = {};     // ckey -> 打ちかけの文字列（キーがある = 開いている）
   var gOpen = true;      // #62: GLOBAL 看板の開閉（既定は開）
   // #62: 開閉だけ localStorage に残す。kb-theme と同じく失敗は握りつぶし、
   // 保存が無いキーは今の既定のまま。ns で 2 テンプレートを分ける（片方が他方を壊さない）。
@@ -4272,28 +4277,42 @@ ${KANBAN_MD_JS}
       addIn.placeholder = "追加して Enter";
       addIn.setAttribute("aria-label", "この列にカードを追加");
       var sending = false;
+      // 表示の切替だけを行う。打ちかけの破棄は clearAdd() に分離する（#75）。
       function showAdd(on){
         addBtn.style.display = on ? "none" : "";
         addIn.style.display = on ? "" : "none";
         if (on) addIn.focus();
       }
-      showAdd(false);
+      function clearAdd(){
+        delete addDraft[ckey];
+        addIn.value = "";
+      }
+      // #75: 再描画を跨いで開いたまま・打ちかけの文字も残す（描画のたびにここで戻す）。
+      if (addDraft[ckey] != null) addIn.value = addDraft[ckey];
+      showAdd(addDraft[ckey] != null);
+      addIn.addEventListener("input", function(){ addDraft[ckey] = addIn.value; });
       addBtn.addEventListener("click", function(){
         if (!ctx.active) { note(RO_MSG); return; }
         showAdd(true);
       });
       addIn.addEventListener("keydown", function(e){
-        if (e.key === "Escape") { e.preventDefault(); addIn.value = ""; showAdd(false); return; }
+        if (e.key === "Escape") { e.preventDefault(); clearAdd(); showAdd(false); return; }
         if (e.key !== "Enter") return;
         var v = addIn.value.trim();
-        addIn.value = "";
+        clearAdd();
         if (!v) { showAdd(false); return; }
         sending = true;
         act("/api/add", { col: key, text: v }, ctx).then(function(){ sending = false; });
         showAdd(false);
       });
-      // 送信中（act の往復中）の blur では閉じない: reload 由来の blur で二重に閉じるのを防ぐ
-      addIn.addEventListener("blur", function(){ if (!sending) showAdd(false); });
+      // 送信中（act の往復中）の blur では閉じない: reload 由来の blur で二重に閉じるのを防ぐ。
+      // 値が入っているなら閉じない（KANBAN_HTML の .add と同じ流儀）。打鍵中の再描画や
+      // 別要素のクリックで打ちかけを失わせないため（#75）。
+      addIn.addEventListener("blur", function(){
+        if (sending || addIn.value.trim()) return;
+        clearAdd();
+        showAdd(false);
+      });
       box.appendChild(addBtn);
       box.appendChild(addIn);
       wrap.appendChild(box);
@@ -4892,6 +4911,9 @@ export const KANBAN_HTML = `<!doctype html>
   // #72: 60 字超の本文のクリック展開（.open）は表示状態なので、sig ではなくここで保持する。
   // sig に載せるとクリックのたびに描画が走る（描画時にここから引くだけにする）。
   var cardOpen = {};    // "board.key:col#id" -> true while the card's body is expanded
+  // #75: その場追加の入力欄（.add）の開閉と打ちかけの文字。dashboard と同形で、
+  // 列単位（board.key:col）に持つ。sig には載せない。捨てるのは明示的な操作だけ。
+  var addDraft = {};    // "board.key:col" -> 打ちかけの文字列（キーがある = 開いている）
   // #73: 列ごとのスクロール位置。.cards は描画のたびに作り直されるので、sig ではなく
   // ここで保持し、描画後に data-ckey で引き当てて戻す。リロードで先頭に戻るのが自然な
   // 挙動なので localStorage には残さない。
@@ -5350,23 +5372,35 @@ ${KANBAN_MD_JS}
         var input = document.createElement("input");
         input.className = "add";
         input.placeholder = "+ \\u8ffd\\u52a0";
+        // 表示の切替だけを行う。打ちかけの破棄は clearInput() に分離する（#75）。
         var showInput = function(on){
           addBtn.style.display = on ? "none" : "";
           input.style.display = on ? "" : "none";
           if (on) input.focus();
         };
-        showInput(false);
+        var clearInput = function(){
+          delete addDraft[ckey];
+          input.value = "";
+        };
+        // #75: 再描画を跨いで開いたまま・打ちかけの文字も残す（描画のたびにここで戻す）。
+        if (addDraft[ckey] != null) input.value = addDraft[ckey];
+        showInput(addDraft[ckey] != null);
+        input.addEventListener("input", function(){ addDraft[ckey] = input.value; });
         addBtn.onclick = function(){ showInput(true); };
         input.onkeydown = function(e){
-          if (e.key === "Escape") { e.preventDefault(); input.value = ""; showInput(false); return; }
+          if (e.key === "Escape") { e.preventDefault(); clearInput(); showInput(false); return; }
           if (e.key !== "Enter") return;
           var v = input.value.trim();
-          input.value = "";
+          clearInput();
           showInput(false);
           if (!v) return;
           send(board, "add?col=" + col + "&text=" + encodeURIComponent(v));
         };
-        input.addEventListener("blur", function(){ if (!input.value.trim()) showInput(false); });
+        input.addEventListener("blur", function(){
+          if (input.value.trim()) return;
+          clearInput();
+          showInput(false);
+        });
         wrap.appendChild(addBtn);
         wrap.appendChild(input);
         box.appendChild(wrap);

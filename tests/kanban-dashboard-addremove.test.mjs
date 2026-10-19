@@ -385,7 +385,7 @@ await check("/api/remove: 存在しない id は 404", async () => {
 		assert.ok(!urls.some((u) => u.includes("/api/add")), `Escape で飛んだ: ${JSON.stringify(urls)}`);
 	});
 
-	await check("vm: blur は閉じるだけで送らない", async () => {
+	await check("vm: blur は送らず、打ちかけがあれば閉じない（#75）", async () => {
 		clearUrls();
 		const on = activeAdd;
 		on.lis.click[0]();
@@ -393,7 +393,22 @@ await check("/api/remove: 存在しない id は 404", async () => {
 		input.value = "やめる";
 		input.lis.blur[0]();
 		for (let i = 0; i < 4; i++) await flush();
-		assert.equal(input.style.display, "none", "blur で閉じていない");
+		assert.ok(!urls.some((u) => u.includes("/api/add")), `blur で飛んだ: ${JSON.stringify(urls)}`);
+		// #75: 打ちかけがあるうちは閉じない。blur で無条件に閉じていたのが「打鍵値が戻る」
+		// 不具合の正体で、再描画前の一瞬のフォーカス移動でも失われていた。
+		assert.notEqual(input.style.display, "none", "値があるのに blur で閉じた");
+		assert.equal(input.value, "やめる", "打ちかけが消えた");
+	});
+
+	await check("vm: 空のまま blur すると閉じる（#75）", async () => {
+		clearUrls();
+		const on = activeAdd;
+		on.lis.click[0]();
+		const input = inputOf(on);
+		input.value = "";
+		input.lis.blur[0]();
+		for (let i = 0; i < 4; i++) await flush();
+		assert.equal(input.style.display, "none", "空なのに閉じていない");
 		assert.equal(on.style.display, "", "+ ボタンが戻っていない");
 		assert.ok(!urls.some((u) => u.includes("/api/add")), `blur で飛んだ: ${JSON.stringify(urls)}`);
 	});
