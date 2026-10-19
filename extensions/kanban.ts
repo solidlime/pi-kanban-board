@@ -3720,7 +3720,6 @@ const DASHBOARD_HTML = `<!doctype html>
   .card .since{color:var(--muted);margin-right:4px;font-variant-numeric:tabular-nums}
   .card .stale{color:var(--muted);margin-right:4px}
   /* #74: ⏳ は常に DOM に置き、2 時間未満は CSS で隠す（ticker が構造を変えないため）。 */
-  .card .stale.empty{display:none}
   /* #38-7: 見出しクリックで列ごと畳む（中身は描画したまま display だけ落とす） */
   .col h3{cursor:pointer}
   .col.collapsed .card,.col.collapsed .more,.col.collapsed .addbtn,.col.collapsed .addin{display:none}
