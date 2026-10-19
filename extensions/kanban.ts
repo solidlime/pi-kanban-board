@@ -2981,6 +2981,45 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
 			});
 			return;
 		}
+		case "/api/maxloops": {
+			// Same sid rule and naming as /api/stuck; n is the doing-loop budget (0 = unlimited).
+			const sid = q.get("sid") ?? (parseScope(q.get("scope")) === "global" ? activeSessionId : null);
+			if (sid === null || sid === "") {
+				sendJson(res, 400, { ok: false, error: "scope=session requires sid" });
+				return;
+			}
+			const n = Number(q.get("n"));
+			if (!isValidMaxLoops(n)) {
+				sendJson(res, 400, { ok: false, error: `n must be an integer 0..${MAX_LOOPS_CAP} (0 = unlimited)` });
+				return;
+			}
+			const scope = parseScope(q.get("scope"));
+			const f = readModesFile();
+			if (scope === "session") ensureSessionBoard(sid);
+			setMaxLoops(f, sid, scope, n);
+			writeModesFile(f);
+			sendJson(res, 200, {
+				ok: true,
+				modes: { session: modesFor(f, sid, "session"), global: modesFor(f, sid, "global") },
+			});
+			return;
+		}
+		case "/api/resume": {
+			// #67: ダッシュボードの「再開」。(sid,scope) は他の書き込みと同じで、実際の書き換えは
+			// そのセッションの poll が行う（halt はサーバではなく拡張プロセスのメモリ）。
+			// ここは 202 で受けるだけ: 見つからないときは 404 を返さない
+			// （セッションはいるが今は止まっていない、が普通なので）。
+			const sid = q.get("sid") ?? (parseScope(q.get("scope")) === "global" ? activeSessionId : null);
+			if (sid === null || sid === "") {
+				sendJson(res, 400, { ok: false, error: "scope=session requires sid" });
+				return;
+			}
+			// One counter of outstanding requests: a stuck consumer must not grow the map.
+			const pending = (resumeRequests.get(sid) ?? 0) + 1;
+			resumeRequests.set(sid, Math.min(pending, 5));
+			sendJson(res, 202, { ok: true, queued: true, sid });
+			return;
+		}
 		case "/api/priority": {
 			// Same sid rule and naming as /api/stuck; n is a card's autoPick priority (not minutes).
 			const sid = q.get("sid") ?? (parseScope(q.get("scope")) === "global" ? activeSessionId : null);
