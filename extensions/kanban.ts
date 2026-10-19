@@ -396,6 +396,33 @@ export function loopBudgetText(cap: number, count: number): string {
 	return `残り ${loopRestText(cap, count)}`;
 }
 
+type MaxLoopsInput = { scope?: string | null; sid?: string | null; n?: string | null };
+
+/**
+ * #71/#011: what /api/maxloops should do with a query — no writes, no reads, so this is
+ * the whole rule set in one testable place. A missing/unknown scope means session, the
+ * same reading parseScope has (the dashboard always sends one).
+ *
+ * scope=global needs no sid: it writes the GLOBAL layer keyed by the active session (so
+ * it does need one of those) — answering "scope=session requires sid" there was a lie.
+ */
+export function maxLoopsRequest(q: MaxLoopsInput): { kind: "error"; error: string } | { kind: "ok"; scope: Scope; sid: string; n: number } {
+	const raw = q.scope ?? "";
+	if (raw !== "" && raw !== "global" && raw !== "session") {
+		return { kind: "error", error: "scope must be global or session" };
+	}
+	const scope: Scope = raw === "global" ? "global" : "session";
+	const given = q.sid ?? "";
+	if (scope === "session") {
+		if (given === "") return { kind: "error", error: "scope=session requires sid" };
+		return { kind: "ok", scope, sid: given, n: Number(q.n) };
+	}
+	// GLOBAL is still per-session: modesFor(..., "global") reads f.GLOBAL[sid].
+	const sid = given === "" ? (activeSessionId ?? "") : given;
+	if (sid === "") return { kind: "error", error: "scope=global requires sid (or an active session)" };
+	return { kind: "ok", scope, sid, n: Number(q.n) };
+}
+
 /** A priority is usable only as an integer inside [-99,99]; anything else is not a priority. */
 export function isValidPriority(n: unknown): n is number {
 	return typeof n === "number" && Number.isInteger(n) && n >= MIN_PRIORITY && n <= MAX_PRIORITY;
@@ -2939,6 +2966,33 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
 		return;
 	}
 
+	// #71/#011: /api/maxloops dispatches before the board gate below — that gate answers
+	// "scope=session requires sid" for anything it cannot name a board file for, which hid
+	// the scope rule (scope=foo reported the session wording). Its own rules live in
+	// maxLoopsRequest, so the wording and the branch can only agree.
+	if (url.pathname === "/api/maxloops") {
+		const plan = maxLoopsRequest({ scope: q.get("scope"), sid: q.get("sid"), n: q.get("n") });
+		if (plan.kind === "error") {
+			sendJson(res, 400, { ok: false, error: plan.error });
+			return;
+		}
+		const { scope, sid } = plan;
+		const n = plan.n;
+		if (!isValidMaxLoops(n)) {
+			sendJson(res, 400, { ok: false, error: `n must be an integer 0..${MAX_LOOPS_CAP} (0 = unlimited)` });
+			return;
+		}
+		const f = readModesFile();
+		if (scope === "session") ensureSessionBoard(sid);
+		setMaxLoops(f, sid, scope, n);
+		writeModesFile(f);
+		sendJson(res, 200, {
+			ok: true,
+			modes: { session: modesFor(f, sid, "session"), global: modesFor(f, sid, "global") },
+		});
+		return;
+	}
+
 	// #67: the only non-board path that lived past this point was /api/kanban.html, deleted
 	// with the pi-web split. A stale caller gets a real 404 instead of the board gate's sid
 	// 400 (KANBAN_HTML itself stays: writeBoardHtml still mirrors it to ~/.pi/kanban).
@@ -3083,29 +3137,6 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
 			const f = readModesFile();
 			if (scope === "session") ensureSessionBoard(sid);
 			setStuckLimit(f, sid, scope, n);
-			writeModesFile(f);
-			sendJson(res, 200, {
-				ok: true,
-				modes: { session: modesFor(f, sid, "session"), global: modesFor(f, sid, "global") },
-			});
-			return;
-		}
-		case "/api/maxloops": {
-			// Same sid rule and naming as /api/stuck; n is the doing-loop budget (0 = unlimited).
-			const sid = q.get("sid") ?? (parseScope(q.get("scope")) === "global" ? activeSessionId : null);
-			if (sid === null || sid === "") {
-				sendJson(res, 400, { ok: false, error: "scope=session requires sid" });
-				return;
-			}
-			const n = Number(q.get("n"));
-			if (!isValidMaxLoops(n)) {
-				sendJson(res, 400, { ok: false, error: `n must be an integer 0..${MAX_LOOPS_CAP} (0 = unlimited)` });
-				return;
-			}
-			const scope = parseScope(q.get("scope"));
-			const f = readModesFile();
-			if (scope === "session") ensureSessionBoard(sid);
-			setMaxLoops(f, sid, scope, n);
 			writeModesFile(f);
 			sendJson(res, 200, {
 				ok: true,
@@ -4064,18 +4095,36 @@ ${KANBAN_MD_JS}
   }
   // The button stays disabled for as long as its handler's promise is in flight, so a
   // triple click cannot become three writes. Released on success and on failure.
+  // #71/#011: the guard itself is flightGate (pure, no DOM) so it can be tested without
+  // a browser; btn() is only the wiring. A handler with no promise is a plain action
+  // (a redraw request) and must not leave the button dead.
+  function flightGate(fn){
+    var busy = false;
+    // null = did not start (busy, or the handler is synchronous); else the wrapped promise.
+    function run(){
+      if (busy) return null;
+      var r = fn();
+      if (!r || typeof r.then !== "function") return null;
+      busy = true;
+      return r.then(function(v){ busy = false; return v; }, function(e){ busy = false; throw e; });
+    }
+    run.isBusy = function(){ return busy; };
+    return run;
+  }
   function btn(label, title, fn, disabled){
     var b = el("button", "mini", label);
     b.type = "button";
     if (title) b.title = title;
     b.disabled = !!disabled;
     if (disabled) return b;
+    var run = flightGate(fn);
     b.addEventListener("click", function(){
       if (b.disabled) return;
-      var r = fn();
-      if (!r || typeof r.then !== "function") return;
+      var p = run();
+      if (!p) return;
       b.disabled = true;
-      r.then(function(){ b.disabled = false; }, function(){ b.disabled = false; });
+      function release(){ b.disabled = false; }
+      p.then(release, release);
     });
     return b;
   }
@@ -4145,9 +4194,15 @@ ${KANBAN_MD_JS}
   }
   // Dashboard wording: 残り N / M, and 残り N / 無制限 when the cap is 0 (uncapped) —
   // the same N as the footer's (loopRestText: remaining under a cap, used without one).
+  // #71/#011: the cap and the count come from files/published state, so nonzero garbage
+  // ("7", null, NaN, ±Infinity) must land on a real branch instead of throwing or
+  // printing "NaN": a cap that is not a finite number is uncapped, a count is ≥ 0 and
+  // finite. cap/used are the raw numbers; the display rule is fixed by the tests.
   function loopRestLine(cap, used){
-    if (cap > 0) return "残り " + Math.max(0, cap - used) + " / " + cap;
-    return "残り " + used + " / 無制限";
+    var c = (typeof cap === "number" && isFinite(cap)) ? cap : 0;
+    var u = (typeof used === "number" && isFinite(used) && used > 0) ? Math.floor(used) : 0;
+    if (c > 0) return "残り " + Math.max(0, c - u) + " / " + c;
+    return "残り " + u + " / 無制限";
   }
 
   // #58: why the doing-loop is stopped, and what actually clears it. The loop budget
