@@ -3533,9 +3533,26 @@ const DASHBOARD_HTML = `<!doctype html>
   // #62: 開閉だけ localStorage に残す。kb-theme と同じく失敗は握りつぶし、
   // 保存が無いキーは今の既定のまま。ns で 2 テンプレートを分ける（片方が他方を壊さない）。
   var LS_KEY = "kb-collapse", LS_NS = "dash";
-  // #65: 描画を止めるのは「ユーザが入力中」のときだけ。編集中の textarea は再描画で
-  // DOM から切り離されると blur が飛ばず、打鍵が無言で消える。
-  function isEditing(){ return typeof document.querySelector === "function" && !!document.querySelector("textarea.ted"); }
+  // #65: 描画を止めるのは「ユーザが入力中」のときだけ。再描画で作り直される領域
+  // （#stats/#sessions/#global/#serve）の中で、値を受け付ける要素にフォーカスがある間は描かない。
+  // フォーカス中の要素が DOM から切り離されると blur が飛ばず、打鍵が無言で消えるため。
+  // - #q（検索ボックス）は 4 領域の外にある静的ノードなので対象外。ここを含めると
+  //   検索打鍵中に redraw() が early return し、絞り込みが一切描画されず画面が凍る。
+  // - button / checkbox は含めない。Chrome はクリックした button にフォーカスを残すので、
+  //   含めるとモード切替ボタンを押した後ずっと更新が止まる。
+  // - クリックでフォーカスが残るが打鍵を受けない INPUT（checkbox/radio/button 系）は除外。
+  //   含めると #serve の永久トグルを押した後、blur するまで更新が止まる。
+  // 見送ったデータは sig を進めず（reload 参照）、blur 後の最初のポーリングで追いつく。
+  var NO_TYPE_INPUT = /^(checkbox|radio|button|submit|reset|file|image|range|color)$/;
+  function isEditing(){
+    var a = document.activeElement;
+    if (!a || a === document.body) return false;
+    var tg = a.tagName;
+    var typing = tg === "TEXTAREA" || a.isContentEditable === true ||
+      (tg === "INPUT" && !NO_TYPE_INPUT.test(a.type || "text"));
+    if (!typing) return false;
+    return !!(a.closest && a.closest("#stats, #sessions, #global, #serve"));
+  }
   // sig は「今 DOM に描かれている状態」を記述する（query を落とすと検索語の変化を取り逃す）。
   function uiSig(){ return JSON.stringify([sessOpen, gOpen, collapsed, query]); }
   function persist(){
@@ -5151,7 +5168,22 @@ ${KANBAN_MD_JS}
   }
 
   // #65: 描画を止めるのは「ユーザが入力中」のときだけ。判定は 1 関数にまとめる。
-  function isEditing(){ return typeof document.querySelector === "function" && !!document.querySelector("textarea.ted"); }
+  // 再描画で作り直される領域（#global/#sessions）の中で、値を受け付ける要素に
+  // フォーカスがある間は描かない（DOM から切り離されると blur が飛ばず打鍵が消える）。
+  // - #q（検索ボックス）は領域外の静的ノードなので対象外。含めると検索打鍵中に
+  //   redraw() が early return し、絞り込みが描画されず画面が凍る。
+  // - button / checkbox は含めない。Chrome はクリックした button にフォーカスを残すので、
+  //   含めるとモード切替ボタンを押した後ずっと更新が止まる。
+  var NO_TYPE_INPUT = /^(checkbox|radio|button|submit|reset|file|image|range|color)$/;
+  function isEditing(){
+    var a = document.activeElement;
+    if (!a || a === document.body) return false;
+    var tg = a.tagName;
+    var typing = tg === "TEXTAREA" || a.isContentEditable === true ||
+      (tg === "INPUT" && !NO_TYPE_INPUT.test(a.type || "text"));
+    if (!typing) return false;
+    return !!(a.closest && a.closest("#stats, #sessions, #global, #serve"));
+  }
 
   function render(globalCards, sessions, gmodes){
     cache = [globalCards, sessions, gmodes];
