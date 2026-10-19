@@ -2673,6 +2673,27 @@ function writeBoardPath(q: URLSearchParams): string | null {
 	return boardPath("session", sid);
 }
 
+/**
+ * The sid a settings write targets, or null with a 400 already sent.
+ * scope=global falls back to the driver; a session write must name one.
+ * #78: the 400 names the scope that actually failed. Answering a global write with
+ * "scope=session requires sid" hid the real cause (no active session to fall back to)
+ * behind a scope the caller never asked for.
+ */
+function settingsSidOf(q: URLSearchParams, res: ServerResponse): string | null {
+	const scope = parseScope(q.get("scope"));
+	const sid = q.get("sid") ?? (scope === "global" ? activeSessionId : null);
+	if (sid !== null && sid !== "") return sid;
+	sendJson(res, 400, {
+		ok: false,
+		error:
+			scope === "global"
+				? "scope=global requires sid (no active session to fall back to)"
+				: "scope=session requires sid",
+	});
+	return null;
+}
+
 /** The session credited for a move made through the HTTP API. */
 function actorOf(q: URLSearchParams): string {
 	const sid = q.get("sid");
@@ -3105,11 +3126,8 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
 			// #67: the fallback stays on purpose. A global switch is *keyed* by session, and
 			// the dashboard writes the global panel without a sid, so demanding one here
 			// would only break the UI; nothing is read from another session by it.
-			const sid = q.get("sid") ?? (parseScope(q.get("scope")) === "global" ? activeSessionId : null);
-			if (sid === null || sid === "") {
-				sendJson(res, 400, { ok: false, error: "scope=session requires sid" });
-				return;
-			}
+			const sid = settingsSidOf(q, res);
+			if (sid === null) return;
 			const key = q.get("key");
 			if (key !== "doingLoop" && key !== "autoPick") {
 				sendJson(res, 400, { ok: false, error: "key must be doingLoop or autoPick" });
@@ -3134,11 +3152,8 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
 		}
 		case "/api/interval": {
 			// Same sid rule as every other write (writeBoardPath above); names only the interval.
-			const sid = q.get("sid") ?? (parseScope(q.get("scope")) === "global" ? activeSessionId : null);
-			if (sid === null || sid === "") {
-				sendJson(res, 400, { ok: false, error: "scope=session requires sid" });
-				return;
-			}
+			const sid = settingsSidOf(q, res);
+			if (sid === null) return;
 			const minutes = Number(q.get("min"));
 			if (!Number.isFinite(minutes) || minutes <= 0) {
 				sendJson(res, 400, { ok: false, error: "min must be a positive number" });
@@ -3157,11 +3172,8 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
 		}
 		case "/api/stuck": {
 			// Same sid rule and naming as /api/interval; n is a settle COUNT, not minutes.
-			const sid = q.get("sid") ?? (parseScope(q.get("scope")) === "global" ? activeSessionId : null);
-			if (sid === null || sid === "") {
-				sendJson(res, 400, { ok: false, error: "scope=session requires sid" });
-				return;
-			}
+			const sid = settingsSidOf(q, res);
+			if (sid === null) return;
 			const n = Number(q.get("n"));
 			if (!isValidStuckLimit(n)) {
 				sendJson(res, 400, { ok: false, error: `n must be an integer 1..${MAX_STUCK_LIMIT}` });
@@ -3183,11 +3195,8 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
 			// そのセッションの poll が行う（halt はサーバではなく拡張プロセスのメモリ）。
 			// ここは 202 で受けるだけ: 見つからないときは 404 を返さない
 			// （セッションはいるが今は止まっていない、が普通なので）。
-			const sid = q.get("sid") ?? (parseScope(q.get("scope")) === "global" ? activeSessionId : null);
-			if (sid === null || sid === "") {
-				sendJson(res, 400, { ok: false, error: "scope=session requires sid" });
-				return;
-			}
+			const sid = settingsSidOf(q, res);
+			if (sid === null) return;
 			// One counter of outstanding requests: a stuck consumer must not grow the map.
 			const pending = (resumeRequests.get(sid) ?? 0) + 1;
 			resumeRequests.set(sid, Math.min(pending, 5));
@@ -3196,11 +3205,8 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
 		}
 		case "/api/priority": {
 			// Same sid rule and naming as /api/stuck; n is a card's autoPick priority (not minutes).
-			const sid = q.get("sid") ?? (parseScope(q.get("scope")) === "global" ? activeSessionId : null);
-			if (sid === null || sid === "") {
-				sendJson(res, 400, { ok: false, error: "scope=session requires sid" });
-				return;
-			}
+			const sid = settingsSidOf(q, res);
+			if (sid === null) return;
 			const n = Number(q.get("n"));
 			if (!isValidPriority(n)) {
 				sendJson(res, 400, { ok: false, error: `n must be an integer ${MIN_PRIORITY}..${MAX_PRIORITY}` });
