@@ -83,6 +83,16 @@ const pi = {
 	sendUserMessage() {},
 };
 mod.default(pi);
+// #83b: /api/** needs the token. The server wrote it under this scenario's HOME, so wrap
+// fetch once instead of threading the cookie through every scenario's waitFor snippet.
+const { readFileSync } = require("node:fs");
+const TOK = readFileSync(process.env.HOME + "/.pi/kanban/token", "utf8").trim();
+const plainFetch = globalThis.fetch;
+globalThis.fetch = (input, init = {}) => {
+	const headers = new Headers(init.headers ?? (input instanceof Request ? input.headers : undefined));
+	if (!headers.has("cookie")) headers.set("Cookie", "kb_token=" + TOK);
+	return plainFetch(input, { ...init, headers });
+};
 ${waitFor}
 console.log("__RESULT__" + JSON.stringify(out));
 process.exit(0);

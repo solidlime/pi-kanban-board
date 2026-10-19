@@ -6,6 +6,10 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer as netServer } from "node:net";
 import http from "node:http";
 import { createRequire } from "node:module";
+import { authFetch, tokenHeader } from "./helpers/token.mjs";
+
+// #83b: HTTP routes need the server token now; tf = fetch + the kb_token cookie.
+const tf = (input, init) => authFetch(input, init);
 
 const HOME_DIR = "/tmp/kb-video-home";
 rmSync(HOME_DIR, { recursive: true, force: true });
@@ -55,7 +59,7 @@ const pi = {
 mod.default(pi);
 for (let i = 0; i < 40; i++) {
 	try {
-		if ((await fetch(`http://127.0.0.1:${PORT}/api/kanban`)).ok) break;
+		if ((await tf(`http://127.0.0.1:${PORT}/api/kanban`)).ok) break;
 	} catch {
 		// まだ listen していない
 	}
@@ -73,7 +77,7 @@ function post(path, body) {
 				port: PORT,
 				path,
 				method: "POST",
-				headers: { "content-length": body.length },
+				headers: { "content-length": body.length, Cookie: tokenHeader() },
 			},
 			(res) => {
 				let data = "";
@@ -143,12 +147,12 @@ const CLIP = "0123456789abcdefghijklmnopqrstuv"; // 32 bytes
 writeFileSync(`${HOME_DIR}/.pi/kanban/media/clip.mp4`, CLIP);
 const MEDIA_URL = `${base}/api/media/clip.mp4`;
 {
-	const res = await fetch(MEDIA_URL);
+	const res = await tf(MEDIA_URL);
 	check("media の mp4 は Content-Type: video/mp4", () =>
 		assert.equal(res.headers.get("content-type"), "video/mp4"));
 }
 {
-	const res = await fetch(MEDIA_URL, { headers: { Range: "bytes=0-3" } });
+	const res = await tf(MEDIA_URL, { headers: { Range: "bytes=0-3" } });
 	const body = await res.text();
 	check("media の mp4 は Range で 206 + Content-Range", () => {
 		assert.equal(res.status, 206);
@@ -158,7 +162,7 @@ const MEDIA_URL = `${base}/api/media/clip.mp4`;
 }
 writeFileSync(`${HOME_DIR}/.pi/kanban/media/clip.webm`, CLIP);
 {
-	const res = await fetch(`${base}/api/media/clip.webm`);
+	const res = await tf(`${base}/api/media/clip.webm`);
 	check("media の webm は Content-Type: video/webm", () =>
 		assert.equal(res.headers.get("content-type"), "video/webm"));
 }
@@ -171,14 +175,14 @@ writeFileSync(`${HOME_DIR}/workspace/site/clip.mp4`, CLIP);
 const add = await call({ action: "add", path: `${HOME_DIR}/workspace/site` });
 const serveId = add.details.id;
 {
-	const res = await fetch(`${base}/serve/${serveId}/clip.mp4`);
+	const res = await tf(`${base}/serve/${serveId}/clip.mp4`);
 	check("serve の mp4 は Content-Type: video/mp4", () =>
 		assert.equal(res.headers.get("content-type"), "video/mp4"));
 	check("serve の mp4 も Accept-Ranges: bytes（B1 退行なし）", () =>
 		assert.equal(res.headers.get("accept-ranges"), "bytes"));
 }
 {
-	const res = await fetch(`${base}/serve/${serveId}/clip.mp4`, { headers: { Range: "bytes=4-7" } });
+	const res = await tf(`${base}/serve/${serveId}/clip.mp4`, { headers: { Range: "bytes=4-7" } });
 	const body = await res.text();
 	check("serve の mp4 も Range で 206", () => {
 		assert.equal(res.status, 206);

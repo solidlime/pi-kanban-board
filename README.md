@@ -48,6 +48,7 @@ pi -e npm:pi-kanban-board
 /kanban interval <min>     set the loop interval (1 minute minimum)
 /kanban maxloops [global] <n>  doing-loop budget (0 = unlimited, default 10)
 /kanban status             loop state, intervals, counts
+/kanban url                the token-bearing dashboard URL to open
 ```
 
 ### The `kanban` tool
@@ -81,6 +82,7 @@ The `serve` tool also takes an optional `title`, which the dashboard shows above
 ├── modes.json           per-board loop/pick/interval settings
 ├── serve.json           published files
 ├── media/               images attached to cards
+├── token                the secret every HTTP route requires (0600)
 ├── server.log           HTTP server log
 └── dashboard.html       generated dashboard
 ```
@@ -93,7 +95,11 @@ The autonomous loop decides once every 1.5s whether to wake the agent. Set `KANB
 
 ## Security notes
 
-The HTTP server binds `0.0.0.0` and sends `Access-Control-Allow-Origin: *`. Mutating endpoints are `GET`-reachable so the board works from a plain browser tab and from inside an `iframe srcdoc`. It is designed for a trusted LAN, not the public internet — do not expose port 8789.
+The HTTP server binds `0.0.0.0`, so every route (`/`, `/api/*`, `/serve/*`) requires a token: 64 hex chars in `~/.pi/kanban/token`, generated on first start with mode `0600`. Mutating endpoints are `GET`-reachable so the board works from a plain browser tab, so the token — not the verb — is what guards them.
+
+Get the URL with `/kanban url` (or the `kanban` tool's `url` action) and open it once: `GET /?token=<t>` sets an `HttpOnly` `kb_token` cookie and redirects to the bare `/`, so the secret stays out of the page and out of your history after that. Opening `/` without the cookie shows a page telling you where to get it instead. Scripts can pass `?token=<t>` on any `/api/*` call.
+
+The `Sec-Fetch-Site` / `Origin` checks from #68 are still there as a second layer: a cross-origin page is refused with 403 even when it somehow has the token. Do not port-forward 8789 to the internet.
 
 ## Nothing here is a service
 

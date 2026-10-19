@@ -5,6 +5,10 @@ import assert from "node:assert/strict";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
+import { authFetch } from "./helpers/token.mjs";
+
+// #83b: HTTP routes need the server token now; tf = fetch + the kb_token cookie.
+const tf = (input, init) => authFetch(input, init);
 
 const HOME_DIR = "/tmp/kb-take-home";
 rmSync(HOME_DIR, { recursive: true, force: true });
@@ -102,7 +106,7 @@ const haltingEntry = (at) => ({
 	data: { count: 10, halted: "limit", scope: null, stuckId: null, stuckCount: 0, lastActivityAt: at },
 });
 
-const driver = async () => (await (await fetch(`${BASE}/api/dashboard`)).json()).driver;
+const driver = async () => (await (await tf(`${BASE}/api/dashboard`)).json()).driver;
 
 // KANBAN_DEBUG の poll verdict 行を集める（なぜ発火/停止したかの観測用）。
 const traces = [];

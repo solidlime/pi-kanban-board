@@ -7,6 +7,10 @@ import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
+import { authFetch } from "./helpers/token.mjs";
+
+// #83b: HTTP routes need the server token now; tf = fetch + the kb_token cookie.
+const tf = (input, init) => authFetch(input, init);
 
 const HOME_DIR = "/tmp/kb-phase7-home";
 rmSync(HOME_DIR, { recursive: true, force: true });
@@ -168,7 +172,7 @@ const pi = {
 mod.default(pi); // ensureServer() はここで走る
 for (let i = 0; i < 40; i++) {
 	try {
-		if ((await fetch(`http://127.0.0.1:${PORT}/api/kanban`)).ok) break;
+		if ((await tf(`http://127.0.0.1:${PORT}/api/kanban`)).ok) break;
 	} catch {
 		// まだ listen していない
 	}
@@ -213,7 +217,7 @@ const kbCmd = async (args) => {
 	check("/kanban priority -> 一覧に DOING の #4 は出ない", () => assert.doesNotMatch(listed, /#4 /));
 }
 
-const api = (q) => fetch(`http://127.0.0.1:${PORT}/api/priority?${q}`);
+const api = (q) => tf(`http://127.0.0.1:${PORT}/api/priority?${q}`);
 {
 	const res = await api(`sid=${SID}&scope=session&id=3&n=7`);
 	const body = await res.json();
@@ -239,7 +243,7 @@ for (const bad of ["100", "-100", "2.5", "abc"]) {
 	check("GET /api/priority?id=99（無い id）-> 404", () => assert.equal(res.status, 404));
 }
 {
-	const res = await fetch(`http://127.0.0.1:${PORT}/api/priority?scope=global&id=3&n=-4`);
+	const res = await tf(`http://127.0.0.1:${PORT}/api/priority?scope=global&id=3&n=-4`);
 	const body = await res.json();
 	check("GET /api/priority?scope=global -> 200（global ボード側に書く）", () => {
 		assert.equal(res.status, 200);

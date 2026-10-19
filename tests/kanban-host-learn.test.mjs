@@ -7,6 +7,10 @@ import { connect, createServer as netServer } from "node:net";
 import http from "node:http";
 import { hostname } from "node:os";
 import { createRequire } from "node:module";
+import { authFetch, tokenHeader } from "./helpers/token.mjs";
+
+// #83b: HTTP routes need the server token now; tf = fetch + the kb_token cookie.
+const tf = (input, init) => authFetch(input, init);
 
 const HOME_DIR = "/tmp/kb-host-learn-home";
 rmSync(HOME_DIR, { recursive: true, force: true });
@@ -56,7 +60,7 @@ const pi = {
 mod.default(pi);
 for (let i = 0; i < 40; i++) {
 	try {
-		if ((await fetch(`http://127.0.0.1:${PORT}/api/kanban`)).ok) break;
+		if ((await tf(`http://127.0.0.1:${PORT}/api/kanban`)).ok) break;
 	} catch {
 		// まだ listen していない
 	}
@@ -88,7 +92,7 @@ const hostText = () => {
 function hostRequest(path, host, method = "GET", body) {
 	return new Promise((resolve, reject) => {
 		const req = http.request(
-			{ host: "127.0.0.1", port: PORT, path, method, headers: { Host: host } },
+			{ host: "127.0.0.1", port: PORT, path, method, headers: { Host: host, Cookie: tokenHeader() } },
 			(res) => {
 				let raw = "";
 				res.on("data", (c) => (raw += c));

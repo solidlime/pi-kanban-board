@@ -7,6 +7,10 @@ import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
 import vm from "node:vm";
+import { authFetch } from "./helpers/token.mjs";
+
+// #83b: HTTP routes need the server token now; tf = fetch + the kb_token cookie.
+const tf = (input, init) => authFetch(input, init);
 
 const HOME_DIR = "/tmp/kb-dashboard-drop-home";
 rmSync(HOME_DIR, { recursive: true, force: true });
@@ -64,20 +68,20 @@ const pi = {
 mod.default(pi);
 for (let i = 0; i < 40; i++) {
 	try {
-		if ((await fetch(`${BASE}/`)).ok) break;
+		if ((await tf(`${BASE}/`)).ok) break;
 	} catch {
 		// まだ listen していない
 	}
 	await new Promise((r) => setTimeout(r, 100));
 }
-const dashboardHtml = await (await fetch(`${BASE}/`)).text();
+const dashboardHtml = await (await tf(`${BASE}/`)).text();
 
 const PNG = Buffer.from(
 	"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M8AAAMBAQDJ/pLvAAAAAElFTkSuQmCC",
 	"base64",
 );
 const post = (query, body) =>
-	fetch(`${BASE}/api/upload?${query}`, {
+	tf(`${BASE}/api/upload?${query}`, {
 		method: "POST",
 		body,
 		headers: { "Content-Type": "application/octet-stream" },
@@ -108,7 +112,7 @@ await check("/api/upload?ext=png&col=todo (id なし) は 200 で新規カード
 	assert.ok(typeof card.img === "string" && card.img.endsWith(".png"), `img が付いていない: ${JSON.stringify(card)}`);
 	// 実ファイルが書かれ、/api/media/<name> が 200 で返ることまで見る。
 	assert.ok(existsSync(`${MEDIA}/${card.img}`), `media にファイルが無い: ${card.img}`);
-	const m = await fetch(`${BASE}/api/media/${encodeURIComponent(card.img)}`);
+	const m = await tf(`${BASE}/api/media/${encodeURIComponent(card.img)}`);
 	assert.equal(m.status, 200, `/api/media/${card.img} が 200 でない: ${m.status}`);
 	assert.equal((await m.arrayBuffer()).byteLength, PNG.length, "配信バイト数が違う");
 });

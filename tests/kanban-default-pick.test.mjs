@@ -10,6 +10,10 @@ import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
+import { authFetch } from "./helpers/token.mjs";
+
+// #83b: HTTP routes need the server token now; tf = fetch + the kb_token cookie.
+const tf = (input, init) => authFetch(input, init);
 
 const HOME_DIR = "/tmp/kb-default-pick-home";
 rmSync(HOME_DIR, { recursive: true, force: true });
@@ -69,7 +73,7 @@ mod.default(pi);
 const BASE = `http://127.0.0.1:${PORT}`;
 for (let i = 0; i < 40; i++) {
 	try {
-		if ((await fetch(`${BASE}/`)).ok) break;
+		if ((await tf(`${BASE}/`)).ok) break;
 	} catch {
 		// まだ listen していない
 	}
@@ -78,7 +82,7 @@ for (let i = 0; i < 40; i++) {
 
 /** /api/kanban?sid= は modes を直接返す（GET。実在セッションに限らない）。 */
 async function sessionModes() {
-	const r = await fetch(`${BASE}/api/kanban?sid=${SID}&fields=id`);
+	const r = await tf(`${BASE}/api/kanban?sid=${SID}&fields=id`);
 	assert.ok(r.ok, `/api/kanban が ${r.status}`);
 	const j = await r.json();
 	assert.ok(j.modes && j.modes.session, `modes.session が無い: ${JSON.stringify(j).slice(0, 300)}`);
@@ -127,7 +131,7 @@ await check("#61 エントリが全く無いセッションはフラット既定
 
 await check("#61 片方だけ切り替えても、応答の modes は両方 boolean で返る", async () => {
 	writeModes({ doingLoop: true, autoPick: true, SESSION: { [SID]: { doingLoop: true } } });
-	const r = await fetch(`${BASE}/api/modes?scope=session&sid=${SID}&key=autoPick&value=off`);
+	const r = await tf(`${BASE}/api/modes?scope=session&sid=${SID}&key=autoPick&value=off`);
 	assert.ok(r.ok, `/api/modes が ${r.status}`);
 	const j = await r.json();
 	assert.equal(j.ok, true, `modes 書き込みが失敗: ${JSON.stringify(j)}`);

@@ -6,6 +6,10 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
 import vm from "node:vm";
+import { authFetch } from "./helpers/token.mjs";
+
+// #83b: HTTP routes need the server token now; tf = fetch + the kb_token cookie.
+const tf = (input, init) => authFetch(input, init);
 
 const HOME_DIR = "/tmp/kb-dashboard-home";
 rmSync(HOME_DIR, { recursive: true, force: true });
@@ -54,7 +58,7 @@ const pi = {
 mod.default(pi);
 for (let i = 0; i < 40; i++) {
 	try {
-		if ((await fetch(`${BASE}/api/kanban`)).ok) break;
+		if ((await tf(`${BASE}/api/kanban`)).ok) break;
 	} catch {
 		// まだ listen していない
 	}
@@ -103,7 +107,7 @@ writeFileSync(
 );
 
 // --- 1. レスポンス形 ----------------------------------------------------------
-const res = await fetch(`${BASE}/api/dashboard`);
+const res = await tf(`${BASE}/api/dashboard`);
 const data = await res.json();
 
 check("200 + application/json", () => {
@@ -119,14 +123,14 @@ check("Origin 無しでも Allow-Methods / Allow-Headers は従来どおり", ()
 	assert.equal(res.headers.get("access-control-allow-headers"), "Content-Type");
 });
 {
-	const same = await fetch(`${BASE}/api/dashboard`, { headers: { Origin: BASE } });
+	const same = await tf(`${BASE}/api/dashboard`, { headers: { Origin: BASE } });
 	check("same-host の Origin は reflect する", () => {
 		assert.equal(same.headers.get("access-control-allow-origin"), BASE);
 		assert.match(same.headers.get("vary") ?? "", /Origin/i);
 	});
 }
 {
-	const evil = await fetch(`${BASE}/api/dashboard`, { headers: { Origin: "http://evil.example" } });
+	const evil = await tf(`${BASE}/api/dashboard`, { headers: { Origin: "http://evil.example" } });
 	check("別ホストの Origin には ACAO を付けない", () => {
 		assert.equal(evil.headers.get("access-control-allow-origin"), null);
 	});
@@ -212,7 +216,7 @@ check("exists=false のエントリも一覧に残る", () => {
 
 // --- 4. / は DASHBOARD_HTML を返す -------------------------------------------
 {
-	const root = await fetch(`${BASE}/`);
+	const root = await tf(`${BASE}/`);
 	const html = await root.text();
 	check("GET / = 200 text/html", () => {
 		assert.equal(root.status, 200);
@@ -231,7 +235,7 @@ check("exists=false のエントリも一覧に残る", () => {
 
 // --- 4b. 失敗時バックオフ -----------------------------------------------------
 {
-	const html2 = await (await fetch(`${BASE}/`)).text();
+	const html2 = await (await tf(`${BASE}/`)).text();
 	const scripts = [...html2.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
 	const apiScript = scripts.find((s) => s.includes('var API = "/api/dashboard"'));
 	check("dashboard のポーリング JS を抽出できる", () => assert.ok(apiScript));
@@ -312,7 +316,7 @@ rmSync(`${KB}/serve.json`, { force: true });
 rmSync(`${KB}/media/one.png`, { force: true });
 rmSync(`${KB}/media/two.mp4`, { force: true });
 {
-	const empty = await (await fetch(`${BASE}/api/dashboard`)).json();
+	const empty = await (await tf(`${BASE}/api/dashboard`)).json();
 	check("空でも配列を返す (null にしない)", () => {
 		assert.deepEqual(empty.global.cards, []);
 		assert.deepEqual(empty.sessions, []);

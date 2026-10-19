@@ -11,6 +11,10 @@ import assert from "node:assert/strict";
 import { mkdirSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
+import { authFetch } from "./helpers/token.mjs";
+
+// #83b: HTTP routes need the server token now; tf = fetch + the kb_token cookie.
+const tf = (input, init) => authFetch(input, init);
 
 const HOME_DIR = "/tmp/kb-ops38-frozen-home";
 rmSync(HOME_DIR, { recursive: true, force: true });
@@ -71,13 +75,13 @@ const pi = {
 mod.default(pi);
 for (let i = 0; i < 40; i++) {
 	try {
-		if ((await fetch(`${BASE}/api/kanban`)).ok) break;
+		if ((await tf(`${BASE}/api/kanban`)).ok) break;
 	} catch {
 		// まだ listen していない
 	}
 	await new Promise((r) => setTimeout(r, 100));
 }
-const dashboardHtml = await (await fetch(`${BASE}/`)).text();
+const dashboardHtml = await (await tf(`${BASE}/`)).text();
 
 // ===========================================================================
 // #38-9: DOING 強調は両テンプレートで同じ見た目（片方だけ直す事故を防ぐ）

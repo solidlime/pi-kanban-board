@@ -7,6 +7,10 @@ import { createServer as netServer } from "node:net";
 import { hostname } from "node:os";
 import http from "node:http";
 import { createRequire } from "node:module";
+import { authFetch, tokenHeader } from "./helpers/token.mjs";
+
+// #83b: HTTP routes need the server token now; tf = fetch + the kb_token cookie.
+const tf = (input, init) => authFetch(input, init);
 
 const HOME_DIR = "/tmp/kb-serve-allow-home";
 const OUTSIDE = "/tmp/kb-serve-allow-outside"; // 隔離 HOME の外 = allowlist 外
@@ -60,7 +64,7 @@ const pi = {
 mod.default(pi);
 for (let i = 0; i < 40; i++) {
 	try {
-		if ((await fetch(`http://127.0.0.1:${PORT}/api/kanban`)).ok) break;
+		if ((await tf(`http://127.0.0.1:${PORT}/api/kanban`)).ok) break;
 	} catch {
 		// まだ listen していない
 	}
@@ -171,7 +175,7 @@ check("20-7e roots 指定時は allowlist も上書きされる", () => {
 
 // --- 20-8: /serve HTML と list が同じホスト ----------------------------------
 {
-	const html = await (await fetch(`${base}/serve`)).text();
+	const html = await (await tf(`${base}/serve`)).text();
 	const hrefs = [...html.matchAll(/href="(https?:\/\/[^"]+)"/g)].map((m) => m[1]);
 	const page = await call({ action: "list" });
 	check("20-8 /serve HTML と list が同じホスト", () => {
@@ -196,7 +200,7 @@ function postHost(body) {
 	return new Promise((resolve, reject) => {
 		const req = http.request(
 			{ host: "127.0.0.1", port: PORT, path: "/api/host", method: "POST",
-				headers: { "Content-Type": "application/json" } },
+				headers: { "Content-Type": "application/json", Cookie: tokenHeader() } },
 			(res) => {
 				let raw = "";
 				res.on("data", (c) => (raw += c));

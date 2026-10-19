@@ -6,6 +6,10 @@ import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
+import { authFetch } from "./helpers/token.mjs";
+
+// #83b: HTTP routes need the server token now; tf = fetch + the kb_token cookie.
+const tf = (input, init) => authFetch(input, init);
 
 const HOME_DIR = "/tmp/kb-fire-home";
 rmSync(HOME_DIR, { recursive: true, force: true });
@@ -375,7 +379,7 @@ checkA('kanban ツール add: col "done" を尊重', async () => {
 // 6: /api/schedule（既存の GET+query 規約 / sid 必須）
 // ---------------------------------------------------------------------------
 const api = async (path, sid) => {
-	const res = await fetch(`${API_BASE}${path}${path.includes("?") ? "&" : "?"}sid=${sid}`);
+	const res = await tf(`${API_BASE}${path}${path.includes("?") ? "&" : "?"}sid=${sid}`);
 	return { status: res.status, body: await res.json() };
 };
 const API_BASE = (() => {
@@ -383,7 +387,7 @@ const API_BASE = (() => {
 	return `http://127.0.0.1:${port}`;
 })();
 
-const sessionsJson = async () => (await fetch(`${API_BASE}/api/sessions`)).json();
+const sessionsJson = async () => (await tf(`${API_BASE}/api/sessions`)).json();
 
 checkA("session_shutdown は driver の pin を解放する（#55）", async () => {
 	// ここまでで pin されているのは fire-quiet（プロセス最初の session_start）。

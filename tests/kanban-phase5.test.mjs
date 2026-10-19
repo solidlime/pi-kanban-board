@@ -7,6 +7,10 @@ import assert from "node:assert/strict";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
+import { authFetch } from "./helpers/token.mjs";
+
+// #83b: HTTP routes need the server token now; tf = fetch + the kb_token cookie.
+const tf = (input, init) => authFetch(input, init);
 
 const HOME_DIR = "/tmp/kb-phase5-home";
 rmSync(HOME_DIR, { recursive: true, force: true });
@@ -146,7 +150,7 @@ const pi = {
 mod.default(pi); // ensureServer() はここで走る
 for (let i = 0; i < 40; i++) {
 	try {
-		if ((await fetch(`http://127.0.0.1:${PORT}/api/kanban`)).ok) break;
+		if ((await tf(`http://127.0.0.1:${PORT}/api/kanban`)).ok) break;
 	} catch {
 		// まだ listen していない
 	}
@@ -178,7 +182,7 @@ for (let i = 0; i < 40; i++) {
 	});
 	// DASHBOARD_HTML は export されていないので、ディスクと GET / の一致で固定する。
 	// check() は同期なので、fetch はここで await してから渡す。
-	const served = await (await fetch(`http://127.0.0.1:${PORT}/`)).text();
+	const served = await (await tf(`http://127.0.0.1:${PORT}/`)).text();
 	check("dashboard.html は ~/.pi/kanban に書かれ、GET / と同じものが降りている", () => {
 		assert.ok(html.length > 1000, "dashboard.html が空");
 		assert.equal(served, html, "ディスクの dashboard.html と GET / の応答が違う");
@@ -189,7 +193,7 @@ for (let i = 0; i < 40; i++) {
 // board gate (400). Await first, then check(), because check() is synchronous and would
 // count a rejected promise as a pass.
 {
-	const res = await fetch(`http://127.0.0.1:${PORT}/api/kanban.html`);
+	const res = await tf(`http://127.0.0.1:${PORT}/api/kanban.html`);
 	check("/api/kanban.html は配信されない（ボードゲートの 400）", () => assert.equal(res.status, 400));
 }
 
@@ -274,7 +278,7 @@ const kanbanCmd = () => commands.get("kanban").handler;
 	check("［help］は使い方を返す", () => assert.match(ctx6.notes[0], /interval/));
 
 	// B4 の書き込み経路（HTML の input が叩くのと同じ GET+query 規約）。
-	const api = (q) => fetch(`http://127.0.0.1:${PORT}/api/interval?${q}`);
+	const api = (q) => tf(`http://127.0.0.1:${PORT}/api/interval?${q}`);
 	const okRes = await api(`scope=session&sid=${SID}&min=9`);
 	check("GET /api/interval?min=9 -> 200 かつ modes.json に 9", () => {
 		assert.equal(okRes.status, 200);

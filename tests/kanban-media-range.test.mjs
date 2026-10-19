@@ -6,6 +6,10 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer as netServer } from "node:net";
 import http from "node:http";
 import { createRequire } from "node:module";
+import { authFetch } from "./helpers/token.mjs";
+
+// #83b: HTTP routes need the server token now; tf = fetch + the kb_token cookie.
+const tf = (input, init) => authFetch(input, init);
 
 const HOME_DIR = "/tmp/kb-media-range-home";
 rmSync(HOME_DIR, { recursive: true, force: true });
@@ -55,7 +59,7 @@ const pi = {
 mod.default(pi);
 for (let i = 0; i < 40; i++) {
 	try {
-		if ((await fetch(`http://127.0.0.1:${PORT}/api/kanban`)).ok) break;
+		if ((await tf(`http://127.0.0.1:${PORT}/api/kanban`)).ok) break;
 	} catch {
 		// まだ listen していない
 	}
@@ -69,7 +73,7 @@ const MEDIA_URL = `${base}/api/media/clip.png`;
 
 // --- 1: bytes=0-3 -> 206 + Content-Range + 4 bytes ----------------------------
 {
-	const res = await fetch(MEDIA_URL, { headers: { Range: "bytes=0-3" } });
+	const res = await tf(MEDIA_URL, { headers: { Range: "bytes=0-3" } });
 	const body = await res.text();
 	check("media bytes=0-3 は 206 + Content-Range + 4 バイト", () => {
 		assert.equal(res.status, 206);
@@ -82,7 +86,7 @@ const MEDIA_URL = `${base}/api/media/clip.png`;
 
 // --- 2: bytes=5- -> 206 で末尾まで -------------------------------------------
 {
-	const res = await fetch(MEDIA_URL, { headers: { Range: "bytes=5-" } });
+	const res = await tf(MEDIA_URL, { headers: { Range: "bytes=5-" } });
 	const body = await res.text();
 	check("media bytes=5- は 206 + 末尾まで", () => {
 		assert.equal(res.status, 206);
@@ -93,7 +97,7 @@ const MEDIA_URL = `${base}/api/media/clip.png`;
 
 // --- 3: 範囲外 -> 416 + bytes */size -----------------------------------------
 {
-	const res = await fetch(MEDIA_URL, { headers: { Range: "bytes=999999-" } });
+	const res = await tf(MEDIA_URL, { headers: { Range: "bytes=999999-" } });
 	check("media 範囲外は 416 + Content-Range: bytes */size", () => {
 		assert.equal(res.status, 416);
 		assert.equal(res.headers.get("content-range"), `bytes */${CONTENT.length}`);
@@ -104,7 +108,7 @@ const MEDIA_URL = `${base}/api/media/clip.png`;
 
 // --- 4: Accept-Ranges は 200 にも付く -----------------------------------------
 {
-	const res = await fetch(MEDIA_URL);
+	const res = await tf(MEDIA_URL);
 	check("media 200 に Accept-Ranges: bytes", () => {
 		assert.equal(res.status, 200);
 		assert.equal(res.headers.get("accept-ranges"), "bytes");
@@ -113,7 +117,7 @@ const MEDIA_URL = `${base}/api/media/clip.png`;
 
 // --- 6: Range 無し 200 の Content-Type / Cache-Control が従来通り -------------
 {
-	const res = await fetch(MEDIA_URL);
+	const res = await tf(MEDIA_URL);
 	check("media 200 の Content-Type は image/png", () =>
 		assert.equal(res.headers.get("content-type"), "image/png"));
 	check("media 200 の Cache-Control は no-store（従来維持）", () =>
@@ -122,7 +126,7 @@ const MEDIA_URL = `${base}/api/media/clip.png`;
 
 // --- 5: HEAD が 405 でない ----------------------------------------------------
 {
-	const res = await fetch(MEDIA_URL, { method: "HEAD" });
+	const res = await tf(MEDIA_URL, { method: "HEAD" });
 	const body = await res.text();
 	check("media HEAD は 405 でない (200) + Accept-Ranges + Content-Length", () => {
 		assert.equal(res.status, 200);
@@ -132,7 +136,7 @@ const MEDIA_URL = `${base}/api/media/clip.png`;
 	});
 }
 {
-	const res = await fetch(MEDIA_URL, { method: "HEAD", headers: { Range: "bytes=0-3" } });
+	const res = await tf(MEDIA_URL, { method: "HEAD", headers: { Range: "bytes=0-3" } });
 	check("media HEAD + Range は 206 ヘッダのみ", () => {
 		assert.equal(res.status, 206);
 		assert.equal(res.headers.get("content-range"), `bytes 0-3/${CONTENT.length}`);
@@ -148,7 +152,7 @@ writeFileSync(`${HOME_DIR}/workspace/site/data.json`, '{"a":1}');
 const add = await call({ action: "add", path: `${HOME_DIR}/workspace/site` });
 const id = add.details.id;
 {
-	const res = await fetch(`${base}/serve/${id}/clip.txt`, { headers: { Range: "bytes=0-3" } });
+	const res = await tf(`${base}/serve/${id}/clip.txt`, { headers: { Range: "bytes=0-3" } });
 	const body = await res.text();
 	check("serve 共通化後も 206 + Content-Range", () => {
 		assert.equal(res.status, 206);
@@ -158,7 +162,7 @@ const id = add.details.id;
 	});
 }
 {
-	const res = await fetch(`${base}/serve/${id}/clip.txt`, { headers: { Range: "bytes=999999-" } });
+	const res = await tf(`${base}/serve/${id}/clip.txt`, { headers: { Range: "bytes=999999-" } });
 	check("serve 416 も退行しない", () => {
 		assert.equal(res.status, 416);
 		assert.equal(res.headers.get("content-range"), `bytes */${CONTENT.length}`);
@@ -166,8 +170,8 @@ const id = add.details.id;
 	});
 }
 {
-	const json = await fetch(`${base}/serve/${id}/data.json`);
-	const txt = await fetch(`${base}/serve/${id}/clip.txt`);
+	const json = await tf(`${base}/serve/${id}/data.json`);
+	const txt = await tf(`${base}/serve/${id}/clip.txt`);
 	check("serve B4: .json は no-store", () => assert.equal(json.headers.get("cache-control"), "no-store"));
 	check("serve B4: 非 HTML/JSON は max-age", () =>
 		assert.match(txt.headers.get("cache-control"), /max-age/));

@@ -9,6 +9,10 @@ import http from "node:http";
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { connect, createServer as netServer } from "node:net";
 import { createRequire } from "node:module";
+import { authFetch, tokenHeader } from "./helpers/token.mjs";
+
+// #83b: HTTP routes need the server token now; tf = fetch + the kb_token cookie.
+const tf = (input, init) => authFetch(input, init);
 
 const HOME_DIR = "/tmp/kb-host-priority-home";
 rmSync(HOME_DIR, { recursive: true, force: true });
@@ -56,7 +60,7 @@ mod.default({
 });
 for (let i = 0; i < 40; i++) {
 	try {
-		if ((await fetch(`http://127.0.0.1:${PORT}/api/kanban`)).ok) break;
+		if ((await tf(`http://127.0.0.1:${PORT}/api/kanban`)).ok) break;
 	} catch {
 		// まだ listen していない
 	}
@@ -82,7 +86,7 @@ const clearHost = () => rmSync(HOST_JSON, { force: true });
 function hostRequest(path, host) {
 	return new Promise((resolve, reject) => {
 		const req = http.request(
-			{ host: "127.0.0.1", port: PORT, path, method: "GET", headers: { Host: host } },
+			{ host: "127.0.0.1", port: PORT, path, method: "GET", headers: { Host: host, Cookie: tokenHeader() } },
 			(res) => {
 				let raw = "";
 				res.on("data", (c) => (raw += c));
@@ -188,7 +192,7 @@ const learn = async (host) => {
 				port: PORT,
 				path: "/api/host",
 				method: "POST",
-				headers: { "Content-Type": "application/json" },
+				headers: { "Content-Type": "application/json", Cookie: tokenHeader() },
 			},
 			(res) => {
 				let raw = "";

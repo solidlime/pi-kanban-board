@@ -6,6 +6,10 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
 import vm from "node:vm";
+import { authFetch } from "./helpers/token.mjs";
+
+// #83b: HTTP routes need the server token now; tf = fetch + the kb_token cookie.
+const tf = (input, init) => authFetch(input, init);
 
 const HOME_DIR = "/tmp/kb-dashboard-cards-home";
 rmSync(HOME_DIR, { recursive: true, force: true });
@@ -52,14 +56,14 @@ const pi = {
 mod.default(pi);
 for (let i = 0; i < 40; i++) {
 	try {
-		if ((await fetch(`${BASE}/`)).ok) break;
+		if ((await tf(`${BASE}/`)).ok) break;
 	} catch {
 		// まだ listen していない
 	}
 	await new Promise((r) => setTimeout(r, 100));
 }
 
-const html = await (await fetch(`${BASE}/`)).text();
+const html = await (await tf(`${BASE}/`)).text();
 
 // --- 1. 文字列レベル: #30 カード操作 ------------------------------------------
 await check("#30 発火予定を表示し、相対ボタンで /api/schedule を叩く", () => {
@@ -391,7 +395,7 @@ writeFileSync(
 	}),
 );
 
-const status = async (qs) => (await fetch(`${BASE}/api/serve?${qs}`)).status;
+const status = async (qs) => (await tf(`${BASE}/api/serve?${qs}`)).status;
 const entries = () => JSON.parse(readFileSync(`${HOME_DIR}/.pi/kanban/serve.json`, "utf8")).entries;
 
 await check("/api/serve action=remove は登録を外すがファイルは残す", async () => {

@@ -7,6 +7,10 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer as netServer } from "node:net";
 import { createRequire } from "node:module";
+import { authFetch } from "./helpers/token.mjs";
+
+// #83b: HTTP routes need the server token now; tf = fetch + the kb_token cookie.
+const tf = (input, init) => authFetch(input, init);
 
 const HOME_DIR = "/tmp/kb-security-home";
 rmSync(HOME_DIR, { recursive: true, force: true });
@@ -59,7 +63,7 @@ mod.default(pi);
 const base = `http://127.0.0.1:${PORT}`;
 for (let i = 0; i < 60; i++) {
 	try {
-		if ((await fetch(`${base}/api/kanban`)).ok) break;
+		if ((await tf(`${base}/api/kanban`)).ok) break;
 	} catch {
 		// まだ listen していない
 	}
@@ -91,7 +95,7 @@ await check("(c) serve-allow.json で明示すれば ~/.pi/kanban も配信で�
 	const added = await call({ action: "add", path: KANBAN_DIR });
 	assert.ok(added.details.id, JSON.stringify(added.details));
 	assert.match(added.content[0].text, /\/serve\/[0-9a-f]{16}\/$/);
-	const body = await (await fetch(`${base}/serve/${added.details.id}/global.json`)).text();
+	const body = await (await tf(`${base}/serve/${added.details.id}/global.json`)).text();
 	assert.match(body, /"cards"/, `配信内容: ${body}`);
 	rmSync(ALLOW_JSON, { force: true });
 });
@@ -105,7 +109,7 @@ await check("(c) serve-allow.json で明示すれば ~/.pi/kanban も配信で�
 	assert.ok(added.details.id, JSON.stringify(added.details));
 	const id = added.details.id;
 
-	const res = await fetch(`${base}/api/serve?action=remove&id=${id}&del=1`);
+	const res = await tf(`${base}/api/serve?action=remove&id=${id}&del=1`);
 	await check("(d) GET /api/serve?del=1 は登録解除だけ行う（200）", () => {
 		assert.equal(res.status, 200);
 	});
@@ -114,14 +118,14 @@ await check("(c) serve-allow.json で明示すれば ~/.pi/kanban も配信で�
 		assert.match(readFileSync(keep, "utf8"), /keep/);
 	});
 	await check("(d) 登録は外れている（/serve/<id>/ は 404）", async () => {
-		const after = await fetch(`${base}/serve/${id}/keep.html`);
+		const after = await tf(`${base}/serve/${id}/keep.html`);
 		assert.equal(after.status, 404);
 	});
 }
 
 // --- (e) selftest は sid を漏らさない ---------------------------------------
 await check("(e) /api/selftest の detail に 32桁 hex の sid が無い", async () => {
-	const j = await (await fetch(`${base}/api/selftest`, { method: "POST" })).json();
+	const j = await (await tf(`${base}/api/selftest`, { method: "POST" })).json();
 	const detail = JSON.stringify(j.checks);
 	assert.doesNotMatch(detail, /[0-9a-f]{32}/i, `sid らしき hex: ${detail}`);
 });

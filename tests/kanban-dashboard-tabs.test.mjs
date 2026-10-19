@@ -7,6 +7,10 @@ import { hostname } from "node:os";
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
 import vm from "node:vm";
+import { authFetch } from "./helpers/token.mjs";
+
+// #83b: HTTP routes need the server token now; tf = fetch + the kb_token cookie.
+const tf = (input, init) => authFetch(input, init);
 
 const HOME_DIR = "/tmp/kb-dashboard-tabs-home";
 rmSync(HOME_DIR, { recursive: true, force: true });
@@ -53,14 +57,14 @@ const pi = {
 mod.default(pi);
 for (let i = 0; i < 40; i++) {
 	try {
-		if ((await fetch(`${BASE}/`)).ok) break;
+		if ((await tf(`${BASE}/`)).ok) break;
 	} catch {
 		// まだ listen していない
 	}
 	await new Promise((r) => setTimeout(r, 100));
 }
 
-const html = await (await fetch(`${BASE}/`)).text();
+const html = await (await tf(`${BASE}/`)).text();
 // ホスト名は実行環境で変わる: テンプレート埋め込みではなく生成時に置換される。
 const HOST = hostname();
 
@@ -141,7 +145,7 @@ check("タブは常に上部の横並び（#50 でサイドバー廃止）", () 
 	assert.match(mq, /\.tabs\{flex-direction:row/);
 });
 
-check("fetch( は 1 箇所のみ（#30/#31 の書き込みも共通の api() を通る）", () => {
+check("tf( は 1 箇所のみ（#30/#31 の書き込みも共通の api() を通る）", () => {
 	assert.equal((html.match(/\bfetch\(/g) || []).length, 1);
 	assert.ok(html.includes("api(API)"), "ポーリングは api(API) を通る");
 	assert.ok(html.includes("return fetch(u"), "唯一の fetch は api() の中");

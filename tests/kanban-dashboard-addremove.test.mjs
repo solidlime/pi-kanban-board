@@ -6,6 +6,10 @@ import { mkdirSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
 import vm from "node:vm";
+import { authFetch } from "./helpers/token.mjs";
+
+// #83b: HTTP routes need the server token now; tf = fetch + the kb_token cookie.
+const tf = (input, init) => authFetch(input, init);
 
 const HOME_DIR = "/tmp/kb-dashboard-addremove-home";
 rmSync(HOME_DIR, { recursive: true, force: true });
@@ -66,14 +70,14 @@ const OTHER = "addremove-readonly"; // driver ではないセッション（#55:
 handlers.get("session_start")({}, ctxFor(ACTIVE));
 for (let i = 0; i < 40; i++) {
 	try {
-		if ((await fetch(`${BASE}/`)).ok) break;
+		if ((await tf(`${BASE}/`)).ok) break;
 	} catch {
 		// まだ listen していない
 	}
 	await new Promise((r) => setTimeout(r, 100));
 }
 
-const SRC = await (await fetch(`${BASE}/`)).text();
+const SRC = await (await tf(`${BASE}/`)).text();
 
 // --- 1. 配信 HTML の文字列レベル ---------------------------------------------
 await check("DASHBOARD_HTML: 各列の + ボタン（addbtn）を持つ", () => {
@@ -144,11 +148,11 @@ await check("dashboard の <script> は構文として妥当", () => {
 });
 
 // --- 3. 実 HTTP: /api/add と /api/remove ------------------------------------
-const dash = async () => (await fetch(`${BASE}/api/dashboard`)).json();
+const dash = async () => (await tf(`${BASE}/api/dashboard`)).json();
 const q = (s) => encodeURIComponent(s);
 
 await check("/api/add: カードが増え、dashboard に出る", async () => {
-	const res = await fetch(`${BASE}/api/add?scope=session&sid=${ACTIVE}&text=${q("テスト追加")}&col=todo`);
+	const res = await tf(`${BASE}/api/add?scope=session&sid=${ACTIVE}&text=${q("テスト追加")}&col=todo`);
 	assert.equal(res.status, 200, `status=${res.status}`);
 	const d = await dash();
 	const card = d.sessions.find((s) => s.id === ACTIVE)?.cards.find((c) => c.text === "テスト追加");
@@ -157,13 +161,13 @@ await check("/api/add: カードが増え、dashboard に出る", async () => {
 });
 
 await check("/api/add: 空 text は 400", async () => {
-	const res = await fetch(`${BASE}/api/add?scope=session&sid=${ACTIVE}&text=`);
+	const res = await tf(`${BASE}/api/add?scope=session&sid=${ACTIVE}&text=`);
 	assert.equal(res.status, 400, `status=${res.status}`);
 });
 
 await check("/api/add: driver でないセッションでも 200 で、そのボードに入る", async () => {
 	handlers.get("session_start")({}, ctxFor(OTHER)); // activeSessionId は #40 で固定なので ACTIVE のまま
-	const res = await fetch(`${BASE}/api/add?scope=session&sid=${OTHER}&text=${q("他セッション追加")}`);
+	const res = await tf(`${BASE}/api/add?scope=session&sid=${OTHER}&text=${q("他セッション追加")}`);
 	assert.equal(res.status, 200, `status=${res.status}`);
 	// 実際にその sid のボードファイルに書かれていること
 	const d = await dash();
@@ -175,7 +179,7 @@ await check("/api/remove: カードが消え、dashboard からも消える", as
 	const before = await dash();
 	const card = before.sessions.find((s) => s.id === ACTIVE).cards.find((c) => c.text === "テスト追加");
 	assert.ok(card, "対象カードが無い");
-	const res = await fetch(`${BASE}/api/remove?scope=session&sid=${ACTIVE}&id=${card.id}`);
+	const res = await tf(`${BASE}/api/remove?scope=session&sid=${ACTIVE}&id=${card.id}`);
 	assert.equal(res.status, 200, `status=${res.status}`);
 	const after = await dash();
 	assert.ok(
@@ -185,7 +189,7 @@ await check("/api/remove: カードが消え、dashboard からも消える", as
 });
 
 await check("/api/remove: 存在しない id は 404", async () => {
-	const res = await fetch(`${BASE}/api/remove?scope=session&sid=${ACTIVE}&id=999999`);
+	const res = await tf(`${BASE}/api/remove?scope=session&sid=${ACTIVE}&id=999999`);
 	assert.equal(res.status, 404, `status=${res.status}`);
 });
 

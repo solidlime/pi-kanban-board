@@ -6,6 +6,10 @@ import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
+import { authFetch } from "./helpers/token.mjs";
+
+// #83b: HTTP routes need the server token now; tf = fetch + the kb_token cookie.
+const tf = (input, init) => authFetch(input, init);
 
 const HOME_DIR = "/tmp/kb-auth-home";
 rmSync(HOME_DIR, { recursive: true, force: true });
@@ -54,7 +58,7 @@ mod.default({
 });
 for (let i = 0; i < 40; i++) {
 	try {
-		if ((await fetch(`http://127.0.0.1:${PORT}/api/kanban`)).ok) break;
+		if ((await tf(`http://127.0.0.1:${PORT}/api/kanban`)).ok) break;
 	} catch {
 		// まだ listen していない
 	}
@@ -85,7 +89,7 @@ writeJson(globalFile, { cards: [{ id: 1, text: "g", col: "todo" }], nextId: 9 })
 // #55: 他セッションのボードも書き込み対象。priority はそのボードのカードを見る。
 writeJson(otherBoardFile, { cards: [{ id: 1, text: "o", col: "todo" }], nextId: 9 });
 
-const status = async (path) => (await fetch(`http://127.0.0.1:${PORT}${path}`)).status;
+const status = async (path) => (await tf(`http://127.0.0.1:${PORT}${path}`)).status;
 
 const SESSION_WRITES = [
 	["/api/modes", `scope=session&key=autoPick&value=on`],
@@ -141,15 +145,15 @@ handlers.get("session_shutdown")();
 await check("shutdown 後の scope=global sid 省略 -> 400", async () =>
 	assert.equal(await status(`/api/modes?scope=global&key=autoPick&value=on`), 400));
 await check("その 400 は global を名指しする（session ではない）", async () => {
-	const body = await (await fetch(`http://127.0.0.1:${PORT}/api/modes?scope=global&key=autoPick&value=on`)).json();
+	const body = await (await tf(`http://127.0.0.1:${PORT}/api/modes?scope=global&key=autoPick&value=on`)).json();
 	assert.equal(body.error, "scope=global requires sid (no active session to fall back to)");
 });
 await check("scope=session の 400 文言は変わらない", async () => {
-	const body = await (await fetch(`http://127.0.0.1:${PORT}/api/modes?scope=session&key=autoPick&value=on`)).json();
+	const body = await (await tf(`http://127.0.0.1:${PORT}/api/modes?scope=session&key=autoPick&value=on`)).json();
 	assert.equal(body.error, "scope=session requires sid");
 });
 await check("/api/interval も同じ文言（#78 の設定系5端点で共通）", async () => {
-	const body = await (await fetch(`http://127.0.0.1:${PORT}/api/interval?scope=global&min=5`)).json();
+	const body = await (await tf(`http://127.0.0.1:${PORT}/api/interval?scope=global&min=5`)).json();
 	assert.equal(body.error, "scope=global requires sid (no active session to fall back to)");
 });
 

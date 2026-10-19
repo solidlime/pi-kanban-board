@@ -5,6 +5,10 @@ import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer as netServer } from "node:net";
 import { createRequire } from "node:module";
+import { authFetch } from "./helpers/token.mjs";
+
+// #83b: HTTP routes need the server token now; tf = fetch + the kb_token cookie.
+const tf = (input, init) => authFetch(input, init);
 
 const HOME_DIR = "/tmp/kb-serve-expiry-home";
 rmSync(HOME_DIR, { recursive: true, force: true });
@@ -68,7 +72,7 @@ const pi = {
 const testHook = mod.default(pi).__test;
 for (let i = 0; i < 40; i++) {
 	try {
-		if ((await fetch(`http://127.0.0.1:${PORT}/api/kanban`)).ok) break;
+		if ((await tf(`http://127.0.0.1:${PORT}/api/kanban`)).ok) break;
 	} catch {
 		// まだ listen していない
 	}
@@ -102,7 +106,7 @@ writeFileSync(
 );
 
 const get = async (p) => {
-	const res = await fetch(`${base}${p}`);
+	const res = await tf(`${base}${p}`);
 	return { status: res.status, body: await res.text() };
 };
 
@@ -130,7 +134,7 @@ check("期限切れは 410 Gone", () => {
 	check("未登録は 404（410 と区別）", () => assert.equal(r.status, 404, `got ${r.status}`));
 }
 {
-	const res = await fetch(`${base}/serve/${EXPIRED_ID}/_inbox/x.txt`, {
+	const res = await tf(`${base}/serve/${EXPIRED_ID}/_inbox/x.txt`, {
 		method: "POST",
 		body: "hello",
 	});
@@ -150,7 +154,7 @@ check("期限切れは 410 Gone", () => {
 }
 
 {
-	const dash = await (await fetch(`${base}/api/dashboard`)).json();
+	const dash = await (await tf(`${base}/api/dashboard`)).json();
 	check("dashboard の serve は期限切れも残し permanent/expiresAt を返す", () => {
 		const e = dash.serve.find((s) => s.id === EXPIRED_ID);
 		assert.ok(e, "期限切れが dashboard から消えている");
@@ -174,7 +178,7 @@ check("期限切れは 410 Gone", () => {
 
 // --- 3. /api/serve の永久トグル ----------------------------------------------
 {
-	const on = await fetch(`${base}/api/serve?action=permanent&id=${FRESH_ID}&value=1`);
+	const on = await tf(`${base}/api/serve?action=permanent&id=${FRESH_ID}&value=1`);
 	const body = await on.json();
 	check("action=permanent&value=1 で permanent:true", () => {
 		assert.equal(on.status, 200, `got ${on.status}`);
@@ -182,7 +186,7 @@ check("期限切れは 410 Gone", () => {
 		assert.equal(body.permanent, true);
 		assert.equal(entriesOnDisk().find((e) => e.id === FRESH_ID).permanent, true);
 	});
-	const off = await fetch(`${base}/api/serve?action=permanent&id=${FRESH_ID}&value=0`);
+	const off = await tf(`${base}/api/serve?action=permanent&id=${FRESH_ID}&value=0`);
 	{
 		const b = await off.json();
 		check("value=0 で permanent が消える", () => {
@@ -192,7 +196,7 @@ check("期限切れは 410 Gone", () => {
 		});
 	}
 	{
-		const r = await fetch(`${base}/api/serve?action=permanent&id=ffffffffffffffff&value=1`);
+		const r = await tf(`${base}/api/serve?action=permanent&id=ffffffffffffffff&value=1`);
 		check("未登録 id の permanent は 404", () => assert.equal(r.status, 404, `got ${r.status}`));
 	}
 }
@@ -233,7 +237,7 @@ check("sweepServe は期限切れだけ実削除する", () => {
 		SERVE_JSON,
 		JSON.stringify({ entries: [{ id: EXPIRED_ID, path: PAGE, createdAt: OLD }] }),
 	);
-	const r = await fetch(`${base}/api/serve?action=remove&id=${EXPIRED_ID}`);
+	const r = await tf(`${base}/api/serve?action=remove&id=${EXPIRED_ID}`);
 	check("期限切れエントリの remove は 200", () => assert.equal(r.status, 200, `got ${r.status}`));
 }
 

@@ -7,6 +7,10 @@ import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer as netServer } from "node:net";
 import { createRequire } from "node:module";
+import { authFetch } from "./helpers/token.mjs";
+
+// #83b: HTTP routes need the server token now; tf = fetch + the kb_token cookie.
+const tf = (input, init) => authFetch(input, init);
 
 const HOME_DIR = "/tmp/kb-ops38-home";
 rmSync(HOME_DIR, { recursive: true, force: true });
@@ -56,7 +60,7 @@ const pi = {
 mod.default(pi);
 for (let i = 0; i < 40; i++) {
 	try {
-		if ((await fetch(`${BASE}/api/kanban`)).ok) break;
+		if ((await tf(`${BASE}/api/kanban`)).ok) break;
 	} catch {
 		// まだ listen していない
 	}
@@ -89,7 +93,7 @@ const PNG = Buffer.from(
 );
 await check("#38-4 /api/upload?id= は既存カードに紐付き、新規カードを作らない", async () => {
 	const before = readGlobal().length;
-	const r = await fetch(`${BASE}/api/upload?scope=global&ext=png&id=1`, {
+	const r = await tf(`${BASE}/api/upload?scope=global&ext=png&id=1`, {
 		method: "POST",
 		body: PNG,
 		headers: { "Content-Type": "application/octet-stream" },
@@ -137,17 +141,17 @@ await check("#38-14 fields 射影は指定キーだけ返し、無指定は従�
 			2,
 		),
 	);
-	const proj = await (await fetch(`${BASE}/api/kanban?sid=${SID}&fields=id,col,text`)).json();
+	const proj = await (await tf(`${BASE}/api/kanban?sid=${SID}&fields=id,col,text`)).json();
 	const c = proj.session.cards[0];
 	assert.deepEqual(Object.keys(c).sort(), ["col", "id", "text"], `余計なキー: ${JSON.stringify(Object.keys(c))}`);
 	assert.equal(c.id, 7);
-	const full = await (await fetch(`${BASE}/api/kanban?sid=${SID}`)).json();
+	const full = await (await tf(`${BASE}/api/kanban?sid=${SID}`)).json();
 	assert.ok("img" in full.session.cards[0] && "priority" in full.session.cards[0], "無指定で射影された");
 });
 
 // --- 1/2. selftest (API とツール check が同じ JSON を返す) --------------------
 await check("#38-1 /api/selftest は {ok, checks:[{name,ok,detail}]} を返す", async () => {
-	const r = await fetch(`${BASE}/api/selftest`, { method: "POST" });
+	const r = await tf(`${BASE}/api/selftest`, { method: "POST" });
 	const j = await r.json();
 	assert.equal(typeof j.ok, "boolean");
 	assert.ok(Array.isArray(j.checks) && j.checks.length >= 4, `checks が足りない: ${JSON.stringify(j)}`);
@@ -179,7 +183,7 @@ await check("#38-2 board ツール check は /api/selftest と同じ JSON を返
 	const res = await spec.execute("test-call", { action: "check", scope: "session" }, undefined, undefined, ctx);
 	assert.ok(!res.isError, `check が失敗した: ${res.content[0].text}`);
 	const fromTool = JSON.parse(res.content[0].text);
-	const fromApi = await (await fetch(`${BASE}/api/selftest`, { method: "POST" })).json();
+	const fromApi = await (await tf(`${BASE}/api/selftest`, { method: "POST" })).json();
 	// 除外キーなし: selftest の detail に時刻・乱数は含まれない（board=activeSessionId と
 	// ファイル数、modes/serve=パスと件数、media=パスと件数）。全て同じプロセス状態を見るので
 	// 厳密一致で固定できる。

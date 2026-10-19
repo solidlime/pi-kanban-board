@@ -8,6 +8,10 @@ import { createServer as netServer } from "node:net";
 import http from "node:http";
 import { createRequire } from "node:module";
 import { resolve as resolvePath } from "node:path";
+import { authFetch, tokenHeader } from "./helpers/token.mjs";
+
+// #83b: HTTP routes need the server token now; tf = fetch + the kb_token cookie.
+const tf = (input, init) => authFetch(input, init);
 
 const HOME_DIR = "/tmp/kb-serve-home";
 rmSync(HOME_DIR, { recursive: true, force: true });
@@ -57,7 +61,7 @@ const pi = {
 mod.default(pi);
 for (let i = 0; i < 40; i++) {
 	try {
-		if ((await fetch(`http://127.0.0.1:${PORT}/api/kanban`)).ok) break;
+		if ((await tf(`http://127.0.0.1:${PORT}/api/kanban`)).ok) break;
 	} catch {
 		// まだ listen していない
 	}
@@ -74,7 +78,7 @@ const SITE = `${HOME_DIR}/workspace/site`;
 function rawGet(path, extraHeaders = {}) {
 	return new Promise((resolve, reject) => {
 		const req = http.request(
-			{ host: "127.0.0.1", port: PORT, path, method: "GET", headers: extraHeaders },
+			{ host: "127.0.0.1", port: PORT, path, method: "GET", headers: { Cookie: tokenHeader(), ...extraHeaders } },
 			(res) => {
 				let body = "";
 				res.on("data", (c) => (body += c));
@@ -122,7 +126,7 @@ check("D5 allowlist 外の登録は 403 + isError", () => {
 
 // --- D2 / A7: index.html の無いディレクトリは一覧が出る ------------------------
 {
-	const res = await fetch(`${base}/serve/${id}/`);
+	const res = await tf(`${base}/serve/${id}/`);
 	const html = await res.text();
 	check("D2 一覧 HTML が 200 で返る", () => assert.equal(res.status, 200));
 	check("D2 一覧に segments/ が入る", () => {
@@ -134,7 +138,7 @@ check("D5 allowlist 外の登録は 403 + isError", () => {
 mkdirSync(`${SITE}/withindex`, { recursive: true });
 writeFileSync(`${SITE}/withindex/index.html`, "<h1>INDEX</h1>");
 {
-	const res = await fetch(`${base}/serve/${id}/withindex/`);
+	const res = await tf(`${base}/serve/${id}/withindex/`);
 	const html = await res.text();
 	check("A7 index.html があればそれを返す", () => {
 		assert.equal(res.status, 200);
@@ -143,7 +147,7 @@ writeFileSync(`${SITE}/withindex/index.html`, "<h1>INDEX</h1>");
 }
 // A7: /serve/<id> はディレクトリなら末尾スラッシュへリダイレクト
 {
-	const res = await fetch(`${base}/serve/${id}`, { redirect: "manual" });
+	const res = await tf(`${base}/serve/${id}`, { redirect: "manual" });
 	check("A7 /serve/<id> は 301 で末尾スラッシュへ", () => {
 		assert.equal(res.status, 301);
 		assert.equal(res.headers.get("location"), `/serve/${id}/`);
@@ -152,7 +156,7 @@ writeFileSync(`${SITE}/withindex/index.html`, "<h1>INDEX</h1>");
 
 // --- D3 / B1: Range -----------------------------------------------------------
 {
-	const res = await fetch(`${base}/serve/${id}/segments/clip.txt`, {
+	const res = await tf(`${base}/serve/${id}/segments/clip.txt`, {
 		headers: { Range: "bytes=0-3" },
 	});
 	const body = await res.text();
@@ -164,7 +168,7 @@ writeFileSync(`${SITE}/withindex/index.html`, "<h1>INDEX</h1>");
 	});
 }
 {
-	const res = await fetch(`${base}/serve/${id}/segments/clip.txt`, {
+	const res = await tf(`${base}/serve/${id}/segments/clip.txt`, {
 		headers: { Range: "bytes=5-" },
 	});
 	const body = await res.text();
@@ -175,7 +179,7 @@ writeFileSync(`${SITE}/withindex/index.html`, "<h1>INDEX</h1>");
 	});
 }
 {
-	const res = await fetch(`${base}/serve/${id}/segments/clip.txt`, {
+	const res = await tf(`${base}/serve/${id}/segments/clip.txt`, {
 		headers: { Range: "bytes=100-200" },
 	});
 	check("D3 範囲外は 416 + bytes */size", () => {
@@ -184,7 +188,7 @@ writeFileSync(`${SITE}/withindex/index.html`, "<h1>INDEX</h1>");
 	});
 }
 {
-	const res = await fetch(`${base}/serve/${id}/segments/clip.txt`, {
+	const res = await tf(`${base}/serve/${id}/segments/clip.txt`, {
 		headers: { Range: "bytes=-4" },
 	});
 	const body = await res.text();
@@ -197,11 +201,11 @@ writeFileSync(`${SITE}/withindex/index.html`, "<h1>INDEX</h1>");
 // --- B4: Cache-Control --------------------------------------------------------
 {
 	writeFileSync(`${SITE}/segments/data.json`, '{"a":1}');
-	const res = await fetch(`${base}/serve/${id}/segments/data.json`);
+	const res = await tf(`${base}/serve/${id}/segments/data.json`);
 	check("B4 .json は no-store", () => assert.equal(res.headers.get("cache-control"), "no-store"));
-	const html = await fetch(`${base}/serve/${id}/`);
+	const html = await tf(`${base}/serve/${id}/`);
 	check("B4 HTML 一覧は no-store", () => assert.equal(html.headers.get("cache-control"), "no-store"));
-	const mp4 = await fetch(`${base}/serve/${id}/segments/clip.txt`);
+	const mp4 = await tf(`${base}/serve/${id}/segments/clip.txt`);
 	check("B4 非 HTML/JSON は max-age", () => assert.match(mp4.headers.get("cache-control"), /max-age/));
 	check("B3 text/plain に charset", () =>
 		assert.equal(mp4.headers.get("content-type"), "text/plain; charset=utf-8"));
@@ -209,7 +213,7 @@ writeFileSync(`${SITE}/withindex/index.html`, "<h1>INDEX</h1>");
 
 // --- B6: HEAD は 405 でない ---------------------------------------------------
 {
-	const res = await fetch(`${base}/serve/${id}/segments/clip.txt`, { method: "HEAD" });
+	const res = await tf(`${base}/serve/${id}/segments/clip.txt`, { method: "HEAD" });
 	check("B6 HEAD は 200 (405 でない)", () => {
 		assert.equal(res.status, 200);
 		assert.equal(res.headers.get("accept-ranges"), "bytes");
@@ -221,7 +225,7 @@ writeFileSync(`${SITE}/withindex/index.html`, "<h1>INDEX</h1>");
 {
 	// `new URL` eats a bare `../`, so the reachable traversal vector is an encoded
 	// separator; a literal `..` is normalized away before it reaches the handler.
-	const res = await fetch(`${base}/serve/${id}/%2e%2e%2f%2e%2e%2f%2e%2e%2fetc/passwd`);
+	const res = await tf(`${base}/serve/${id}/%2e%2e%2f%2e%2e%2f%2e%2e%2fetc/passwd`);
 	check("D4 エンコードされた .. は 403", () =>
 		assert.equal(res.status, 403, `${res.status} body=${res.statusText}`));
 	const raw = await rawGet(`/serve/${id}/../serve.json`);
@@ -229,16 +233,16 @@ writeFileSync(`${SITE}/withindex/index.html`, "<h1>INDEX</h1>");
 }
 {
 	symlinkSync(HOME_DIR, `${SITE}/escape`);
-	const res = await fetch(`${base}/serve/${id}/escape/.hidden-dir/`);
+	const res = await tf(`${base}/serve/${id}/escape/.hidden-dir/`);
 	check("B2 シンボリックリンク脱出は 403", () => assert.equal(res.status, 403));
-	const res2 = await fetch(`${base}/serve/${id}/escape/`);
+	const res2 = await tf(`${base}/serve/${id}/escape/`);
 	check("B2 外を指すシンボリックリンク自体も 403", () => assert.equal(res2.status, 403));
 }
 
 // --- D6 / A2: 参照であってコピーでない ----------------------------------------
 {
 	writeFileSync(`${SITE}/segments/after.txt`, "added later");
-	const got = await fetch(`${base}/serve/${id}/segments/after.txt`);
+	const got = await tf(`${base}/serve/${id}/segments/after.txt`);
 	const body = await got.text();
 	check("D6 登録後に足したファイルが同じ URL で取れる", () => {
 		assert.equal(got.status, 200);
@@ -248,7 +252,7 @@ writeFileSync(`${SITE}/withindex/index.html`, "<h1>INDEX</h1>");
 
 // --- D7 / A7b: ディレクトリ一覧 JSON ------------------------------------------
 {
-	const res = await fetch(`${base}/serve/${id}/segments/?list=json`);
+	const res = await tf(`${base}/serve/${id}/segments/?list=json`);
 	const list = await res.json();
 	check("D7 ?list=json は JSON 配列", () => {
 		assert.equal(res.status, 200);
@@ -262,11 +266,11 @@ writeFileSync(`${SITE}/withindex/index.html`, "<h1>INDEX</h1>");
 		assert.equal(after.size, "added later".length);
 		assert.equal(typeof after.mtime, "number");
 	});
-	const rootList = await (await fetch(`${base}/serve/${id}/?list=json`)).json();
+	const rootList = await (await tf(`${base}/serve/${id}/?list=json`)).json();
 	check("D7 JSON 一覧にディレクトリ種別が入る", () => {
 		assert.ok(rootList.some((e) => e.type === "dir"), JSON.stringify(rootList));
 	});
-	const accept = await fetch(`${base}/serve/${id}/segments/`, {
+	const accept = await tf(`${base}/serve/${id}/segments/`, {
 		headers: { Accept: "application/json" },
 	});
 	const acceptList = await accept.json();
@@ -280,7 +284,7 @@ writeFileSync(`${SITE}/withindex/index.html`, "<h1>INDEX</h1>");
 		assert.equal(listed.details.ok, true);
 		assert.ok(listed.details.entries.some((e) => e.id === id), JSON.stringify(listed.details));
 	});
-	const page = await fetch(`${base}/serve`);
+	const page = await tf(`${base}/serve`);
 	const html = await page.text();
 	check("A8 /serve の一覧ページに id が出る", () => {
 		assert.equal(page.status, 200);
@@ -291,7 +295,7 @@ writeFileSync(`${SITE}/withindex/index.html`, "<h1>INDEX</h1>");
 	mkdirSync(goneDir, { recursive: true });
 	const goneAdd = await call({ action: "add", path: goneDir });
 	rmSync(goneDir, { recursive: true, force: true });
-	const page2 = await (await fetch(`${base}/serve`)).text();
+	const page2 = await (await tf(`${base}/serve`)).text();
 	check("A9 消えたパスは一覧に出ない", () => assert.doesNotMatch(page2, new RegExp(goneAdd.details.id)));
 	const listed2 = await call({ action: "list" });
 	check("A9 list からも消える", () =>
@@ -306,7 +310,7 @@ writeFileSync(`${SITE}/withindex/index.html`, "<h1>INDEX</h1>");
 	});
 	const rmByPath = await call({ action: "remove", path: `${HOME_DIR}/workspace/gone` });
 	check("A6 remove(path) で消えたパスも解除できる", () => assert.equal(rmByPath.details.ok, true));
-	const afterRemove = await fetch(`${base}/serve/${id}/`);
+	const afterRemove = await tf(`${base}/serve/${id}/`);
 	check("A6 解除後は 404", () => assert.equal(afterRemove.status, 404));
 	// 元に戻して他テストと干渉させない
 	await call({ action: "add", path: SITE });
@@ -330,7 +334,7 @@ writeFileSync(`${SITE}/withindex/index.html`, "<h1>INDEX</h1>");
 		assert.doesNotMatch(SHORT_ID, /^[0-9a-f]{16}$/);
 		assert.notEqual(SHORT_ID, hashOfShort);
 	});
-	const shortServed = await fetch(`${base}/serve/${SHORT_ID}/segments/clip.txt`);
+	const shortServed = await tf(`${base}/serve/${SHORT_ID}/segments/clip.txt`);
 	check("#34 手書き id の URL は配信される", () => assert.equal(shortServed.status, 200));
 	const shortRemove = await rawGet(`/api/serve?action=remove&id=${SHORT_ID}&sid=regress`);
 	const shortBody = JSON.parse(shortRemove.body);
@@ -342,7 +346,7 @@ writeFileSync(`${SITE}/withindex/index.html`, "<h1>INDEX</h1>");
 		assert.equal(shortBody.id, SHORT_ID);
 		assert.notEqual(shortBody.id, hashOfShort);
 	});
-	const shortAfter = await fetch(`${base}/serve/${SHORT_ID}/segments/clip.txt`);
+	const shortAfter = await tf(`${base}/serve/${SHORT_ID}/segments/clip.txt`);
 	check("#34 解除後は手書き id の URL が 404", () => assert.equal(shortAfter.status, 404));
 	check("#34 レジストリからは short1 だけが消え、16桁hex の既存登録は残る", () => {
 		const now = JSON.parse(readFileSync(registry, "utf8"));
@@ -353,8 +357,8 @@ writeFileSync(`${SITE}/withindex/index.html`, "<h1>INDEX</h1>");
 
 // --- B5: 相対パスのフェッチが http 越しに成立 ---------------------------------
 {
-	const rel = await fetch(`${base}/serve/${id}/segments/data.json`);
-	const txt = await fetch(`${base}/serve/${id}/segments/clip.txt`);
+	const rel = await tf(`${base}/serve/${id}/segments/data.json`);
+	const txt = await tf(`${base}/serve/${id}/segments/clip.txt`);
 	check("B5 相対パス相当の http 取得が動く", () => {
 		assert.equal(rel.status, 200);
 		assert.equal(txt.status, 200);

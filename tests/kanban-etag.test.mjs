@@ -5,6 +5,10 @@ import assert from "node:assert/strict";
 import { mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
+import { authFetch } from "./helpers/token.mjs";
+
+// #83b: HTTP routes need the server token now; tf = fetch + the kb_token cookie.
+const tf = (input, init) => authFetch(input, init);
 
 const HOME_DIR = "/tmp/kb-etag-home";
 rmSync(HOME_DIR, { recursive: true, force: true });
@@ -50,7 +54,7 @@ const pi = {
 	sendUserMessage() {},
 };
 mod.default(pi);
-const get = (p, headers) => fetch(`${BASE}${p}`, { headers });
+const get = (p, headers) => tf(`${BASE}${p}`, { headers });
 
 const ACTIVE = "etag1111";
 writeFileSync(

@@ -6,6 +6,10 @@ import { existsSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, wri
 import { createServer as netServer } from "node:net";
 import http from "node:http";
 import { createRequire } from "node:module";
+import { authFetch, tokenHeader } from "./helpers/token.mjs";
+
+// #83b: HTTP routes need the server token now; tf = fetch + the kb_token cookie.
+const tf = (input, init) => authFetch(input, init);
 
 const HOME_DIR = "/tmp/kb-inbox-home";
 rmSync(HOME_DIR, { recursive: true, force: true });
@@ -64,7 +68,7 @@ const pi = {
 mod.default(pi);
 for (let i = 0; i < 40; i++) {
 	try {
-		if ((await fetch(`http://127.0.0.1:${PORT}/api/kanban`)).ok) break;
+		if ((await tf(`http://127.0.0.1:${PORT}/api/kanban`)).ok) break;
 	} catch {
 		// まだ listen していない
 	}
@@ -82,7 +86,7 @@ const INBOX = `${SITE}/_inbox`;
 function raw(method, path, body) {
 	return new Promise((resolve, reject) => {
 		const req = http.request(
-			{ host: "127.0.0.1", port: PORT, path, method, headers: { "Content-Type": "application/octet-stream" } },
+			{ host: "127.0.0.1", port: PORT, path, method, headers: { "Content-Type": "application/octet-stream", Cookie: tokenHeader() } },
 			(res) => {
 				let out = "";
 				res.on("data", (c) => (out += c));
@@ -128,7 +132,7 @@ const NOTE = JSON.stringify({ take: 14, approved: true });
 
 // --- A4: 既存 GET で読める（新しい GET を足していない） -----------------------
 {
-	const res = await fetch(`${base}/serve/${id}/_inbox/a.json`);
+	const res = await tf(`${base}/serve/${id}/_inbox/a.json`);
 	const body = await res.text();
 	await checkAsync("A4 既存 GET /serve/<id>/_inbox/<name> で内容一致", async () => {
 		assert.equal(res.status, 200);
@@ -243,10 +247,10 @@ const board = (cards) => ({ cards, nextId: 99 });
 {
 	await new Promise((r) => setTimeout(r, 5));
 	await post(`/serve/${id}/_inbox/fresh.json`, "x");
-	const page = await (await fetch(`${base}/serve`)).text();
+	const page = await (await tf(`${base}/serve`)).text();
 	check("A8 /serve 一覧に未読数が出る", () => assert.match(page, /inbox 1/));
 	await call({ action: "ack", id });
-	const page2 = await (await fetch(`${base}/serve`)).text();
+	const page2 = await (await tf(`${base}/serve`)).text();
 	check("A8 ack 後は未読数が消える", () => assert.doesNotMatch(page2, /inbox \d/));
 }
 
@@ -266,7 +270,7 @@ const board = (cards) => ({ cards, nextId: 99 });
 	check("A7 list 未読2件で (2 unread) が付く", () => {
 		assert.equal(rowOf(unread), `${SITE_URL}\t${SITE} (2 unread)`);
 	});
-	const html = await (await fetch(`${base}/serve`)).text();
+	const html = await (await tf(`${base}/serve`)).text();
 	check("A7 list の未読数は HTML 一覧と同じ", () => assert.match(html, /inbox 2/));
 	await call({ action: "ack", id });
 	const acked = await call({ action: "list" });
@@ -289,6 +293,9 @@ const board = (cards) => ({ cards, nextId: 99 });
 		assert.match(line, /^=== KANBAN \(this session\) ===$/m);
 		assert.match(line, /^TODO\s+#1 x$/m);
 		assert.match(line, /GUI: open http:\/\/[^\s/]+:\d+\/ in a browser\./);
+		// #83b: トークン無しで URL を開いても案内画面だけ。導線の行が生きていることのみ固定する。
+		assert.match(line, /^TOKEN: \/kanban url/m);
+		assert.ok(!/token=[0-9a-f]{64}/.test(line), "トークン値がプロンプトに埋まってはいけない");
 		assert.match(line, /^=== END KANBAN ===$/m);
 	});
 	await call({ action: "ack", id });
@@ -313,7 +320,7 @@ check("B 空ボードは null のまま（既存挙動）", () => assert.equal(m
 
 // --- 既存挙動の不変（/api/* 規約） --------------------------------------------
 {
-	const api = await fetch(`${base}/api/kanban`);
+	const api = await tf(`${base}/api/kanban`);
 	const j = await api.json();
 	await checkAsync("contract GET /api/kanban は ok:true + boards", async () => {
 		assert.equal(api.status, 200);

@@ -7,6 +7,10 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
+import { authFetch } from "./helpers/token.mjs";
+
+// #83b: HTTP routes need the server token now; tf = fetch + the kb_token cookie.
+const tf = (input, init) => authFetch(input, init);
 
 const HOME_DIR = "/tmp/kb-unlock-home";
 rmSync(HOME_DIR, { recursive: true, force: true });
@@ -52,7 +56,7 @@ mod.default({
 });
 for (let i = 0; i < 40; i++) {
 	try {
-		if ((await fetch(`http://127.0.0.1:${PORT}/api/sessions`)).ok) break;
+		if ((await tf(`http://127.0.0.1:${PORT}/api/sessions`)).ok) break;
 	} catch {
 		// まだ listen していない
 	}
@@ -67,7 +71,7 @@ const ctxFor = (sid) => ({
 });
 const boardFile = (sid) => `${HOME_DIR}/.pi/kanban/sessions/${sid}.json`;
 const readBoard = (sid) => JSON.parse(readFileSync(boardFile(sid), "utf8"));
-const get = (path) => fetch(`http://127.0.0.1:${PORT}${path}`);
+const get = (path) => tf(`http://127.0.0.1:${PORT}${path}`);
 const sessionsJson = async () => (await get("/api/sessions")).json();
 
 const A = "unlock-a";

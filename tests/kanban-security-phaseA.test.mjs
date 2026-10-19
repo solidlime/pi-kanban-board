@@ -8,6 +8,10 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer as netServer } from "node:net";
 import http from "node:http";
 import { createRequire } from "node:module";
+import { authFetch, tokenHeader } from "./helpers/token.mjs";
+
+// #83b: HTTP routes need the server token now; tf = fetch + the kb_token cookie.
+const tf = (input, init) => authFetch(input, init);
 
 const HOME_DIR = "/tmp/kb-security-phaseA-home";
 rmSync(HOME_DIR, { recursive: true, force: true });
@@ -65,7 +69,7 @@ const pi = {
 mod.default(pi);
 for (let i = 0; i < 40; i++) {
 	try {
-		if ((await fetch(`http://127.0.0.1:${PORT}/api/kanban`)).ok) break;
+		if ((await tf(`http://127.0.0.1:${PORT}/api/kanban`)).ok) break;
 	} catch {
 		// まだ listen していない
 	}
@@ -78,8 +82,13 @@ const call = (args) => serve.execute("t", args, null, () => {});
 const base = `http://127.0.0.1:${PORT}`;
 const SITE = `${HOME_DIR}/workspace/site`;
 
-/** http.request 直叩き。fetch はヘッダを足すので、無ヘッダの再現にはこちらを使う。 */
-function send(method, path, { headers = {}, body } = {}) {
+/**
+ * http.request 直叩き。fetch はヘッダを足すので、無ヘッダの再現にはこちらを使う。
+ * #83b: 既定でトークンを付ける。付けないと全部 401 で止まり、このファイルが試したい
+ * Origin / MIME ゲートに届かない。認証そのものを試す箇所だけ `{ noToken: true }`。
+ */
+function send(method, path, { headers = {}, body, noToken = false } = {}) {
+	if (!noToken && !headers.Cookie && !headers.cookie) headers = { ...headers, Cookie: tokenHeader() };
 	return new Promise((resolve, reject) => {
 		const req = http.request({ host: "127.0.0.1", port: PORT, path, method, headers }, (res) => {
 			let out = "";
@@ -332,7 +341,8 @@ const WRITE_ROUTES = [
 ];
 for (const route of WRITE_ROUTES) {
 	const res = await send("GET", `/api/${route}`, {
-		headers: { Origin: "http://evil.example", "Sec-Fetch-Site": "same-site", Host: `127.0.0.1:${PORT}` },
+		// #83b: トークンは付ける。付けないと 401 で止まり、この表が試したい Origin ゲートに届かない。
+		headers: { Origin: "http://evil.example", "Sec-Fetch-Site": "same-site", Host: `127.0.0.1:${PORT}`, Cookie: tokenHeader() },
 	});
 	const name = route.split("?")[0];
 	await checkAsync(`GET /api/${name} は cross-origin で 403`, async () =>
@@ -345,6 +355,7 @@ for (const path of ["/api/upload?scope=session&sid=s1&col=todo&ext=png", "/api/s
 			"Sec-Fetch-Site": "same-site",
 			Host: `127.0.0.1:${PORT}`,
 			"Content-Type": "application/octet-stream",
+			Cookie: tokenHeader(),
 		},
 		body: Buffer.from([0x89, 0x50, 0x4e, 0x47]),
 	});
@@ -354,23 +365,33 @@ for (const path of ["/api/upload?scope=session&sid=s1&col=todo&ext=png", "/api/s
 {
 	// Origin: null は比較するホストを持たない。以前は素通りしていた穴。
 	const res = await send("GET", `/api/add?text=nullorigin&col=todo&scope=session&sid=s1`, {
-		headers: { Origin: "null", "Sec-Fetch-Site": "same-site" },
+		headers: { Origin: "null", "Sec-Fetch-Site": "same-site", Cookie: tokenHeader() },
 	});
 	await checkAsync("Origin: null の書き込みは 403", async () =>
 		assert.equal(res.status, 403, `status=${res.status} body=${res.body}`));
 }
 {
-	// ヘッダ無し＝ブラウザ以外（エージェントツール・別 pi・probeServer）。壊してはいけない線。
-	const res = await send("GET", `/api/add?text=agent_ok&col=todo&scope=session&sid=s1`);
-	await checkAsync("ヘッダ無しの書き込みは 200（エージェント経路）", async () => {
-		assert.equal(res.status, 200, `status=${res.status} body=${res.body}`);
-		assert.equal(JSON.parse(res.body).ok, true);
+	// #83b: the "header-less GET is 200" line is gone. It used to protect the agent path,
+	// but the agent's `kanban` tool never speaks HTTP (it builds a Card and calls
+	// writeBoard in-process), and `probeServer` now presents the token. With no such
+	// caller left, a header-less request is exactly the attack: LAN-reachable curl.
+	const res = await send("GET", `/api/add?text=agent_ok&col=todo&scope=session&sid=s1`, { noToken: true });
+	await checkAsync("ヘッダ無し・トークン無しの書き込みは 401", async () => {
+		assert.equal(res.status, 401, `status=${res.status} body=${res.body}`);
+		assert.equal(JSON.parse(res.body).error, "unauthorized");
+	});
+	const ok = await send("GET", `/api/add?text=agent_ok&col=todo&scope=session&sid=s1`, {
+		headers: { Cookie: tokenHeader() },
+	});
+	await checkAsync("トークン付きのヘッダ無し Origin 書き込みは 200（多層防御の内側は従来通り）", async () => {
+		assert.equal(ok.status, 200, `status=${ok.status} body=${ok.body}`);
+		assert.equal(JSON.parse(ok.body).ok, true);
 	});
 }
 {
 	// 読み取り側に ACAO を漏らさない。登録エントリは絶対パスなので、ここが漏れると
 	// 任意のページが ~/workspace 配下を読める。
-	const res = await send("GET", "/serve/", { headers: { Origin: "http://evil.example" } });
+	const res = await send("GET", "/serve/", { headers: { Origin: "http://evil.example", Cookie: tokenHeader() } });
 	await checkAsync("/serve/ GET は別ホストの Origin に ACAO を付けない", async () => {
 		assert.equal(res.status, 200, `status=${res.status}`);
 		assert.equal(res.headers["access-control-allow-origin"], undefined);

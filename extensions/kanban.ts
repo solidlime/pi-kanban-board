@@ -41,9 +41,10 @@
  * drop box the agent picks up with ordinary `ls` / `read` / `grep` (A14 revised).
  */
 
-import { createHash } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import {
 	appendFileSync,
+	chmodSync,
 	createReadStream,
 	existsSync,
 	mkdirSync,
@@ -205,6 +206,47 @@ const SESSIONS_DIR = join(KANBAN_DIR, "sessions");
 const LEGACY_JSON = join(KANBAN_DIR, "board.json");
 const DASHBOARD_HTML_PATH = join(KANBAN_DIR, "dashboard.html");
 const SERVER_LOG = join(KANBAN_DIR, "server.log");
+const TOKEN_FILE = join(KANBAN_DIR, "token"); // #83b: the one secret every HTTP route needs
+const TOKEN_COOKIE = "kb_token";
+const TOKEN_TTL_SEC = 31536000; // one year: the cookie is the only thing keeping the board open
+let tokenCache: string | null = null;
+
+/**
+ * #83b: read the token, or make one. 64 hex chars, 0600. A file that is missing, empty,
+ * unreadable or the wrong shape is replaced rather than fatal - a board that refuses to
+ * start is worse than a rotated token, and the user can always ask for the URL again.
+ * The token is NEVER logged (server.log is a plain file anyone can read).
+ */
+function ensureToken(): string {
+	if (tokenCache !== null) return tokenCache;
+	const usable = (v: string): boolean => /^[0-9a-f]{64}$/.test(v);
+	try {
+		const raw = readFileSync(TOKEN_FILE, "utf8").trim();
+		if (usable(raw)) {
+			// An existing file may have been created by hand with 0644: correct it.
+			try {
+				if ((statSync(TOKEN_FILE).mode & 0o777) !== 0o600) chmodSync(TOKEN_FILE, 0o600);
+			} catch {
+				// a chmod we cannot do does not make the token unusable
+			}
+			tokenCache = raw;
+			return raw;
+		}
+	} catch {
+		// missing or unreadable -> fall through and generate
+	}
+	const fresh = randomBytes(32).toString("hex");
+	try {
+		mkdirSync(KANBAN_DIR, { recursive: true });
+		writeFileSync(TOKEN_FILE, `${fresh}\n`, { mode: 0o600 });
+		chmodSync(TOKEN_FILE, 0o600); // mode: is subject to umask; this is not
+	} catch (err) {
+		const e = err as NodeJS.ErrnoException;
+		process.stderr.write(`kanban: token write failed (${TOKEN_FILE}): ${e.code ?? "error"}: ${e.message}\n`);
+	}
+	tokenCache = fresh;
+	return fresh;
+}
 const MEDIA_DIR = join(KANBAN_DIR, "media");
 const SERVE_JSON = join(KANBAN_DIR, "serve.json"); // the registry (A5/A6)
 const SERVE_ALLOW_JSON = join(KANBAN_DIR, "serve-allow.json"); // optional allowlist override (A10)
@@ -825,7 +867,11 @@ export function renderInjectionText(b: Board): string | null {
 		line("doing"),
 		line("done"),
 		...(inbox === null ? [] : [inbox]),
-		`GUI: open http://${hostname()}:${PORT}/ in a browser.`,
+		`GUI: open ${boardUrlBare()} in a browser.`,
+		// #83b: the bare URL is not enough any more; one line says where the token comes from.
+		// The token value itself never enters the prompt (it would be replayed to the model
+		// on every poll and end up in transcripts).
+		"TOKEN: /kanban url (or the `kanban` url action) prints the link that sets the cookie.",
 		"Use the `kanban` tool to add/move/remove cards and keep them in sync with the user's real tasks.",
 		"=== END KANBAN ===",
 	].join("\n");
@@ -1014,6 +1060,7 @@ export type KanbanArgs =
 	| { kind: "priority"; id: number | undefined; value: number | undefined }
 	| { kind: "img"; id: number; path: string }
 	| { kind: "take" }
+	| { kind: "url" }
 	| { kind: "reject"; reason: string };
 
 const KANBAN_HELP =
@@ -1026,6 +1073,7 @@ const KANBAN_HELP =
 	"/kanban maxloops [global] <回>  ループ上限（無指定で現在値、0 = 無制限）\n" +
 	"/kanban loop on|off|status [global] / pick on|off\n" +
 	"/kanban take  auto-tick の駆動元をこのセッションに切り替える\n" +
+	"/kanban url  この看板を開く URL（トークン付き）\n" +
 	"/kanban  メニュー";
 
 /**
@@ -1038,6 +1086,8 @@ export function parseKanbanArgs(argv: string[]): KanbanArgs {
 	if (head === "help") return { kind: "help" };
 	// `/kanban take`: ownership is process-global, so any scope word after it is ignored.
 	if (head === "take") return { kind: "take" };
+	// #83b: the board needs a token; this is how a human gets one without reading the file.
+	if (head === "url") return { kind: "url" };
 	if (head === "add") {
 		const text = argv.slice(1).join(" ").trim();
 		return text.length === 0 ? { kind: "reject", reason: "使い方: /kanban add <タスク内容>（空のカードは作りません）" } : { kind: "add", text };
@@ -1255,6 +1305,56 @@ function corsHeaders(req: IncomingMessage): Record<string, string> {
 	if (!isSameHostOrigin(req)) return { ...CORS_HEADERS, Vary: "Origin" };
 	return { ...CORS_HEADERS, "Access-Control-Allow-Origin": String(req.headers.origin), Vary: "Origin" };
 }
+
+/**
+ * #83b: the whole /api surface and /serve are token-gated (0.0.0.0 listener, no auth
+ * before this). A wrong/missing token is a 401 before the Origin gate below runs; the
+ * gate stays as the second layer. The agent's own tools write the store directly and
+ * never come through here, so requiring a token breaks no in-process caller.
+ */
+function tokenMatches(candidate: string | null): boolean {
+	const expected = ensureToken();
+	if (candidate === null || candidate === "") return false;
+	const a = Buffer.from(candidate);
+	const b = Buffer.from(expected);
+	if (a.length !== b.length) return false; // constant-time only compares equal lengths
+	return timingSafeEqual(a, b);
+}
+
+/** The caller's token: `?token=` (curl, scripts) or the `kb_token` cookie (the page). */
+function callerToken(req: IncomingMessage, q: URLSearchParams): string | null {
+	const fromQuery = q.get("token");
+	if (fromQuery !== null && fromQuery !== "") return fromQuery;
+	const raw = req.headers.cookie;
+	if (typeof raw !== "string") return null;
+	for (const part of raw.split(";")) {
+		const eq = part.indexOf("=");
+		if (eq < 0) continue;
+		if (part.slice(0, eq).trim() !== TOKEN_COOKIE) continue;
+		return part.slice(eq + 1).trim();
+	}
+	return null;
+}
+
+function isAuthorized(req: IncomingMessage, q: URLSearchParams): boolean {
+	return tokenMatches(callerToken(req, q));
+}
+
+/**
+ * #83b: what `/` answers when the caller has no valid token. Deliberately carries no
+ * token value: the whole point of the 401. The URL is one `/kanban url` away.
+ */
+const TOKEN_HELP_HTML = `<!doctype html>
+<html lang="ja"><head><meta charset="utf-8"><title>KANBAN - token required</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>body{font:14px/1.6 system-ui,sans-serif;margin:0;padding:2rem;background:#111;color:#ddd}
+code{background:#222;padding:.15em .35em;border-radius:3px}a{color:#7ab}</style></head>
+<body><h1>トークンが必要</h1>
+<p>この看板はトークンで保護されている。</p>
+<p><code>/kanban url</code> を実行するか、エージェントに \`kanban\` ツールの <code>url</code> アクションを頼んで、
+表示された <code>?token=...</code> 付き URL をこのタブで開き直して。一度開けば Cookie が入るので、
+以降はこの URL だけでよい。</p>
+</body></html>`;
 
 /**
  * #67/#76: refuse a browser-originated cross-origin write before it reaches a handler.
@@ -2859,6 +2959,31 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
 
 	const url = new URL(req.url ?? "/", "http://127.0.0.1");
 
+	// #83b: the token gate. Everything the listener exposes under /api, /serve and / is
+	// protected here, before the Origin gate, because the Origin gate only knows how to
+	// judge a browser: a header-less curl had no reason to be refused. OPTIONS is exempt
+	// (a preflight carries no credentials by design) and /favicon.ico too (a bare retry loop).
+	const gated =
+		url.pathname === "/" ||
+		url.pathname === SERVE_PREFIX ||
+		url.pathname.startsWith(`${SERVE_PREFIX}/`) ||
+		url.pathname === "/api" ||
+		url.pathname.startsWith("/api/");
+	if (gated && req.method !== "OPTIONS" && url.pathname !== "/favicon.ico" && !isAuthorized(req, url.searchParams)) {
+		if (url.pathname === "/" && req.method === "GET" && url.searchParams.get("token") === null) {
+			// A browser with no cookie gets the way out, not a bare 401 (this is the page a
+			// user lands on when they open the board from a stale bookmark). 200 on purpose:
+			// it is a page to read, and a 401 makes browsers pop an auth dialog.
+			res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+			res.end(TOKEN_HELP_HTML);
+			return;
+		}
+		// The 401 body is a constant: it must never echo the token the caller tried.
+		sendJson(res, 401, { ok: false, error: "unauthorized" });
+		req.resume();
+		return;
+	}
+
 	// #76: the gate sits before dispatch and covers the whole write surface, verb-independently.
 	// It used to guard only POST /api/host and POST /serve/**/_inbox, which left the eleven
 	// GET+query state changes reachable from any page.
@@ -2941,6 +3066,18 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
 
 	// Read-only routes first: they resolve the session themselves.
 	if (url.pathname === "/") {
+		// #83b: `?token=` is the only way in. Swap it for a cookie and send the browser to
+		// the bare path, so the secret does not stay in the address bar, history or a shared
+		// link. A caller that already has a valid cookie skips this branch (gated above).
+		if (url.searchParams.get("token") !== null) {
+			res.writeHead(303, {
+				"Set-Cookie": `${TOKEN_COOKIE}=${ensureToken()}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${TOKEN_TTL_SEC}`,
+				Location: "/",
+				"Content-Type": "text/html; charset=utf-8",
+			});
+			res.end();
+			return;
+		}
 		res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
 		res.end(DASHBOARD_HTML);
 		return;
@@ -3264,6 +3401,20 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
 	}
 }
 
+/**
+ * #83b: the board URL a human (or the agent answering "where's the board?") hands to a
+ * browser. The token rides in the query exactly once: `GET /?token=` swaps it for an
+ * HttpOnly cookie and 303s to the bare `/`. Never embed it in the HTML itself.
+ */
+function boardUrl(): string {
+	return `${serveBaseUrl()}/?token=${ensureToken()}`;
+}
+
+/** The board URL without the secret: safe for the prompt block (and stable across restarts). */
+function boardUrlBare(): string {
+	return `${serveBaseUrl()}/`;
+}
+
 /** Server log file. One `tail` shows the whole story. */
 function logServer(line: string): void {
 	process.stderr.write(`kanban: ${line}\n`);
@@ -3298,13 +3449,21 @@ type Probe = {
 /** 200 + a JSON object, or null. One helper for every fingerprint below. */
 async function probeJson(path: string): Promise<Record<string, unknown> | null> {
 	try {
-		const r = await fetch(`http://127.0.0.1:${PORT}${path}`, { signal: AbortSignal.timeout(1500) });
+		// #83b: header, not `?token=` - a path is matched verbatim by the servers we are
+		// fingerprinting, and an old kanban would 404 the query away.
+		const r = await fetch(`http://127.0.0.1:${PORT}${path}`, { signal: AbortSignal.timeout(1500), headers: probeHeaders() });
 		if (r.status !== 200) return null;
 		const body: unknown = await r.json();
 		return typeof body === "object" && body !== null ? (body as Record<string, unknown>) : null;
 	} catch {
 		return null;
 	}
+}
+
+/** #83b: /api is token-gated, so the self-probe has to present ours. Tokens never reach
+ * the log; this header is only ever sent to 127.0.0.1 on our own port. */
+function probeHeaders(): Record<string, string> {
+	return { Cookie: `${TOKEN_COOKIE}=${ensureToken()}` };
 }
 
 /** #83: does the listener on PORT answer /api/dashboard with JSON? Current-gen kanban only. */
@@ -3323,7 +3482,7 @@ async function servesBoard(): Promise<boolean> {
 /** #83b: `/api/kanban.html` is served only before #67 (the pi-web split deleted it). */
 async function servesLegacyPanel(): Promise<boolean> {
 	try {
-		const r = await fetch(`http://127.0.0.1:${PORT}/api/kanban.html`, { signal: AbortSignal.timeout(1500) });
+		const r = await fetch(`http://127.0.0.1:${PORT}/api/kanban.html`, { signal: AbortSignal.timeout(1500), headers: probeHeaders() });
 		return r.status === 200 && (r.headers.get("content-type") ?? "").includes("text/html");
 	} catch {
 		return false;
@@ -3340,6 +3499,7 @@ async function probeServer(): Promise<Probe> {
 	try {
 		res = await fetch(`http://127.0.0.1:${PORT}/api/selftest`, {
 			method: "POST",
+			headers: probeHeaders(),
 			signal: AbortSignal.timeout(1500),
 		});
 	} catch {
@@ -3386,6 +3546,9 @@ function ensureServer(): void {
 		sweepSessions();
 		sweepServe(); // 起動時に一度。以降は poll が 1 時間 throttle で回す。
 		lastServeSweep = Date.now();
+		// #83b: once, at startup. A token file that cannot be written still leaves a
+		// process-local token, so the board stays reachable for this run.
+		ensureToken();
 		writeBoardHtml();
 	}
 	void startListening();
@@ -5550,6 +5713,10 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 				ctx.ui.notify(parsed.reason);
 				return;
 			}
+			if (parsed.kind === "url") {
+				ctx.ui.notify(`ダッシュボード: ${boardUrl()}`);
+				return;
+			}
 			if (parsed.kind === "take") {
 				// #40: ownCtx is the FIRST session_start in this process; a session opened later
 				// would never drive the loop. This is the explicit handover. The handler's ctx is
@@ -5640,7 +5807,7 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 				]);
 				if (picked === undefined || picked === "終了") return;
 				if (picked === guiOption) {
-					ctx.ui.notify(`ダッシュボード: http://${hostname()}:${PORT}/`);
+					ctx.ui.notify(`ダッシュボード: ${boardUrl()}`);
 					continue;
 				}
 				if (picked === switchOption) {
@@ -5760,7 +5927,7 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 		name: "kanban",
 		label: "Kanban board",
 		description:
-			"Manage a 3-column kanban board (todo/doing/done). action=list shows the board, add creates a card, move changes its column, remove deletes it, check runs the board/serve/media/modes self-test and returns its JSON, resume clears a doing-loop halt (same reset as /kanban loop on: budget back to 10, doingLoop ON in both scopes) — the GUI's loop switch cannot clear it, because the halt lives in the extension process, not in modes.json. scope selects the board: 'session' (default, this conversation's board) or 'global' (shared by every session). Card IDs are unique only within one board — global #7 and session #7 are different cards. The board is shared with the user's GUI and persisted under ~/.pi/kanban/.",
+			"Manage a 3-column kanban board (todo/doing/done). action=list shows the board, add creates a card, move changes its column, remove deletes it, check runs the board/serve/media/modes self-test and returns its JSON, resume clears a doing-loop halt (same reset as /kanban loop on: budget back to 10, doingLoop ON in both scopes) — the GUI's loop switch cannot clear it, because the halt lives in the extension process, not in modes.json. scope selects the board: 'session' (default, this conversation's board) or 'global' (shared by every session). Card IDs are unique only within one board — global #7 and session #7 are different cards. url returns the token-bearing dashboard URL to open in a browser. The board is shared with the user's GUI and persisted under ~/.pi/kanban/.",
 		parameters: Type.Object({
 			action: Type.Union([
 				Type.Literal("list"),
@@ -5768,7 +5935,10 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 				Type.Literal("move"),
 				Type.Literal("remove"),
 				Type.Literal("check"),
+				// #83b: the agent creates cards in-process (writeBoard), so it never needs the
+				// HTTP token - the `kanban` tool is not an HTTP client.
 				Type.Literal("resume"),
+				Type.Literal("url"),
 			]),
 			scope: Type.Optional(Type.Union([Type.Literal("session"), Type.Literal("global")])),
 			text: Type.Optional(Type.String()),
@@ -5872,6 +6042,11 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 					resumeWithModes(ctx, sid);
 					const capNow = maxLoopsOf(modesFor(readModesFile(), sid, "session"));
 					message = `resumed: ${was} / count ${oldCount} → 0 / doingLoop ON (session+global) / ${loopBudgetText(capNow, 0)}`;
+					break;
+				}
+				case "url": {
+					// The board is token-gated; hand over the one URL that opens it.
+					message = boardUrl();
 					break;
 				}
 				default:

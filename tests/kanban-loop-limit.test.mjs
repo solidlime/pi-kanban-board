@@ -7,6 +7,10 @@ import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
+import { authFetch } from "./helpers/token.mjs";
+
+// #83b: HTTP routes need the server token now; tf = fetch + the kb_token cookie.
+const tf = (input, init) => authFetch(input, init);
 
 const HOME_DIR = "/tmp/kb-loop-limit-home";
 rmSync(HOME_DIR, { recursive: true, force: true });
@@ -41,7 +45,7 @@ function check(name, fn) {
 }
 // await が要る検証用（check は同期なので、外で取ってから渡す）。
 async function get(path) {
-	const r = await fetch(`${BASE}${path}`);
+	const r = await tf(`${BASE}${path}`);
 	return { status: r.status, body: await r.json() };
 }
 const rowOf = async (sid) => {
@@ -301,7 +305,7 @@ check("parseKanbanArgs: maxloops 範囲外は reject", () =>
 	assert.equal(mod.parseKanbanArgs(["maxloops", "1001"]).kind, "reject"));
 
 // --- 8. テンプレート: 上限 UI と再開が両方にある ------------------------------
-const DASH = await (await fetch(`${BASE}/`)).text();
+const DASH = await (await tf(`${BASE}/`)).text();
 check("DASHBOARD_HTML に上限値の入力欄（/api/maxloops 経由）がある", () => {
 	assert.ok(/\/api\/maxloops/.test(DASH), "maxloops の保存経路が無い");
 	assert.ok(/上限/.test(DASH), "上限のラベルが無い");

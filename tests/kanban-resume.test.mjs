@@ -6,6 +6,10 @@ import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
+import { authFetch } from "./helpers/token.mjs";
+
+// #83b: HTTP routes need the server token now; tf = fetch + the kb_token cookie.
+const tf = (input, init) => authFetch(input, init);
 
 const HOME_DIR = "/tmp/kb-resume-home";
 rmSync(HOME_DIR, { recursive: true, force: true });
@@ -154,7 +158,7 @@ check("halted 中は 1 件も送らない", () => assert.equal(sent.length, 0, `
 
 // --- 3. GUI 経路: dashboard に halted が載っている（理由を出すための前提） ----
 const dashboardHalted = async () => {
-	const j = await (await fetch(`${BASE}/api/dashboard`)).json();
+	const j = await (await tf(`${BASE}/api/dashboard`)).json();
 	const row = j.sessions.find((s) => s.id === SID);
 	return row === undefined ? "NO-SUCH-SESSION" : row.halted;
 };
@@ -197,7 +201,7 @@ check("resume 後は 1 件送る", () => assert.equal(sent.length, 1, `sent=${se
 }
 
 // --- 5. GUI: halted の理由と復帰手段が出ている（両テンプレート） ------------------
-const DASH = await (await fetch(`${BASE}/`)).text();
+const DASH = await (await tf(`${BASE}/`)).text();
 // #84: 右パネルのテンプレートは廃止。ダッシュボード 1 枚だけを固定する。
 check("DASHBOARD_HTML は両方の停止理由を持つ", () => {
 	assert.ok(DASH.includes("ループ上限（"), "limit の文言が無い");

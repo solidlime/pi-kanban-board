@@ -7,6 +7,10 @@ import { mkdirSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
 import vm from "node:vm";
+import { authFetch } from "./helpers/token.mjs";
+
+// #83b: HTTP routes need the server token now; tf = fetch + the kb_token cookie.
+const tf = (input, init) => authFetch(input, init);
 
 const HOME_DIR = "/tmp/kb-dashboard-edit-home";
 rmSync(HOME_DIR, { recursive: true, force: true });
@@ -53,7 +57,7 @@ const pi = {
 mod.default(pi);
 for (let i = 0; i < 40; i++) {
 	try {
-		if ((await fetch(`${BASE}/`)).ok) break;
+		if ((await tf(`${BASE}/`)).ok) break;
 	} catch {
 		// まだ listen していない
 	}
@@ -62,7 +66,7 @@ for (let i = 0; i < 40; i++) {
 
 // --- 0. 実サーバ: GET / が 200 で新コードを配信する ---------------------------
 {
-	const res = await fetch(`${BASE}/`);
+	const res = await tf(`${BASE}/`);
 	const html = await res.text();
 	check("GET / は 200 を返す", () => assert.equal(res.status, 200));
 	check("配信 HTML にカード本体の dblclick が含まれる", () =>
@@ -76,7 +80,7 @@ for (let i = 0; i < 40; i++) {
 
 // --- 1. 配信されたテンプレート文字列レベル -----------------------------------
 // DASHBOARD_HTML は export されていないので、サーバが返した HTML を正とする。
-const SRC = await (await fetch(`${BASE}/`)).text();
+const SRC = await (await tf(`${BASE}/`)).text();
 
 check("DASHBOARD_HTML: dblclick はカード本体に付く（1 本だけ）", () => {
 	assert.ok(SRC.includes('card.addEventListener("dblclick"'), "カード本体のリスナが無い");

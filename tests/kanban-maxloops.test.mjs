@@ -12,6 +12,10 @@ import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
+import { authFetch } from "./helpers/token.mjs";
+
+// #83b: HTTP routes need the server token now; tf = fetch + the kb_token cookie.
+const tf = (input, init) => authFetch(input, init);
 
 const HOME_DIR = "/tmp/kb-maxloops-home";
 rmSync(HOME_DIR, { recursive: true, force: true });
@@ -80,17 +84,17 @@ const ctxFor = (sid) => ({
 handlers.get("session_start")({ type: "session_start" }, ctxFor(ACTIVE));
 for (let i = 0; i < 40; i++) {
 	try {
-		if ((await fetch(`${BASE}/`)).ok) break;
+		if ((await tf(`${BASE}/`)).ok) break;
 	} catch {
 		// まだ listen していない
 	}
 	await new Promise((r) => setTimeout(r, 100));
 }
-const dashboardHtml = await (await fetch(`${BASE}/`)).text();
+const dashboardHtml = await (await tf(`${BASE}/`)).text();
 const scriptsOf = (html) => [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
 
 const get = async (path) => {
-	const res = await fetch(`${BASE}${path}`);
+	const res = await tf(`${BASE}${path}`);
 	return { status: res.status, body: await res.json().catch(() => null) };
 };
 const readModesRaw = () => JSON.parse(readFileSync(`${KB}/modes.json`, "utf8"));
