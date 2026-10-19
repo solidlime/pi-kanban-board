@@ -97,8 +97,15 @@ type Board = { cards: Card[]; nextId: number };
 // are the DEFAULT for any (scope, sid) with no explicit entry; keep them on every write.
 // stuckLimit is a settle COUNT (not minutes): intervalMin and stuckLimit are both
 // numbers but measure different things, so each has its own reader and writer.
-type ModePair = { doingLoop: boolean; autoPick: boolean; intervalMin?: number; stuckLimit?: number };
-// The two booleans only: intervalMin/stuckLimit are numbers and take their own writers.
+// maxLoops (#67) is the doing-loop budget; 0 = unlimited.
+type ModePair = {
+	doingLoop: boolean;
+	autoPick: boolean;
+	intervalMin?: number;
+	stuckLimit?: number;
+	maxLoops?: number;
+};
+// The two booleans only: intervalMin/stuckLimit/maxLoops are numbers and take their own writers.
 type SwitchKey = "doingLoop" | "autoPick";
 type ModesFile = {
 	doingLoop?: boolean;
@@ -127,7 +134,9 @@ const KANBAN_CUSTOM_TYPE = "kanban-board"; // customType of the per-turn trailin
 const STALE_MS = 3 * 60 * 60 * 1000; // DOING for this long without a move -> ⚠Nh in the footer
 const LOOP_CUSTOM_TYPE = "kanban-loop"; // customType of the session entry holding LoopState
 const LOOP_PROMPT_TYPE = "kanban-loop-continue"; // customType of the continuation prompt entry
-const MAX_LOOPS = 10; // continuations before doingLoop turns itself off
+const DEFAULT_MAX_LOOPS = 10; // continuations before doingLoop turns itself off
+const MAX_LOOPS = DEFAULT_MAX_LOOPS; // legacy alias: the GUI templates still read this
+const MAX_LOOPS_CAP = 1000; // largest budget a caller may store (0 = unlimited, not a cap)
 const DEFAULT_STUCK_LIMIT = 3; // settles on one DOING card before that card's loop stops
 const MIN_STUCK_LIMIT = 1;
 const MAX_STUCK_LIMIT = 20;
@@ -148,7 +157,13 @@ let activeSessionId: string | null = null;
 // A loop halt lives in one extension closure (memory + session JSONL). The HTTP server
 // runs in the same process but outside that closure, so this is the only door for the
 // GUI to learn WHY the loop stopped. Published by paintLoop, cleared by resume.
-const haltedBySid = new Map<string, { halted: "limit" | "stuck"; stuckId: number | null; stuckCount: number }>();
+const haltedBySid = new Map<
+	string,
+	{ halted: "limit" | "stuck"; stuckId: number | null; stuckCount: number; cap: number }
+>();
+// #67: /api/resume cannot reach a session's closure state from the server module, so it
+// parks a request here and the owning session's poll runs the resume (see resumeLoop).
+const resumeRequests = new Map<string, number>();
 let server: Server | null = null;
 // Every non-starting state is surfaced in the footer: a dead API must never be silent.
 //   up    - this process owns the port, or a process of OUR version does.
@@ -323,6 +338,14 @@ function setStuckLimit(f: ModesFile, sid: string, scope: Scope, count: number): 
 	else f.SESSION = next;
 }
 
+/** Persist one board's doing-loop budget; same read-modify-write as setMode. */
+function setMaxLoops(f: ModesFile, sid: string, scope: Scope, n: number): void {
+	const next = (scope === "global" ? f.GLOBAL : f.SESSION) ?? {};
+	next[sid] = { ...modesFor(f, sid, scope), maxLoops: n };
+	if (scope === "global") f.GLOBAL = next;
+	else f.SESSION = next;
+}
+
 /** Displayed minutes for a pair: an entry written before intervalMin existed still means 5. */
 export function intervalMinOf(m: { intervalMin?: number }): number {
 	const v = m.intervalMin;
@@ -345,6 +368,33 @@ export function isValidStuckLimit(n: unknown): n is number {
 export function stuckLimitOf(m: { stuckLimit?: number }): number {
 	const v = m.stuckLimit;
 	return isValidStuckLimit(v) ? v : DEFAULT_STUCK_LIMIT;
+}
+
+/** A maxLoops is usable only as an integer inside [0,1000]; 0 means unlimited. */
+export function isValidMaxLoops(n: unknown): n is number {
+	return typeof n === "number" && Number.isInteger(n) && n >= 0 && n <= MAX_LOOPS_CAP;
+}
+
+/**
+ * The doing-loop budget for a pair. Absent/invalid (hand-edited "10", 2.5, 5000) means
+ * the old hard-coded 10, so an existing modes.json keeps its behavior; 0 or less = 0 =
+ * unlimited, which is what the dashboard writes to lift the cap.
+ */
+export function maxLoopsOf(m: { maxLoops?: number } | undefined | null): number {
+	const v = m?.maxLoops;
+	if (typeof v !== "number" || !Number.isInteger(v)) return DEFAULT_MAX_LOOPS;
+	if (v <= 0) return 0;
+	return v <= MAX_LOOPS_CAP ? v : DEFAULT_MAX_LOOPS;
+}
+
+/** "3/10" or "3/∞" — the footer's budget fraction (∞ = no cap). */
+export function loopRestText(cap: number, count: number): string {
+	return cap <= 0 ? `${count}/∞` : `${Math.max(0, cap - count)}/${cap}`;
+}
+
+/** "残り 3/10" / "残り 3/∞" for the status line and the tool reply. */
+export function loopBudgetText(cap: number, count: number): string {
+	return `残り ${loopRestText(cap, count)}`;
 }
 
 /** A priority is usable only as an integer inside [-99,99]; anything else is not a priority. */
@@ -891,7 +941,7 @@ export function shouldAutoTick(i: Parameters<typeof autoTickVerdict>[0]): boolea
  * (undefined / not an array / empty) returns false = inject: a loop that silently stops
  * is the worse failure.
  * Head-only on purpose: scanning the whole history would let one old prompt freeze the
- * loop for the rest of the session, and no settle would ever bump the MAX_LOOPS count.
+ * loop for the rest of the session, and no settle would ever bump the loop count.
  */
 export function isUserInputHead(messages: unknown[] | undefined): boolean {
 	if (!Array.isArray(messages) || messages.length === 0) return false;
@@ -925,6 +975,9 @@ export type KanbanArgs =
 	| { kind: "intervalStatus"; scope: Scope }
 	| { kind: "stuck"; scope: Scope; count: number }
 	| { kind: "stuckStatus"; scope: Scope }
+	// #67: the doing-loop budget; n === 0 means unlimited.
+	| { kind: "maxLoops"; scope: Scope; n: number }
+	| { kind: "maxLoopsStatus"; scope: Scope }
 	// id/value undefined = bare `/kanban priority` = list; id only = show one card.
 	| { kind: "priority"; id: number | undefined; value: number | undefined }
 	| { kind: "img"; id: number; path: string }
@@ -938,6 +991,7 @@ const KANBAN_HELP =
 	"/kanban img <id> <path>  ローカル画像を #id に添付（media/ にコピー、8MBまで）\n" +
 	"/kanban interval [global] <分>  自動再開の間隔（無指定で現在値）\n" +
 	"/kanban stuck [global] <回>  スタック判定の閾値（無指定で現在値）\n" +
+	"/kanban maxloops [global] <回>  ループ上限（無指定で現在値、0 = 無制限）\n" +
 	"/kanban loop on|off|status [global] / pick on|off\n" +
 	"/kanban take  auto-tick の駆動元をこのセッションに切り替える\n" +
 	"/kanban  メニュー";
@@ -1017,6 +1071,18 @@ export function parseKanbanArgs(argv: string[]): KanbanArgs {
 			return { kind: "reject", reason: `使い方: /kanban stuck [global] <回>（1〜${MAX_STUCK_LIMIT}の整数）: ${countTok}` };
 		}
 		return { kind: "stuck", scope, count };
+	}
+	if (head === "maxloops") {
+		// #67: 0 = 無制限. Same shape as `stuck`, one number, same scope syntax.
+		const global = argv[1] === "global";
+		const nTok = global ? argv[2] : argv[1];
+		const scope: Scope = global ? "global" : "session";
+		if (nTok === undefined) return { kind: "maxLoopsStatus", scope };
+		const n = Number(nTok);
+		if (!isValidMaxLoops(n)) {
+			return { kind: "reject", reason: `使い方: /kanban maxloops [global] <回>（0〜${MAX_LOOPS_CAP}の整数、0 = 無制限）: ${nTok}` };
+		}
+		return { kind: "maxLoops", scope, n };
 	}
 	return { kind: "add", text: argv.join(" ").trim() };
 }
@@ -2294,7 +2360,7 @@ type SessionRow = {
 	modes: { session: ModePair; global: ModePair };
 	// Why this session's doing-loop is stopped; null = running. Process memory, so it is
 	// read from haltedBySid and not from any file (see the note at that map).
-	halted: { halted: "limit" | "stuck"; stuckId: number | null; stuckCount: number } | null;
+	halted: { halted: "limit" | "stuck"; stuckId: number | null; stuckCount: number; cap: number } | null;
 	cards: Card[];
 };
 
@@ -5105,10 +5171,17 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 			setLoopTag(sid, s, s === scope ? tag : "");
 			loopRest.delete(tagKey(sid, s));
 		}
-		if (loop.count > 0) loopRest.set(tagKey(sid, scope), ` ${Math.max(0, MAX_LOOPS - loop.count)}/${MAX_LOOPS}`);
+		if (loop.count > 0) {
+			// The cap of the board this loop is driving: the footer must show the same number.
+			const cap = maxLoopsOf(modesFor(readModesFile({ repair: false }), sid, scope));
+			loopRest.set(tagKey(sid, scope), ` ${loopRestText(cap, loop.count)}`);
+		}
 		// Same value the footer shows, published for the HTTP dashboard (see haltedBySid).
 		if (loop.halted === null) haltedBySid.delete(sid);
-		else haltedBySid.set(sid, { halted: loop.halted, stuckId: loop.stuckId, stuckCount: loop.stuckCount });
+		else {
+			const cap = maxLoopsOf(modesFor(readModesFile({ repair: false }), sid, scope));
+			haltedBySid.set(sid, { halted: loop.halted, stuckId: loop.stuckId, stuckCount: loop.stuckCount, cap });
+		}
 		refresh(ctx, sid);
 	};
 
