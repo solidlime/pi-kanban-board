@@ -46,6 +46,7 @@ pi -e npm:pi-kanban-board
 /kanban loop on|off        toggle the autonomous loop for this board
 /kanban pick on|off        toggle auto-pick for this board
 /kanban interval <min>     set the loop interval (1 minute minimum)
+/kanban maxloops [global] <n>  doing-loop budget (0 = unlimited, default 10)
 /kanban status             loop state, intervals, counts
 ```
 
