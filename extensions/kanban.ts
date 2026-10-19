@@ -3211,7 +3211,53 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
  * separates "our sibling pi" (reuse) from "an old kanban left running" (stale).
  * `startedAt`/`pid` are display-only: nothing here ever signal()s a probed pid.
  */
-type Probe = { reachable: boolean; version?: string; pid?: number; startedAt?: number };
+type Probe = {
+	reachable: boolean;
+	version?: string;
+	pid?: number;
+	startedAt?: number;
+	servesDashboard?: boolean;
+	// #83b: generation fingerprints. `servesDashboard` alone is not enough - a kanban
+	// from before #67 answers `/api/kanban` and `/api/kanban.html` and 404s `/` and
+	// `/api/dashboard`, which is the exact shape that made the old probe say "not a kanban".
+	servesBoard?: boolean;
+	servesLegacyPanel?: boolean;
+};
+
+/** 200 + a JSON object, or null. One helper for every fingerprint below. */
+async function probeJson(path: string): Promise<Record<string, unknown> | null> {
+	try {
+		const r = await fetch(`http://127.0.0.1:${PORT}${path}`, { signal: AbortSignal.timeout(1500) });
+		if (r.status !== 200) return null;
+		const body: unknown = await r.json();
+		return typeof body === "object" && body !== null ? (body as Record<string, unknown>) : null;
+	} catch {
+		return null;
+	}
+}
+
+/** #83: does the listener on PORT answer /api/dashboard with JSON? Current-gen kanban only. */
+async function servesDashboard(): Promise<boolean> {
+	return (await probeJson("/api/dashboard")) !== null;
+}
+
+/** #83b: `/api/kanban` is the fingerprint every generation keeps. `sessionId` is null on a
+ * bare read, so its PRESENCE (plus ok:true) is the test - never cards/modes/stats, which
+ * differ between generations. */
+async function servesBoard(): Promise<boolean> {
+	const body = await probeJson("/api/kanban");
+	return body !== null && body.ok === true && "sessionId" in body;
+}
+
+/** #83b: `/api/kanban.html` is served only before #67 (the pi-web split deleted it). */
+async function servesLegacyPanel(): Promise<boolean> {
+	try {
+		const r = await fetch(`http://127.0.0.1:${PORT}/api/kanban.html`, { signal: AbortSignal.timeout(1500) });
+		return r.status === 200 && (r.headers.get("content-type") ?? "").includes("text/html");
+	} catch {
+		return false;
+	}
+}
 
 /**
  * Ask whatever answers PORT who it is. A /api/selftest that 404s (or has no identity)
@@ -3228,7 +3274,13 @@ async function probeServer(): Promise<Probe> {
 	} catch {
 		return { reachable: false };
 	}
-	if (res.status === 404) return { reachable: true }; // pre-#66 kanban: identity unknown
+	// #83: pre-#66 kanban - no identity. One more question tells an old kanban from a
+	// listener that has nothing to do with us, which is the difference between
+	// "kill pid X" and "find out what owns this port".
+	if (res.status === 404) {
+		const [dash, board, legacy] = await Promise.all([servesDashboard(), servesBoard(), servesLegacyPanel()]);
+		return { reachable: true, servesDashboard: dash, servesBoard: board, servesLegacyPanel: legacy };
+	}
 	try {
 		const body = (await res.json()) as { identity?: { version?: unknown; pid?: unknown; startedAt?: unknown } };
 		const id = body.identity;
@@ -3341,7 +3393,24 @@ async function listenLoop(): Promise<void> {
 		return;
 	}
 	apiState = "down";
+	// #83: the port is taken by something that never answers our API. The two commands
+	// below separate "another process", "Windows reserved the range" and "stale handle".
+	// One line each - server.log has room, the footer stays the one-word API DOWN.
 	logServer(`API DOWN: no listener on ${HOST}:${PORT} after ${LISTEN_ATTEMPTS} attempts`);
+	logServer(
+		`${PORT} diagnostics: another process? ${portOwnerHint(PORT)}`,
+	);
+	logServer(
+		`${PORT} diagnostics: reserved range (Hyper-V/WSL2)? netsh int ipv4 show excludedportrange protocol=tcp`,
+	);
+}
+
+/** #83b: the one command that names the process on PORT, for THIS platform. Both OS forms
+ * are named because the pi that logs may not be the machine holding the port (remote). */
+function portOwnerHint(port: number): string {
+	const win = `netstat -ano | findstr :${port}`;
+	const nix = `ss -tlnp | grep ${port}`;
+	return process.platform === "win32" ? `${win} (Windows) or ${nix} (Linux)` : `${nix} (Linux) or ${win} (Windows)`;
 }
 
 /**
@@ -3359,9 +3428,46 @@ async function decideReuse(p: Probe): Promise<void> {
 		return;
 	}
 	apiState = "stale";
+	// #83: say WHICH process to kill - a pid-less "restart the owning pi" is useless
+	// when the owner is an unrelated window on another desktop.
+	const owner =
+		p.pid === undefined
+			? "pid unknown (pre-#66 kanban reports no pid)"
+			: `pid ${p.pid}${p.startedAt === undefined ? "" : ` (started ${new Date(p.startedAt).toISOString()})`}`;
 	logServer(
-		`refusing to reuse stale server: expected v${SERVER_VERSION}, got v${p.version ?? "unknown"}. Restart the owning pi process.`,
+		`refusing to reuse stale server: expected v${SERVER_VERSION}, got v${p.version ?? "unknown"}, ${owner}.`,
 	);
+	if (p.version === undefined) {
+		// #83b: name the generation. `servesDashboard` alone called a pre-#67 kanban
+		// "not a kanban" - it answers /api/kanban and /api/kanban.html but not /api/dashboard.
+		const isKanban = p.servesBoard === true || p.servesDashboard === true || p.servesLegacyPanel === true;
+		if (!isKanban) {
+			logServer(
+				`${HOST}:${PORT} is held by something that is not a kanban (no /api/selftest, /api/kanban, /api/dashboard).`,
+			);
+			logServer(`find it: ${portOwnerHint(PORT)}; or start pi with KANBAN_PORT=8790.`);
+		} else if (p.servesLegacyPanel === true && p.servesDashboard !== true) {
+			// Pre-#67: the extension loaded in that pi-web is the old code. Restarting pi-web
+			// is the ONLY fix, and the port holder is pi-web itself - killing it is not a fix.
+			const who =
+				p.pid === undefined
+					? "the port holder is pi-web itself"
+					: `the port holder is pi-web itself, pid ${p.pid}${p.startedAt === undefined ? "" : ` (started ${new Date(p.startedAt).toISOString()})`}`;
+			logServer(`${HOST}:${PORT} is held by an old kanban (pre-#67): /api/kanban.html answers, dashboard does not.`);
+			logServer('so the dashboard shows {"ok":false,"error":"not found"}. pi-web must be restarted (再起動).');
+			logServer(`${who}; do not kill it, that takes pi-web down. Or start pi with KANBAN_PORT=8790.`);
+		} else {
+			// A kanban, but not this generation's: its `/` is not our dashboard.
+			logServer(`${HOST}:${PORT} is held by an old kanban: /api/dashboard answers, / does not.`);
+			logServer(
+				`that is why the dashboard shows "not found". Kill ${p.pid === undefined ? "that process" : `pid ${p.pid}`}, or start pi with KANBAN_PORT=8790.`,
+			);
+		}
+	} else {
+		logServer(
+			`that server is v${p.version}. Kill ${p.pid === undefined ? "it" : `pid ${p.pid}`} or start pi with KANBAN_PORT=8790 to reuse the dashboard at once.`,
+		);
+	}
 	// The old process may exit later. Keep looking for the freed port, slowly.
 	if (staleRetryTimer === null) {
 		staleRetryTimer = setTimeout(() => {
@@ -6708,6 +6814,11 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 			// (/api/resume parks a token, poll consumes it); these let a test assert
 			// the parked state instead of sleeping on a timer.
 			resumeRequests,
+			// #83: the listen/probe path is only reachable through a real port conflict,
+			// so the tests drive the two halves directly.
+			probe: probeServer,
+			decideReuse,
+			apiState: () => apiState,
 			resumeNow: (sid: string) => {
 				if (ownCtx === null) throw new Error("no session ctx");
 				return resumeWithModes(ownCtx, sid);
