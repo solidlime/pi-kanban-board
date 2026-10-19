@@ -110,8 +110,27 @@ check("200 + application/json", () => {
 	assert.equal(res.status, 200);
 	assert.match(res.headers.get("content-type") ?? "", /application\/json/);
 });
-check("CORS ヘッダが既存 /api/* と揃う", () =>
-	assert.equal(res.headers.get("access-control-allow-origin"), "*"));
+// #68: ACAO is decided per caller now, so the wildcard is gone. A request without an
+// Origin has no one to allow — the header must be absent, not "*" and not "null".
+check("Origin 無しのリクエストには ACAO を付けない", () =>
+	assert.equal(res.headers.get("access-control-allow-origin"), null));
+check("Origin 無しでも Allow-Methods / Allow-Headers は従来どおり", () => {
+	assert.match(res.headers.get("access-control-allow-methods") ?? "", /GET, POST/);
+	assert.equal(res.headers.get("access-control-allow-headers"), "Content-Type");
+});
+{
+	const same = await fetch(`${BASE}/api/dashboard`, { headers: { Origin: BASE } });
+	check("same-host の Origin は reflect する", () => {
+		assert.equal(same.headers.get("access-control-allow-origin"), BASE);
+		assert.match(same.headers.get("vary") ?? "", /Origin/i);
+	});
+}
+{
+	const evil = await fetch(`${BASE}/api/dashboard`, { headers: { Origin: "http://evil.example" } });
+	check("別ホストの Origin には ACAO を付けない", () => {
+		assert.equal(evil.headers.get("access-control-allow-origin"), null);
+	});
+}
 check("host は非空文字列", () => {
 	assert.equal(typeof data.host, "string");
 	assert.ok(data.host.length > 0, `host=${data.host}`);

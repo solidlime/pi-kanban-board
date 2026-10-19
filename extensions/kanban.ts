@@ -1183,38 +1183,112 @@ const STALE_RETRY_MS = 30000;
 // off by default because this runs every 1.5s.
 const pollDebugEnabled = (): boolean => /^(1|true|yes)$/i.test(process.env.KANBAN_DEBUG ?? "");
 
+// #76: no wildcard. A page must not be able to read /serve and /api answers from another
+// origin, so the ACAO value is decided per request (corsHeaders) and only same-host
+// origins are reflected.
 const CORS_HEADERS: Record<string, string> = {
-	"Access-Control-Allow-Origin": "*",
 	"Access-Control-Allow-Methods": "GET, POST, OPTIONS",
 	"Access-Control-Allow-Headers": "Content-Type",
 	"Access-Control-Max-Age": "600",
 };
 
 /**
- * #67: refuse a browser-originated cross-origin write before it reaches a handler.
+ * Hostname of a browser-supplied Origin, or null when there is none to compare. "" is the
+ * sentinel for "present but origin-less" (literal null, or unparseable), never matching.
+ *
+ * #76: hostname, not host — the right panel serves KANBAN_HTML from its own port and builds
+ * an absolute `http://<host>:8789/api/` URL, so Origin and Host carry DIFFERENT ports by
+ * construction. Comparing host (port included) would 403 the panel's own fetches.
+ */
+function originHostname(req: IncomingMessage): string | null {
+	const origin = req.headers.origin;
+	if (typeof origin !== "string") return null;
+	if (origin === "null") return ""; // sentinel: present but origin-less
+	try {
+		return new URL(origin).hostname;
+	} catch {
+		return ""; // unparseable: same sentinel, never matches a Host
+	}
+}
+
+function isSameHostOrigin(req: IncomingMessage): boolean {
+	const hostname = originHostname(req);
+	if (hostname === null || hostname === "") return false;
+	const host = (req.headers.host ?? "").toLowerCase();
+	const bare = host.startsWith("[") ? host.slice(0, host.indexOf("]") + 1) : host.split(":")[0];
+	return hostname.toLowerCase() === bare;
+}
+
+/**
+ * #76: the CORS answer for one request. No Origin = no CORS headers (nothing to allow).
+ * Same-host Origin is reflected (the right panel builds an absolute :8789 URL, so its
+ * answer is useless to the page without this); anything else is left without an
+ * allow-origin header at all — "null" would be a value a browser accepts, which is the
+ * hole this removes. Vary is set because the answer depends on the caller's Origin.
+ */
+function corsHeaders(req: IncomingMessage): Record<string, string> {
+	if (req.headers.origin === undefined) return { ...CORS_HEADERS };
+	if (!isSameHostOrigin(req)) return { ...CORS_HEADERS, Vary: "Origin" };
+	return { ...CORS_HEADERS, "Access-Control-Allow-Origin": String(req.headers.origin), Vary: "Origin" };
+}
+
+/**
+ * #67/#76: refuse a browser-originated cross-origin write before it reaches a handler.
  * Sec-Fetch-* is forbidden header name territory: a page cannot set or omit it, so its
  * presence means a browser sent it. A request with no Sec-Fetch-Site is not a browser
- * (curl, a peer pi, probeServer's fetch) and is outside the CSRF threat model, so it is
- * allowed — making this header mandatory would break every script caller.
- * Origin is checked only when present and not "null": "null" is what a sandboxed iframe
- * and some privacy modes send, and it carries no origin to compare against.
+ * (curl, a peer pi, probeServer's fetch, the agent tools) and is outside the CSRF threat
+ * model, so it is allowed — making this header mandatory would break every script caller.
+ *
+ * Sec-Fetch-Site is judged FIRST (same-site included: the right panel runs on another
+ * port of this host), because Origin is the weaker signal: judging Origin first would let
+ * an attacker who can shape Origin widen the null-origin hole. Origin is then compared
+ * host-to-host, not origin-to-origin — the panel's own port is not PORT.
+ * Origin: null (sandboxed iframe, some privacy modes) carries no host to compare, so it is
+ * refused outright; it used to be waved through.
  */
 function crossOriginWriteRefusal(req: IncomingMessage): string | null {
 	const site = req.headers["sec-fetch-site"];
 	if (typeof site === "string") {
 		const v = site.trim().toLowerCase();
-		if (v !== "same-origin" && v !== "none") return `cross-origin write refused (Sec-Fetch-Site: ${v})`;
+		if (v !== "same-origin" && v !== "same-site" && v !== "none") return `cross-origin write refused (Sec-Fetch-Site: ${v})`;
 	}
 	const origin = req.headers.origin;
-	if (typeof origin !== "string" || origin === "null") return null;
-	let host: string;
-	try {
-		host = new URL(origin).host;
-	} catch {
-		return "cross-origin write refused (unparseable Origin)";
-	}
-	if (host !== (req.headers.host ?? "")) return `cross-origin write refused (Origin: ${origin})`;
+	if (origin === undefined) return null; // no Origin: not a page (or a page's subresource)
+	if (origin === "null") return "cross-origin write refused (Origin: null)";
+	const hostname = originHostname(req);
+	if (hostname === null) return null;
+	if (hostname === "") return "cross-origin write refused (Origin: unparseable)";
+	if (!isSameHostOrigin(req)) return `cross-origin write refused (Origin: ${origin})`;
 	return null;
+}
+
+/**
+ * #76: every path in here mutates process state (board, modes, registry, inbox bytes).
+ * Reads are deliberately absent: gating them would break the served file viewer.
+ * Verb-independent on purpose — /api/add and friends are still GET + query, so a verb
+ * check would let the whole write surface through.
+ */
+function isWritePath(pathname: string, method: string): boolean {
+	if (pathname === "/api/upload" || pathname === "/api/selftest") return true;
+	if (pathname === "/api/host" || pathname === "/api/serve") return true;
+	if (method === "POST" && (pathname === SERVE_PREFIX || pathname.startsWith(`${SERVE_PREFIX}/`))) return true;
+	if (method !== "GET") return false;
+	switch (pathname) {
+		case "/api/add":
+		case "/api/move":
+		case "/api/remove":
+		case "/api/rename":
+		case "/api/modes":
+		case "/api/interval":
+		case "/api/stuck":
+		case "/api/maxloops":
+		case "/api/resume":
+		case "/api/priority":
+		case "/api/schedule":
+			return true;
+		default:
+			return false;
+	}
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
@@ -2082,17 +2156,9 @@ function handleServe(req: IncomingMessage, res: ServerResponse, url: URL): void 
 	learnServeHostFromHeader(req.headers.host);
 	// The only write direction: POST /serve/<id>/_inbox/<name>. Anything else on POST
 	// (or any other verb) is refused before a byte is read.
+	// #67: _inbox is the one write direction on /serve. #76: the refusal now happens in
+	// handle() before dispatch, so this branch exists only to dispatch.
 	if (req.method === "POST") {
-		// #67: _inbox is the one write direction on /serve, so it is the one place a page
-		// on another origin could push bytes. No Content-Type check here on purpose: the
-		// stored bytes are harmless because every read back through /serve is text/plain +
-		// attachment + nosniff, so an uploaded .html can never execute in this origin.
-		const refusal = crossOriginWriteRefusal(req);
-		if (refusal !== null) {
-			sendJson(res, 403, { ok: false, error: refusal });
-			req.resume();
-			return;
-		}
 		serveInbox(req, res);
 		return;
 	}
@@ -2697,15 +2763,40 @@ function projectBoard(b: Board, keys: string[]): Board {
 
 
 function handle(req: IncomingMessage, res: ServerResponse): void {
-	for (const [k, v] of Object.entries(CORS_HEADERS)) res.setHeader(k, v);
+	// #76: the allow-origin value is per-caller now, so it is decided here rather than in a
+	// module constant. Vary: Origin rides along or a shared cache serves one caller's answer
+	// to another.
+	const cors = corsHeaders(req);
+	for (const [k, v] of Object.entries(cors)) res.setHeader(k, v);
+
+	const url = new URL(req.url ?? "/", "http://127.0.0.1");
+
+	// #76: the gate sits before dispatch and covers the whole write surface, verb-independently.
+	// It used to guard only POST /api/host and POST /serve/**/_inbox, which left the eleven
+	// GET+query state changes reachable from any page.
+	if (isWritePath(url.pathname, req.method ?? "GET")) {
+		const refusal = crossOriginWriteRefusal(req);
+		if (refusal !== null) {
+			sendJson(res, 403, { ok: false, error: refusal });
+			req.resume();
+			return;
+		}
+	}
 
 	if (req.method === "OPTIONS") {
+		// #76: preflight answers on the same rule as everything else, so a cross-origin page
+		// is told nothing it could use. Unconditional 204 used to advertise the API to any
+		// page on the machine.
+		if (crossOriginWriteRefusal(req) !== null) {
+			res.writeHead(403);
+			res.end();
+			return;
+		}
 		res.writeHead(204);
 		res.end();
 		return;
 	}
 
-	const url = new URL(req.url ?? "/", "http://127.0.0.1");
 	const q = url.searchParams;
 
 	// Path-based route: switch() cannot match it.
@@ -2725,14 +2816,8 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
 	}
 	if (req.method === "POST") {
 		if (url.pathname === "/api/host") {
-			// #67: the host report is a page-originated write (dashboard -> /api/host), so a
-			// page on another origin must not be able to re-point serve-host.json.
-			const refusal = crossOriginWriteRefusal(req);
-			if (refusal !== null) {
-				sendJson(res, 403, { ok: false, error: refusal });
-				req.resume();
-				return;
-			}
+			// #76: the gate above already refused a cross-origin page here; this branch only
+			// has to dispatch.
 			handleHostReport(req, res);
 			return;
 		}

@@ -161,12 +161,16 @@ const NOTE = JSON.stringify({ take: 1 });
 		assert.equal(res.status, 403, `status=${res.status} body=${res.body}`));
 }
 {
+	// #68: same-site は許可する（同一ホスト別ポートの右パネルが送る値）。cross-site だけが
+	// 攻撃の印なので、線はそこに引く。
 	const res = await send("POST", `/serve/${id}/_inbox/samesite.json`, {
-		headers: { "Content-Type": "application/octet-stream", "Sec-Fetch-Site": "same-site" },
+		headers: { "Content-Type": "application/octet-stream", "Sec-Fetch-Site": "same-site", Origin: `http://127.0.0.1:${PORT}` },
 		body: NOTE,
 	});
-	await checkAsync("Sec-Fetch-Site: same-site の _inbox POST も 403", async () =>
-		assert.equal(res.status, 403, `status=${res.status} body=${res.body}`));
+	await checkAsync("same-site（同一ホスト別ポート）の _inbox POST は許可", async () => {
+		assert.equal(res.status, 200, `status=${res.status} body=${res.body}`);
+		assert.equal(JSON.parse(res.body).ok, true);
+	});
 }
 {
 	const res = await send("POST", `/serve/${id}/_inbox/ok.json`, {
@@ -283,17 +287,93 @@ const NOTE = JSON.stringify({ take: 1 });
 
 // --- 8. CORS ヘッダ ------------------------------------------------------------
 {
-	const res = await send("OPTIONS", "/api/kanban", {
+	// #68: preflight も同じ判定。別ホストは 403（中身も CORS ヘッダも返さない）、
+	// 同一ホストだけが 204 + reflect。攻撃元 Origin は別ホストそのもの。
+	const evil = await send("OPTIONS", "/api/kanban", {
 		headers: { Origin: "http://nas.local:8789", "Access-Control-Request-Method": "POST" },
 	});
-	await checkAsync("プリフライトは 204 で ACAO: * を返す", async () => {
-		assert.equal(res.status, 204);
-		assert.equal(res.headers["access-control-allow-origin"], "*");
+	await checkAsync("別ホストのプリフライトは 403 で CORS を許可しない", async () => {
+		assert.equal(evil.status, 403, `status=${evil.status}`);
+		assert.equal(evil.headers["access-control-allow-origin"], undefined);
+	});
+	const same = await send("OPTIONS", "/api/kanban", {
+		headers: { Origin: base, "Access-Control-Request-Method": "POST", "Access-Control-Request-Headers": "content-type" },
+	});
+	await checkAsync("same-host のプリフライトは 204 + reflect", async () => {
+		assert.equal(same.status, 204);
+		assert.equal(same.headers["access-control-allow-origin"], base);
+		assert.match(same.headers.vary ?? "", /Origin/i);
 	});
 	await checkAsync("Allow-Methods に POST が入っている", async () =>
-		assert.match(res.headers["access-control-allow-methods"] ?? "", /POST/));
+		assert.match(same.headers["access-control-allow-methods"] ?? "", /POST/));
 	await checkAsync("Access-Control-Max-Age が 600", async () =>
-		assert.equal(res.headers["access-control-max-age"], "600"));
+		assert.equal(same.headers["access-control-max-age"], "600"));
+	await checkAsync("Allow-Headers に Content-Type が入っている", async () =>
+		assert.match(same.headers["access-control-allow-headers"] ?? "", /Content-Type/i));
+}
+
+// --- 9. #68 段階0: provenance gate の回帰 --------------------------------------
+// 経路リストは本体の isWritePath を写さず、ここに明示的に列挙する。本体の集合から
+// 漏れた経路を将来追加したとき、この表を更新し忘れれば「攻撃が 200 で返る」で落ちる。
+const WRITE_ROUTES = [
+	`add?text=atk&col=todo&scope=session&sid=s1`,
+	`move?id=1&col=done&scope=session&sid=s1`,
+	`remove?id=1&scope=session&sid=s1`,
+	`rename?id=1&text=atk&scope=session&sid=s1`,
+	`modes?key=doingLoop&value=on&scope=session&sid=s1`,
+	`interval?min=30&scope=session&sid=s1`,
+	`stuck?n=3&scope=session&sid=s1`,
+	`maxloops?n=5&scope=session&sid=s1`,
+	`resume?scope=global`,
+	`priority?id=1&priority=high&scope=session&sid=s1`,
+	`schedule?id=1&at=2030-01-01T00:00:00Z&scope=session&sid=s1`,
+];
+for (const route of WRITE_ROUTES) {
+	const res = await send("GET", `/api/${route}`, {
+		headers: { Origin: "http://evil.example", "Sec-Fetch-Site": "same-site", Host: `127.0.0.1:${PORT}` },
+	});
+	const name = route.split("?")[0];
+	await checkAsync(`GET /api/${name} は cross-origin で 403`, async () =>
+		assert.equal(res.status, 403, `status=${res.status} body=${res.body}`));
+}
+for (const path of ["/api/upload?scope=session&sid=s1&col=todo&ext=png", "/api/selftest"]) {
+	const res = await send("POST", path, {
+		headers: {
+			Origin: "http://evil.example",
+			"Sec-Fetch-Site": "same-site",
+			Host: `127.0.0.1:${PORT}`,
+			"Content-Type": "application/octet-stream",
+		},
+		body: Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+	});
+	await checkAsync(`POST ${path.split("?")[0]} は cross-origin で 403`, async () =>
+		assert.equal(res.status, 403, `status=${res.status} body=${res.body}`));
+}
+{
+	// Origin: null は比較するホストを持たない。以前は素通りしていた穴。
+	const res = await send("GET", `/api/add?text=nullorigin&col=todo&scope=session&sid=s1`, {
+		headers: { Origin: "null", "Sec-Fetch-Site": "same-site" },
+	});
+	await checkAsync("Origin: null の書き込みは 403", async () =>
+		assert.equal(res.status, 403, `status=${res.status} body=${res.body}`));
+}
+{
+	// ヘッダ無し＝ブラウザ以外（エージェントツール・別 pi・probeServer）。壊してはいけない線。
+	const res = await send("GET", `/api/add?text=agent_ok&col=todo&scope=session&sid=s1`);
+	await checkAsync("ヘッダ無しの書き込みは 200（エージェント経路）", async () => {
+		assert.equal(res.status, 200, `status=${res.status} body=${res.body}`);
+		assert.equal(JSON.parse(res.body).ok, true);
+	});
+}
+{
+	// 読み取り側に ACAO を漏らさない。登録エントリは絶対パスなので、ここが漏れると
+	// 任意のページが ~/workspace 配下を読める。
+	const res = await send("GET", "/serve/", { headers: { Origin: "http://evil.example" } });
+	await checkAsync("/serve/ GET は別ホストの Origin に ACAO を付けない", async () => {
+		assert.equal(res.status, 200, `status=${res.status}`);
+		assert.equal(res.headers["access-control-allow-origin"], undefined);
+		assert.match(res.headers.vary ?? "", /Origin/i);
+	});
 }
 
 // --- 結果 ---------------------------------------------------------------------
