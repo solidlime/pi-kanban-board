@@ -3563,6 +3563,10 @@ const DASHBOARD_HTML = `<!doctype html>
   // #38-7/#38-11: どちらもクライアントだけの状態（サーバには保存しない）。
   // #62: 列のキーは "session.<sid>:col" / "global:col"（GLOBAL に active sid を混ぜない）。
   var collapsed = {};    // ckey -> true while a column is folded
+  // #72: 60 字超の本文のクリック展開（.open）だけは別の持ち物が要る。.open は表示状態なので
+  // isEditing() では守れず、分境界の再描画で必ず畳まれる。sig には載せない（載せると
+  // クリックのたびに描画が走ってフォーカスが飛ぶ）— 描画時にここから引くだけ。
+  var cardOpen = {};     // ckey + "#" + id -> true while the card's body is expanded
   var gOpen = true;      // #62: GLOBAL 看板の開閉（既定は開）
   // #62: 開閉だけ localStorage に残す。kb-theme と同じく失敗は握りつぶし、
   // 保存が無いキーは今の既定のまま。ns で 2 テンプレートを分ける（片方が他方を壊さない）。
@@ -3593,9 +3597,24 @@ const DASHBOARD_HTML = `<!doctype html>
     try {
       var all = JSON.parse(localStorage.getItem(LS_KEY) || "{}");
       if (!all || typeof all !== "object") all = {};
-      all[LS_NS] = { sess: sessOpen, g: gOpen, cols: collapsed };
+      all[LS_NS] = { sess: sessOpen, g: gOpen, cols: collapsed, open: cardOpen };
       localStorage.setItem(LS_KEY, JSON.stringify(all));
     } catch (e) {}
+  }
+  // #72: 展開状態の読み直し + 消えたカードの掃除。render() からも呼ぶので例外は握りつぶす。
+  // 掃除は列単位（ckey 接頭辞）。掃除が起きたときだけ書き戻すので、保存も痩せる。
+  function loadOpen(ckey, list){
+    try {
+      var all = JSON.parse(localStorage.getItem(LS_KEY) || "null");
+      var v = all && all[LS_NS];
+      if (v && v.open && typeof v.open === "object") Object.keys(v.open).forEach(function(k){ cardOpen[k] = v.open[k] === true; });
+    } catch (e) {}
+    var present = {}, pruned = false;
+    list.forEach(function(c){ present[ckey + "#" + c.id] = true; });
+    Object.keys(cardOpen).forEach(function(k){
+      if (k.indexOf(ckey + "#") === 0 && !present[k]) { delete cardOpen[k]; pruned = true; }
+    });
+    if (pruned) persist();
   }
   (function(){
     var all = null;
@@ -3604,6 +3623,7 @@ const DASHBOARD_HTML = `<!doctype html>
     if (!v || typeof v !== "object") return;
     if (v.sess && typeof v.sess === "object") Object.keys(v.sess).forEach(function(k){ sessOpen[k] = v.sess[k] === true; });
     if (v.cols && typeof v.cols === "object") Object.keys(v.cols).forEach(function(k){ collapsed[k] = v.cols[k] === true; });
+    if (v.open && typeof v.open === "object") Object.keys(v.open).forEach(function(k){ cardOpen[k] = v.open[k] === true; });
     if (typeof v.g === "boolean") gOpen = v.g;
   })();
   var STALE_GUI_MS = 2 * 60 * 60 * 1000; // DOING over this long gets a ⏳
@@ -3988,6 +4008,7 @@ ${KANBAN_MD_JS}
       // #62: GLOBAL に active sid を混ぜない（切り替わるたびに別キーになって勝手に開いていた）。
       var ckey = ctx.scope === "global" ? "global:" + key : ctx.scope + "." + ctx.sid + ":" + key;
       var box = el("div", "col" + (key === "doing" && list.length ? " doingcol" : "") + (collapsed[ckey] ? " collapsed" : ""));
+      loadOpen(ckey, list); // #72: 描画のたびに読み直し、消えたカードの分を掃除する
       box.setAttribute("data-col", key);
       var h = el("h3", null, pair[1]);
       h.appendChild(el("span", "c", String(list.length)));
@@ -4101,7 +4122,12 @@ ${KANBAN_MD_JS}
           // #38-5: 60 字超は 3 行で切ってクリック展開（列内の高さを揃える）。
           if (String(c.text || "").length > 60) {
             t.classList.add("clampable");
-            t.addEventListener("click", function(){ t.classList.toggle("open"); });
+            var okey = ckey + "#" + c.id;
+            if (cardOpen[okey]) t.classList.add("open");
+            t.addEventListener("click", function(){
+              if (t.classList.toggle("open")) cardOpen[okey] = true; else delete cardOpen[okey];
+              persist();
+            });
           }
           card.appendChild(t);
           // #36: 本文のダブルクリックで編集。書き込みは既存の text 系 API（rename）。
@@ -4682,7 +4708,7 @@ export const KANBAN_HTML = `<!doctype html>
     try {
       var all = JSON.parse(localStorage.getItem(LS_KEY) || "{}");
       if (!all || typeof all !== "object") all = {};
-      all[LS_NS] = { sess: open, g: gOpen, cols: collapsed };
+      all[LS_NS] = { sess: open, g: gOpen, cols: collapsed, open: cardOpen };
       localStorage.setItem(LS_KEY, JSON.stringify(all));
     } catch (e) {}
   }
@@ -4690,6 +4716,24 @@ export const KANBAN_HTML = `<!doctype html>
   var last = "";        // whole-page signature, so an idle reload touches no DOM
   var query = "";       // #38-8: search box text, lowercase; filters cards in every column
   var collapsed = {};   // #38-7: "board.key:col" -> true while a column is folded
+  // #72: 60 字超の本文のクリック展開（.open）は表示状態なので、sig ではなくここで保持する。
+  // sig に載せるとクリックのたびに描画が走る（描画時にここから引くだけにする）。
+  var cardOpen = {};    // "board.key:col#id" -> true while the card's body is expanded
+  // #72: 展開状態の読み直し + 消えたカードの掃除（右パネル側、dashboard と同形）。
+  // 掃除が起きたときだけ書き戻すので、保存も痩せる。
+  function loadOpen(ckey, list){
+    try {
+      var all = JSON.parse(localStorage.getItem(LS_KEY) || "null");
+      var v = all && all[LS_NS];
+      if (v && v.open && typeof v.open === "object") Object.keys(v.open).forEach(function(k){ cardOpen[k] = v.open[k] === true; });
+    } catch (e) {}
+    var present = {}, pruned = false;
+    list.forEach(function(c){ present[ckey + "#" + c.id] = true; });
+    Object.keys(cardOpen).forEach(function(k){
+      if (k.indexOf(ckey + "#") === 0 && !present[k]) { delete cardOpen[k]; pruned = true; }
+    });
+    if (pruned) persist();
+  }
   var cache = null;     // last render inputs, so the search box refilters without a fetch
   var STALE_GUI_MS = 2 * 60 * 60 * 1000; // #38-11: DOING over this long gets a ⏳
   // #62: 復元は collapsed の宣言より後で行う（宣言前だと var 巻き上げで undefined になる）。
@@ -4700,6 +4744,7 @@ export const KANBAN_HTML = `<!doctype html>
     if (!v || typeof v !== "object") return;
     if (v.sess && typeof v.sess === "object") Object.keys(v.sess).forEach(function(k){ open[k] = v.sess[k] === true; });
     if (v.cols && typeof v.cols === "object") Object.keys(v.cols).forEach(function(k){ collapsed[k] = v.cols[k] === true; });
+    if (v.open && typeof v.open === "object") Object.keys(v.open).forEach(function(k){ cardOpen[k] = v.open[k] === true; });
     if (typeof v.g === "boolean") gOpen = v.g;
   })();
 
@@ -4909,7 +4954,14 @@ ${KANBAN_MD_JS}
     // #38-5: 長い本文は 3 行で切ってクリック展開（列内の高さを揃える）。
     if ((c.text || "").length > 60) {
       tt.classList.add("clampable");
-      tt.addEventListener("click", function(){ tt.classList.toggle("open"); });
+      // #72: 展開状態は cardOpen（localStorage 永続）。sig には載せない。
+      // キーは列の折りたたみ（ckey = board.key + ":" + col）と同じ形に揃える。
+      var okey = board.key + ":" + c.col + "#" + c.id;
+      if (cardOpen[okey]) tt.classList.add("open");
+      tt.addEventListener("click", function(){
+        if (tt.classList.toggle("open")) cardOpen[okey] = true; else delete cardOpen[okey];
+        persist();
+      });
     }
     t.appendChild(tt);
     el.appendChild(t);
@@ -5063,6 +5115,7 @@ ${KANBAN_MD_JS}
       box.appendChild(h);
       var deck = document.createElement("div");
       deck.className = "cards";
+      loadOpen(ckey, list); // #72: 描画のたびに読み直し、消えたカードの分を掃除する
       list.forEach(function(c){ deck.appendChild(card(board, c, ci)); });
       if (!list.length) {
         var emp = document.createElement("div");
