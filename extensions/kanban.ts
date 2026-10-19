@@ -3733,14 +3733,35 @@ ${KANBAN_MD_JS}
   }
   function prioOf(c){ var v = c && c.priority; return (typeof v === "number" && isFinite(v)) ? v : 0; }
   function intervalOf(m){ var v = m && m.intervalMin; return (typeof v === "number" && isFinite(v) && v > 0) ? v : 5; }
+  // #67: the doing-loop budget. Absent/invalid = 10 (the old hard-coded cap); 0 = unlimited.
+  // Mirrors maxLoopsOf on the server, so the GUI never shows a cap the loop does not use.
+  function maxLoopsOf(m){
+    var v = m && m.maxLoops;
+    if (typeof v !== "number" || v !== Math.floor(v)) return 10;
+    if (v <= 0) return 0;
+    return v <= 1000 ? v : 10;
+  }
 
   // #58: why the doing-loop is stopped, and what actually clears it. The loop budget
-  // lives in pi's extension process (survives the file), so only these two paths lift it.
-  function haltText(h){
+  // lives in pi's extension process (survives the file), so the tool/command paths lift
+  // it; #67 added the 再開 button below, which is the third (and only GUI) path.
+  function haltText(h, cap){
     if (!h) return "";
-    if (h.halted === "limit") return "ループ上限（" + ${MAX_LOOPS} + "回）に達して停止 — 再開は kanban ツールの resume、または /kanban loop on（下のスイッチを ON にしても再開しない）";
-    if (h.halted === "stuck") return "同じカード（#" + h.stuckId + "）で " + h.stuckCount + " 回スタックして停止 — カードを直してから kanban ツールの resume、または /kanban loop on（下のスイッチを ON にしても再開しない）";
+    var c = (cap === undefined || cap === null) ? 10 : cap;
+    if (h.halted === "limit") return "ループ上限（" + (c > 0 ? c + "回" : "無制限") + "）に達して停止 — 下の「再開」、kanban ツールの resume、または /kanban loop on（スイッチを ON にしても再開しない）";
+    if (h.halted === "stuck") return "同じカード（#" + h.stuckId + "）で " + h.stuckCount + " 回スタックして停止 — カードを直してから下の「再開」、kanban ツールの resume、または /kanban loop on（スイッチを ON にしても再開しない）";
     return "";
+  }
+
+  // #67: 再開ボタン。halt は拡張プロセスのメモリなので、この書き込みは「要求」でしかない
+  // （/api/resume は 202 を返し、そのセッションの poll が実際に解除する）。
+  function resumeBtn(ctx){
+    var b = el("button", "mini", "再開");
+    b.type = "button";
+    b.title = "停止を解除して回数を 0 に戻す（doingLoop も ON に戻る）";
+    b.disabled = !ctx.active;
+    if (ctx.active) b.addEventListener("click", function(){ act("/api/resume", {}, ctx); });
+    return b;
   }
   var PRIO_MAX = 99, PRIO_MIN = -99; // same range the server enforces
   var dragging = null;               // {scope, sid, id} of the card being dragged
@@ -3832,6 +3853,23 @@ ${KANBAN_MD_JS}
     box.appendChild(btn("分", "この間隔（分）で保存", function(){
       var v = Number(iv.value);
       if (isFinite(v) && v > 0) act("/api/interval", { min: Math.round(v) }, ctx);
+    }, !ctx.active));
+    // #67: ループ上限（0 = 無制限）。間隔と同じ行・同じ act() 経路で保存する。
+    // 保存済みの上限を出すときは intervalOf と同じ「無ければ既定」の読み方をする。
+    var cap = maxLoopsOf(m);
+    box.appendChild(el("span", null, "上限"));
+    var ml = el("input");
+    ml.type = "number";
+    ml.min = "0";
+    ml.max = "1000";
+    ml.value = String(cap);
+    ml.disabled = !ctx.active;
+    ml.title = "ループ上限（回、0 = 無制限）";
+    ml.setAttribute("aria-label", "ループ上限（回、0 で無制限）");
+    box.appendChild(ml);
+    box.appendChild(btn("回", "この上限（回、0 = 無制限）で保存", function(){
+      var v = Number(ml.value);
+      if (isFinite(v) && v >= 0 && v <= 1000 && v % 1 === 0) act("/api/maxloops", { n: v }, ctx);
     }, !ctx.active));
     // DOING 全停止 reuses the existing blocked field, one card at a time (no new state).
     var doing = cards.filter(function(c){
@@ -4137,8 +4175,17 @@ ${KANBAN_MD_JS}
       });
       art.appendChild(hd);
       // #58: reason + way back. Without it the ctl switches below look like they work.
-      var halt = haltText(s.halted);
-      if (halt) art.appendChild(el("div", "halt", halt));
+      // #67: the cap in force for THIS row, and a 再開 button for a limit halt — the
+      // switch alone still cannot lift a halt (it lives in the extension process).
+      var halt = haltText(s.halted, maxLoopsOf(s.modes && s.modes.session));
+      if (halt) {
+        var hb = el("div", "halt", halt);
+        if (s.halted && s.halted.halted === "limit") {
+          hb.appendChild(document.createTextNode(" "));
+          hb.appendChild(resumeBtn(boardCtx("session", s.id)));
+        }
+        art.appendChild(hb);
+      }
       if (!expanded) { box.appendChild(art); return; }
       var ctx = boardCtx("session", s.id);
       // #48: 検索してヒット 0 件のセッションは「該当なし」だけ出す（ヘッダは残す）。
