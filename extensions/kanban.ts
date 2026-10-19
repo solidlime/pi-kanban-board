@@ -1320,6 +1320,32 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
 	res.end(JSON.stringify(body));
 }
 
+/**
+ * #85: the dashboard poller gets a body hash so an unchanged board costs a header round
+ * trip instead of the whole payload. There is no cache layer on purpose — the body is
+ * built every request, so every write changes the hash by construction. `no-cache` (not
+ * `no-store`) keeps the 304 reachable: the client must revalidate, not stop asking.
+ *
+ * The caller's CORS headers (and `Vary: Origin`) are already on the response and are left
+ * alone here; a 304 the browser cannot read is worthless, so they ride along.
+ */
+function sendEtagJson(req: IncomingMessage, res: ServerResponse, body: string): void {
+	const etag = `"${createHash("sha1").update(body).digest("hex")}"`;
+	res.setHeader("ETag", etag);
+	res.setHeader("Cache-Control", "no-cache");
+	const inm = req.headers["if-none-match"];
+	// Weak comparison (RFC 9110): W/ prefixes are the same representation for our purpose.
+	const match =
+		typeof inm === "string" && inm.split(",").some((t) => t.trim().replace(/^W\//, "") === etag);
+	if (match) {
+		res.writeHead(304);
+		res.end();
+		return;
+	}
+	res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+	res.end(body);
+}
+
 // ---------------------------------------------------------------------------
 // Local path serving (/serve/<id>/...) on the existing 8789 server (A11/A14)
 // ---------------------------------------------------------------------------
@@ -2464,6 +2490,21 @@ type SessionRow = {
 	cards: Card[];
 };
 
+/**
+ * #85b: `sessions[].updatedAt` は分単位に丸める。mtime は走っているセッションで毎秒進むが、
+ * ダッシュボードがその値から描くのは分粒度の相対時刻だけ（#74 で ticker が部分更新する）。
+ * 秒以下を本文に載せると ETag が毎ポーリング変わり、304 が死ぬ。
+ * 壊れた mtime は例外にせず null に落とす（クライアントの ago()/full() は null を「—」にする）。
+ */
+export function updatedAtMin(ms: unknown): string | null {
+	if (typeof ms !== "number" || !Number.isFinite(ms) || ms < 0) return null;
+	// Date の上限 (±8.64e15) を超えると toISOString が投げる。mtime では起きないが、
+	// この関数は例外を投げない約束なので範囲も見る。
+	const floored = Math.floor(ms / 60000) * 60000;
+	if (floored > 8.64e15) return null;
+	return new Date(floored).toISOString();
+}
+
 /** The per-column card counts every board view shows. */
 function countCols(b: Board): { todo: number; doing: number; done: number } {
 	return { todo: cardsIn(b, "todo").length, doing: cardsIn(b, "doing").length, done: cardsIn(b, "done").length };
@@ -2605,7 +2646,7 @@ async function dashboardPayload(): Promise<unknown> {
 			name: s.name, // raw on purpose: the dashboard sets it with textContent
 			cwd: s.cwd,
 			isActive: s.mine, // driver か。もう書き込みロックの印ではない
-			updatedAt: new Date(s.modified).toISOString(),
+			updatedAt: updatedAtMin(s.modified),
 			modes: s.modes,
 			counts: s.counts,
 			cards: s.cards,
@@ -2885,7 +2926,7 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
 	}
 	if (url.pathname === "/api/dashboard") {
 		void dashboardPayload().then(
-			(body) => sendJson(res, 200, body),
+			(body) => sendEtagJson(req, res, JSON.stringify(body)),
 			() => sendJson(res, 500, { ok: false, error: "dashboard failed" }),
 		);
 		return;
@@ -4879,8 +4920,15 @@ ${KANBAN_MD_JS}
   }
   function schedule(){
     clearTimeout(timer);
+    // 隠れたタブは問い合わせない。fails は触らないので、戻った時のバックオフはそのまま続く。
+    if (document.visibilityState === "hidden") return;
     timer = setTimeout(reload, nextDelay());
   }
+  // 復帰したら待たずに 1 回取る。schedule() は clearTimeout するので timer は二重にならない。
+  // （テスト用の最小 document には addEventListener が無いので存在確認だけする）
+  if (typeof document.addEventListener === "function") document.addEventListener("visibilitychange", function(){
+    if (document.visibilityState !== "hidden") reload();
+  });
   // #74: 分境界項は無い。データが変わらなければ sig も変わらない（相対時刻は
   // ticker が textContent を書き換える。毎分のフル再描画はそれで用済み）。
   // サーバの now は毎分変わる（#65 で分単位に丸め済み）ので、sig からは外す。
