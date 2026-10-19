@@ -3509,6 +3509,74 @@ export const KANBAN_MD_JS = `
   }
 `;
 
+// #76: リロードを跨ぐ記憶（列のスクロール位置 / 展開中のカード）。ONE definition,
+// injected into BOTH the dashboard and the right panel. 列のスクロール位置は画面ごとに
+// 別物なので、キーは LS_NS（dash / kanban）で分ける = kb-scroll/{ns} / kb-open/{ns}。
+// 既存の kb-collapse は形もキーも触らない（#72/#73 の再描画越しの復元はそのまま残す）。
+export const KANBAN_MEMORY_JS = `
+  var LS_SCROLL = "kb-scroll", LS_OPEN = "kb-open";
+  var MAX_CARD_OPEN = 40;      // 展開状態を覚えるカードの上限（超えたら挿入順の古い方から捨てる）
+  var SCROLL_DEBOUNCE_MS = 150; // 毎スクロールで書かない。書き込みは止まってから
+  // localStorage は信用しない。壊れた JSON / 配列 / null は「保存なし」に落とす。
+  function memParse(raw){
+    if (raw == null) return null;
+    try {
+      var v = JSON.parse(raw);
+      return v && typeof v === "object" && !Array.isArray(v) ? v : null;
+    } catch (e) { return null; }
+  }
+  function memRead(key){
+    try { return memParse(localStorage.getItem(key)); } catch (e) { return null; }
+  }
+  function memWrite(key, val){
+    try { localStorage.setItem(key, JSON.stringify(val)); } catch (e) {}
+  }
+  function memLoad(key, ns){
+    var all = memRead(key), v = all && all[ns];
+    return v && typeof v === "object" && !Array.isArray(v) ? v : null;
+  }
+  function memSave(key, ns, obj){
+    var all = memRead(key) || {};
+    all[ns] = obj;
+    memWrite(key, all);
+  }
+  // 列が縮んだときに下の空白へ飛ばないよう、今の最大スクロール量に丸める。
+  function memClamp(v, scrollHeight, clientHeight){
+    if (typeof v !== "number" || !isFinite(v) || v <= 0) return 0;
+    var sh = typeof scrollHeight === "number" && isFinite(scrollHeight) ? scrollHeight : 0;
+    var ch = typeof clientHeight === "number" && isFinite(clientHeight) ? clientHeight : 0;
+    var max = sh - ch;
+    if (!(max > 0)) return 0;
+    return v > max ? max : v;
+  }
+  // 記憶する価値のある展開か。DONE は数十枚あり容量も食うので対象外（閉じた状態に戻す）。
+  function memKeepable(ckey){
+    return /:(todo|doing)$/.test(String(ckey || ""));
+  }
+  // 保存前に掃除: DONE を落とし、上限を超えた分は挿入順の古い方から捨てる。
+  function memCompactCards(obj, max){
+    var out = {}, keys = Object.keys(obj || {}), n = keys.length;
+    if (max == null) max = MAX_CARD_OPEN;
+    for (var i = 0; i < n; i++){
+      if (!memKeepable(keys[i].split("#")[0])) continue;
+      if (obj[keys[i]] !== true) continue;
+      out[keys[i]] = true;
+    }
+    keys = Object.keys(out);
+    for (var j = 0; j + max < keys.length; j++) delete out[keys[j]];
+    return out;
+  }
+  // 消えたカードの id を保存から落とす（列単位。消えたときだけ true を返す）。
+  function memPruneColumn(obj, ckey, ids){
+    var live = {}, pruned = false, prefix = ckey + "#";
+    (ids || []).forEach(function(id){ live[prefix + id] = true; });
+    Object.keys(obj || {}).forEach(function(k){
+      if (k.indexOf(prefix) === 0 && !live[k]) { delete obj[k]; pruned = true; }
+    });
+    return pruned;
+  }
+`;
+
 const DASHBOARD_HTML = `<!doctype html>
 <html lang="ja">
 <head>
@@ -3771,6 +3839,52 @@ const DASHBOARD_HTML = `<!doctype html>
   // #62: 開閉だけ localStorage に残す。kb-theme と同じく失敗は握りつぶし、
   // 保存が無いキーは今の既定のまま。ns で 2 テンプレートを分ける（片方が他方を壊さない）。
   var LS_KEY = "kb-collapse", LS_NS = "dash";
+  // #76: リロード越しの記憶。kb-scroll/dash = 列のスクロール位置、kb-open/dash = 展開中の
+  // カード（DONE は対象外・上限 40）。再描画越しの cardOpen の上に「保存層」を足す形。
+${KANBAN_MEMORY_JS}
+  var scrollTimer = null;
+  // #76: DONE はリロードで閉じた状態に戻す。kb-collapse（#72 の残骸）にも載せない。
+  function keptOpen(){
+    return memCompactCards(cardOpen, MAX_CARD_OPEN);
+  }
+  function memoCards(){
+    // 保存のたびに掃除する（毎描画ではない）。DONE と上限超過はここで落ちる。
+    memSave(LS_OPEN, LS_NS, keptOpen());
+  }
+  function persistCore(){
+    try {
+      var all = JSON.parse(localStorage.getItem(LS_KEY) || "{}");
+      if (!all || typeof all !== "object") all = {};
+      all[LS_NS] = { sess: sessOpen, g: gOpen, cols: collapsed, open: keptOpen() };
+      localStorage.setItem(LS_KEY, JSON.stringify(all));
+    } catch (e) {}
+  }
+  function saveScrollPos(deck){
+    var k = deck && deck.getAttribute("data-ckey");
+    if (!k || !(deck.clientHeight > 0)) return; // 畳んだ列は測れない（0 で潰さない）
+    var m = memLoad(LS_SCROLL, LS_NS) || {};
+    m[k] = deck.scrollTop;
+    memSave(LS_SCROLL, LS_NS, m);
+  }
+  function onScroll(e){
+    var t = e && e.target;
+    if (!t || !t.getAttribute) return;
+    clearTimeout(scrollTimer);
+    scrollTimer = setTimeout(function(){ saveScrollPos(t); }, SCROLL_DEBOUNCE_MS);
+  }
+  function restoreScrollPos(root){
+    if (!root || !root.querySelectorAll) return;
+    var m = memLoad(LS_SCROLL, LS_NS);
+    if (!m) return;
+    var ds = root.querySelectorAll(".cards[data-ckey]");
+    for (var i = 0; i < ds.length; i++){
+      var k = ds[i].getAttribute("data-ckey");
+      var v = Object.prototype.hasOwnProperty.call(m, k) ? m[k] : null;
+      if (v == null) continue;
+      var y = memClamp(v, ds[i].scrollHeight, ds[i].clientHeight);
+      if (y > 0) ds[i].scrollTop = y;
+    }
+  }
   // #65: 描画を止めるのは「ユーザが入力中」のときだけ。再描画で作り直される領域
   // （#stats/#sessions/#global/#serve）の中で、値を受け付ける要素にフォーカスがある間は描かない。
   // フォーカス中の要素が DOM から切り離されると blur が飛ばず、打鍵が無言で消えるため。
@@ -3793,14 +3907,7 @@ const DASHBOARD_HTML = `<!doctype html>
   }
   // sig は「今 DOM に描かれている状態」を記述する（query を落とすと検索語の変化を取り逃す）。
   function uiSig(){ return JSON.stringify([sessOpen, gOpen, collapsed, query]); }
-  function persist(){
-    try {
-      var all = JSON.parse(localStorage.getItem(LS_KEY) || "{}");
-      if (!all || typeof all !== "object") all = {};
-      all[LS_NS] = { sess: sessOpen, g: gOpen, cols: collapsed, open: cardOpen };
-      localStorage.setItem(LS_KEY, JSON.stringify(all));
-    } catch (e) {}
-  }
+  function persist(){ persistCore(); }
   // #72: 展開状態の読み直し + 消えたカードの掃除。render() からも呼ぶので例外は握りつぶす。
   // 掃除は列単位（ckey 接頭辞）。掃除が起きたときだけ書き戻すので、保存も痩せる。
   function loadOpen(ckey, list){
@@ -3814,8 +3921,11 @@ const DASHBOARD_HTML = `<!doctype html>
     Object.keys(cardOpen).forEach(function(k){
       if (k.indexOf(ckey + "#") === 0 && !present[k]) { delete cardOpen[k]; pruned = true; }
     });
-    if (pruned) persist();
+    if (pruned) { persist(); memoCards(); }
   }
+  // #76: リロード越しの展開状態。DONE は保存しないので、ここで拾うのは TODO/DOING だけ。
+  var memoOpen = memLoad(LS_OPEN, LS_NS);
+  if (memoOpen) Object.keys(memoOpen).forEach(function(k){ if (memoOpen[k] === true) cardOpen[k] = true; });
   (function(){
     var all = null;
     try { all = JSON.parse(localStorage.getItem(LS_KEY) || "null"); } catch (e) {}
@@ -4251,8 +4361,12 @@ ${KANBAN_MD_JS}
           uploadHere(ctx, key, f, undefined); // 列の先頭に新規カード
         });
       }
+      // #76: 列スクロールはリロード越しにも覚える（描画越しは saveScroll が担当）
+      var deck = el("div", "cards");
+      deck.setAttribute("data-ckey", ckey);
+      deck.addEventListener("scroll", onScroll);
       if (!list.length) {
-        box.appendChild(el("div", "more", "なし"));
+        deck.appendChild(el("div", "more", "なし"));
       } else {
         list.slice(0, MAX_PER_COL).forEach(function(c){
           var card = el("div", "card");
@@ -4330,6 +4444,7 @@ ${KANBAN_MD_JS}
             t.addEventListener("click", function(){
               if (t.classList.toggle("open")) cardOpen[okey] = true; else delete cardOpen[okey];
               persist();
+              memoCards(); // #76: DONE は memCompactCards が落とす（画面の開閉はそのまま）
             });
           }
           card.appendChild(t);
@@ -4368,10 +4483,12 @@ ${KANBAN_MD_JS}
           if (prioOf(c)) card.appendChild(el("span", "prio", "P" + prioOf(c)));
           if (c.blocked) card.appendChild(el("span", "blocked", "停止中"));
           if (ctx) card.appendChild(cardOps(c, ctx));
-          box.appendChild(card);
+          deck.appendChild(card);
         });
-        if (list.length > MAX_PER_COL) box.appendChild(el("div", "more", "他 " + (list.length - MAX_PER_COL) + " 枚"));
+        if (list.length > MAX_PER_COL) deck.appendChild(el("div", "more", "他 " + (list.length - MAX_PER_COL) + " 枚"));
       }
+      box.appendChild(deck);
+      restoreScrollPos(box);
       // #45: 列の最後尾でその場に追加。Enter=確定 / Escape=取消 / blur=閉じる。
       // 読み取り専用は aria-disabled（理由を返すためクリックは受ける）。
       var addBtn = el("button", "mini addbtn", "+");
@@ -5002,14 +5119,53 @@ export const KANBAN_HTML = `<!doctype html>
   // #62: 開閉だけ localStorage に残す（kb-theme と同じ流儀。失敗は握りつぶし、
   // 保存が無いキーは今の既定のまま）。ns でダッシュボードとキー空間を分ける。
   var LS_KEY = "kb-collapse", LS_NS = "kanban";
-  function persist(){
+  // #76: 右パネルも同じ記憶層を使う。列のスクロール位置は画面ごとに別物なので
+  // キーは LS_NS で分ける（kb-scroll/kanban, kb-open/kanban）。ダッシュボードとは混ざらない。
+${KANBAN_MEMORY_JS}
+  var scrollTimer = null;
+  // #76: DONE はリロードで閉じた状態に戻す。kb-collapse（#72 の残骸）にも載せない。
+  function keptOpen(){
+    return memCompactCards(cardOpen, MAX_CARD_OPEN);
+  }
+  function memoCards(){
+    // 保存のたびに掃除する（毎描画ではない）。DONE と上限超過はここで落ちる。
+    memSave(LS_OPEN, LS_NS, keptOpen());
+  }
+  function persistCore(){
     try {
       var all = JSON.parse(localStorage.getItem(LS_KEY) || "{}");
       if (!all || typeof all !== "object") all = {};
-      all[LS_NS] = { sess: open, g: gOpen, cols: collapsed, open: cardOpen };
+      all[LS_NS] = { sess: open, g: gOpen, cols: collapsed, open: keptOpen() };
       localStorage.setItem(LS_KEY, JSON.stringify(all));
     } catch (e) {}
   }
+  function saveScrollPos(deck){
+    var k = deck && deck.getAttribute("data-ckey");
+    if (!k || !(deck.clientHeight > 0)) return;
+    var m = memLoad(LS_SCROLL, LS_NS) || {};
+    m[k] = deck.scrollTop;
+    memSave(LS_SCROLL, LS_NS, m);
+  }
+  function onScroll(e){
+    var t = e && e.target;
+    if (!t || !t.getAttribute) return;
+    clearTimeout(scrollTimer);
+    scrollTimer = setTimeout(function(){ saveScrollPos(t); }, SCROLL_DEBOUNCE_MS);
+  }
+  function restoreScrollPos(root){
+    if (!root || !root.querySelectorAll) return;
+    var m = memLoad(LS_SCROLL, LS_NS);
+    if (!m) return;
+    var ds = root.querySelectorAll(".cards[data-ckey]");
+    for (var i = 0; i < ds.length; i++){
+      var k = ds[i].getAttribute("data-ckey");
+      var v = Object.prototype.hasOwnProperty.call(m, k) ? m[k] : null;
+      if (v == null) continue;
+      var y = memClamp(v, ds[i].scrollHeight, ds[i].clientHeight);
+      if (y > 0) ds[i].scrollTop = y;
+    }
+  }
+  function persist(){ persistCore(); }
   var drag = null;      // { board:key, id } while a card is in flight
   var last = "";        // whole-page signature, so an idle reload touches no DOM
   var query = "";       // #38-8: search box text, lowercase; filters cards in every column
@@ -5021,8 +5177,8 @@ export const KANBAN_HTML = `<!doctype html>
   // 列単位（board.key:col）に持つ。sig には載せない。捨てるのは明示的な操作だけ。
   var addDraft = {};    // "board.key:col" -> 打ちかけの文字列（キーがある = 開いている）
   // #73: 列ごとのスクロール位置。.cards は描画のたびに作り直されるので、sig ではなく
-  // ここで保持し、描画後に data-ckey で引き当てて戻す。リロードで先頭に戻るのが自然な
-  // 挙動なので localStorage には残さない。
+  // ここで保持し、描画後に data-ckey で引き当てて戻す。#76 で localStorage にも残す
+  // （リロード越しの分は上の KANBAN_MEMORY_JS が kb-scroll/<ns> で担当）。
   var colScroll = {};   // "board.key:col" -> scrollTop
   // 畳んだ列は clientHeight 0 で位置を測れない。測れた値だけ覚える（0 で潰さない）。
   function saveScroll(root){
@@ -5053,8 +5209,11 @@ export const KANBAN_HTML = `<!doctype html>
     Object.keys(cardOpen).forEach(function(k){
       if (k.indexOf(ckey + "#") === 0 && !present[k]) { delete cardOpen[k]; pruned = true; }
     });
-    if (pruned) persist();
+    if (pruned) { persist(); memoCards(); }
   }
+  // #76: リロード越しの展開状態（DONE は保存対象外なので拾うのは TODO/DOING だけ）。
+  var memoOpen = memLoad(LS_OPEN, LS_NS);
+  if (memoOpen) Object.keys(memoOpen).forEach(function(k){ if (memoOpen[k] === true) cardOpen[k] = true; });
   var cache = null;     // last render inputs, so the search box refilters without a fetch
   var STALE_GUI_MS = 2 * 60 * 60 * 1000; // #38-11: DOING over this long gets a ⏳
   // #62: 復元は collapsed の宣言より後で行う（宣言前だと var 巻き上げで undefined になる）。
@@ -5282,6 +5441,7 @@ ${KANBAN_MD_JS}
       tt.addEventListener("click", function(){
         if (tt.classList.toggle("open")) cardOpen[okey] = true; else delete cardOpen[okey];
         persist();
+        memoCards(); // #76: DONE は memCompactCards が落とす（画面の開閉はそのまま）
       });
     }
     t.appendChild(tt);
@@ -5434,9 +5594,11 @@ ${KANBAN_MD_JS}
       // #38-7: 見出しクリックで列ごと畳む（状態はクライアントだけ。#62: 保存もする）。
       h.addEventListener("click", function(){ collapsed[ckey] = !collapsed[ckey]; box.classList.toggle("collapsed"); persist(); });
       box.appendChild(h);
+      // #76: 列スクロールはリロード越しにも覚える（描画越しの #73 saveScroll はそのまま）
       var deck = document.createElement("div");
       deck.className = "cards";
       deck.setAttribute("data-ckey", ckey);
+      deck.addEventListener("scroll", onScroll); // 止まってから kb-scroll/kanban に書く
       loadOpen(ckey, list); // #72: 描画のたびに読み直し、消えたカードの分を掃除する
       list.forEach(function(c){ deck.appendChild(card(board, c, ci)); });
       if (!list.length) {
@@ -5446,6 +5608,7 @@ ${KANBAN_MD_JS}
         deck.appendChild(emp);
       }
       box.appendChild(deck);
+      restoreScrollPos(box); // #76: 作法はダッシュボードと同じ（描画直後にクランプして戻す）
       if (board.editable) {
         // A dragged card only ever lands on its OWN board; cross-board moves are not a thing.
         box.addEventListener("dragover", function(e){
@@ -5672,7 +5835,7 @@ ${KANBAN_MD_JS}
     ]);
     if (sig === last) return;
     last = sig;
-    saveScroll(globalEl); // #73: 消す前に今の位置を控える
+    saveScroll(globalEl); // #73: 消す前に今の位置を控える（再描画越し。リロード越しは #76 が担当）
     saveScroll(listEl);
     globalEl.innerHTML = "";
     globalEl.appendChild(globalHead());
