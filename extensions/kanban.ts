@@ -135,7 +135,6 @@ const STALE_MS = 3 * 60 * 60 * 1000; // DOING for this long without a move -> �
 const LOOP_CUSTOM_TYPE = "kanban-loop"; // customType of the session entry holding LoopState
 const LOOP_PROMPT_TYPE = "kanban-loop-continue"; // customType of the continuation prompt entry
 const DEFAULT_MAX_LOOPS = 10; // continuations before doingLoop turns itself off
-const MAX_LOOPS = DEFAULT_MAX_LOOPS; // legacy alias: the GUI templates still read this
 const MAX_LOOPS_CAP = 1000; // largest budget a caller may store (0 = unlimited, not a cap)
 const DEFAULT_STUCK_LIMIT = 3; // settles on one DOING card before that card's loop stops
 const MIN_STUCK_LIMIT = 1;
@@ -4692,6 +4691,25 @@ ${KANBAN_MD_JS}
     sunit.className = "mt";
     sunit.textContent = "回";
     wrap.appendChild(sunit);
+    // #67: maxLoops is the doing-loop budget (0 = 無制限). Same row, same GET+query gate.
+    // 1000 is the server's cap; the GUI refuses the same range instead of round-tripping a 400.
+    var ml = document.createElement("input");
+    ml.className = "ml";
+    ml.type = "number";
+    ml.min = "0";
+    ml.max = "1000";
+    ml.title = "ループ上限（0 = 無制限）";
+    ml.value = String(maxLoopsOf(board.modes));
+    ml.onchange = function(){
+      var v = Number(ml.value);
+      if (!(v >= 0 && v <= 1000 && v % 1 === 0)) { ml.value = String(maxLoopsOf(board.modes)); return; }
+      send(board, "maxloops?n=" + v);
+    };
+    wrap.appendChild(ml);
+    var munit = document.createElement("span");
+    munit.className = "mt";
+    munit.textContent = maxLoopsOf(board.modes) > 0 ? "上限" : "上限（無制限）";
+    wrap.appendChild(munit);
     return wrap;
   }
 
@@ -4722,6 +4740,19 @@ ${KANBAN_MD_JS}
     }).then(function(r){ return r.json(); }).then(function(j){
       reload(j && j.ok ? null : "upload failed");
     }).catch(function(){ reload("upload failed"); });
+  }
+
+  // #67: 再開ボタン。halt は拡張プロセスのメモリなので、この書き込みはそのセッションの
+  // poll が拾って実行する（サーバは 202 を返すだけ）。send() が "&scope=.." を足すので
+  // パス側に "?" を置いておく。
+  function resumeBtn(board){
+    var b = document.createElement("button");
+    b.type = "button";
+    b.className = "mini";
+    b.textContent = "再開";
+    b.title = "停止を解除して回数を 0 に戻す（doingLoop も ON に戻る）";
+    b.onclick = function(){ send(board, "resume?"); };
+    return b;
   }
 
   function send(board, path){
@@ -5005,12 +5036,22 @@ ${KANBAN_MD_JS}
     return open[row.id] === undefined ? !!row.mine : open[row.id];
   }
 
+  // #67: the doing-loop budget. Absent/invalid = 10 (the old hard-coded cap); 0 = unlimited.
+  // Mirrors maxLoopsOf on the server, so the GUI never shows a cap the loop does not use.
+  function maxLoopsOf(m){
+    var v = m && m.maxLoops;
+    if (typeof v !== "number" || v !== Math.floor(v)) return 10;
+    if (v <= 0) return 0;
+    return v <= 1000 ? v : 10;
+  }
+
   // #58: same text as the dashboard's haltText — keep the two in step.
-  function haltText(h){
+  function haltText(h, cap){
     if (!h) return "";
-    if (h.halted === "limit") return "ループ上限（" + ${MAX_LOOPS} + "回）に達して停止。再開は kanban ツールの resume か /kanban loop on（下の modes を ON にしても再開しない）";
-    if (h.halted === "stuck") return "同じカード（#" + h.stuckId + "）で " + h.stuckCount + " 回スタックして停止。カードを直してから kanban ツールの resume か /kanban loop on（下の modes を ON にしても再開しない）";
-    if (h.halted) return "ループ停止中（" + h.halted + "）。kanban ツールの resume か /kanban loop on で再開";
+    var c = (cap === undefined || cap === null) ? 10 : cap;
+    if (h.halted === "limit") return "ループ上限（" + (c > 0 ? c + "回" : "無制限") + "）に達して停止。下の「再開」か kanban ツールの resume、/kanban loop on（modes を ON にしても再開しない）";
+    if (h.halted === "stuck") return "同じカード（#" + h.stuckId + "）で " + h.stuckCount + " 回スタックして停止。カードを直してから下の「再開」か kanban ツールの resume、/kanban loop on（modes を ON にしても再開しない）";
+    if (h.halted) return "ループ停止中（" + h.halted + "）。下の「再開」か kanban ツールの resume、/kanban loop on で再開";
     return "";
   }
 
@@ -5085,11 +5126,18 @@ ${KANBAN_MD_JS}
     wrap.appendChild(head);
     // #58: why it stopped + how to restart. Silence here is what makes the toggles
     // below look broken: they write modes.json, the halt lives in the extension process.
-    var why = haltText(row.halted);
+    var why = haltText(row.halted, maxLoopsOf(row.modes && row.modes.session));
     if (why) {
       var hb = document.createElement("div");
       hb.className = "halt";
       hb.textContent = why;
+      // #67: a limit halt is liftable from here; a stuck halt needs the card fixed first,
+      // which a button cannot do — so the 再開 button is drawn for a limit halt only.
+      if (row.halted && row.halted.halted === "limit") {
+        var rctx = { key: "s:" + row.id, scope: "session", sid: row.id, editable: true, modes: row.modes && row.modes.session };
+        hb.appendChild(document.createTextNode(" "));
+        hb.appendChild(resumeBtn(rctx));
+      }
       wrap.appendChild(hb);
     }
     if (expanded(row)) {
