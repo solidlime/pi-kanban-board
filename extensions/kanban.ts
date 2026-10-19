@@ -2560,6 +2560,8 @@ async function dashboardPayload(): Promise<unknown> {
 		startedAt: serverStartedAt,
 		// #65: 分単位に丸める。クライアントの再描画 sig が毎ポーリングで変わり、編集中の
 		// textarea を DOM ごと捨てていた（形は ISO 文字列のまま。相対時刻の粒度は 1 分）。
+		// #74: クライアントはもうこの値を描画に使わない（sigOf が除外する）。API の形と
+		// この丸めはそのまま（他が読んでいる。消すと毎ポーリングで sig が変わる）。
 		now: new Date(Math.floor(Date.now() / 60000) * 60000).toISOString(),
 		// #40: which session's ctx drives auto-tick. Read-only on purpose: switching is
 		// `/kanban take` only, so the dashboard has no write path to race.
@@ -3470,6 +3472,8 @@ const DASHBOARD_HTML = `<!doctype html>
   /* #38-10/#38-11: DOING の経過（「N分前から」）と 2 時間超の ⏳。色は既存トークンのみ */
   .card .since{color:var(--muted);margin-right:4px;font-variant-numeric:tabular-nums}
   .card .stale{color:var(--muted);margin-right:4px}
+  /* #74: ⏳ は常に DOM に置き、2 時間未満は CSS で隠す（ticker が構造を変えないため）。 */
+  .card .stale.empty{display:none}
   /* #38-7: 見出しクリックで列ごと畳む（中身は描画したまま display だけ落とす） */
   .col h3{cursor:pointer}
   .col.collapsed .card,.col.collapsed .more,.col.collapsed .addbtn,.col.collapsed .addin{display:none}
@@ -3712,6 +3716,11 @@ const DASHBOARD_HTML = `<!doctype html>
     if (typeof v.g === "boolean") gOpen = v.g;
   })();
   var STALE_GUI_MS = 2 * 60 * 60 * 1000; // DOING over this long gets a ⏳
+  // #74: 相対時刻スパンの台帳。render() が書き、tick() が読む。
+  // nowT: ago() で描いたテキスト / nowS: 「N分前から」と ⏳
+  var nowBase = Date.now();
+  var nowT = [];
+  var nowS = [];
 ${KANBAN_MD_JS}
 
   // #48: "/" で検索欄へ、Esc でクリア。入力中は横取りしない。
@@ -4196,14 +4205,12 @@ ${KANBAN_MD_JS}
           var t = el("span", "t");
           // #38-10/#38-11: DOING の経過を本文の前に出す（2 時間超は ⏳ も）。movedAt の
           // 無いカードは何も出さない（推測で「0分」を書かない — KANBAN_HTML と同じ規則）。
+          // #74: 経過分と ⏳ は lead で作っておき、台帳に載せて tick() が文字だけ書き換える。
           var lead = "";
-          if (c.col === "doing" && typeof c.movedAt === "number") {
-            var ageMs = nowMs - c.movedAt;
-            var mins = Math.max(0, Math.floor(ageMs / 60000));
-            if (ageMs > STALE_GUI_MS) lead += '<span class="stale" title="' + mins + '分前から DOING">\u23f3</span>';
-            lead += '<span class="since">' + mins + '分前から</span>';
-          }
+          var movedAt = c.movedAt;
+          if (c.col === "doing" && typeof movedAt === "number") lead = sinceLead(movedAt);
           t.innerHTML = lead + md(c.text); // md escapes first, then expands the whitelisted subset
+          if (lead !== "" && typeof movedAt === "number") sinceLive(movedAt, t);
           // #38-5: 60 字超は 3 行で切ってクリック展開（列内の高さを揃える）。
           if (String(c.text || "").length > 60) {
             t.classList.add("clampable");
@@ -4328,6 +4335,8 @@ ${KANBAN_MD_JS}
   }
 
   function renderSessions(sessions, nowMs){
+    // #74: 相対時刻は nowBase（render が入れたもの）を使う。nowMs 引数は互換のため残す。
+    void nowMs;
     var box = document.getElementById("sessions");
     box.innerHTML = "";
     if (!sessions.length) {
@@ -4358,7 +4367,11 @@ ${KANBAN_MD_JS}
       hd.appendChild(t);
       hd.appendChild(el("span", "sess-cwd", s.cwd || ""));
       var meta = el("span", "sess-meta");
-      meta.textContent = countsText(s.counts, cards, search) + " ・ 更新 " + ago(s.updatedAt, nowMs);
+      meta.textContent = countsText(s.counts, cards, search) + " ・ 更新 ";
+      // #74: 相対時刻は専用の span。毎分の書き換えは tick() が textContent だけで行う。
+      var mm = el("span", null);
+      agoLive(s.updatedAt, mm);
+      meta.appendChild(mm);
       meta.title = full(s.updatedAt);
       hd.appendChild(meta);
       // ヘッダ内の操作（ops / ボタン / リンク / 入力）は畳まない。click と keydown で共有。
@@ -4495,7 +4508,7 @@ ${KANBAN_MD_JS}
       x.title = v.permanent ? "永久（自動削除なし）" : (v.expiresAt ? "期限: " + full(v.expiresAt) : "createdAt が無いので期限なし");
       row.appendChild(x);
       var t = el("span", "t");
-      t.textContent = ago(v.createdAt, nowMs);
+      agoLive(v.createdAt, t);
       t.title = full(v.createdAt);
       row.appendChild(t);
       // Serve has no per-entry process to stop: 停止 deregisters the URL, 削除 also
@@ -4529,10 +4542,12 @@ ${KANBAN_MD_JS}
     return gone ? "消失した登録を一覧から消す" : "配信を止める（/serve/<id>/ が 404 になる）";
   }
 
-  function render(d){
+  function render(d, nowMs){
     if (isEditing()) return; // #65: 編集中は描画しない（sig を進める判断は呼び出し元）
-    var nowMs = d.now ? new Date(d.now).getTime() : null;
-    if (isNaN(nowMs)) nowMs = null;
+    nowBase = nowMs;
+    // #74: 前回描いたスパンは DOM ごと捨てるので、台帳もここで捨てる（伸びない）。
+    nowT = [];
+    nowS = [];
     var activeSid = "";
     (d.sessions || []).forEach(function(s){ if (s.isActive && !activeSid) activeSid = s.id; });
     renderStats(d.stats);
@@ -4564,14 +4579,84 @@ ${KANBAN_MD_JS}
     clearTimeout(timer);
     timer = setTimeout(reload, nextDelay());
   }
-  function sigOf(d){ return JSON.stringify(d) + ":" + Math.floor(Date.now() / 60000); }
+  // #74: 分境界項は無い。データが変わらなければ sig も変わらない（相対時刻は
+  // ticker が textContent を書き換える。毎分のフル再描画はそれで用済み）。
+  // サーバの now は毎分変わる（#65 で分単位に丸め済み）ので、sig からは外す。
+  // これを戻すと 1 分ごとにフル再描画が復活する。
+  function sigOf(d){
+    var c = Object.assign({}, d);
+    delete c.now;
+    return JSON.stringify(c);
+  }
+  // #74: 相対時刻は render を回さずにここで書き換える。nowBase は「このスパンを
+  // 描いた瞬間の時刻」。tick() は nowBase と Date.now() の差が 1 分以上動いた時だけ
+  // textContent を差し替える：DOM は部分的に動くが、#sessions の中身は差し替わらない。
+  function agoLive(iso, node){
+    var r = { el: node, at: iso ? new Date(iso).getTime() : NaN, base: nowBase, text: ago(iso, nowBase) };
+    node.textContent = r.text;
+    nowT.push(r);
+  }
+  // tick はテキストノードの値だけ差し替える（textContent 代入はノードを作り直すので、
+  // 構造の変異として数えられてしまう。ここは文字の変異が正しい）。
+  function setLive(r, text){
+    if (text === r.text) return;
+    var n = r.el.firstChild;
+    if (n) n.nodeValue = text;
+    else r.el.textContent = text;
+    r.text = text;
+  }
+  // #74: 文字列で組み立てるのは、テストが .t の innerHTML で経過を検証しているため。
+  // tick() はここで作った .since の文字だけを書き換え、⏳ の出し入れはしない
+  // （データが次に変わった時に判定される。分粒度なので許容 — #74 の副作用）。
+  function sinceLead(movedAt){
+    var mins = Math.max(0, Math.floor((nowBase - movedAt) / 60000));
+    var lead = nowBase - movedAt > STALE_GUI_MS
+      ? '<span class="stale" title="' + mins + '\u5206\u524d\u304b\u3089 DOING">\u23f3</span>'
+      : "";
+    return lead + '<span class="since">' + mins + '\u5206\u524d\u304b\u3089</span>';
+  }
+  function sinceLive(movedAt, box){
+    var si = box.querySelector ? box.querySelector(".since") : null;
+    nowS.push({ el: si || box, at: movedAt, base: nowBase, text: si ? si.textContent : "",
+      mins: Math.max(0, Math.floor((nowBase - movedAt) / 60000)) });
+  }
+  function tick(at){
+    var now = at != null ? at : Date.now();
+    // 位相を揃える: 次に textContent を差し替えるのは描画から 60 秒後（分境界ではない）。
+    nowBase = now;
+    for (var i = 0; i < nowT.length; i++) {
+      var t = nowT[i];
+      if (now - t.base < 60000) continue;
+      setLive(t, isNaN(t.at) ? "\u2014" : ago(new Date(t.at).toISOString(), now));
+    }
+    for (var j = 0; j < nowS.length; j++) {
+      var r = nowS[j];
+      if (now - r.base < 60000) continue;
+      var mins = Math.max(r.mins, Math.floor((now - r.at) / 60000));
+      setLive(r, mins + "\u5206\u524d\u304b\u3089");
+    }
+  }
   // #48: 開閉・検索語を変えたら即描画。sig も更新するので、次のポーリングが
   // 「同じ sig」で描画をスキップしても画面と sig が食い違わない。
   function redraw(){
     if (!lastData) return;
     if (isEditing()) return; // #65: render() は何もしないので、sig だけ進めてはいけない
-    sig = sigOf(lastData) + uiSig();
-    render(lastData);
+    paint();
+  }
+  // #74: 描画の基準時刻はサーバの now（分丸め済み）。テストは固定の now を送って
+  // 相対時刻を検証するので、ここは d.now を優先する。sigOf は now を外しているので、
+  // この値を描画に使っても毎分のフル再描画は起きない。
+  function baseOf(d){
+    var t = d && d.now ? new Date(d.now).getTime() : NaN;
+    return isNaN(t) ? Date.now() : t;
+  }
+  // #74: sig を進めるのはここだけ。redraw()/reload() の両方が呼ぶ。
+  function paint(){
+    var d = lastData;
+    var nowMs = baseOf(d);
+    sig = sigOf(d) + uiSig();
+    render(d, nowMs);
+    tick(nowMs); // 描いた瞬間に揃える。次の ticker はちょうど +60 秒
   }
   function reload(){
     api(API).then(function(d){
@@ -4579,14 +4664,14 @@ ${KANBAN_MD_JS}
       lastData = d;
       setConn(true);
       fails = 0;
-      // re-render when data changes, or once a minute so relative times stay honest
+      // #74: データが変わっていなくても、時刻 ticker の位相はここで揃え直す
+      // （render はしない。DOM は触らない。分丸め済みの now ではなく実時刻で進める）。
       var s = sigOf(d) + uiSig();
-      if (s === sig) return;
+      if (s === sig) { tick(baseOf(d)); return; }
       // #65: 編集中で描画を見送ったら sig は進めない。次に編集が終わったポーリングで
       // 「変わっていない」と誤判定され、永久に再描画されなくなるため。
       if (isEditing()) return;
-      sig = s;
-      render(d);
+      paint();
     }).catch(function(){
       fails += 1;
       // keep lastData on screen; just flag the reconnect state
@@ -4604,6 +4689,9 @@ ${KANBAN_MD_JS}
     redraw();
   });
   reload();
+  // #74: 相対時刻の ticker は新しい setInterval ではなく既存のポーリングに乗る。
+  // reload() の「sig が変わらない」分岐が tick() を呼ぶので、通信も再描画も増やさず
+  // （通信は既存の 1 本のまま）、span の文字だけが分粒度で動く。
 })();
 </script>
 <script>
