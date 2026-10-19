@@ -686,7 +686,9 @@ function haltTag(l: LoopState): string {
 }
 
 const loopTags = new Map<string, string>();
-const loopRest = new Map<string, string>();
+// The COUNT per (session, board), never the rendered " 3/10": the cap is read at every
+// draw (see modeTags), so a cap change shows up in the footer without another settle.
+const loopCount = new Map<string, number>();
 
 const tagKey = (sessionId: string, scope: Scope): string => `${sessionId}|${scope}`;
 
@@ -699,7 +701,14 @@ function loopTagFor(sessionId: string, scope: Scope): string {
 function modeTags(f: ModesFile, sessionId: string, scope: Scope): string {
 	const m = modesFor(f, sessionId, scope);
 	const tags = `${m.doingLoop ? " loop" : ""}${m.autoPick ? " pick" : ""}`;
-	return tags === "" ? "" : tags + (loopRest.get(tagKey(sessionId, scope)) ?? "");
+	if (tags === "") return "";
+	const count = loopCount.get(tagKey(sessionId, scope));
+	return tags + (count === undefined ? "" : ` ${loopRestText(maxLoopsOf(m), count)}`);
+}
+
+/** The count this session has used, for the dashboard's 「残り N / 上限」 row. */
+function loopCountOf(sessionId: string): number {
+	return Math.max(loopCount.get(tagKey(sessionId, "session")) ?? 0, loopCount.get(tagKey(sessionId, "global")) ?? 0);
 }
 
 /** Redraw the last footer we drew (the listen race resolves long after session_start). */
@@ -2360,6 +2369,8 @@ type SessionRow = {
 	// Why this session's doing-loop is stopped; null = running. Process memory, so it is
 	// read from haltedBySid and not from any file (see the note at that map).
 	halted: { halted: "limit" | "stuck"; stuckId: number | null; stuckCount: number; cap: number } | null;
+	// The doing-loop count this session has used (process memory, same door as `halted`).
+	loops: number;
 	cards: Card[];
 };
 
@@ -2405,6 +2416,7 @@ async function sessionRows(): Promise<{ activeSessionId: string | null; sessions
 				counts: countCols(b),
 				modes: { session: modesFor(f, id, "session"), global: modesFor(f, id, "global") },
 				halted: haltedBySid.get(id) ?? null,
+				loops: loopCountOf(id),
 				cards: b.cards,
 			};
 		});
@@ -2425,6 +2437,7 @@ async function sessionRows(): Promise<{ activeSessionId: string | null; sessions
 				global: modesFor(f, activeSessionId, "global"),
 			},
 			halted: haltedBySid.get(activeSessionId) ?? null,
+			loops: loopCountOf(activeSessionId),
 			cards: [],
 		});
 	}
@@ -2507,6 +2520,9 @@ async function dashboardPayload(): Promise<unknown> {
 			// null = running. The loop state is process memory, which this module shares;
 			// the GUI's ON/OFF toggle only writes modes.json and cannot clear it.
 			halted: s.halted,
+			// #67: the doing-loop count this session has used. The cap rides on `modes`;
+			// the dashboard draws 「残り N / 上限」 from the two.
+			loops: loopCountOf(s.id),
 		})),
 		serve,
 	};
@@ -2737,6 +2753,13 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
 	if (req.method !== "GET") {
 		sendJson(res, 405, { ok: false, error: "method not allowed" });
 		req.resume();
+		return;
+	}
+
+	// ブラウザは毎ロード /favicon.ico を取りに来る。持っていないので 204（本文なし）。
+	if (url.pathname === "/favicon.ico") {
+		res.writeHead(204);
+		res.end();
 		return;
 	}
 
@@ -3406,6 +3429,17 @@ const DASHBOARD_HTML = `<!doctype html>
   button.sw.on{border-color:var(--ok);color:var(--ok)}
   button.sw[disabled]{opacity:.45;cursor:default}
   .ctl input[type=number]{width:56px;font:inherit;font-size:11px;background:var(--panel);color:var(--text);border:1px solid var(--border-strong);border-radius:4px;padding:1px 4px}
+  /* #67: 残り N / 上限 は同じ行のまま（幅を取るので折返し単位にする） */
+  .ctl .rest{font-variant-numeric:tabular-nums;white-space:nowrap}
+  /* #66: ラベルと入力欄は 1 つの nowrap 群（幅が足りなければ行ごと折り返す） */
+  .ctl .grp{display:inline-flex;align-items:center;gap:8px;flex-wrap:nowrap;white-space:nowrap}
+  /* #68: WCAG 2.5.8 の 24×24。見た目は padding で稼ぎ、文字は 10px のまま */
+  button.mini{min-width:24px;min-height:24px;padding:3px 6px}
+  @media (max-width:479px){
+    .ctl{gap:6px}
+    .ctl .grp{gap:5px}
+    .ctl input[type=number]{width:44px}
+  }
   .more{font-size:11px;color:var(--muted);padding:2px 4px}
   /* sessions */
   .sess{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:10px}
@@ -3693,12 +3727,21 @@ ${KANBAN_MD_JS}
     // a failed write is not a connection failure: the next poll shows the truth
     return api(path, params).then(function(){ reload(); }, function(){});
   }
+  // The button stays disabled for as long as its handler's promise is in flight, so a
+  // triple click cannot become three writes. Released on success and on failure.
   function btn(label, title, fn, disabled){
     var b = el("button", "mini", label);
     b.type = "button";
     if (title) b.title = title;
     b.disabled = !!disabled;
-    if (!disabled) b.addEventListener("click", fn);
+    if (disabled) return b;
+    b.addEventListener("click", function(){
+      if (b.disabled) return;
+      var r = fn();
+      if (!r || typeof r.then !== "function") return;
+      b.disabled = true;
+      r.then(function(){ b.disabled = false; }, function(){ b.disabled = false; });
+    });
     return b;
   }
   function boardCtx(scope, sid, active){ return { scope: scope, sid: sid || "", active: active !== false }; }
@@ -3757,6 +3800,20 @@ ${KANBAN_MD_JS}
     if (v <= 0) return 0;
     return v <= 1000 ? v : 10;
   }
+  // #67: how many doing-loops this session has used. Published by /api/dashboard
+  // (sessions[].loops) from the extension process; the cap is read from modes here.
+  function loopCountOf(sid){
+    if (!lastData || !sid) return 0;
+    var i, list = lastData.sessions || [];
+    for (i = 0; i < list.length; i++) if (list[i] && list[i].id === sid) return typeof list[i].loops === "number" ? list[i].loops : 0;
+    return 0;
+  }
+  // Dashboard wording: 残り N / M, and 残り N / 無制限 when the cap is 0 (uncapped) —
+  // the same N as the footer's (loopRestText: remaining under a cap, used without one).
+  function loopRestLine(cap, used){
+    if (cap > 0) return "残り " + Math.max(0, cap - used) + " / " + cap;
+    return "残り " + used + " / 無制限";
+  }
 
   // #58: why the doing-loop is stopped, and what actually clears it. The loop budget
   // lives in pi's extension process (survives the file), so the tool/command paths lift
@@ -3790,7 +3847,7 @@ ${KANBAN_MD_JS}
     sched.title = full(c.nextFireAt) || "発火予定なし";
     ops.appendChild(sched);
     function fire(at, label, title, off){
-      ops.appendChild(btn(label, title, function(){ act("/api/schedule", { id: c.id, at: at }, ctx); }, !ctx.active || off));
+      ops.appendChild(btn(label, title, function(){ return act("/api/schedule", { id: c.id, at: at }, ctx); }, !ctx.active || off));
     }
     fire("+5m", "+5m", "5分後に発火");
     fire("+1h", "+1h", "1時間後に発火");
@@ -3798,7 +3855,7 @@ ${KANBAN_MD_JS}
       var d = new Date();
       d.setDate(d.getDate() + 1);
       d.setHours(9, 0, 0, 0);
-      act("/api/schedule", { id: c.id, at: d.toISOString() }, ctx);
+      return act("/api/schedule", { id: c.id, at: d.toISOString() }, ctx);
     }, !ctx.active));
     fire("", "解除", "発火予定を消す", !c.nextFireAt);
     // #36: 任意の時刻は datetime-local 直入力（空で解除）。プリセットは残す。
@@ -3819,10 +3876,10 @@ ${KANBAN_MD_JS}
     // 数値が大きいほど先（server: priority desc, id asc）。0 は未設定なので表示しない。
     var pair = el("span", "pair");
     pair.appendChild(btn("▲", "優先度を上げる", function(){
-      if (prioOf(c) < PRIO_MAX) act("/api/priority", { id: c.id, n: prioOf(c) + 1 }, ctx);
+      if (prioOf(c) < PRIO_MAX) return act("/api/priority", { id: c.id, n: prioOf(c) + 1 }, ctx);
     }, !ctx.active || prioOf(c) >= PRIO_MAX));
     pair.appendChild(btn("▼", "優先度を下げる", function(){
-      if (prioOf(c) > PRIO_MIN) act("/api/priority", { id: c.id, n: prioOf(c) - 1 }, ctx);
+      if (prioOf(c) > PRIO_MIN) return act("/api/priority", { id: c.id, n: prioOf(c) - 1 }, ctx);
     }, !ctx.active || prioOf(c) <= PRIO_MIN));
     ops.appendChild(pair);
     // #45: 削除。読み取り専用は aria-disabled（ネイティブ disabled だとクリックが
@@ -3857,7 +3914,10 @@ ${KANBAN_MD_JS}
     }
     box.appendChild(sw("doingLoop", "ループ"));
     box.appendChild(sw("autoPick", "ピック"));
-    box.appendChild(el("span", null, "間隔"));
+    // 間隔・上限は「ラベル＋入力欄＋ボタン」を 1 つの nowrap 群にまとめる。
+    // 幅が足りないときは行ごと折り返すので、ラベルだけが泣き別れしない（#66）。
+    var ivg = el("span", "grp");
+    ivg.appendChild(el("span", null, "間隔"));
     var iv = el("input");
     iv.type = "number";
     iv.min = "1";
@@ -3865,15 +3925,20 @@ ${KANBAN_MD_JS}
     iv.disabled = !ctx.active;
     iv.title = "発火間隔（分）";
     iv.setAttribute("aria-label", "発火間隔（分）");
-    box.appendChild(iv);
-    box.appendChild(btn("分", "この間隔（分）で保存", function(){
+    ivg.appendChild(iv);
+    ivg.appendChild(btn("分", "この間隔（分）で保存", function(){
       var v = Number(iv.value);
-      if (isFinite(v) && v > 0) act("/api/interval", { min: Math.round(v) }, ctx);
+      if (isFinite(v) && v > 0) return act("/api/interval", { min: Math.round(v) }, ctx);
+      note("間隔は 1 以上の整数（分）: " + (iv.value === "" ? "(空)" : iv.value));
+      iv.value = String(intervalOf(m));
     }, !ctx.active));
+    box.appendChild(ivg);
     // #67: ループ上限（0 = 無制限）。間隔と同じ行・同じ act() 経路で保存する。
     // 保存済みの上限を出すときは intervalOf と同じ「無ければ既定」の読み方をする。
     var cap = maxLoopsOf(m);
-    box.appendChild(el("span", null, "上限"));
+    var mlg = el("span", "grp");
+    // 上限ラベルは右パネル（KANBAN_HTML）と同じ表記に揃える。0 = 無制限。
+    mlg.appendChild(el("span", null, cap > 0 ? "上限" : "上限（無制限）"));
     var ml = el("input");
     ml.type = "number";
     ml.min = "0";
@@ -3882,11 +3947,22 @@ ${KANBAN_MD_JS}
     ml.disabled = !ctx.active;
     ml.title = "ループ上限（回、0 = 無制限）";
     ml.setAttribute("aria-label", "ループ上限（回、0 で無制限）");
-    box.appendChild(ml);
-    box.appendChild(btn("回", "この上限（回、0 = 無制限）で保存", function(){
+    mlg.appendChild(ml);
+    mlg.appendChild(btn("回", "この上限（回、0 = 無制限）で保存", function(){
       var v = Number(ml.value);
-      if (isFinite(v) && v >= 0 && v <= 1000 && v % 1 === 0) act("/api/maxloops", { n: v }, ctx);
+      // 範囲外は黙って捨てずに、サーバが返すのと同じ範囲を文言で知らせて値を戻す。
+      // 空欄は Number("") = 0 = 無制限になってしまうので、それも弾く。
+      if (!(ml.value !== "" && isFinite(v) && v >= 0 && v <= 1000 && v % 1 === 0)) {
+        note("上限は 0〜1000 の整数（0 = 無制限）: " + (ml.value === "" ? "(空)" : ml.value));
+        ml.value = String(cap);
+        return;
+      }
+      return act("/api/maxloops", { n: v }, ctx);
     }, !ctx.active));
+    box.appendChild(mlg);
+    // #67: このボードで使った回数と残り。正本は拡張プロセス（loop.count）で、
+    // ダッシュボードは /api/dashboard の loops をそのまま出す（新しい API は要らない）。
+    box.appendChild(el("span", "rest", loopRestLine(cap, loopCountOf(ctx.sid))));
     // DOING 全停止 reuses the existing blocked field, one card at a time (no new state).
     var doing = cards.filter(function(c){
       return c.col === "doing" && !(typeof c.blocked === "string" && c.blocked.trim().length > 0);
@@ -4524,7 +4600,7 @@ export const KANBAN_HTML = `<!doctype html>
   .card img,.card video{flex-basis:100%;max-width:100%;max-height:64px;border-radius:4px;display:block;margin-top:4px}
   .card .badimg{flex-basis:100%;font-size:11px;color:var(--muted);margin-top:4px}
   .col.over{outline:2px dashed var(--accent);outline-offset:-2px;background:var(--accent-soft)}
-  button{background:transparent;border:1px solid var(--border-strong);color:var(--text);border-radius:4px;cursor:pointer;font-size:12px;line-height:1;padding:2px 5px}
+  button{background:transparent;border:1px solid var(--border-strong);color:var(--text);border-radius:4px;cursor:pointer;font-size:12px;line-height:1;padding:2px 5px;min-width:24px;min-height:24px}
   button:hover{border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}
   .add{flex:none;width:100%;margin-top:4px;background:transparent;border:1px dashed var(--border-strong);color:var(--text);border-radius:6px;padding:6px 8px;font-size:12px}
   .add:focus{border-color:var(--accent)}
@@ -4546,7 +4622,13 @@ export const KANBAN_HTML = `<!doctype html>
   .halt{font-size:11px;line-height:1.5;color:var(--warn-fg,var(--accent));border:1px solid currentColor;border-radius:5px;padding:4px 8px;margin:0 0 6px}
   .modes{display:flex;gap:6px;align-items:center;margin:0 0 6px;flex-wrap:wrap}
   .modes .mt{font-size:11px;color:var(--muted)}
-  .modes .iv,.modes .st,.card .pr{width:3.2em;background:var(--card);border:1px solid var(--border-strong);color:var(--text);border-radius:4px;font-size:11px;padding:2px 4px}
+  .modes .iv,.modes .st,.modes .ml,.card .pr{width:3.2em;background:var(--card);border:1px solid var(--border-strong);color:var(--text);border-radius:4px;font-size:11px;padding:2px 4px}
+  /* #66: 390px でもラベルと入力欄を 1 行に保つ（泣き別れさせない） */
+  @media (max-width:479px){
+    .modes{gap:4px}
+    .modes .mt{font-size:10px;white-space:nowrap}
+    .modes .iv,.modes .st,.modes .ml{width:2.6em;padding:2px 2px}
+  }
   .card .pr{text-align:center}
   .card .pr.hp{color:var(--accent);border-color:var(--accent);background:var(--accent-soft)}
   .card .pr.lp{color:var(--muted)}
@@ -5336,13 +5418,11 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 		// One settle drives one board: leaving a tag on the other line would be a lie.
 		for (const s of ["session", "global"] as const) {
 			setLoopTag(sid, s, s === scope ? tag : "");
-			loopRest.delete(tagKey(sid, s));
+			loopCount.delete(tagKey(sid, s));
 		}
-		if (loop.count > 0) {
-			// The cap of the board this loop is driving: the footer must show the same number.
-			const cap = maxLoopsOf(modesFor(readModesFile({ repair: false }), sid, scope));
-			loopRest.set(tagKey(sid, scope), ` ${loopRestText(cap, loop.count)}`);
-		}
+		// Only the count is published; modeTags turns it into "3/10" against the cap it
+		// reads at draw time, so the footer can never show a cap the file no longer has.
+		if (loop.count > 0) loopCount.set(tagKey(sid, scope), loop.count);
 		// Same value the footer shows, published for the HTTP dashboard (see haltedBySid).
 		if (loop.halted === null) haltedBySid.delete(sid);
 		else {
