@@ -345,8 +345,12 @@ for (const route of WRITE_ROUTES) {
 		headers: { Origin: "http://evil.example", "Sec-Fetch-Site": "same-site", Host: `127.0.0.1:${PORT}`, Cookie: tokenHeader() },
 	});
 	const name = route.split("?")[0];
-	await checkAsync(`GET /api/${name} は cross-origin で 403`, async () =>
-		assert.equal(res.status, 403, `status=${res.status} body=${res.body}`));
+	// #80-⑥: GET の書き込みは Sec-Fetch-Site が same-origin でない時点で 405（Origin ゲートの
+	// 手前）。表の主眼は「200 で攻撃が通らない」なので、止める層が 403 から 405 に変わった。
+	await checkAsync(`GET /api/${name} は cross-origin で 403/405（200 にならない）`, async () => {
+		assert.equal(res.status === 403 || res.status === 405, true, `status=${res.status} body=${res.body}`);
+		assert.equal(JSON.parse(res.body).ok, false);
+	});
 }
 for (const path of ["/api/upload?scope=session&sid=s1&col=todo&ext=png", "/api/selftest"]) {
 	const res = await send("POST", path, {
@@ -367,8 +371,10 @@ for (const path of ["/api/upload?scope=session&sid=s1&col=todo&ext=png", "/api/s
 	const res = await send("GET", `/api/add?text=nullorigin&col=todo&scope=session&sid=s1`, {
 		headers: { Origin: "null", "Sec-Fetch-Site": "same-site", Cookie: tokenHeader() },
 	});
-	await checkAsync("Origin: null の書き込みは 403", async () =>
-		assert.equal(res.status, 403, `status=${res.status} body=${res.body}`));
+	// #80-⑥: same-site の GET 書き込みは 405 が先。どちらにせよ 200 にはならない。
+	await checkAsync("Origin: null の書き込みは 405/403", async () => {
+		assert.equal(res.status === 403 || res.status === 405, true, `status=${res.status} body=${res.body}`);
+	});
 }
 {
 	// #83b: the "header-less GET is 200" line is gone. It used to protect the agent path,

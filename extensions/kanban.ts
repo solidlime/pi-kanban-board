@@ -1496,6 +1496,32 @@ function isWritePath(pathname: string, method: string): boolean {
 	}
 }
 
+/**
+ * #80-⑥: GET is not a safe verb on the write surface. Eleven routes take their arguments
+ * from the query, so anything that merely *follows* a URL — an unfurl bot, a URL scanner, a
+ * proxy prefetch, a link a logged-in user clicks — mutates the board. The token gate does
+ * not cover it: the browser sends kb_auth along with a clicked link, and a shared `?token=`
+ * link carries the secret in the URL itself.
+ *
+ * Sec-Fetch-Site is what tells those callers apart, and it is a forbidden header name — a
+ * page can neither set nor omit it. Present and not `same-origin` means the fetch was not
+ * this page's own action (a pasted URL/bookmark is `none`, a card in a chat app is
+ * `cross-site`, `same-site` is a sibling origin), so a write GET is refused. `same-origin`
+ * stays a 200: it is the dashboard's own click, and breaking it takes the whole GUI (#38).
+ *
+ * 暫定 / PROVISIONAL: no Sec-Fetch-Site = let through untouched. curl, an older browser, a
+ * sibling pi's probe and every script caller send none, and they are outside the
+ * prefetch/CSRF threat model. Tighten this — require the header on the write surface — once
+ * Sec-Fetch-* is universal and those callers present the token instead.
+ */
+function methodNotAllowedOnGet(req: IncomingMessage, pathname: string): boolean {
+	if (req.method !== "GET") return false; // POST keeps its own dispatch (405 or the POST routes)
+	const site = req.headers["sec-fetch-site"];
+	if (typeof site !== "string") return false; // 暫定: header-less caller = pre-Sec-Fetch-* client
+	if (site.trim().toLowerCase() === "same-origin") return false; // the dashboard itself
+	return isWritePath(pathname, "GET");
+}
+
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
 	res.writeHead(status, { ...CORS_HEADERS, "Content-Type": "application/json; charset=utf-8" });
 	res.end(JSON.stringify(body));
@@ -3130,6 +3156,18 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
 	if (gated && req.method !== "OPTIONS" && url.pathname !== "/favicon.ico" && !isAuthorized(req, url.searchParams)) {
 		// The 401 body is a constant: it must never echo the token the caller tried.
 		sendJson(res, 401, { ok: false, error: "unauthorized" });
+		req.resume();
+		return;
+	}
+
+	// #80-⑥: a write GET from a caller that is not this page is a 405, before the #76 Origin
+	// gate below (which lets `none`/`same-site` through — fine for POST, not for a verb that
+	// a prefetcher can issue). Auth comes first on purpose: an anonymous caller stays a 401
+	// and learns nothing about which routes are writes.
+	if (methodNotAllowedOnGet(req, url.pathname)) {
+		// No Allow header: GET is allowed on this resource for same-origin, and the refusal is
+		// about who is calling, not which methods exist here.
+		sendJson(res, 405, { ok: false, error: "method not allowed" });
 		req.resume();
 		return;
 	}
