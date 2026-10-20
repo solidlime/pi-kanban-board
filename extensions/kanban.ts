@@ -292,6 +292,24 @@ function readRaw(path: string): string {
 	}
 }
 
+/**
+ * Change signature of one file, read as a stat: 0.039ms against 0.53ms for reading the
+ * bytes back, and poll asks for three of them every 1.5s.
+ * mtimeNs alone is not enough: this fs has a coarse mtime tick (two writes inside one tick
+ * reported the SAME mtimeNs), so size and the inode carry the rest. The inode is what
+ * catches a same-size rewrite, because every writer here goes through tmp+rename.
+ * shortcut: an in-place write of an unchanged size inside one mtime tick is invisible;
+ * upgrade to a content hash if a writer ever stops using tmp+rename.
+ */
+export function fileSig(path: string): string {
+	try {
+		const st = statSync(path, { bigint: true });
+		return `${st.mtimeNs}:${st.size}:${st.ino}`;
+	} catch {
+		return ""; // absent is a stable signature too: "" every tick until it appears
+	}
+}
+
 /** Pure: parse one board file. */
 function readBoard(path: string): Board {
 	try {
@@ -329,7 +347,11 @@ function readModesFile(opts: { repair?: boolean } = {}): ModesFile {
 function writeModesFile(f: ModesFile): void {
 	try {
 		mkdirSync(KANBAN_DIR, { recursive: true });
-		writeFileSync(MODES_JSON, JSON.stringify(f, null, 2));
+		// tmp+rename, same as writeBoard: diskSnapshot watches the inode, and an in-place
+		// write keeps it, which would hide two toggles inside one mtime tick.
+		const tmp = `${MODES_JSON}.${process.pid}.tmp`;
+		writeFileSync(tmp, JSON.stringify(f, null, 2));
+		renameSync(tmp, MODES_JSON);
 	} catch (err) {
 		const e = err as NodeJS.ErrnoException;
 		process.stderr.write(`kanban: modes write failed (${MODES_JSON}): ${e.code ?? "error"}: ${e.message}\n`);
@@ -3542,14 +3564,21 @@ function ensureServer(): void {
 	apiStarting = true;
 	if (server === null && serverStartedAt === 0) {
 		// Startup work belongs to a real attempt, not to a retry that may never run.
+		// #83b: the token is the one piece of startup work a request needs - without it
+		// the first request after bind answers 401. A token file that cannot be written
+		// still leaves a process-local token, so the board stays reachable for this run.
+		ensureToken();
+		// #84: listen before the housekeeping. listenLoop issues s.listen() before its
+		// first await, so the bind is in flight while the sweeps below run. The other
+		// order made the first request of a cold start wait for all of them.
+		void startListening();
+		// Startup-only: the guards above keep this block to a real first attempt.
 		migrateLegacyBoard();
 		sweepSessions();
 		sweepServe(); // 起動時に一度。以降は poll が 1 時間 throttle で回す。
 		lastServeSweep = Date.now();
-		// #83b: once, at startup. A token file that cannot be written still leaves a
-		// process-local token, so the board stays reachable for this run.
-		ensureToken();
 		writeBoardHtml();
+		return;
 	}
 	void startListening();
 }
@@ -5566,9 +5595,9 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 	// default sid over to that session. The default is now set once, where ownCtx
 	// is adopted.
 
-	/** Raw bytes of every board layer plus modes.json; any disk change (ours or a sibling's) flips it. */
+	/** Stat signature of every board layer plus modes.json; any disk change (ours or a sibling's) flips it. */
 	const diskSnapshot = (sessionId: string): string =>
-		`${readRaw(boardPath("session", sessionId))}\u0000${readRaw(GLOBAL_JSON)}\u0000${readRaw(MODES_JSON)}`;
+		`${fileSig(boardPath("session", sessionId))}\u0000${fileSig(GLOBAL_JSON)}\u0000${fileSig(MODES_JSON)}`;
 
 	/** Stop the timer and release the owned ctx (session end, or a ctx that cannot answer). */
 	const stopPoll = (): void => {
