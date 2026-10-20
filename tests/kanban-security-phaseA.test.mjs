@@ -4,7 +4,7 @@
 // 固定するもの: (1) /serve の能動型 MIME 降格 + attachment + nosniff / (2) 書き込み系の
 // cross-origin 門前払い（ヘッダ無しは通す）/ (3) /api/kanban の sid 規則 / (4) 死んだルート。
 import assert from "node:assert/strict";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer as netServer } from "node:net";
 import http from "node:http";
 import { createRequire } from "node:module";
@@ -156,6 +156,60 @@ for (const name of ["x.html", "x.svg", "x.js"]) {
 	]) {
 		await checkAsync(`/serve ${label} 応答にも nosniff`, async () =>
 			assert.equal(res.headers["x-content-type-options"], "nosniff"));
+	}
+}
+
+// --- 2b. opt-in: serve-allow.json の allowExec: true で降格を解除できる -------------
+// ローカル運用で HTML をブラウザに開きたい時の逃げ道。既定は降格のまま（上のテストが
+// それを固定している）なので、ここでは明示的に許可した時だけ緩むことを見る。
+{
+	const ALLOW_JSON = `${HOME_DIR}/.pi/kanban/serve-allow.json`;
+	const previous = existsSync(ALLOW_JSON) ? readFileSync(ALLOW_JSON, "utf8") : null;
+	try {
+		writeFileSync(ALLOW_JSON, JSON.stringify({ allowExec: true }));
+		const html = await send("GET", `/serve/${id}/x.html`);
+		await checkAsync("allowExec: true なら x.html は text/html で返る", async () => {
+			assert.equal(html.status, 200, `status=${html.status} body=${html.body}`);
+			assert.equal((html.headers["content-type"] ?? "").split(";")[0], "text/html");
+		});
+		await checkAsync("allowExec: true なら x.html に attachment は付かない", async () =>
+			assert.equal(html.headers["content-disposition"], undefined));
+		const js = await send("GET", `/serve/${id}/x.js`);
+		await checkAsync("allowExec: true なら x.js は text/javascript で返る", async () => {
+			assert.equal(js.status, 200, `status=${js.status} body=${js.body}`);
+			assert.equal((js.headers["content-type"] ?? "").split(";")[0], "text/javascript");
+		});
+		const svg = await send("GET", `/serve/${id}/x.svg`);
+		await checkAsync("allowExec: true なら x.svg は image/svg+xml で返る", async () => {
+			assert.equal(svg.status, 200, `status=${svg.status} body=${svg.body}`);
+			assert.equal((svg.headers["content-type"] ?? "").split(";")[0], "image/svg+xml");
+		});
+		await checkAsync("allowExec: true なら x.svg に attachment は付かない", async () =>
+			assert.equal(svg.headers["content-disposition"], undefined));
+
+		// 降格継続側。`=== true` を `!== false` や truthy 判定に書き換えてもここが緑のまま
+		// にならないよう、「true 以外は全部降格」を値の種類ごとに固定する。文字列 "true" と
+		// 数値 1 は JSON.parse の後では真値なので、緩めた瞬間に真っ先に落ちる場所。
+		for (const [label, payload] of [
+			["allowExec: false", JSON.stringify({ allowExec: false })],
+			['allowExec: "true" (文字列)', JSON.stringify({ allowExec: "true" })],
+			["allowExec: 1 (数値)", JSON.stringify({ allowExec: 1 })],
+			["パース失敗", "{ allowExec: "],
+		]) {
+			writeFileSync(ALLOW_JSON, payload);
+			const res = await send("GET", `/serve/${id}/x.html`);
+			await checkAsync(`${label} なら x.html は text/plain のまま`, async () => {
+				assert.equal(res.status, 200, `status=${res.status} body=${res.body}`);
+				assert.equal((res.headers["content-type"] ?? "").split(";")[0], "text/plain");
+			});
+			await checkAsync(`${label} なら x.html に attachment が付く`, async () =>
+				assert.equal(res.headers["content-disposition"], "attachment"));
+		}
+	} finally {
+		// 元の状態へ戻す。他のテストが同じ HOME を共有するので、残留させると降格の
+		// 検証が後から「解除済み」を見て通ってしまう。
+		if (previous === null) rmSync(ALLOW_JSON, { force: true });
+		else writeFileSync(ALLOW_JSON, previous);
 	}
 }
 

@@ -73,6 +73,20 @@ Served entries expire after 7 days by default. Mark one `permanent` to keep it. 
 
 The `serve` tool also takes an optional `title`, which the dashboard shows above the URL. It is free-form and may be omitted — an entry without one renders as URL only.
 
+`~/.pi/kanban/serve-allow.json` (all keys optional) controls what `/serve` hands out and the base URL it advertises:
+
+```json
+{
+  "roots": ["/home/me/workspace"],
+  "baseUrl": "http://nas:8789",
+  "allowExec": true
+}
+```
+
+`roots` replaces the default `~/workspace` allowlist wholesale. `baseUrl` overrides the learned host and port in printed links.
+
+`allowExec` cancels the active-MIME downgrade (#67). By default `/serve` answers `text/html`, `image/svg+xml`, `text/javascript`, XML and WASM as `text/plain` plus `Content-Disposition: attachment`. `/serve` is behind the token gate, but a page from a served directory runs in this origin, so its script reaches `/api/*` with the `kb_auth` cookie the browser sends on its own — token-level authority without ever learning the token. That is why the downgrade is the default. Setting `allowExec: true` skips both the relabelling and the attachment, so an HTML page opens instead of downloading — and the script inside it runs with the board's own privileges. That is a deliberate choice for a trusted network; it stays off unless you write it.
+
 ## Where state lives
 
 ```

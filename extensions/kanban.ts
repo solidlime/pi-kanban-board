@@ -1699,6 +1699,23 @@ function serveAllowRoots(): string[] {
 	return defaults.map((r) => realOrSelf(resolve(r)));
 }
 
+/**
+ * #67 opt-in: `allowExec: true` in serve-allow.json cancels the active-MIME downgrade, so
+ * a local HTML page opens in the browser instead of downloading. /serve is behind the token
+ * gate, but a page from a served dir *runs in this origin*, so its script reaches /api/*
+ * with the `kb_auth` cookie the browser sends on its own — token-level authority without
+ * ever learning the token. That is why the downgrade is the default and lifting it has to
+ * be a deliberate act: missing, unparsable or non-boolean all stay downgraded.
+ */
+function serveAllowExec(): boolean {
+	try {
+		return (JSON.parse(readRaw(SERVE_ALLOW_JSON)) as { allowExec?: unknown }).allowExec === true;
+	} catch {
+		// unreadable override -> downgraded (the safe side)
+		return false;
+	}
+}
+
 /** Lexical containment: `abs` is `root` itself or a descendant. */
 function isUnder(abs: string, roots: string[]): boolean {
 	return roots.some((r) => {
@@ -2207,10 +2224,16 @@ function serveExt(name: string): string {
 }
 
 /**
- * #67: MIMEs a browser would *execute* in our origin. /serve is unauthenticated and
- * anyone on the LAN can drop a file into a served dir, so these are downgraded to
- * text/plain + attachment (see serveFileOpts). Images, audio, video, PDF and zip stay
- * as they are: the dashboard renders them, and none of them run script in our origin.
+ * #67: MIMEs a browser would *execute* in our origin. /serve sits behind the token gate, but
+ * a page served from these dirs runs in this origin: its script can call /api/* with the
+ * `kb_auth` cookie the browser sends automatically, i.e. with the token's own authority and
+ * without knowing it. So these are downgraded to text/plain + attachment (see
+ * serveFileOpts). Images, audio, video, PDF and zip stay as they are: the dashboard renders
+ * them, and none of them run script in our origin.
+ * serve-allow.json `allowExec: true` opts out of the downgrade (see serveAllowExec).
+ * Entries SERVE_MIME never returns (application/xhtml+xml, application/javascript,
+ * application/x-javascript, application/ecmascript, text/ecmascript, text/xml) are cover for
+ * a future MIME addition, not a statement about today's table — kept on purpose.
  */
 const SERVE_ACTIVE_MIME = new Set([
 	"text/html",
@@ -2226,12 +2249,14 @@ const SERVE_ACTIVE_MIME = new Set([
 	"application/wasm",
 ]);
 
-/** B3: text/* needs an explicit charset or the browser guesses (mojibake). */
-function serveMimeOf(name: string): string {
+/**
+ * B3: text/* needs an explicit charset or the browser guesses (mojibake).
+ * #67: `downgrade` is computed once by serveFileOpts and drives BOTH the relabel and the
+ * attachment there — the two cannot drift apart if only one place decides.
+ */
+function serveMimeOf(name: string, downgrade: boolean): string {
 	const type = SERVE_MIME[serveExt(name)] ?? "application/octet-stream";
-	// #67: an executable type is not merely relabelled here; serveFileOpts also attaches
-	// Content-Disposition: attachment, so the browser downloads instead of rendering.
-	if (SERVE_ACTIVE_MIME.has(type)) return "text/plain; charset=utf-8";
+	if (downgrade) return "text/plain; charset=utf-8";
 	return type.startsWith("text/") ? `${type}; charset=utf-8` : type;
 }
 
@@ -2587,14 +2612,16 @@ function handleServe(req: IncomingMessage, res: ServerResponse, url: URL): void 
 /** /serve's MIME + B4 cache rules, kept in one place for both call sites. */
 function serveFileOpts(abs: string, st: Stats): FileServeOpts {
 	const raw = SERVE_MIME[serveExt(abs)] ?? "application/octet-stream";
+	// #67: the one decision. Only an *active* type is downgraded, and only while nobody has
+	// written `allowExec: true`; the downgrade alone is not enough anyway (text/plain is
+	// sniffable back into HTML), so attachment rides on the same boolean — a plain .txt keeps
+	// its inline behaviour, and a lifted downgrade leaves nothing to attach.
+	const downgrade = !serveAllowExec() && SERVE_ACTIVE_MIME.has(raw);
 	return {
-		contentType: serveMimeOf(abs),
+		contentType: serveMimeOf(abs, downgrade),
 		cacheControl: serveCacheOf(abs),
 		lastModified: new Date(st.mtimeMs).toUTCString(),
-		// #67: only a *downgraded* type is attached — a plain .txt stays inline. The
-		// downgrade alone is not enough anyway (text/plain is sniffable back into HTML);
-		// attachment keeps the dashboard's <a target=_blank> a download, not a page.
-		download: SERVE_ACTIVE_MIME.has(raw),
+		download: downgrade,
 	};
 }
 
