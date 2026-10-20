@@ -9,7 +9,7 @@ import http from "node:http";
 import { createRequire } from "node:module";
 import { authFetch, tokenHeader } from "./helpers/token.mjs";
 
-// #83b: HTTP routes need the server token now; tf = fetch + the kb_token cookie.
+// #83b: HTTP routes need the server token now; tf = fetch + the kb_auth cookie.
 const tf = (input, init) => authFetch(input, init);
 
 const HOME_DIR = "/tmp/kb-serve-allow-home";

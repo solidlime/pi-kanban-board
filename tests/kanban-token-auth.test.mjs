@@ -70,7 +70,7 @@ ${
 	keepAlive
 		? `for (let i = 0; i < 400; i++) {
   try {
-    const r = await fetch("http://127.0.0.1:" + port + "/api/kanban", { headers: { Cookie: "kb_token=" + readTokenFromDisk() } });
+    const r = await fetch("http://127.0.0.1:" + port + "/api/kanban", { headers: { Cookie: "kb_auth=" + readTokenFromDisk() } });
     if (r.ok) break;
   } catch {}
   await new Promise((r) => setTimeout(r, 25));
@@ -152,9 +152,12 @@ await check("1b. server.log にトークンが書かれていない", () => {
 	assert.ok(!log.includes(A.token), "トークンがログに漏れている");
 });
 await check("1c. 起動が2回目の ensureToken でも同じトークン（再生成しない）", async () => {
-	const again = await fetch(`${A.base}/api/dashboard`, { headers: { Cookie: `kb_token=${A.token}` } });
+	const again = await fetch(`${A.base}/api/dashboard`, { headers: { Cookie: `kb_auth=${A.token}` } });
 	assert.equal(again.status, 200);
 	assert.equal(readFileSync(tokenPath(A.home), "utf8").trim(), A.token);
+});
+await check("1d. ~/.pi/kanban は 0700（#85: ディレクトリごと閉じる）", () => {
+	assert.equal(mode(`${A.home}/.pi/kanban`), 0o700, `mode=${mode(`${A.home}/.pi/kanban`).toString(8)}`);
 });
 
 // --- 2/3. GET /?token= --------------------------------------------------------
@@ -163,10 +166,12 @@ await check("2. GET /?token=<正> は 303 + Set-Cookie + Location: /", async () 
 	assert.equal(r.status, 303, `status=${r.status}`);
 	assert.equal(r.headers.get("location"), "/", "クエリ無しの / へ飛ばすこと");
 	const cookie = r.headers.get("set-cookie") ?? "";
-	assert.match(cookie, new RegExp(`kb_token=${A.token}`));
+	assert.match(cookie, new RegExp(`kb_auth=${A.token}`));
 	assert.match(cookie, /HttpOnly/i);
 	assert.match(cookie, /SameSite=Lax/i);
 	assert.match(cookie, /Path=\//);
+	assert.match(cookie, /Max-Age=2592000/, "#85: 30日");
+	assert.ok(!/Secure/i.test(cookie), "http で使うので Secure は付けない");
 	assert.equal(await r.text(), "", "本文は空");
 });
 await check("3. GET /?token=<誤> は 401", async () => {
@@ -185,16 +190,16 @@ await check("5. GET /api/dashboard?token=<正> → 200", async () => {
 	const r = await fetch(`${A.base}/api/dashboard?token=${A.token}`);
 	assert.equal(r.status, 200, `status=${r.status}`);
 });
-await check("6. Cookie: kb_token=<正> → 200", async () => {
-	const r = await dash({ Cookie: `kb_token=${A.token}` });
+await check("6. Cookie: kb_auth=<正> → 200", async () => {
+	const r = await dash({ Cookie: `kb_auth=${A.token}` });
 	assert.equal(r.status, 200, `status=${r.status}`);
 });
-await check("7. Cookie: kb_token=<誤> → 401", async () => {
-	const r = await dash({ Cookie: `kb_token=${"1".repeat(64)}` });
+await check("7. Cookie: kb_auth=<誤> → 401", async () => {
+	const r = await dash({ Cookie: `kb_auth=${"1".repeat(64)}` });
 	assert.equal(r.status, 401, `status=${r.status}`);
 });
 await check("7b. 長さの違うトークンも 401（timingSafeEqual の早期 return 側）", async () => {
-	const r = await dash({ Cookie: `kb_token=${A.token.slice(0, 32)}` });
+	const r = await dash({ Cookie: `kb_auth=${A.token.slice(0, 32)}` });
 	assert.equal(r.status, 401, `status=${r.status}`);
 });
 await check("7c. 別名の Cookie は無視される", async () => {
@@ -212,20 +217,21 @@ await check("8. 401 の本文にトークン値が含まれない", async () => 
 	];
 	for (const b of bodies) assert.ok(!b.includes(A.token), `本文にトークン: ${b}`);
 });
-await check("9. 案内ページ（Cookie 無しの GET /）は HTML でトークン値を含まない", async () => {
+await check("9. Cookie 無しの GET / も 200 でダッシュボードを配る（#85: 入口だから）", async () => {
 	const r = await fetch(`${A.base}/`, { redirect: "manual" });
-	// 案内ページは 200。401 にするとブラウザが Basic 認証ダイアログを出す。
 	assert.equal(r.status, 200, `status=${r.status}`);
 	assert.match(r.headers.get("content-type") ?? "", /text\/html/);
-	assert.equal(r.headers.get("set-cookie"), null, "案内ページは Cookie を配らない");
+	assert.equal(r.headers.get("set-cookie"), null, "Cookie 無しの / は Cookie を配らない");
 	const body = await r.text();
-	assert.match(body, /トークン/);
+	// ログイン導線はページ内の JS(authFail) が出す。生の値はどこにも無い。
+	assert.match(body, /id="banner"/);
+	assert.match(body, /function authFail\(\)/);
 	assert.match(body, /\/kanban url/);
-	assert.ok(!body.includes(A.token), "案内ページにトークンが埋まっている");
+	assert.ok(!body.includes(A.token), "ページにトークンが埋まっている");
 });
 
 // --- protected surface --------------------------------------------------------
-await check("10. 無認証で届く端点は無い（/api/*, /serve/*, /）", async () => {
+await check("10. 無認証で届く端点は無い（/api/*, /serve/*）", async () => {
 	const paths = [
 		"/api/kanban",
 		"/api/sessions",
@@ -246,11 +252,11 @@ await check("10. 無認証で届く端点は無い（/api/*, /serve/*, /）", as
 });
 await check("10b. 認証が通れば従来どおり（Origin ゲートは内側に残っている）", async () => {
 	const r = await fetch(`${A.base}/api/add?text=auth_ok&scope=global`, {
-		headers: { Cookie: `kb_token=${A.token}` },
+		headers: { Cookie: `kb_auth=${A.token}` },
 	});
 	assert.equal(r.status, 200, `status=${r.status}`);
 	const evil = await fetch(`${A.base}/api/add?text=evil&scope=global`, {
-		headers: { Cookie: `kb_token=${A.token}`, Origin: "http://evil.example" },
+		headers: { Cookie: `kb_auth=${A.token}`, Origin: "http://evil.example" },
 	});
 	assert.equal(evil.status, 403, `cross-origin -> ${evil.status}`);
 });
@@ -264,7 +270,7 @@ await check("10b. 認証が通れば従来どおり（Origin ゲートは内側�
 	});
 	await check("11b. 中身は書き換えない（既存トークンを尊重する）", () => {
 		assert.equal(B.token, old);
-		const r = fetch(`${B.base}/api/dashboard`, { headers: { Cookie: `kb_token=${old}` } });
+		const r = fetch(`${B.base}/api/dashboard`, { headers: { Cookie: `kb_auth=${old}` } });
 		return r.then((x) => assert.equal(x.status, 200));
 	});
 	await B.srv.stop();
@@ -285,11 +291,11 @@ await check("10b. 認証が通れば従来どおり（Origin ゲートは内側�
 	});
 	await check("12b. 古いトークンは 401、新しいトークンは 200", async () => {
 		const stale = await fetch(`http://127.0.0.1:${C.port}/api/dashboard`, {
-			headers: { Cookie: `kb_token=${oldToken}` },
+			headers: { Cookie: `kb_auth=${oldToken}` },
 		});
 		assert.equal(stale.status, 401, `stale -> ${stale.status}`);
 		const fresh = await fetch(`http://127.0.0.1:${C.port}/api/dashboard`, {
-			headers: { Cookie: `kb_token=${newToken}` },
+			headers: { Cookie: `kb_auth=${newToken}` },
 		});
 		assert.equal(fresh.status, 200, `fresh -> ${fresh.status}`);
 	});

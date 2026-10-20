@@ -95,9 +95,9 @@ The autonomous loop decides once every 1.5s whether to wake the agent. Set `KANB
 
 ## Security notes
 
-The HTTP server binds `0.0.0.0`, so every route (`/`, `/api/*`, `/serve/*`) requires a token: 64 hex chars in `~/.pi/kanban/token`, generated on first start with mode `0600`. Mutating endpoints are `GET`-reachable so the board works from a plain browser tab, so the token — not the verb — is what guards them.
+The HTTP server binds `0.0.0.0`, so every data route (`/api/*`, `/serve/*`) requires a token: 64 hex chars in `~/.pi/kanban/token`, generated on first start with mode `0600` in a `0700` dir. Mutating endpoints are `GET`-reachable so the board works from a plain browser tab, so the token — not the verb — is what guards them.
 
-Get the URL with `/kanban url` (or the `kanban` tool's `url` action) and open it once: `GET /?token=<t>` sets an `HttpOnly` `kb_token` cookie and redirects to the bare `/`, so the secret stays out of the page and out of your history after that. Opening `/` without the cookie shows a page telling you where to get it instead. Scripts can pass `?token=<t>` on any `/api/*` call.
+Get the URL with `/kanban url` (or the `kanban` tool's `url` action) and open it once: `GET /?token=<t>` sets an `HttpOnly` `kb_auth` cookie and redirects to the bare `/`, so the secret stays out of the page and out of your history after that. `/` itself is always served — opening it without the cookie shows the board, whose fetch gets a 401 and puts up a banner telling you where to get the URL. Scripts can pass `?token=<t>` on any `/api/*` call.
 
 The `Sec-Fetch-Site` / `Origin` checks from #68 are still there as a second layer: a cross-origin page is refused with 403 even when it somehow has the token. Do not port-forward 8789 to the internet.
 

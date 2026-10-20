@@ -207,8 +207,8 @@ const LEGACY_JSON = join(KANBAN_DIR, "board.json");
 const DASHBOARD_HTML_PATH = join(KANBAN_DIR, "dashboard.html");
 const SERVER_LOG = join(KANBAN_DIR, "server.log");
 const TOKEN_FILE = join(KANBAN_DIR, "token"); // #83b: the one secret every HTTP route needs
-const TOKEN_COOKIE = "kb_token";
-const TOKEN_TTL_SEC = 31536000; // one year: the cookie is the only thing keeping the board open
+const TOKEN_COOKIE = "kb_auth"; // #85: the name the spec fixes; the value is still the token
+const TOKEN_TTL_SEC = 30 * 24 * 60 * 60; // #85: 30 days
 let tokenCache: string | null = null;
 
 /**
@@ -219,6 +219,14 @@ let tokenCache: string | null = null;
  */
 function ensureToken(): string {
 	if (tokenCache !== null) return tokenCache;
+	// #85: the directory holds the secret, so it is 0700 on both branches (a 0755 one an
+	// older version left behind is corrected here, same as the token file below).
+	try {
+		mkdirSync(KANBAN_DIR, { recursive: true, mode: 0o700 });
+		if ((statSync(KANBAN_DIR).mode & 0o077) !== 0) chmodSync(KANBAN_DIR, 0o700);
+	} catch {
+		// a chmod we cannot do does not make the token unusable
+	}
 	const usable = (v: string): boolean => /^[0-9a-f]{64}$/.test(v);
 	try {
 		const raw = readFileSync(TOKEN_FILE, "utf8").trim();
@@ -237,7 +245,6 @@ function ensureToken(): string {
 	}
 	const fresh = randomBytes(32).toString("hex");
 	try {
-		mkdirSync(KANBAN_DIR, { recursive: true });
 		writeFileSync(TOKEN_FILE, `${fresh}\n`, { mode: 0o600 });
 		chmodSync(TOKEN_FILE, 0o600); // mode: is subject to umask; this is not
 	} catch (err) {
@@ -1343,7 +1350,7 @@ function tokenMatches(candidate: string | null): boolean {
 	return timingSafeEqual(a, b);
 }
 
-/** The caller's token: `?token=` (curl, scripts) or the `kb_token` cookie (the page). */
+/** The caller's token: `?token=` (curl, scripts) or the `kb_auth` cookie (the page). */
 function callerToken(req: IncomingMessage, q: URLSearchParams): string | null {
 	const fromQuery = q.get("token");
 	if (fromQuery !== null && fromQuery !== "") return fromQuery;
@@ -1363,20 +1370,10 @@ function isAuthorized(req: IncomingMessage, q: URLSearchParams): boolean {
 }
 
 /**
- * #83b: what `/` answers when the caller has no valid token. Deliberately carries no
- * token value: the whole point of the 401. The URL is one `/kanban url` away.
+ * #85: the "go get a token" text lives in the dashboard's own 401 handler (authFail), not
+ * in a separate error page: `/` is always served now, so the page a stale bookmark lands
+ * on is the board itself, saying where the URL comes from.
  */
-const TOKEN_HELP_HTML = `<!doctype html>
-<html lang="ja"><head><meta charset="utf-8"><title>KANBAN - token required</title>
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<style>body{font:14px/1.6 system-ui,sans-serif;margin:0;padding:2rem;background:#111;color:#ddd}
-code{background:#222;padding:.15em .35em;border-radius:3px}a{color:#7ab}</style></head>
-<body><h1>トークンが必要</h1>
-<p>この看板はトークンで保護されている。</p>
-<p><code>/kanban url</code> を実行するか、エージェントに \`kanban\` ツールの <code>url</code> アクションを頼んで、
-表示された <code>?token=...</code> 付き URL をこのタブで開き直して。一度開けば Cookie が入るので、
-以降はこの URL だけでよい。</p>
-</body></html>`;
 
 /**
  * #67/#76: refuse a browser-originated cross-origin write before it reaches a handler.
@@ -2981,25 +2978,18 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
 
 	const url = new URL(req.url ?? "/", "http://127.0.0.1");
 
-	// #83b: the token gate. Everything the listener exposes under /api, /serve and / is
-	// protected here, before the Origin gate, because the Origin gate only knows how to
-	// judge a browser: a header-less curl had no reason to be refused. OPTIONS is exempt
-	// (a preflight carries no credentials by design) and /favicon.ico too (a bare retry loop).
+	// #83b/#85: the token gate. Every /api and /serve route is protected here, before the
+	// Origin gate, because the Origin gate only knows how to judge a browser: a header-less
+	// curl had no reason to be refused. `/` is deliberately NOT gated - it is the entry
+	// point that sets the cookie, and the page it serves tells the user how to get one.
+	// OPTIONS is exempt (a preflight carries no credentials by design) and /favicon.ico too
+	// (a bare retry loop).
 	const gated =
-		url.pathname === "/" ||
 		url.pathname === SERVE_PREFIX ||
 		url.pathname.startsWith(`${SERVE_PREFIX}/`) ||
 		url.pathname === "/api" ||
 		url.pathname.startsWith("/api/");
 	if (gated && req.method !== "OPTIONS" && url.pathname !== "/favicon.ico" && !isAuthorized(req, url.searchParams)) {
-		if (url.pathname === "/" && req.method === "GET" && url.searchParams.get("token") === null) {
-			// A browser with no cookie gets the way out, not a bare 401 (this is the page a
-			// user lands on when they open the board from a stale bookmark). 200 on purpose:
-			// it is a page to read, and a 401 makes browsers pop an auth dialog.
-			res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-			res.end(TOKEN_HELP_HTML);
-			return;
-		}
 		// The 401 body is a constant: it must never echo the token the caller tried.
 		sendJson(res, 401, { ok: false, error: "unauthorized" });
 		req.resume();
@@ -3088,10 +3078,17 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
 
 	// Read-only routes first: they resolve the session themselves.
 	if (url.pathname === "/") {
-		// #83b: `?token=` is the only way in. Swap it for a cookie and send the browser to
+		// #85: `/` is always served - the dashboard's own fetch shows the login guidance
+		// when it gets a 401, so the page itself is the entry point, not an error page.
+		// `?token=` is the way in: it is swapped for the cookie and the browser is sent to
 		// the bare path, so the secret does not stay in the address bar, history or a shared
-		// link. A caller that already has a valid cookie skips this branch (gated above).
-		if (url.searchParams.get("token") !== null) {
+		// link. A wrong token is still a 401 (it must not become a cookie).
+		const given = url.searchParams.get("token");
+		if (given !== null) {
+			if (!tokenMatches(given)) {
+				sendJson(res, 401, { ok: false, error: "unauthorized" });
+				return;
+			}
 			res.writeHead(303, {
 				"Set-Cookie": `${TOKEN_COOKIE}=${ensureToken()}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${TOKEN_TTL_SEC}`,
 				Location: "/",
@@ -4313,6 +4310,7 @@ ${KANBAN_MD_JS}
     }
     // #52: 生ボディの POST（/api/upload）もこの 1 つの fetch 点を通す。
     return fetch(u, init).then(function(r){
+      if (r.status === 401) authFail(); // #85: 401 は接続断ではなく Cookie 切れ
       if (!r.ok) throw new Error("http " + r.status);
       return r.json();
     });
@@ -5103,9 +5101,20 @@ ${KANBAN_MD_JS}
     c.className = ok ? "ok" : "bad";
     c.textContent = ok ? "接続中" : "再接続中";
     b.classList.toggle("on", !ok);
-    if (!ok && firstFail) b.textContent = "サーバに接続できません" +
+    // #85: a 401 is not a connection failure, so it keeps its own (already shown) text.
+    if (!ok && firstFail && !authFailed) b.textContent = "サーバに接続できません" +
       (lastData ? "。前回の表示を維持しています…" : "。サーバが起動するのを待っています…");
 }
+  // #85: /api/* needs the cookie now. When one comes back 401, the way back in is the
+  // token-bearing URL from /kanban url, so say that instead of "server unreachable".
+  var authFailed = false;
+  function authFail(){
+    authFailed = true;
+    var b = document.getElementById("banner");
+    if (!b) return;
+    b.textContent = "トークンが必要。/kanban url の URL を開き直して。";
+    b.classList.add("on");
+  }
   // A failed first fetch must not sit dark until the 5s tick. Retry fast, then back off.
   // 1s/2s/4s... capped at 30s; success resets to the normal 5s poll.
   var POLL_MS = 5000;

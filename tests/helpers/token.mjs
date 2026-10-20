@@ -20,14 +20,14 @@ export function readToken(home = process.env.HOME) {
 	throw lastErr ?? new Error("token file never appeared");
 }
 
-/** fetch + the `kb_token` cookie. Same signature as fetch. */
+/** fetch + the `kb_auth` cookie. Same signature as fetch. */
 export function authFetch(input, init = {}) {
 	const headers = new Headers(init.headers ?? (input instanceof Request ? input.headers : undefined));
-	if (!headers.has("cookie")) headers.set("Cookie", `kb_token=${readToken()}`);
+	if (!headers.has("cookie")) headers.set("Cookie", `kb_auth=${readToken()}`);
 	return fetch(input, { ...init, headers });
 }
 
 /** The same credential for tests that have to build a raw `http.request` themselves. */
 export function tokenHeader() {
-	return `kb_token=${readToken()}`;
+	return `kb_auth=${readToken()}`;
 }

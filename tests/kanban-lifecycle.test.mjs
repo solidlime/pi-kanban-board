@@ -90,7 +90,7 @@ const TOK = readFileSync(process.env.HOME + "/.pi/kanban/token", "utf8").trim();
 const plainFetch = globalThis.fetch;
 globalThis.fetch = (input, init = {}) => {
 	const headers = new Headers(init.headers ?? (input instanceof Request ? input.headers : undefined));
-	if (!headers.has("cookie")) headers.set("Cookie", "kb_token=" + TOK);
+	if (!headers.has("cookie")) headers.set("Cookie", "kb_auth=" + TOK);
 	return plainFetch(input, { ...init, headers });
 };
 ${waitFor}
