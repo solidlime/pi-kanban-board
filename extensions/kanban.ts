@@ -3097,7 +3097,14 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
 			res.end();
 			return;
 		}
-		res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+		res.writeHead(200, {
+			"Content-Type": "text/html; charset=utf-8",
+			// #80-⑩: a cross-origin page must not be able to frame the board and overlay its
+			// own controls on top of it — a clickjacked move/remove is a write the user never
+			// made, and the token gate does not help because the browser sends the cookie.
+			"X-Frame-Options": "SAMEORIGIN",
+			"Content-Security-Policy": "frame-ancestors 'self'",
+		});
 		res.end(DASHBOARD_HTML);
 		return;
 	}

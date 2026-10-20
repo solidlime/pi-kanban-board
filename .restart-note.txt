@@ -1,0 +1,6 @@
+# 再起動前の状態 2026-10-20T17:49:13+09:00
+commit: 016b294 feat(auth): #85 token gate for /api and /serve
+uncommitted: 1
+token: 4dd3f5d61fab904fae2f9eaf4ec64e3f4ade3404056b51dc9045b54dd88ec589
+kanban_dir_mode: 755
+8789_before: GET/=200 api=401

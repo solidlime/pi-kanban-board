@@ -230,6 +230,16 @@ await check("9. Cookie 無しの GET / も 200 でダッシュボードを配る
 	assert.ok(!body.includes(A.token), "ページにトークンが埋まっている");
 });
 
+// #80-⑩: a cross-origin page must not be able to frame the board and overlay its own
+// controls — a clickjacked move/remove is a write the user never made. The token gate
+// does not help here because the browser attaches the cookie to the frame's own loads.
+await check("9b. GET / は他オリジンのフレームに載せない（#80-⑩）", async () => {
+	const r = await fetch(`${A.base}/`, { redirect: "manual" });
+	assert.equal(r.status, 200);
+	assert.equal(r.headers.get("x-frame-options"), "SAMEORIGIN");
+	assert.match(r.headers.get("content-security-policy") ?? "", /frame-ancestors 'self'/);
+});
+
 // --- protected surface --------------------------------------------------------
 await check("10. 無認証で届く端点は無い（/api/*, /serve/*）", async () => {
 	const paths = [
