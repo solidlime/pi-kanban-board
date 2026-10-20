@@ -26,6 +26,9 @@ const PORT = await new Promise((resolve) => {
 	});
 });
 process.env.KANBAN_PORT = String(PORT);
+// #80-⑨: Host allowlist は「ユーザーが使う別名」を KANBAN_HOSTS で足す前提。このテストは
+// 学習対象のホスト名を Host ヘッダで捏造するので、逃げ道で許可しておく。
+process.env.KANBAN_HOSTS = "myhost.ts.net,10.0.0.5,evil.example,proxy.example";
 
 const require = createRequire(import.meta.url);
 const { createJiti } = require(

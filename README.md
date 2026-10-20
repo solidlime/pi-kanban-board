@@ -101,6 +101,8 @@ Get the URL with `/kanban url` (or the `kanban` tool's `url` action) and open it
 
 The `Sec-Fetch-Site` / `Origin` checks from #68 are still there as a second layer: a cross-origin page is refused with 403 even when it somehow has the token. Do not port-forward 8789 to the internet.
 
+The first layer is a **Host allowlist** (#80-⑨), checked before the token: a request whose `Host` is not `localhost`, `127.0.0.1`, `::1`, this machine's hostname, one of its interface addresses, or a name listed in `KANBAN_HOSTS` (comma-separated) gets `403 {"ok":false,"error":"host not allowed"}`. This is what stops DNS rebinding — the browser sends the attacker's domain as `Host`, so the cookie is never even read. Reaching the board under a name no interface carries (`nas`, a MagicDNS name, a reverse-proxy host) needs `KANBAN_HOSTS=nas,...`; the interfaces are read per request, so a new tailscale/docker address needs no restart, only the env var does.
+
 ## Nothing here is a service
 
 There is no daemon. The HTTP server lives inside the pi process, so board state is available exactly as long as pi is running. The generated HTML is rewritten on each render; edit the `DASHBOARD_HTML` constant in `extensions/kanban.ts`, not the generated file.

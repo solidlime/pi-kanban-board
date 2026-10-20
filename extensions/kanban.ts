@@ -59,7 +59,7 @@ import {
 import type { Dirent, Stats } from "node:fs";
 import { createServer } from "node:http";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
-import { homedir, hostname } from "node:os";
+import { homedir, hostname, networkInterfaces } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { Type } from "typebox";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
@@ -1336,6 +1336,52 @@ function isSameHostOrigin(req: IncomingMessage): boolean {
 	const host = (req.headers.host ?? "").toLowerCase();
 	const bare = host.startsWith("[") ? host.slice(0, host.indexOf("]") + 1) : host.split(":")[0];
 	return hostname.toLowerCase() === bare;
+}
+
+/**
+ * #80-⑨: the names this server answers to. Same-host Origin cannot tell an attacker's
+ * domain from ours — that is exactly what DNS rebinding buys: `evil.example` resolves to
+ * 127.0.0.1, so the browser sends `Host: evil.example` and sees a same-origin page. The
+ * Host header is the one place the name the browser used survives, so it is checked
+ * against this finite set before anything else looks at the request.
+ *
+ * Read per request, not cached: interfaces change under us (tailscale up/down, a new
+ * docker bridge) and the user's fix is to reload, not to restart the server. The set is
+ * small and networkInterfaces() is a netlink read, far cheaper than the board work behind
+ * it. The learned serve host is NOT in here on purpose — it was learned from a Host header,
+ * so trusting it would make the allowlist self-poisoning.
+ */
+function allowedHosts(): Set<string> {
+	// `nas` is this deployment's established spelling (`http://nas:8789/`) and is carried by
+	// no interface, so leaving it out would 403 a board that worked the day before this gate
+	// landed. Any other alias a user reaches the board as still has to be listed in
+	// KANBAN_HOSTS — those are open-ended in a way this one is not.
+	const names = new Set(["localhost", "127.0.0.1", "::1", "::ffff:127.0.0.1", "nas", hostname().toLowerCase()]);
+	for (const entries of Object.values(networkInterfaces())) {
+		for (const entry of entries ?? []) names.add(entry.address.toLowerCase());
+	}
+	// #80-⑨: the escape hatch. A user who reaches the board as `nas` (a DNS alias, a
+	// MagicDNS name, a reverse proxy) has no interface carrying that spelling, and `nas` is
+	// also what the dashboard passes on to /serve — refusing it would break a working setup.
+	for (const raw of (process.env.KANBAN_HOSTS ?? "").split(",")) {
+		const name = hostNameOf(raw);
+		if (name.length > 0) names.add(name);
+	}
+	return names;
+}
+
+/**
+ * #80-⑨: the Host gate. Applies to every path, `/` included, because the token gate
+ * below deliberately lets `/` through (it is where the cookie is handed out) and the
+ * Origin gate only knows how to judge a browser. A missing Host is refused: HTTP/1.1
+ * requires one, so its absence is a hand-built request, not a browser.
+ * The port is ignored (hostNameOf) — the listener port is ours and the dashboard's
+ * absolute origin uses it on a different port anyway.
+ */
+function hostRefusal(req: IncomingMessage): boolean {
+	const raw = req.headers.host;
+	if (typeof raw !== "string") return true;
+	return !allowedHosts().has(hostNameOf(raw));
 }
 
 /**
@@ -3051,6 +3097,17 @@ function projectBoard(b: Board, keys: string[]): Board {
 
 
 function handle(req: IncomingMessage, res: ServerResponse): void {
+	// #80-⑨: the Host gate runs FIRST — before CORS, before the token gate. It is the layer
+	// that decides whether this request is even addressed to us, and a rebound attacker's
+	// page carries the kb_auth cookie (the browser thinks it is same-origin), so the token
+	// gate cannot see the attack; the Host header can. Refusing here also means no Cookie
+	// header is ever parsed for a name we do not answer to.
+	if (hostRefusal(req)) {
+		sendJson(res, 403, { ok: false, error: "host not allowed" });
+		req.resume();
+		return;
+	}
+
 	// #76: the allow-origin value is per-caller now, so it is decided here rather than in a
 	// module constant. Vary: Origin rides along or a shared cache serves one caller's answer
 	// to another.

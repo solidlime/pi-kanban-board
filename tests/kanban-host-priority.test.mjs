@@ -28,6 +28,9 @@ const PORT = await new Promise((resolve) => {
 	});
 });
 process.env.KANBAN_PORT = String(PORT);
+// #80-⑨: Host allowlist は「ユーザーが使う別名」を KANBAN_HOSTS で足す前提。このテストは
+// 優先規則を見るために nas / otherhost を Host ヘッダで捏造するので、逃げ道で許可する。
+process.env.KANBAN_HOSTS = "nas,otherhost";
 
 const require = createRequire(import.meta.url);
 const { createJiti } = require(
