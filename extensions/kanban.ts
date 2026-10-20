@@ -54,6 +54,7 @@ import {
 	renameSync,
 	statSync,
 	unlinkSync,
+	utimesSync,
 	writeFileSync,
 } from "node:fs";
 import type { Dirent, Stats } from "node:fs";
@@ -2643,14 +2644,65 @@ function writeMedia(cardId: number, ext: string, bytes: Buffer): string | null {
 	return name;
 }
 
+// #80-⑧: deleting a card must not destroy the file. The bytes are unrecoverable once
+// unlinked, and every delete path (/api/remove, /api/upload replace, the `kanban` tool,
+// the dashboard menu) is reachable by a misclick, a CSRF and a plain bug. So a delete is
+// a rename into media/.trash instead; 7 days later the sweeper drops it for real.
+// To restore by hand: `mv ~/.pi/kanban/media/.trash/<epoch>-<name> ~/.pi/kanban/media/<name>`
+// and put the basename back on the card (`/api/upload?id=<id>` is the easy way).
+const TRASH_DIR = join(MEDIA_DIR, ".trash");
+const TRASH_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** Drop what has sat in .trash longer than the TTL. Only the top level is ours. */
+function sweepTrash(now: number): void {
+	let entries: Dirent[];
+	try {
+		entries = readdirSync(TRASH_DIR, { withFileTypes: true });
+	} catch {
+		return; // no .trash yet
+	}
+	for (const entry of entries) {
+		if (!entry.isFile()) continue;
+		const path = join(TRASH_DIR, entry.name);
+		try {
+			if (now - statSync(path).mtimeMs > TRASH_TTL_MS) unlinkSync(path);
+		} catch {
+			// gone between readdir and stat/unlink -> nothing to do
+		}
+	}
+}
+
+/**
+ * #80-⑧: move a media file into MEDIA_DIR/.trash/<epoch_ms>-<basename> (same filesystem,
+ * so the rename is atomic). Returns the new path, or null when the path is outside
+ * MEDIA_DIR / already gone. The path check is the traversal guard: `../` resolves out and
+ * is refused, so only files directly under media/ can be moved.
+ */
+function trashMedia(absPath: string): string | null {
+	const root = resolve(MEDIA_DIR);
+	const abs = resolve(absPath);
+	// root + sep, so a sibling like `media-evil/` cannot pass on a bare prefix match.
+	if (!abs.startsWith(root + sep)) return null;
+	if (!existsSync(abs)) return null;
+	const now = Date.now();
+	sweepTrash(now);
+	try {
+		mkdirSync(TRASH_DIR, { recursive: true });
+		const dest = join(TRASH_DIR, `${now}-${basename(abs)}`);
+		renameSync(abs, dest);
+		// rename keeps the original mtime; stamp the entry time so the TTL counts time
+		// spent in .trash, not the age of the upload (an old file would be swept at once).
+		utimesSync(dest, now / 1000, now / 1000);
+		return dest;
+	} catch {
+		return null;
+	}
+}
+
 /** Best-effort delete of a card's media file. Missing file is not an error. */
 function removeMedia(card: Card): void {
 	if (!card.img || !isSafeMediaName(card.img)) return;
-	try {
-		unlinkSync(join(MEDIA_DIR, card.img));
-	} catch {
-		// already gone / not ours -> ignore
-	}
+	trashMedia(join(MEDIA_DIR, card.img));
 }
 
 function serveMedia(req: IncomingMessage, res: ServerResponse, rawName: string): void {
@@ -3080,8 +3132,10 @@ function runSelfTest(): { ok: boolean; checks: SelfTestCheck[]; identity: SelfTe
 			// A real write: mkdir succeeding on a read-only mount is not proof.
 			const probe = join(MEDIA_DIR, `.selftest-${process.pid}`);
 			writeFileSync(probe, "");
+			// #80-⑧: not user data (a zero-byte file this probe just made), so it is unlinked
+			// rather than trashed; `.trash` itself is a directory and is not counted here.
 			unlinkSync(probe);
-			return `${MEDIA_DIR} (${readdirSync(MEDIA_DIR).length} file(s))`;
+			return `${MEDIA_DIR} (${mediaFileCount()} file(s))`;
 		}),
 	];
 	return { ok: checks.every((c) => c.ok), checks, identity: serverIdentity() };
@@ -6559,6 +6613,7 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 			probe: probeServer,
 			decideReuse,
 			apiState: () => apiState,
+			trashMedia,
 			resumeNow: (sid: string) => {
 				if (ownCtx === null) throw new Error("no session ctx");
 				return resumeWithModes(ownCtx, sid);
