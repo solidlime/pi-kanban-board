@@ -179,6 +179,24 @@ for (const name of ["evil.html", "evil.svg", "evil.js", "evil.exe", "evil.sh", "
 		assert.equal(after.status, 200, `status=${after.status} body=${after.body}`));
 }
 
+// --- #86 /api/upload にも総量上限 ----------------------------------------------
+{
+	// 上限は 1GiB。実バイトを書かずに埋めるため sparse file を使う（statSync は 1GiB を返す）。
+	// 小さなボディで確かめるのが肝——単発上限 (8MB/64MB) は関係なく、総量だけで落ちる。
+	mkdirSync(MEDIA, { recursive: true });
+	const junk = `${MEDIA}/upload-budget-junk.mp4`;
+	writeFileSync(junk, "");
+	truncateSync(junk, 1024 * 1024 * 1024);
+	const res = await send("POST", "/api/upload?ext=png&scope=global", { body: Buffer.from([0x89]) });
+	await checkAsync("#86 総量上限を超える /api/upload は 413", async () => {
+		assert.equal(res.status, 413, `status=${res.status} body=${res.body}`);
+	});
+	rmSync(junk, { force: true });
+	const after = await send("POST", "/api/upload?ext=png&scope=global", { body: Buffer.from([0x89]) });
+	await checkAsync("#86 空になったら /api/upload は再び通る", async () =>
+		assert.equal(after.status, 200, `status=${after.status} body=${after.body}`));
+}
+
 console.log(`${passed} passed, ${failures.length} failed`);
 for (const failure of failures) console.log(`  FAIL ${failure}`);
 process.exit(failures.length === 0 ? 0 : 1);

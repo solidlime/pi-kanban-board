@@ -3043,6 +3043,19 @@ function handleUpload(req: IncomingMessage, res: ServerResponse, q: URLSearchPar
 	}
 	collectBody(req, res, uploadLimitOf(ext), (buf) => {
 		if (buf === null) return; // 413/400 already sent
+		// #86: the per-file limit above bounds ONE request; this bounds the volume. The
+		// check sits before removeMedia/writeMedia on purpose: evicting the old file and
+		// then refusing would leave the card pointing at media that no longer exists, so a
+		// refusal here leaves the card and its current media exactly as they were.
+		// shortcut: the total is a fresh walk per upload (fine at this file count), upgrade
+		// to a cached counter if media/ ever reaches the thousands.
+		if (mediaDirBytes() + buf.length > MEDIA_DIR_MAX_BYTES) {
+			sendJson(res, 413, {
+				ok: false,
+				error: `media budget exceeded (max ${fmtMB(MEDIA_DIR_MAX_BYTES)})`,
+			});
+			return;
+		}
 		const b = readBoard(path);
 		const idParam = q.get("id");
 		let card: Card;
