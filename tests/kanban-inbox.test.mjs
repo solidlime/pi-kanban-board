@@ -113,11 +113,11 @@ rmSync(INBOX, { recursive: true, force: true }); // A2: 無い状態から始め
 const NOTE = JSON.stringify({ take: 14, approved: true });
 {
 	const res = await post(`/serve/${id}/_inbox/a.json`, NOTE);
-	await checkAsync("A1 POST は 200 で { ok, path, name, bytes } を返す", async () => {
+	await checkAsync("A1 POST は 200 で { ok, name, bytes } を返す（#80-⑦: 絶対パスは返さない）", async () => {
 		assert.equal(res.status, 200, `status=${res.status} body=${res.body}`);
 		const j = JSON.parse(res.body);
 		assert.equal(j.ok, true);
-		assert.equal(j.path, `${INBOX}/a.json`);
+		assert.equal(j.path, undefined, "配信ディレクトリの絶対パスを返してはいけない");
 		assert.equal(j.name, "a.json");
 		assert.equal(j.bytes, Buffer.byteLength(NOTE));
 	});

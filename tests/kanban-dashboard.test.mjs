@@ -195,7 +195,11 @@ check("stats.serve = 登録数", () => assert.equal(data.stats.serve, 2));
 check("exists=true のエントリ", () => {
 	const e = data.serve.find((x) => x.id === LIVE_ID);
 	assert.ok(e, "live entry が無い");
-	assert.equal(e.path, LIVE_PATH);
+	// #80-⑦: 以前は絶対パス (e.path) を payload に載せていた。同一ホスト別ポートのページが
+	// 「列挙して取得」の2リクエストで済むので、いまは name（最終セグメント）だけを返す。
+	// 意図（サーバのファイル構造を外部に見せない）を固定するために反転させている。
+	assert.equal(e.path, undefined, "絶対パスが payload に戻っている");
+	assert.equal(e.name, "workspace");
 	assert.equal(e.exists, true);
 	assert.match(e.url, new RegExp(`/serve/${LIVE_ID}/$`));
 	assert.match(e.url, /^https?:\/\//);
@@ -203,10 +207,13 @@ check("exists=true のエントリ", () => {
 	// #50: エージェントが付けた表示名が payload に乗る
 	assert.equal(e.title, "配信テスト用");
 });
+check("一覧の応答本文に絶対パスが含まれない (#80-⑦)", () =>
+	assert.ok(!JSON.stringify(data.serve).includes(HOME_DIR), "serve 一覧に絶対パスが漏れている"));
 check("exists=false のエントリも一覧に残る", () => {
 	const e = data.serve.find((x) => x.id === GONE_ID);
 	assert.ok(e, "gone entry が消えている");
-	assert.equal(e.path, GONE_PATH);
+	assert.equal(e.path, undefined);
+	assert.equal(e.name, "gone"); // 存在しなくても最後のセグメントは出る
 	assert.equal(e.exists, false);
 	assert.equal(typeof e.createdAt, "string");
 	assert.equal(e.createdAt, "");

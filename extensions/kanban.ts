@@ -264,6 +264,22 @@ const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const MAX_UPLOAD = 8 * 1024 * 1024; // images and inbox files
 const MAX_UPLOAD_VIDEO = 64 * 1024 * 1024; // a video needs room the image budget cannot give
 const INBOX_NUDGE_NAMES = 3; // filenames per INBOX row before collapsing to `+N more`
+// #80-⑪: the _inbox extension policy is an ALLOWLIST, not a denylist. A denylist has to
+// be re-synced every time a new active type shows up (svg, mhtml, hta, wasm, ...) and a
+// missed entry is served back by /serve/*; failing closed costs a refused file instead.
+// The list is what the dashboard actually moves: images, video, audio, plain text/data.
+const INBOX_EXTS = new Set([
+	"png", "jpg", "jpeg", "gif", "webp", "avif", "heic",
+	"mp4", "webm", "mov", "mkv",
+	"mp3", "wav", "ogg", "m4a", "flac",
+	"txt", "md", "json", "jsonl", "csv", "tsv", "log", "yaml", "yml",
+]);
+const INBOX_NAME_MAX = 128; // chars, one path segment; longer names only help a hostile page
+// #80-⑪: the disk budget for media/ and the _inbox bytes that share the same volume
+// (5.3T disk, 2.9T free here). MAX_UPLOAD_VIDEO is 64MB, so 1GiB is ~16 videos or ~128
+// 8MB images — enough for one board, small enough that an unattended upload loop with a
+// dropped card reference (media files are only removed when a card is) cannot fill it.
+const MEDIA_DIR_MAX_BYTES = 1024 * 1024 * 1024;
 const OK_EXTS = ["png", "jpg", "gif", "webp", "avif", "mp4", "webm"];
 const MIME_BY_EXT: Record<string, string> = {
 	png: "image/png",
@@ -1888,8 +1904,25 @@ function serveUrlFor(entry: ServeEntry): string {
  * the served directory, so its realpath is compared against the served root too.
  */
 function inboxRejection(root: string, name: string): { status: number; error: string } | null {
-	if (name.length === 0 || name === "." || name === ".." || /[\/\\\0]/.test(name)) {
+	// #80-⑪: one bounded segment, no control characters. The name lands in logs, in the
+	// dashboard and in `ls`, so bytes a terminal can interpret stop here.
+	if (
+		name.length === 0 ||
+		name.length > INBOX_NAME_MAX ||
+		name === "." ||
+		name === ".." ||
+		/[\/\\\0]/.test(name) ||
+		// eslint-disable-next-line no-control-regex
+		/[\u0000-\u001f\u007f]/.test(name)
+	) {
 		return { status: 400, error: "bad name" };
+	}
+	// #80-⑪: _inbox bytes are served back by /serve/*, so the extension decides what a
+	// browser can be persuaded to parse there. Allowlist, see INBOX_EXTS above.
+	const dot = name.lastIndexOf(".");
+	const ext = dot < 0 ? "" : name.slice(dot + 1).toLowerCase();
+	if (!INBOX_EXTS.has(ext)) {
+		return { status: 400, error: `extension not allowed: ${ext === "" ? "(none)" : `.${ext}`}` };
 	}
 	const dir = join(root, INBOX);
 	if (!isUnder(realOrSelf(dir), [root])) return { status: 403, error: "inbox escapes the served path" };
@@ -1924,6 +1957,19 @@ function writeInbox(req: IncomingMessage, res: ServerResponse, entry: ServeEntry
 			sendJson(res, rejected.status, { ok: false, error: rejected.error });
 			return;
 		}
+		// #80-⑪: the body limit above bounds ONE request; this bounds the volume. The
+		// inbox and media/ share a disk and media/ is only ever cleaned per card, so the
+		// budget is measured once, before the write, and refuses rather than evicting.
+		// shortcut: the total is a fresh walk per POST (fine at this file count), upgrade
+		// to a cached counter if media/ ever reaches the thousands.
+		const used = mediaDirBytes();
+		if (used + buf.length > MEDIA_DIR_MAX_BYTES) {
+			sendJson(res, 413, {
+				ok: false,
+				error: `media budget exceeded (max ${fmtMB(MEDIA_DIR_MAX_BYTES)})`,
+			});
+			return;
+		}
 		const dir = join(root, INBOX);
 		const target = join(dir, name);
 		try {
@@ -1935,7 +1981,9 @@ function writeInbox(req: IncomingMessage, res: ServerResponse, entry: ServeEntry
 			return;
 		}
 		logServer(`inbox write ${target} (${buf.length} B)`);
-		sendJson(res, 200, { ok: true, path: target, name, bytes: buf.length });
+		// #80-⑦: `target` is an absolute path. The writer already knows the name it
+		// sent, so echoing the server's directory layout back buys it nothing.
+		sendJson(res, 200, { ok: true, name, bytes: buf.length });
 	});
 }
 
@@ -2243,6 +2291,16 @@ ${rows}
 }
 
 /**
+ * #80-⑦: what the browser is allowed to see instead of the absolute path. The registry
+ * is reachable from any same-host page (the CORS answer reflects a same-host Origin), so
+ * an absolute path turned "enumerate, then fetch" into two requests and handed a foreign
+ * page the server's directory layout. The last segment is enough to recognise an entry.
+ */
+function serveDisplayName(entry: ServeEntry): string {
+	return basename(entry.path) || entry.path;
+}
+
+/**
  * A8: the browser entry point for <host>:8789/serve. Dead paths are hidden (A9).
  * Unread inbox files are counted here so the page shows what the agent has not acked.
  */
@@ -2256,7 +2314,8 @@ function serveRegistry(res: ServerResponse, isHead: boolean): void {
 			// #20: absolute href so the registry agrees with `serve list` and survives
 			// being opened at a host other than the configured baseUrl.
 			const href = `${serveBaseUrl()}${SERVE_PREFIX}/${encodeURIComponent(e.id)}/`;
-			return `<li><a href="${escHtml(href)}">${escHtml(e.id)}</a> <span class="m">${escHtml(e.path)}</span>${badge}</li>`;
+			// #80-⑦: id + name only; the absolute path stays a server-side concept.
+			return `<li><a href="${escHtml(href)}">${escHtml(e.id)}</a> <span class="m">${escHtml(serveDisplayName(e))}</span>${badge}</li>`;
 		})
 		.join("\n");
 	const body = `<!doctype html><meta charset="utf-8"><title>serve</title>
@@ -2468,6 +2527,26 @@ function serveFileOpts(abs: string, st: Stats): FileServeOpts {
 
 function parseCol(value: string | null): Col | undefined {
 	return value === "todo" || value === "doing" || value === "done" ? value : undefined;
+}
+
+/** #80-⑪: total bytes under MEDIA_DIR. Missing directory = 0, unreadable entry = skipped. */
+function mediaDirBytes(): number {
+	let names: string[];
+	try {
+		names = readdirSync(MEDIA_DIR, { recursive: true }) as string[];
+	} catch {
+		return 0;
+	}
+	let total = 0;
+	for (const name of names) {
+		try {
+			const st = statSync(join(MEDIA_DIR, name));
+			if (st.isFile()) total += st.size;
+		} catch {
+			// gone between readdir and stat -> not part of the budget
+		}
+	}
+	return total;
 }
 
 /** A bare filename directly under MEDIA_DIR (no path traversal). */
@@ -2729,7 +2808,9 @@ async function dashboardPayload(): Promise<unknown> {
 	const serve = readServeFile().map((e) => ({
 		id: e.id,
 		url: serveUrlFor(e),
-		path: e.path,
+		// #80-⑦: `path` (absolute, server-side) is no longer in the payload. The
+		// dashboard only ever needed something to recognise the entry by.
+		name: serveDisplayName(e),
 		title: e.title ?? "",
 		createdAt: e.createdAt ?? "",
 		permanent: e.permanent === true,
@@ -5047,7 +5128,8 @@ ${KANBAN_MD_JS}
       }
       u.appendChild(el("span", gone ? "badge gone" : "badge on", gone ? "\\u2715 消失" : "\\u25CF 配信中"));
       row.appendChild(u);
-      row.appendChild(el("span", "p", v.path || ""));
+      // #80-⑦: the server stopped sending the absolute path; name is the last segment.
+      row.appendChild(el("span", "p", v.name || ""));
       var left = serveLeft(v, nowMs);
       var x = el("span", "x" + (left.cls ? " " + left.cls : ""), left.text);
       x.title = v.permanent ? "永久（自動削除なし）" : (v.expiresAt ? "期限: " + full(v.expiresAt) : "createdAt が無いので期限なし");
