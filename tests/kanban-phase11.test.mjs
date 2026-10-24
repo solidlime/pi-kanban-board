@@ -64,15 +64,15 @@ const S = "phase11-me";
 const OTHER = "phase11-other";
 
 // ---------------------------------------------------------------------------
-// 1-5: nextTodo の所有フィルタ（純関数）
+// 1-5: nextTodo の選定（純関数。TODO に所有フィルタは無い）
 // ---------------------------------------------------------------------------
 check("1 GLOBAL TODO: movedBy 無し -> 拾える", () =>
 	eq(nextTodo([{ id: 1, text: "free", col: "todo" }], "global", S)?.id, 1));
 check("2 GLOBAL TODO: movedBy === sid -> 拾える", () =>
 	eq(nextTodo([{ id: 1, text: "mine", col: "todo", movedBy: S }], "global", S)?.id, 1));
-check("3 GLOBAL TODO: movedBy === 他者（priority 高）-> 拾わない", () =>
-	eq(nextTodo([{ id: 1, text: "theirs", col: "todo", movedBy: OTHER, priority: 9 }], "global", S), undefined));
-check("4 GLOBAL: 他者所有(高priority)を飛ばして拾える TODO を選ぶ（priority より所有が先）", () =>
+check("3 #87 GLOBAL TODO: movedBy === 他者でも拾う（TODO は所有を持たない）", () =>
+	eq(nextTodo([{ id: 1, text: "theirs", col: "todo", movedBy: OTHER, priority: 9 }], "global", S)?.id, 1));
+check("4 #87 GLOBAL: 所有でなく priority 順で選ぶ（他者スタンプが先頭）", () =>
 	eq(
 		nextTodo(
 			[
@@ -82,9 +82,9 @@ check("4 GLOBAL: 他者所有(高priority)を飛ばして拾える TODO を選�
 			"global",
 			S,
 		)?.id,
-		2,
+		1,
 	));
-check("4b GLOBAL: 拾える TODO が他者所有だけなら undefined", () =>
+check("4b #87 GLOBAL: 他者所有の TODO だけでも拾う", () =>
 	eq(
 		nextTodo(
 			[
@@ -93,8 +93,8 @@ check("4b GLOBAL: 拾える TODO が他者所有だけなら undefined", () =>
 			],
 			"global",
 			S,
-		),
-		undefined,
+		)?.id,
+		1,
 	));
 check("5 SESSION TODO: movedBy 無しでも拾える（既存挙動）", () =>
 	eq(nextTodo([{ id: 1, text: "t", col: "todo" }], "session", S)?.id, 1));
@@ -140,7 +140,7 @@ const settle = (sess) =>
 	sess.handlers.get("agent_before_settle")({ context: { contextMessages: [{ role: "assistant" }] } }, sess.ctx);
 
 try {
-	// --- (A) 6: GLOBAL の wake カード = pickFirstTodo の結果（他者所有は飛ばす） ------
+	// --- (A) 6: GLOBAL の wake カード = pickFirstTodo の結果（#87: 他者スタンプも拾う） ---
 	const A = "phase11-a";
 	const sessA = startSession(A);
 	setModes(A, "SESSION", true, true);
@@ -152,18 +152,19 @@ try {
 	]);
 	await sleep(2000);
 	assert.equal(sessA.sent.length, 1, `GLOBAL の拾える TODO で 1 回 wake するはず: ${JSON.stringify(sessA.sent)}`);
-	const want = { id: 1, text: "mine", col: "todo" };
-	assert.equal(sessA.sent[0], continuationPrompt(want, "global"), "wake は他者所有(#2)でなく #1");
-	assert.match(sessA.sent[0], /^GLOBAL TODO #1 "mine" を着手しろ。/);
-	assert.equal(readGlobal().find((c) => c.id === 1).col, "todo", "poll は盤面を書かない");
+	const want = { id: 2, text: "theirs", col: "todo", movedBy: OTHER, priority: 9 };
+	assert.equal(sessA.sent[0], continuationPrompt(want, "global"), "wake は priority 9 の #2");
+	assert.match(sessA.sent[0], /^GLOBAL TODO #2 "theirs" を着手しろ。/);
+	assert.equal(readGlobal().find((c) => c.id === 2).col, "todo", "poll は盤面を書かない");
 	const picked = pickFirstTodo(A, "global");
 	assert.ok(picked, "pickFirstTodo は GLOBAL の拾える TODO を返す");
-	assert.equal(picked.id, 1, "poll の wake と pickFirstTodo は同じカード");
-	assert.equal(readGlobal().find((c) => c.id === 2).col, "todo", "他者所有は動かない");
-	assert.equal(readGlobal().find((c) => c.id === 1).col, "doing", "pickFirstTodo は実際に DOING へ移す");
+	assert.equal(picked.id, 2, "poll の wake と pickFirstTodo は同じカード");
+	assert.equal(readGlobal().find((c) => c.id === 2).col, "doing", "pickFirstTodo は実際に DOING へ移す");
+	assert.equal(readGlobal().find((c) => c.id === 2).movedBy, A, "着手した A が所有を取る");
+	assert.equal(readGlobal().find((c) => c.id === 1).col, "todo", "選ばれなかった #1 は動かない");
 	passed += 1;
 
-	// --- (B) 7: settle は GLOBAL の他者所有 TODO を動かさない --------------------
+	// --- (B) 7: #87 settle は GLOBAL の他者スタンプ TODO も拾って DOING にする ---
 	const B = "phase11-b";
 	const sessB = startSession(B);
 	setModes(B, "SESSION", true, true);
@@ -171,8 +172,9 @@ try {
 	writeBoardFile(B, []); // SESSION に拾う TODO なし
 	writeGlobalFile([{ id: 5, text: "theirs", col: "todo", movedBy: OTHER, priority: 9 }]);
 	const resB = settle(sessB);
-	assert.equal(readGlobal().find((c) => c.id === 5).col, "todo", `settle が他者所有 GLOBAL TODO を動かした: ${JSON.stringify(readGlobal())}`);
-	assert.equal(resB, undefined, "動かすカードが無ければ settle は continue しない");
+	assert.equal(readGlobal().find((c) => c.id === 5).col, "doing", `settle が他者スタンプ GLOBAL TODO を拾わなかった: ${JSON.stringify(readGlobal())}`);
+	assert.equal(readGlobal().find((c) => c.id === 5).movedBy, B, "拾った B が所有を取る");
+	assert.ok(resB && resB.continue === true, "拾った以上 settle は続行する");
 	passed += 1;
 
 	// --- (C) 陽性対照: 同じ経路で movedBy 無し GLOBAL TODO は settle が拾う ---------
@@ -200,16 +202,16 @@ try {
 	assert.ok(resE && resE.continue === true, "SESSION TODO 経由の settle は続行する");
 	passed += 1;
 
-	// --- (F) 純関数の poll と同じ式の一致（所有フィルタ適用後） -------------------
+	// --- (F) 純関数の poll と同じ式の一致（TODO に所有フィルタは無い） -------------
 	const pollPick = (cards, sid, scope) =>
 		tickCardFor(cards, scope, sid) ?? nextTodo(cards, scope, sid);
-	check("6 純関数: poll の wake 選定 = nextTodo（GLOBAL 他者所有あり）", () => {
+	check("6 純関数: poll の wake 選定 = nextTodo（GLOBAL 他者スタンプあり）", () => {
 		const cards = [
 			{ id: 1, text: "mine", col: "todo" },
 			{ id: 2, text: "theirs", col: "todo", movedBy: OTHER, priority: 9 },
 		];
 		eq(pollPick(cards, S, "global")?.id, nextTodo(cards, "global", S)?.id);
-		eq(pollPick(cards, S, "global")?.id, 1);
+		eq(pollPick(cards, S, "global")?.id, 2); // #87: priority 9 の他者スタンプが先頭
 	});
 } catch (err) {
 	failures.push(`live: ${err.message}`);

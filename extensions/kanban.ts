@@ -1221,41 +1221,50 @@ function setLoopTag(sessionId: string, scope: Scope, tag: string): void {
 }
 
 /**
- * TODO cards THIS session may pick. The mirror of headOwnedDoing, and the rule is the
- * opposite on purpose: DOING means "someone is on it", so an unowned DOING card is off
- * limits. A TODO means "nobody started it yet", so in the global layer an unstamped one
- * is still fair game -- it only becomes someone else's once a /api/move stamps movedBy.
- * Session boards are ours alone: every TODO there qualifies.
- */
-function ownedTodos(cards: Card[], scope: Scope, sid: string): Card[] {
-	const todo = cards.filter((c) => c.col === "todo");
-	return scope === "global" ? todo.filter((c) => c.movedBy === undefined || c.movedBy === sid) : todo;
-}
-
-/**
+ * #87: TODO (not started) carries NO ownership. `movedBy` on a TODO is only the record
+ * of who last touched the card -- filtering on it here is what turned a sibling's GLOBAL
+ * TODO into a card nobody could pick: the only poller reads its own sid's board, and the
+ * stamp said "not yours". Ownership lives in DOING alone (headOwnedDoing / tickCardFor),
+ * so "do not steal someone's work in progress" is still enforced.
  * Pure: the TODO autoPick would move next, without moving it. `pickFirstTodo` uses
  * this too, so the poll's wake card is the same card the settle will pick.
+ * scope/sid stay in the signature: they are the poll/settle call convention, and every
+ * caller (and test) passes them; the pick itself no longer depends on either.
  */
-export function nextTodo(cards: Card[], scope: Scope, sid: string, now: number = Date.now()): Card | undefined {
+export function nextTodo(cards: Card[], _scope: Scope, _sid: string, now: number = Date.now()): Card | undefined {
 	// orderTodos: priority descending, then id ascending (the old rule at equal priority).
 	// Silent cards are dropped before ordering, so a blocked/scheduled head cannot
 	// starve the pickable card behind it (autoPick as a whole stays alive).
-	return orderTodos(ownedTodos(cards, scope, sid).filter((c) => !isSilent(c, now)))[0];
+	return orderTodos(cards.filter((c) => c.col === "todo" && !isSilent(c, now)))[0];
 }
 
 /**
  * Move the first TODO card into DOING. Returns the card, or null when there is no
  * TODO left. autoPick keeps a card moving, so the stale warning starts now.
+ *
+ * #87 CAS: with TODO ownership gone, two sessions may aim at the same card. The move is
+ * a read-modify-write, so the card is re-read from disk right before the write and only
+ * moved while it is STILL an unclaimed TODO. The claim itself is the write: `movedBy`
+ * holds one value, so the winner's name survives and the loser's `headOwnedDoing` no
+ * longer matches. There is no file lock to reuse (the session-wide write lock was removed
+ * in 2e5d4ca); inside one process the whole read/verify/write block is synchronous, so
+ * the only remaining window is another process pre-empting between the two file ops.
  */
 export function pickFirstTodo(sessionId: string, scope: Scope): Card | null {
 	const path = boardPath(scope, sessionId);
-	const b = readBoard(path);
-	const first = nextTodo(b.cards, scope, sessionId);
-	if (first === undefined) return null;
-	first.col = "doing";
-	stampMove(first, sessionId);
+	const target = nextTodo(readBoard(path).cards, scope, sessionId);
+	if (target === undefined) return null;
+	const b = readBoard(path); // CAS: re-read, do not trust the snapshot we chose from
+	const live = b.cards.find((c) => c.id === target.id);
+	if (live === undefined || live.col !== "todo" || isSilent(live)) return null; // lost the race
+	live.col = "doing";
+	stampMove(live, sessionId);
 	writeBoard(path, b);
-	return first;
+	// Read back: if a sibling wrote between our verify and our rename, its movedBy is what
+	// survived and this session must not go on working as if it owned the card.
+	const claimed = readBoard(path).cards.find((c) => c.id === target.id);
+	if (claimed === undefined || claimed.movedBy !== sessionId) return null;
+	return claimed;
 }
 
 /**
