@@ -6486,7 +6486,12 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 		if (loop.halted === "stuck") {
 			const driving = loop.scope ?? "session";
 			if (!cardsIn(readBoard(boardPath(driving, sid)), "doing").some((c) => c.id === loop.stuckId)) {
-				loop = { count: 0, halted: null, scope: null, stuckId: null, stuckCount: 0, lastActivityAt: 0 };
+				// #90: the activity clock says "active NOW", not 0. 0 reads as "no activity recorded"
+				// (poll passes `|| undefined` and the gate treats undefined as just-active), so quiet
+				// only opened at starved = 3 intervals: a 5-minute window became 15 (measured in #88).
+				// Stamping now costs one interval and leaves lastTickAt alone, so the starvation guard
+				// (lastTickAt alone decides) still fires after 3 intervals no matter what this says.
+				loop = { count: 0, halted: null, scope: null, stuckId: null, stuckCount: 0, lastActivityAt: Date.now() };
 				persistLoop();
 				paintLoop(ctx, sid);
 			}
