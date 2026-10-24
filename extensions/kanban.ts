@@ -5657,6 +5657,10 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 		setMode(f, sid, "session", "doingLoop", true);
 		setMode(f, sid, "global", "doingLoop", true);
 		writeModesFile(f);
+		// #89: a resume turns the loop back ON, so the timer must exist. No-op when it already
+		// does (the /api/resume path runs inside poll) and when this process has no ownCtx yet;
+		// adopting an owner here would steal the driver from the session that pinned it.
+		ensurePollTimer();
 		paintLoop(ctx, sid); // clears the footer tag and the dashboard's halted row
 		return before;
 	};
@@ -5876,6 +5880,23 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 	};
 
 	/**
+	 * #89: the only place the timer is created, and the pair of stopPoll(). `sync()` fires on
+	 * session_start/session_tree alone, so a process that never receives one (a restart, or
+	 * the `/kanban take` handover into a session that never started here) sat at
+	 * pollTimer=null forever: measured 0 wakes in 90s and 0 in 8s after take. Every path that
+	 * makes the loop runnable calls this instead of waiting for the next event.
+	 *
+	 * Two guards: no ownCtx = nothing to poll, and an existing timer must never be replaced
+	 * (a second interval would halve the period and wake too early).
+	 */
+	const ensurePollTimer = (): void => {
+		if (ownCtx === null || pollTimer !== null) return;
+		// Same period as the dashboard's poll so the footer and the page converge.
+		pollTimer = setInterval(poll, 1500);
+		pollTimer.unref(); // a stray timer must never hold the process open
+	};
+
+	/**
 	 * A disposed runner makes every ctx accessor throw (assertActive), `isIdle()` included.
 	 * Warn once, and after two consecutive throws release ownCtx and stop the timer: the ctx
 	 * cannot be revived here, so the next session_start adopts instead of throwing forever.
@@ -6034,6 +6055,8 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 				// activity clock, so the previous owner's quiet window cannot block the new one.
 				loop.halted = null;
 				loop.lastActivityAt = 0;
+				// #89: adopting a ctx without arming the timer left the handover inert (8s -> 0 wakes).
+				ensurePollTimer();
 				ctx.ui.notify(`kanban: 駆動元を ${prev ?? "なし"} → ${sid} に切り替えた`);
 				return;
 			}
@@ -6579,13 +6602,9 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 				// disposed ownCtx: its poll strikes out and releases it for the next start
 			}
 		}
-		if (pollTimer === null) {
-			// Same period as the dashboard's poll so the footer and the page converge.
-			// Started unconditionally: the HTTP server is shared with a sibling pi, but the
-			// loop is this session's, so no listen result may gate it.
-			pollTimer = setInterval(poll, 1500);
-			pollTimer.unref(); // a stray timer must never hold the process open
-		}
+		// Started unconditionally: the HTTP server is shared with a sibling pi, but the loop
+		// is this session's, so no listen result may gate it. ownCtx is set by now either way.
+		ensurePollTimer();
 	};
 	pi.on("session_start", (_event, ctx) => sync(ctx, false));
 	pi.on("session_tree", (_event, ctx) => sync(ctx, true));
