@@ -1828,6 +1828,16 @@ function learnedServeHost(): string | null {
 }
 
 /**
+ * #94: what the board calls itself. This used `os.hostname()` directly, so a box whose
+ * /etc/hostname is a docker container id titled the page "KANBAN - 0ac4a588fea8" while
+ * every /serve URL it handed out said "nas". The learned host is the name the user's
+ * browser actually reaches this machine by, so the title should agree with the URLs.
+ */
+function hostLabel(): string {
+	return learnedServeHost() ?? hostname();
+}
+
+/**
  * #23: /serve is browser traffic — handle() routes every /serve path here and nothing
  * else — so its Host header names the host the user actually reached us at, and it
  * survives a sandboxed iframe whose page JS is dead. `/api/*` is deliberately NOT a
@@ -5553,7 +5563,7 @@ ${KANBAN_MD_JS}
 </script>
 </body>
 </html>
-`.replace(/__KB_HOST__/g, hostname);
+`.replace(/__KB_HOST__/g, hostLabel);
 
 // ---------------------------------------------------------------------------
 // Extension body
@@ -6679,6 +6689,8 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 			hasTimer: () => pollTimer !== null,
 			poll,
 			sweepServe,
+			// #94: the title and the URLs must agree; a test needs both sides.
+			serveBaseUrl,
 			// #67: the dashboard's 再開 is exercised through the real poll hand-off
 			// (/api/resume parks a token, poll consumes it); these let a test assert
 			// the parked state instead of sleeping on a timer.
