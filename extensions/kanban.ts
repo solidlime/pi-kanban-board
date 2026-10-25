@@ -918,7 +918,19 @@ export function renderInjectionText(b: Board): string | null {
 		// The token value itself never enters the prompt (it would be replayed to the model
 		// on every poll and end up in transcripts).
 		"TOKEN: /kanban url (or the `kanban` url action) prints the link that sets the cookie.",
-		"Use the `kanban` tool to add/move/remove cards and keep them in sync with the user's real tasks.",
+		// #93: the threshold is measured, not guessed. Across 1941 past turns, `deliv>=3`
+		// is 13% of requests but 43% of assistant work, and 37% of those runs exceed 30
+		// minutes — the region where state has to survive across turns. `deliv=2` is
+		// usually one file plus a check (median 16 messages / 7 min), so splitting there
+		// just turns the board into a log of what was done instead of what is owed.
+		"Use the `kanban` tool to hold what you owe, not what you did.",
+		"",
+		"Open a card when a request needs three or more separate deliverables —",
+		"three files, three delegations, or a mix. Below that, just do it.",
+		"",
+		"A card is a promise to finish something. Keep going without waiting:",
+		"if the user goes quiet, the board is what tells the next turn what is",
+		"owed. Move it to DONE only when the thing actually works.",
 		"=== END KANBAN ===",
 	].join("\n");
 }

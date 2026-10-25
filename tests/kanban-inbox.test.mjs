@@ -210,7 +210,11 @@ const board = (cards) => ({ cards, nextId: 99 });
 	});
 	// 未読 0 のときは行ごと出さない（既存の KANBAN ブロックは不変）
 	check("A6 未読 0 のブロックに余分な空行が無い", () => {
-		assert.doesNotMatch(after, /\n\n/);
+		// #93: the injected guidance carries its own paragraph breaks now, so "no blank
+		// line anywhere" stopped being the invariant. What must hold is that dropping
+		// the inbox line leaves no empty slot where it used to sit — right before GUI.
+		assert.ok(!after.includes("INBOX"), "INBOX 行が残っている");
+		assert.match(after, /DONE\s+\(none\)\nGUI: open/, after);
 		assert.match(after, /\n=== END KANBAN ===$/);
 	});
 	// ack 全 entry（引数無し）でも seen が書かれる
