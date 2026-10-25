@@ -1114,6 +1114,9 @@ const KANBAN_HELP =
 	"/kanban add <タスク内容>  同じ（空のカードは作りません）\n" +
 	"/kanban priority <id> [n]  優先度（大きいほど先に autoPick、-99〜99。無指定で表示、id 無しで TODO 一覧）\n" +
 	"/kanban img <id> <path>  ローカル画像を #id に添付（media/ にコピー、8MBまで）\n" +
+	// ツール専用の操作。`/kanban edit ...` はコマンドとして実在しない（parseKanbanArgs に無い語は
+	// カード追加になる）ので、スラッシュ記法では書かない。
+	"kanban ツール action=\"edit\" <id> <本文>  本文を差し替える（列・所有権は変わらない。空は不可）\n" +
 	"/kanban interval [global] <分>  自動再開の間隔（無指定で現在値）\n" +
 	"/kanban stuck [global] <回>  スタック判定の閾値（無指定で現在値）\n" +
 	"/kanban maxloops [global] <回>  ループ上限（無指定で現在値、0 = 無制限）\n" +
@@ -6248,7 +6251,7 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 		name: "kanban",
 		label: "Kanban board",
 		description:
-			"Manage a 3-column kanban board (todo/doing/done). action=list shows the board, add creates a card, move changes its column, remove deletes it, check runs the board/serve/media/modes self-test and returns its JSON, resume clears a doing-loop halt (same reset as /kanban loop on: budget back to 10, doingLoop ON in both scopes) — the GUI's loop switch cannot clear it, because the halt lives in the extension process, not in modes.json. scope selects the board: 'session' (default, this conversation's board) or 'global' (shared by every session). Card IDs are unique only within one board — global #7 and session #7 are different cards. url returns the token-bearing dashboard URL to open in a browser. The board is shared with the user's GUI and persisted under ~/.pi/kanban/.",
+			"Manage a 3-column kanban board (todo/doing/done). action=list shows the board, add creates a card, move changes its column, remove deletes it, edit rewrites a card's text (column and ownership stay), check runs the board/serve/media/modes self-test and returns its JSON, resume clears a doing-loop halt (same reset as /kanban loop on: budget back to 10, doingLoop ON in both scopes) — the GUI's loop switch cannot clear it, because the halt lives in the extension process, not in modes.json. scope selects the board: 'session' (default, this conversation's board) or 'global' (shared by every session). Card IDs are unique only within one board — global #7 and session #7 are different cards. url returns the token-bearing dashboard URL to open in a browser. The board is shared with the user's GUI and persisted under ~/.pi/kanban/.",
 		parameters: Type.Object({
 			action: Type.Union([
 				Type.Literal("list"),
@@ -6260,6 +6263,9 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 				// HTTP token - the `kanban` tool is not an HTTP client.
 				Type.Literal("resume"),
 				Type.Literal("url"),
+				// edit rewrites a card's text only. Same rules as /api/rename: no stampMove,
+				// movedAt/movedBy stay (a rename does not transfer ownership), empty text is an error.
+				Type.Literal("edit"),
 			]),
 			scope: Type.Optional(Type.Union([Type.Literal("session"), Type.Literal("global")])),
 			text: Type.Optional(Type.String()),
@@ -6335,6 +6341,17 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 					if (gateError !== null) return fail(gateError);
 					persistError = writeBoard(path, b);
 					message = `moved #${card.id} to ${card.col} (${scope})${gateNote(card)}`;
+					break;
+				}
+				case "edit": {
+					if (params.id === undefined) return fail("edit requires id");
+					const text = (params.text ?? "").trim();
+					if (text.length === 0) return fail("edit requires a non-empty text");
+					const card = b.cards.find((c) => c.id === params.id);
+					if (card === undefined) return fail(`no card with id ${params.id} in the ${scope} board`);
+					card.text = text;
+					persistError = writeBoard(path, b);
+					message = `edited #${card.id} (${scope})`;
 					break;
 				}
 				case "remove": {
