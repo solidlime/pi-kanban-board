@@ -60,3 +60,13 @@
 - `tests/kanban-db-maint-http.test.mjs`（新規、既存の HTTP テストの雛形に倣う）: GET は 405 / token なしは 401 / diagnose は 200 で `integrity:"ok"`・`pages>0` / vacuum は 200 で `after <= before` かつカードが残る。
 - `tests/kanban-dashboard-settings.test.mjs`: ボタン存在、診断クリックで `POST /api/db/diagnose` が 1 回だけ、連打しても 1 回、VACUUM クリックで `/api/db/vacuum` が 1 回、結果行に文言が出る。
 - `tests/kanban-dashboard-projects.test.mjs:147` の `fetch(` 本数 assertion が増えるので追随する。
+
+## #14 pi の実行状態を外部から読む口（調査・完了）
+
+結論だけここに残す。詳細と実測ログは [issue-14-external-state.md](issue-14-external-state.md)。
+
+- **公式に保証された口**: `~/.pi/agent/sessions/--<cwd>--/<ts>_<sid>.jsonl` の走査 + JSONL パース（`docs/session-format.md:11-14`）。読めるのは id / cwd / model(`model_change`) / thinkingLevel / 全メッセージ / `usage`（トークン + コスト）。
+- **実行中かどうかは docs に存在しない**（lock / heartbeat / status は 0 件）。代わりに **pi-intercom の broker が生きた状態を持つ**: named pipe へ 4 バイト長プレフィックス + JSON で繋ぎ、`register` → `list` で `status`（`tool:codemode` 等）/ `contextPct` / `pid` / `lastActivity` が取れる（実測成功）。ただし register は `session_joined` を撒くので、使うなら常駐 1 接続で。
+- **RPC `get_state` と `--mode json` は使えない**: どちらも自分が起動した子プロセス限定で、既存セッションへの attach は無い（`docs/rpc.md:7-10`）。
+- セッション追記は `appendFileSync` 単発・fsync 無し（`dist/core/session-manager.js:812`）。**読む側は末尾の不完全行を捨てる**。
+- 実装するなら: モデル名とコストはファイル読み、実行状態と contextPct だけ broker（無ければ列ごと非表示、`pi-intercom` は任意依存）。mtime で「動いていそう」を推測するのはやめる。
