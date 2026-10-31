@@ -1,6 +1,6 @@
 {
   "name": "pi-kanban-board",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Kanban board for pi: a session-scoped board the agent keeps in sync, an HTTP dashboard on port 8789, and an autonomous doing-loop.",
   "keywords": [
     "pi-package",
