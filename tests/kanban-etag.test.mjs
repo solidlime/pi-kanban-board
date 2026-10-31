@@ -202,7 +202,7 @@ setMtime();
 const nextMin = await get("/api/dashboard", { "If-None-Match": sameMin1Etag });
 const nextMinBody = await nextMin.text();
 
-await check("分が変わると ETag が変わり 200 + 本文あり", () => {
+await check("内容が変わると ETag が変わり 200 + 本文あり", () => {
 	assert.equal(nextMin.status, 200, `status=${nextMin.status} (丸めすぎで更新を取り逃がしている)`);
 	assert.ok(nextMinBody.length > 0, "本文が空");
 	assert.notEqual(nextMin.headers.get("etag"), sameMin1Etag, "ETag が変わっていない");
