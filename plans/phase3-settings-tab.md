@@ -35,3 +35,28 @@
 - 並び順: ボードのループ → 保存データ → 配信サーバー → 自己診断（インフラ系を後ろに寄せる）。
 - テストのスライス境界が `id="pane-serve"` を marker にしているので `id="pane-settings"` に付け替える（tabs / cards / collapse-search / projects）。
 - `isEditing()` の `#serve` は残る（入力欄は同じ id のまま設定ペイン内にある）。
+
+## #13 DB メンテ操作（VACUUM・件数・診断）（実施中）
+設定タブの「保存データ」に、今ある件数表示へ **診断** と **VACUUM** の 2 操作を足す。
+
+### API（POST のみ。既存 /api/selftest と同じ流儀で、prefetch では叩けない）
+- `POST /api/db/diagnose` → `{ok, integrity, pages, freelist, pageSize, bytes, boards, cards, projects, decisions}`。
+  `integrity === "ok"` なら 200、それ以外は 503（/api/selftest と同じ扱い）。
+- `POST /api/db/vacuum` → `{ok, before, after, saved, ...dbInfo}`。失敗は 500 `{ok:false, error}`。
+- 書き込み系パス判定（`extensions/kanban.ts:1652` 付近の `if (pathname === "/api/upload" || pathname === "/api/selftest") return true;`）に 2 パスを追加する。忘れると CSRF/Origin ゲートを素通りする。
+
+### db.ts
+- `KanbanDb` に `maintenance()` と `vacuum()` を足す。`PRAGMA integrity_check / page_count / freelist_count / page_size` を 1 行ずつ読み、`VACUUM` は try/catch で失敗を投げ返す（握り潰さない）。
+- pragma が取れない環境では `integrity: "unavailable"` を返して落ちない（node:sqlite は experimental）。
+
+### UI（`web/dashboard.html` の `#settings-db`）
+- 既存の行（サイズ・件数）はそのまま。下に `DB 診断` / `VACUUM` の 2 ボタンと結果行（`aria-live="polite"`）を足す。
+- **`selfTestBusy` と同じモジュールスコープのフラグで連打と二重 POST を防ぐ**（`btn()` の flightGate は DOM ノードに閉じるので 5 秒ポーリングの再描画で無効化される）。押した瞬間に `renderDb()` を呼んで、押したノードごと無効な新品に置き換える。
+- 診断成功の表示: `整合性 ok / ページ 24 / 空き 0 / 4.0 KB`。VACUUM 成功: `4.0 KB → 3.5 KB（-12%）`。
+- 応答に `db` が入っているので、成功後は `reload()` で件数とサイズを取り直す（自前で再計算しない）。
+
+### テスト
+- `tests/db.test.mjs`: `maintenance()` が integrity ok / pages > 0、`vacuum()` 後もカードが読めて integrity ok。
+- `tests/kanban-db-maint-http.test.mjs`（新規、既存の HTTP テストの雛形に倣う）: GET は 405 / token なしは 401 / diagnose は 200 で `integrity:"ok"`・`pages>0` / vacuum は 200 で `after <= before` かつカードが残る。
+- `tests/kanban-dashboard-settings.test.mjs`: ボタン存在、診断クリックで `POST /api/db/diagnose` が 1 回だけ、連打しても 1 回、VACUUM クリックで `/api/db/vacuum` が 1 回、結果行に文言が出る。
+- `tests/kanban-dashboard-projects.test.mjs:147` の `fetch(` 本数 assertion が増えるので追随する。

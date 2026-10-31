@@ -1650,6 +1650,8 @@ function crossOriginWriteRefusal(req: IncomingMessage): string | null {
  */
 function isWritePath(pathname: string, method: string): boolean {
 	if (pathname === "/api/upload" || pathname === "/api/selftest") return true;
+	// #13: DB の診断と VACUUM も「読むだけの GET」では踏ませない（VACUUM は書き込み）。
+	if (pathname === "/api/db/diagnose" || pathname === "/api/db/vacuum") return true;
 	if (pathname === "/api/host" || pathname === "/api/serve") return true;
 	if (method === "POST" && (pathname === SERVE_PREFIX || pathname.startsWith(`${SERVE_PREFIX}/`))) return true;
 	if (method !== "GET") return false;
@@ -3202,7 +3204,15 @@ async function projectsPayload(): Promise<unknown> {
  * 読めないときは null — ダッシュボードは何も描かない（旧サーバー互換と同じ見え方）。
  * counts は呼び出し元が既に持っている数字（totals 合計）を使って二重に数えない。
  */
-function dbInfo(cards: number): unknown {
+type DbInfo = {
+	file: string;
+	bytes: number;
+	boards: number;
+	cards: number;
+	projects: number;
+	decisions: number;
+};
+function dbInfo(cards: number): DbInfo | null {
 	try {
 		const st = statSync(DB_FILE);
 		const store = kanbanDb();
@@ -3219,6 +3229,47 @@ function dbInfo(cards: number): unknown {
 	}
 }
 
+/**
+ * #13: GLOBAL と全セッションの列合計。/api/dashboard の stats と /api/db/* の件数が
+ * 同じ数え方になるよう 1 か所に置く（数え直す実装を増やさない）。
+ */
+function totalCounts(
+	gb: Board,
+	sessions: { counts: { todo: number; doing: number; done: number } }[],
+): { todo: number; doing: number; done: number } {
+	const totals = countCols(gb);
+	for (const s of sessions) {
+		totals.todo += s.counts.todo;
+		totals.doing += s.counts.doing;
+		totals.done += s.counts.done;
+	}
+	return totals;
+}
+
+/**
+ * #13: 設定タブからの DB 診断と VACUUM。件数は dbInfo に任せる（/api/dashboard と同じ
+ * 実装で、同じ数字を埋める）。VACUUM の失敗は握り潰さず 500 で返す。
+ */
+async function dbMaintenance(pathname: string, res: ServerResponse): Promise<void> {
+	const { sessions } = await sessionRows();
+	const totals = totalCounts(readBoard(GLOBAL_JSON), sessions);
+	const info = dbInfo(totals.todo + totals.doing + totals.done) ?? {};
+	if (pathname === "/api/db/diagnose") {
+		const m = kanbanDb().maintenance();
+		const ok = m.integrity === "ok";
+		sendJson(res, ok ? 200 : 503, { ok, ...m, ...info });
+		return;
+	}
+	try {
+		const before = statSync(DB_FILE).size;
+		kanbanDb().vacuum();
+		const after = statSync(DB_FILE).size;
+		sendJson(res, 200, { ok: true, before, after, saved: before - after, ...info });
+	} catch (err) {
+		sendJson(res, 500, { ok: false, error: String((err && (err as Error).message) || err) });
+	}
+}
+
 /** GET /api/dashboard: one request carrying everything the dashboard renders. */
 async function dashboardPayload(): Promise<unknown> {
 	const { sessions } = await sessionRows();
@@ -3227,12 +3278,7 @@ async function dashboardPayload(): Promise<unknown> {
 	// The GLOBAL board's switches live under scope=global, keyed by the active session.
 	const f = readModesFile();
 	// stats.todo/doing/done = GLOBAL plus every session board.
-	const totals = { ...globalCounts };
-	for (const s of sessions) {
-		totals.todo += s.counts.todo;
-		totals.doing += s.counts.doing;
-		totals.done += s.counts.done;
-	}
+	const totals = totalCounts(gb, sessions);
 	// Dead registrations stay listed; `exists` is the flag that tells the UI.
 	// 期限切れも残す: dashboard が「期限切れ」と出し、そこから解除できるようにする。
 	const serve = readServeFile().map((e) => ({
@@ -3614,6 +3660,12 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
 		if (url.pathname === "/api/selftest") {
 			const report = runSelfTest();
 			sendJson(res, report.ok ? 200 : 503, report);
+			return;
+		}
+		if (url.pathname === "/api/db/diagnose" || url.pathname === "/api/db/vacuum") {
+			void dbMaintenance(url.pathname, res).catch(() =>
+				sendJson(res, 500, { ok: false, error: "db maintenance failed" }),
+			);
 			return;
 		}
 		if (url.pathname !== "/api/upload") {

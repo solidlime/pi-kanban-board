@@ -1572,6 +1572,51 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
     row.appendChild(el("span", "rest", "ボード " + numOr0(dbInfo.boards) + " / カード " + numOr0(dbInfo.cards) +
       " / プロジェクト " + numOr0(dbInfo.projects) + " / 決定 " + numOr0(dbInfo.decisions)));
     box.appendChild(row);
+    // #13: 診断と VACUUM。実行中は結果行を「実行中…」にする（結果は dbResult が持つ）。
+    var act = el("div", "srow");
+    act.appendChild(btn("DB 診断", "整合性とページ数を読む（/api/db/diagnose）", function(){ runDbAction("diagnose"); }, dbBusy !== null));
+    act.appendChild(btn("VACUUM", "空き領域を回収してファイルを縮める（/api/db/vacuum）", function(){ runDbAction("vacuum"); }, dbBusy !== null));
+    box.appendChild(act);
+    var res = el("div", null, dbBusy ? "実行中…" : (dbResult || ""));
+    res.id = "settings-db-result";
+    res.setAttribute("aria-live", "polite");
+    box.appendChild(res);
+  }
+  // #13: 実行中フラグと結果は selfTest と同じ理由でモジュールに持つ。renderDb() は 5 秒
+  // ポーリングの再描画でボタン DOM ごと作り直されるので、btn() の flightGate（ノードに残る）
+  // だけでは実行中の再描画で新品の有効ボタンが生えて 2 回目の POST が通る。
+  var dbResult = null;  // 最後の結果（ポーリングの再描画でも消さない）
+  var dbBusy = null;    // 実行中の action 名。null = 実行していない
+  function runDbAction(action){
+    if (dbBusy) return;
+    dbBusy = action;
+    renderDb(lastData && lastData.db); // 押したノードも即 disabled の新品に差し替える
+    // api() は !ok で throw するので、503/500 の本文が読めるよう生 fetch で読む（selftest と同じ）。
+    return fetch("/api/db/" + action, { method: "POST" }).then(function(r){
+      if (r.status === 401) authFail();
+      return r.json();
+    }).then(function(d){
+      dbBusy = null;
+      dbResult = dbResultText(action, d);
+      renderDb(lastData && lastData.db);
+      reload(); // 件数とサイズはサーバの数字を取り直す（自前で再計算しない）
+    }, function(){
+      dbBusy = null;
+      dbResult = "NG 実行できません";
+      renderDb(lastData && lastData.db);
+    });
+  }
+  function dbResultText(action, d){
+    if (!d || typeof d !== "object") return "NG 応答が読めない";
+    if (action === "diagnose") {
+      if (d.ok !== true) return "NG 整合性 " + (d.integrity || "不明");
+      return "整合性 " + d.integrity + " / ページ " + numOr0(d.pages) + " / 空き " + numOr0(d.freelist) +
+        " / " + kbSize(d.bytes);
+    }
+    if (d.ok !== true) return "NG " + (d.error || "VACUUM に失敗");
+    var saved = numOr0(d.saved);
+    if (saved <= 0) return kbSize(d.before) + "（変化なし）";
+    return kbSize(d.before) + " → " + kbSize(d.after) + "（-" + Math.round((saved / d.before) * 100) + "%）";
   }
   function numOr0(v){ return typeof v === "number" && isFinite(v) ? v : 0; }
 

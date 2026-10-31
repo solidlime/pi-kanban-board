@@ -103,11 +103,12 @@ const DASH = {
 	db: DB,
 };
 
-async function boot({ dash = DASH, selftest, hold = false } = {}) {
+async function boot({ dash = DASH, selftest, hold = false, diagnose, vacuum, holdDb = null } = {}) {
 	const byId = {};
 	const urls = [];
 	const held = [];
 	let selftestAt = 0;
+	const dbAt = { diagnose: 0, vacuum: 0 };
 	const document = {
 		getElementById: (id) => byId[id] || (byId[id] = makeEl("div")),
 		createElement: (t) => makeEl(t),
@@ -135,6 +136,17 @@ async function boot({ dash = DASH, selftest, hold = false } = {}) {
 				if (hold) return new Promise((res) => held.push(() => res(body())));
 				return Promise.resolve(body());
 			}
+			if (url.includes("/api/db/")) {
+				// #13: DB メンテは書き込み（VACUUM はファイルを触る）ので POST でなければならない。
+				assert.equal(init && init.method, "POST", "db メンテが POST で叩かれていない");
+				const action = url.includes("/api/db/vacuum") ? "vacuum" : "diagnose";
+				dbAt[action] += 1;
+				const body = action === "vacuum"
+					? { ok: true, status: 200, json: () => Promise.resolve(vacuum) }
+					: { ok: true, status: 200, json: () => Promise.resolve(diagnose) };
+				if (holdDb === action) return new Promise((res) => held.push(() => res(body)));
+				return Promise.resolve(body);
+			}
 			return Promise.resolve(reply(state.dash));
 		},
 		setTimeout: () => 0,
@@ -144,7 +156,14 @@ async function boot({ dash = DASH, selftest, hold = false } = {}) {
 	vm.createContext(sandbox);
 	vm.runInContext(JS, sandbox);
 	for (let i = 0; i < 4; i++) await flush();
-	return { byId, urls, state, selftestCount: () => selftestAt, release: () => held.forEach((f) => f()) };
+	return {
+		byId,
+		urls,
+		state,
+		selftestCount: () => selftestAt,
+		dbCount: (action) => dbAt[action],
+		release: () => held.forEach((f) => f()),
+	};
 }
 
 const rows = (byId) => all(byId["settings-loops"], (e) => e.className === "srow");
@@ -297,4 +316,113 @@ test("#11: 診断結果は再描画でも残る", async () => {
 	for (let i = 0; i < 6; i++) await flush();
 	const shown = texts(byId["settings-selftest"]);
 	assert.ok(shown.some((t) => t === "OK（1 件）"), `再描画で消えた: ${shown.join(" / ")}`);
+});
+
+// --- #13 DB メンテ（診断 / VACUUM）--------------------------------------------
+const dbButtons = (byId) => all(byId["settings-db"], (n) => n.tagName === "BUTTON");
+const dbResultNodes = (byId) => all(byId["settings-db"], (n) => n.id === "settings-db-result");
+const DIAGNOSE = {
+	ok: true,
+	integrity: "ok",
+	pages: 24,
+	freelist: 0,
+	pageSize: 4096,
+	bytes: 4096,
+	file: "boards.sqlite",
+	boards: 3,
+	cards: 6,
+	projects: 2,
+	decisions: 4,
+};
+
+test("#13: 保存データに DB 診断 / VACUUM のボタンと結果行がある", async () => {
+	const { byId } = await boot({ diagnose: DIAGNOSE });
+	assert.deepEqual(dbButtons(byId).map((b) => b.textContent), ["DB 診断", "VACUUM"]);
+	const res = dbResultNodes(byId);
+	assert.equal(res.length, 1, `結果行が ${res.length} 個ある`);
+	assert.equal(res[0].getAttribute("aria-live"), "polite");
+});
+
+test("#13: DB 診断は POST /api/db/diagnose を 1 回だけ叩き、数値を出す", async () => {
+	const { byId, urls, dbCount } = await boot({ diagnose: DIAGNOSE });
+	const first = dbButtons(byId)[0];
+	first._lis.click[0]();
+	first._lis.click[0](); // 連打
+	for (let i = 0; i < 6; i++) await flush();
+	assert.equal(dbCount("diagnose"), 1, `診断を ${dbCount("diagnose")} 回叩いた`);
+	assert.equal(dbCount("vacuum"), 0);
+	assert.ok(urls.includes("/api/db/diagnose"));
+	const shown = texts(byId["settings-db"]);
+	assert.ok(shown.includes("整合性 ok / ページ 24 / 空き 0 / 4.0 KB"), `表示が違う: ${shown.join(" / ")}`);
+	// 診断の数値は自前で作らず、サーバの数字（reload）を取り直す
+	assert.ok(urls.filter((u) => u.startsWith("/api/dashboard")).length > 0);
+});
+
+// #13 (BLOCK): 実行中フラグは btn() の flightGate ではなくモジュールに持つ。flightGate は
+// ボタンの DOM ノードに残るので、5 秒ポーリングの再描画で新品ノードが生えると 2 回目が通る。
+test("#13: 実行中に再描画されても診断の再送は起きない", async () => {
+	const { byId, state, dbCount, release } = await boot({ diagnose: DIAGNOSE, holdDb: "diagnose" });
+	dbButtons(byId)[0]._lis.click[0]();
+	for (let i = 0; i < 2; i++) await flush();
+	assert.equal(dbCount("diagnose"), 1, `1 回目のクリックで ${dbCount("diagnose")} 回叩いた`);
+
+	// 5 秒ポーリング相当の再描画（render → renderSettings → renderDb）
+	state.dash = { ...DASH, stats: { ...DASH.stats, todo: 99 } };
+	writeButtons(rows(byId)[1])[0]._lis.click[0]();
+	for (let i = 0; i < 6; i++) await flush();
+
+	// モック DOM は box.innerHTML = "" を再現しないので、最新のノード（末尾）が今のボタン。
+	const now = dbButtons(byId);
+	const [diag, vac] = now.slice(-2);
+	assert.equal(diag.disabled, true, "実行中なのに再描画後の診断ボタンが有効");
+	assert.equal(vac.disabled, true, "実行中なのに再描画後の VACUUM ボタンが有効");
+	if (diag._lis.click) diag._lis.click[0]();
+	if (vac._lis.click) vac._lis.click[0]();
+	for (let i = 0; i < 2; i++) await flush();
+	assert.equal(dbCount("diagnose"), 1, `再描画後に再送した（${dbCount("diagnose")} 回）`);
+	assert.equal(dbCount("vacuum"), 0, "実行中に VACUUM が通った");
+
+	release();
+	for (let i = 0; i < 6; i++) await flush();
+	const down = dbButtons(byId).slice(-2);
+	assert.deepEqual(down.map((b) => b.disabled), [false, false], "完了後もボタンが死んでいる");
+	assert.ok(texts(byId["settings-db"]).includes("整合性 ok / ページ 24 / 空き 0 / 4.0 KB"));
+});
+
+test("#13: VACUUM は before → after と削減率を出す", async () => {
+	const { byId, dbCount } = await boot({
+		vacuum: { ok: true, before: 4096, after: 3600, saved: 496, file: "boards.sqlite", boards: 3, cards: 6, projects: 2, decisions: 4 },
+	});
+	dbButtons(byId)[1]._lis.click[0]();
+	for (let i = 0; i < 6; i++) await flush();
+	assert.equal(dbCount("vacuum"), 1, `VACUUM を ${dbCount("vacuum")} 回叩いた`);
+	assert.equal(dbCount("diagnose"), 0);
+	const shown = texts(byId["settings-db"]);
+	assert.ok(shown.includes("4.0 KB → 3.5 KB（-12%）"), `表示が違う: ${shown.join(" / ")}`);
+});
+
+test("#13: 縮まなかった VACUUM は「変化なし」と言う", async () => {
+	const { byId, dbCount } = await boot({ vacuum: { ok: true, before: 4096, after: 4096, saved: 0 } });
+	dbButtons(byId)[1]._lis.click[0]();
+	for (let i = 0; i < 6; i++) await flush();
+	assert.equal(dbCount("vacuum"), 1);
+	assert.ok(texts(byId["settings-db"]).includes("4.0 KB（変化なし）"), texts(byId["settings-db"]).join(" / "));
+});
+
+test("#13: VACUUM が 500 で落ちたら本文を NG として出す", async () => {
+	const { byId, dbCount } = await boot({ vacuum: { ok: false, error: "database is locked" } });
+	dbButtons(byId)[1]._lis.click[0]();
+	for (let i = 0; i < 6; i++) await flush();
+	assert.equal(dbCount("vacuum"), 1);
+	assert.ok(texts(byId["settings-db"]).includes("NG database is locked"), texts(byId["settings-db"]).join(" / "));
+});
+
+test("#13: 診断が 503（整合性 NG）でも本文を出す", async () => {
+	const { byId, dbCount } = await boot({
+		diagnose: { ok: false, integrity: "unavailable", pages: 0, freelist: 0, pageSize: 0, bytes: 0 },
+	});
+	dbButtons(byId)[0]._lis.click[0]();
+	for (let i = 0; i < 6; i++) await flush();
+	assert.equal(dbCount("diagnose"), 1);
+	assert.ok(texts(byId["settings-db"]).includes("NG 整合性 unavailable"), texts(byId["settings-db"]).join(" / "));
 });

@@ -185,9 +185,10 @@ check("タブは常に上部の横並び（#50 でサイドバー廃止）", () 
 	assert.match(mq, /\.tabs\{flex-direction:row/);
 });
 
-check("tf( は 1 箇所のみ（+ #11 の自己診断だけは生 fetch）", () => {
+check("tf( は 1 箇所のみ（+ #11 の自己診断と #13 の DB メンテだけは生 fetch）", () => {
 	// #11: /api/selftest は 503 を「NG の正常応答」として返すので、!ok で throw する api() は通せない。
-	assert.equal((html.match(/\bfetch\(/g) || []).length, 2);
+	// #13: /api/db/* も 503/500 の本文を読むので同じ理由で生 fetch を持つ。
+	assert.equal((html.match(/\bfetch\(/g) || []).length, 3);
 	assert.ok(html.includes("api(API)"), "ポーリングは api(API) を通る");
 	assert.ok(html.includes("return fetch(u"), "ボード書き込みの fetch は api() の中");
 	assert.ok(html.includes('fetch("/api/selftest"'), "自己診断の生 fetch が無い");

@@ -73,7 +73,7 @@ export type KanbanDb = {
 	/** Drop a whole board. Tests use this to reproduce "no boards at all". */
 	deleteBoard(key: BoardKey): void;
 	/** Every session board, newest touch first - the replacement for readdir(SESSIONS_DIR). */
-	sessionKeys(): { sid: string; touchedAt: number }[];
+	sessionKeys(): { sid: string; touchedAt: number }[];
 	/** Every project, most recently touched first. */
 	listProjects(): Project[];
 	/** Read one project, or null. */
@@ -86,6 +86,10 @@ export type KanbanDb = {
 	listDecisions(slug?: string): Decision[];
 	addDecision(slug: string, text: string, why?: string, at?: number): Decision;
 	deleteDecision(id: number): boolean;
+	/** #13: read-only health numbers for the settings tab. */
+	maintenance(): { integrity: string; pages: number; freelist: number; pageSize: number };
+	/** #13: compact the file. Throws on failure; the caller turns it into a 500. */
+	vacuum(): void;
 	close(): void;
 };
 
@@ -267,7 +271,7 @@ export function openKanbanDb(file: string): KanbanDb {
 	);
 	const insertDecision = db.prepare("INSERT INTO decision (slug, at, text, why) VALUES (?, ?, ?, ?)");
 	const deleteDecisionsBySlug = db.prepare("DELETE FROM decision WHERE slug = ?");
-	const deleteDecisionRow = db.prepare("DELETE FROM decision WHERE id = ?");
+	const deleteDecisionRow = db.prepare("DELETE FROM decision WHERE id = ?");
 	const sweep = db.prepare("DELETE FROM board WHERE scope = 'session' AND touched_at < ?");
 	const sweepDeps = db.prepare(
 		"DELETE FROM card_dep WHERE scope = 'session' AND sid IN (SELECT sid FROM board WHERE scope = 'session' AND touched_at < ?)",
@@ -301,6 +305,13 @@ export function openKanbanDb(file: string): KanbanDb {
 			}
 		}
 		return { cards, nextId: Number(head.next_id) };
+	};
+
+	// First column of a one-row pragma. Only maintenance() reads pragmas this way, so this
+	// stays a local helper instead of a general "run some SQL" door.
+	const pragmaValue = (sql: string): unknown => {
+		const row = db.prepare(sql).get() as Row | undefined;
+		return row === undefined ? undefined : Object.values(row)[0];
 	};
 
 	return {
@@ -415,6 +426,24 @@ export function openKanbanDb(file: string): KanbanDb {
 				db.exec("ROLLBACK");
 				throw err;
 			}
+		},
+		// One pragma at a time and every failure ends in the same answer: node:sqlite is
+		// experimental and the settings tab must still open on a file it cannot read.
+		maintenance() {
+			try {
+				return {
+					integrity: String(pragmaValue("PRAGMA integrity_check") ?? "unavailable"),
+					pages: Number(pragmaValue("PRAGMA page_count") ?? 0),
+					freelist: Number(pragmaValue("PRAGMA freelist_count") ?? 0),
+					pageSize: Number(pragmaValue("PRAGMA page_size") ?? 0),
+				};
+			} catch {
+				return { integrity: "unavailable", pages: 0, freelist: 0, pageSize: 0 };
+			}
+		},
+		// Not caught: a failed compaction is a real error, and the caller owns the 500.
+		vacuum() {
+			db.exec("VACUUM");
 		},
 		listDecisions(slug) {
 			const rows = slug === undefined ? selectDecisions.all() : selectDecisionsBySlug.all(slug);

@@ -208,3 +208,30 @@ test("a v1 database gains the project and decision tables without losing cards",
 	assert.deepEqual(db.readBoard(key).cards, [{ id: 1, text: "v1 card", col: "todo", project: "kb" }]);
 	db.close();
 });
+
+test("#13 maintenance reads integrity and page numbers without touching rows", async () => {
+	const { db, key } = await fresh();
+	db.writeBoard(key, { cards: [{ id: 1, text: "a", col: "todo" }], nextId: 2 });
+	const m = db.maintenance();
+	assert.equal(m.integrity, "ok");
+	assert.ok(m.pages > 0, `pages=${m.pages}`);
+	assert.ok(m.freelist >= 0, `freelist=${m.freelist}`);
+	assert.ok(m.pageSize > 0, `pageSize=${m.pageSize}`);
+	assert.deepEqual(db.readBoard(key).cards, [{ id: 1, text: "a", col: "todo" }]);
+	db.close();
+});
+
+test("#13 vacuum compacts the file and every card survives it", async () => {
+	const { db, key } = await fresh();
+	const cards = [
+		{ id: 1, text: "a", col: "todo" },
+		{ id: 2, text: "b", col: "done", project: "kb" },
+	];
+	db.writeBoard(key, { cards, nextId: 3 });
+	// Dropping a row is what leaves space behind: that is what VACUUM has to reclaim.
+	db.writeBoard(key, { cards: [cards[1]], nextId: 3 });
+	db.vacuum();
+	assert.deepEqual(db.readBoard(key).cards, [cards[1]]);
+	assert.equal(db.maintenance().integrity, "ok");
+	db.close();
+});

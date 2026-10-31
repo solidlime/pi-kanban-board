@@ -143,8 +143,9 @@ test("#8 ペインと取り込み先がある", () => {
 	assert.match(html, /id="pane-projects"[^>]*hidden/, "初期は隠れている");
 	// 専用タイマーは作らない: 既存の 5 秒ポーリング（reload）に相乗りする
 	assert.ok(html.includes('if (activeTab === "projects") loadProjects()'), "reload の末尾でだけ取りに行く");
-	// #11: 自己診断（/api/selftest）だけは 503 を正常応答として読むため生 fetch を 1 本持つ。
-	assert.equal((html.match(/fetch\(/g) || []).length, 2, "fetch 点は api() + /api/selftest");
+	// #11/#13: 自己診断（/api/selftest）と DB メンテ（/api/db/*）は 503/500 を正常な応答として
+	// 読むため生 fetch を持つ。api() は !ok で throw するので本文が読めない。
+	assert.equal((html.match(/fetch\(/g) || []).length, 3, "fetch 点は api() + /api/selftest + /api/db/*");
 });
 
 test("#8 決定を打っている間はポーリングが描き直さない", () => {
