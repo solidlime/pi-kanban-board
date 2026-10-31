@@ -13,11 +13,12 @@
 //
 // 実装の要点: 「閉じる」と「打ちかけを捨てる」を分離した。showAdd/showInput は表示だけを
 // 切り替え、破棄は clearAdd/clearInput が担う。blur は値が入っていれば捨てない。
+import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-const SRC = readFileSync(new URL("../extensions/kanban.ts", import.meta.url).pathname, "utf8");
+const SRC = readFileSync(fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url)), "utf8");
 
 const grab = (re) => [...SRC.matchAll(re)].map((m) => m[0]);
 
@@ -77,7 +78,7 @@ test("#75: Escape と Enter 確定は明示的に捨てる", () => {
 	const escapes = grab(/if \(e\.key === "Escape"\) \{ e\.preventDefault\(\); clear(?:Add|Input)\(\); show(?:Add|Input)\(false\); return; \}/g);
 	assert.equal(escapes.length, 1, "ダッシュボードの Escape が clear* を通ること");
 	assert.ok(
-		/var v = addIn\.value\.trim\(\);\n        clearAdd\(\);/.test(SRC),
+		/var v = addIn\.value\.trim\(\);\r?\n        clearAdd\(\);/.test(SRC),
 		"ダッシュボードの Enter 確定が clearAdd を通ること",
 	);
 

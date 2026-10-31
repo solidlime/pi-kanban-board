@@ -1,6 +1,7 @@
 // #85: ダッシュボードのポーリングを安くする (ETag / 304 + 可視状態ガード) 自己検証 (#011)。
 // フレームワーク無しで `node tests/kanban-etag.test.mjs`。
 // HOME と KANBAN_PORT を差し替えるので本番の ~/.pi/kanban と 8789 には触れない。
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
@@ -16,6 +17,9 @@ const KB = `${HOME_DIR}/.pi/kanban`;
 mkdirSync(`${KB}/sessions`, { recursive: true });
 mkdirSync(`${KB}/media`, { recursive: true });
 process.env.HOME = HOME_DIR;
+// Windows: os.homedir() prefers USERPROFILE over HOME, so keep them in step or the
+// server writes its token to the real profile and this test reads a missing file.
+process.env.USERPROFILE = process.env.HOME;
 process.env.KANBAN_PORT = String(
 	await new Promise((resolve) => {
 		const s = createServer();
@@ -30,10 +34,10 @@ const BASE = `http://127.0.0.1:${PORT}`;
 
 const require = createRequire(import.meta.url);
 const { createJiti } = require(
-	"/root/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/jiti/lib/jiti.cjs",
+	process.env.KANBAN_JITI ?? createRequire(import.meta.url).resolve("jiti"),
 );
 const jiti = createJiti(import.meta.url);
-const mod = await jiti.import(new URL("../extensions/kanban.ts", import.meta.url).pathname);
+const mod = await jiti.import(fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url)));
 
 const failures = [];
 let passed = 0;
@@ -328,4 +332,4 @@ await check("dashboard スクリプトに setInterval が無い（ポーリン�
 // --- 結果 ---------------------------------------------------------------------
 console.log(`kanban-etag: ${passed} passed, ${failures.length} failed`);
 for (const f of failures) console.log(`  FAIL ${f}`);
-process.exit(failures.length === 0 ? 0 : 1);
+setTimeout(() => process.exit(failures.length === 0 ? 0 : 1), 100);

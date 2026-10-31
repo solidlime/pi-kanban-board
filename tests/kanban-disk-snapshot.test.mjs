@@ -2,6 +2,7 @@
 // 危険なのは唯一「同一ミリ秒ティック内の2回の書き込み」なので、そこだけを実測で固定する。
 // `node tests/kanban-disk-snapshot.test.mjs`（フレームワーク無し、既存テストと同じ流儀）。
 // HOME と KANBAN_PORT を差し替えるので、本番の ~/.pi/kanban と 8789 には触れない。
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
@@ -11,6 +12,9 @@ const HOME_DIR = "/tmp/kb-disksig-home";
 rmSync(HOME_DIR, { recursive: true, force: true });
 mkdirSync(`${HOME_DIR}/.pi/kanban/sessions`, { recursive: true });
 process.env.HOME = HOME_DIR;
+// Windows: os.homedir() prefers USERPROFILE over HOME, so keep them in step or the
+// server writes its token to the real profile and this test reads a missing file.
+process.env.USERPROFILE = process.env.HOME;
 process.env.KANBAN_PORT = String(
 	await new Promise((resolve) => {
 		const s = createServer();
@@ -24,10 +28,10 @@ process.env.KANBAN_PORT = String(
 // dist/jiti.cjs は壊れているので lib/jiti.cjs を使う（既存テストと同じ経路）。
 const require = createRequire(import.meta.url);
 const { createJiti } = require(
-	"/root/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/jiti/lib/jiti.cjs",
+	process.env.KANBAN_JITI ?? createRequire(import.meta.url).resolve("jiti"),
 );
 const jiti = createJiti(import.meta.url);
-const SRC = new URL("../extensions/kanban.ts", import.meta.url).pathname;
+const SRC = fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url));
 const mod = await jiti.import(SRC);
 const SOURCE = readFileSync(SRC, "utf8");
 
@@ -119,4 +123,4 @@ check("writeModesFile も tmp+rename（ino が変わる = 署名が効く）", (
 
 console.log(`${passed} passed, ${failures.length} failed`);
 for (const failure of failures) console.log(`  FAIL ${failure}`);
-process.exit(failures.length === 0 ? 0 : 1);
+setTimeout(() => process.exit(failures.length === 0 ? 0 : 1), 100);

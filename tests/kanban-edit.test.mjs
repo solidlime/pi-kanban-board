@@ -3,6 +3,7 @@
 // text.trim() で空ならエラー（ボードを書かない）/ stampMove を呼ばない（movedAt・movedBy 据え置き）/
 // 対象が無ければエラー（黙って作らない）/ scope は move・remove と同じ解決。
 // HOME と KANBAN_PORT を差し替えるので、本番の ~/.pi/kanban と 8789 には触れない。
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
@@ -13,6 +14,9 @@ const HOME_DIR = "/tmp/kb-edit-home";
 rmSync(HOME_DIR, { recursive: true, force: true });
 mkdirSync(`${HOME_DIR}/.pi/kanban/sessions`, { recursive: true });
 process.env.HOME = HOME_DIR;
+// Windows: os.homedir() prefers USERPROFILE over HOME, so keep them in step or the
+// server writes its token to the real profile and this test reads a missing file.
+process.env.USERPROFILE = process.env.HOME;
 process.env.KANBAN_PORT = String(
 	await new Promise((resolve) => {
 		const s = createServer();
@@ -25,10 +29,10 @@ process.env.KANBAN_PORT = String(
 
 const require = createRequire(import.meta.url);
 const { createJiti } = require(
-	"/root/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/jiti/lib/jiti.cjs",
+	process.env.KANBAN_JITI ?? createRequire(import.meta.url).resolve("jiti"),
 );
 const jiti = createJiti(import.meta.url);
-const target = process.env.KANBAN_TS ?? new URL("../extensions/kanban.ts", import.meta.url).pathname;
+const target = process.env.KANBAN_TS ?? fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url));
 const mod = await jiti.import(target);
 
 const HOME = `${HOME_DIR}/.pi/kanban`;
@@ -209,4 +213,4 @@ await check("KANBAN_HELP に edit の行がある", async () => {
 for (const f of failures) console.error(`FAIL ${f}`);
 console.log(`${passed} passed, ${failures.length} failed`);
 // poll timer は session_start を踏むので動いている。HTTP サーバごと明示終了。
-process.exit(failures.length === 0 ? 0 : 1);
+setTimeout(() => process.exit(failures.length === 0 ? 0 : 1), 100);

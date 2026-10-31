@@ -1,6 +1,9 @@
 // kanban serve (ローカルパス HTTP 配信) の自己検証。フレームワーク無しで
 // `node tests/kanban-serve.test.mjs`。HOME と KANBAN_PORT を差し替えるので本番の
 // ~/.pi/kanban と 8789 には触れない。D の7項目 + B1/B2/B4/B6/A4/A9 を実測で固定する。
+import { fileURLToPath } from "node:url";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -13,11 +16,15 @@ import { authFetch, tokenHeader } from "./helpers/token.mjs";
 // #83b: HTTP routes need the server token now; tf = fetch + the kb_auth cookie.
 const tf = (input, init) => authFetch(input, init);
 
-const HOME_DIR = "/tmp/kb-serve-home";
+const TMP_ROOT = tmpdir();
+const HOME_DIR = TMP_ROOT + "/kb-serve-home";
 rmSync(HOME_DIR, { recursive: true, force: true });
-mkdirSync(`${HOME_DIR}/.pi/kanban/sessions`, { recursive: true });
-mkdirSync(`${HOME_DIR}/workspace/site/segments`, { recursive: true });
+mkdirSync(`${join(HOME_DIR, ".pi/kanban/sessions")}`, { recursive: true });
+mkdirSync(`${join(HOME_DIR, "workspace/site/segments")}`, { recursive: true });
 process.env.HOME = HOME_DIR;
+// Windows: os.homedir() prefers USERPROFILE over HOME, so keep them in step or the
+// server writes its token to the real profile and this test reads a missing file.
+process.env.USERPROFILE = process.env.HOME;
 
 const PORT = await new Promise((resolve) => {
 	const s = netServer();
@@ -30,10 +37,10 @@ process.env.KANBAN_PORT = String(PORT);
 
 const require = createRequire(import.meta.url);
 const { createJiti } = require(
-	"/root/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/jiti/lib/jiti.cjs",
+	process.env.KANBAN_JITI ?? createRequire(import.meta.url).resolve("jiti"),
 );
 const jiti = createJiti(import.meta.url);
-const SRC = new URL("../extensions/kanban.ts", import.meta.url).pathname;
+const SRC = fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url));
 const mod = await jiti.import(SRC);
 
 const failures = [];
@@ -72,7 +79,7 @@ const serve = tools.get("serve");
 assert.ok(serve, "serve ツールが registerTool されている");
 const call = (args) => serve.execute("t", args, null, () => {});
 const base = `http://127.0.0.1:${PORT}`;
-const SITE = `${HOME_DIR}/workspace/site`;
+const SITE = `${join(HOME_DIR, "workspace/site")}`;
 
 // 生のパスを送る (fetch は URL を正規化して `..` を消してしまう)
 function rawGet(path, extraHeaders = {}) {
@@ -91,7 +98,7 @@ function rawGet(path, extraHeaders = {}) {
 }
 
 const CONTENT = "0123456789abcdefghijklmnopqrstuv"; // 32 bytes
-writeFileSync(`${SITE}/segments/clip.txt`, CONTENT);
+writeFileSync(`${join(SITE, "segments/clip.txt")}`, CONTENT);
 
 // --- D1 / A3 / A4 / C1: add が URL を返し、再登録で同じ URL ---------------------
 const add = await call({ action: "add", path: SITE });
@@ -109,15 +116,15 @@ check("id は sha256(absPath) の先頭16hex", () =>
 	assert.equal(id, createHash("sha256").update(SITE).digest("hex").slice(0, 16)));
 
 // --- C2: 失敗は成功と区別できる ------------------------------------------------
-const badAdd = await call({ action: "add", path: `${HOME_DIR}/workspace/does-not-exist` });
+const badAdd = await call({ action: "add", path: `${join(HOME_DIR, "workspace/does-not-exist")}` });
 check("C2 存在しないパスは isError で返る", () => {
 	assert.equal(badAdd.isError, true);
 	assert.equal(badAdd.details.ok, false);
 });
 
 // --- D5 / A10: allowlist 外は 403 ---------------------------------------------
-mkdirSync(`${HOME_DIR}/.hidden-dir`, { recursive: true });
-const denied = await call({ action: "add", path: `${HOME_DIR}/.hidden-dir` });
+mkdirSync(`${join(HOME_DIR, ".hidden-dir")}`, { recursive: true });
+const denied = await call({ action: "add", path: `${join(HOME_DIR, ".hidden-dir")}` });
 check("D5 allowlist 外の登録は 403 + isError", () => {
 	assert.equal(denied.details.ok, false);
 	assert.equal(denied.details.status, 403, JSON.stringify(denied.details));
@@ -135,8 +142,8 @@ check("D5 allowlist 外の登録は 403 + isError", () => {
 	});
 }
 // A7: index.html があればそれを返す
-mkdirSync(`${SITE}/withindex`, { recursive: true });
-writeFileSync(`${SITE}/withindex/index.html`, "<h1>INDEX</h1>");
+mkdirSync(`${join(SITE, "withindex")}`, { recursive: true });
+writeFileSync(`${join(SITE, "withindex/index.html")}`, "<h1>INDEX</h1>");
 {
 	const res = await tf(`${base}/serve/${id}/withindex/`);
 	const html = await res.text();
@@ -200,7 +207,7 @@ writeFileSync(`${SITE}/withindex/index.html`, "<h1>INDEX</h1>");
 
 // --- B4: Cache-Control --------------------------------------------------------
 {
-	writeFileSync(`${SITE}/segments/data.json`, '{"a":1}');
+	writeFileSync(`${join(SITE, "segments/data.json")}`, '{"a":1}');
 	const res = await tf(`${base}/serve/${id}/segments/data.json`);
 	check("B4 .json は no-store", () => assert.equal(res.headers.get("cache-control"), "no-store"));
 	const html = await tf(`${base}/serve/${id}/`);
@@ -232,7 +239,7 @@ writeFileSync(`${SITE}/withindex/index.html`, "<h1>INDEX</h1>");
 	check("D4 生の .. は 403/404", () => assert.ok([403, 404].includes(raw.status), `got ${raw.status}`));
 }
 {
-	symlinkSync(HOME_DIR, `${SITE}/escape`);
+	symlinkSync(HOME_DIR, `${join(SITE, "escape")}`);
 	const res = await tf(`${base}/serve/${id}/escape/.hidden-dir/`);
 	check("B2 シンボリックリンク脱出は 403", () => assert.equal(res.status, 403));
 	const res2 = await tf(`${base}/serve/${id}/escape/`);
@@ -241,7 +248,7 @@ writeFileSync(`${SITE}/withindex/index.html`, "<h1>INDEX</h1>");
 
 // --- D6 / A2: 参照であってコピーでない ----------------------------------------
 {
-	writeFileSync(`${SITE}/segments/after.txt`, "added later");
+	writeFileSync(`${join(SITE, "segments/after.txt")}`, "added later");
 	const got = await tf(`${base}/serve/${id}/segments/after.txt`);
 	const body = await got.text();
 	check("D6 登録後に足したファイルが同じ URL で取れる", () => {
@@ -291,7 +298,7 @@ writeFileSync(`${SITE}/withindex/index.html`, "<h1>INDEX</h1>");
 		assert.match(html, new RegExp(id));
 	});
 	// A9: ディスクから消したパスは一覧から外れる
-	const goneDir = `${HOME_DIR}/workspace/gone`;
+	const goneDir = `${join(HOME_DIR, "workspace/gone")}`;
 	mkdirSync(goneDir, { recursive: true });
 	const goneAdd = await call({ action: "add", path: goneDir });
 	rmSync(goneDir, { recursive: true, force: true });
@@ -308,7 +315,7 @@ writeFileSync(`${SITE}/withindex/index.html`, "<h1>INDEX</h1>");
 		assert.equal(missing.details.ok, false);
 		assert.equal(missing.isError, true);
 	});
-	const rmByPath = await call({ action: "remove", path: `${HOME_DIR}/workspace/gone` });
+	const rmByPath = await call({ action: "remove", path: `${join(HOME_DIR, "workspace/gone")}` });
 	check("A6 remove(path) で消えたパスも解除できる", () => assert.equal(rmByPath.details.ok, true));
 	const afterRemove = await tf(`${base}/serve/${id}/`);
 	check("A6 解除後は 404", () => assert.equal(afterRemove.status, 404));
@@ -322,7 +329,7 @@ writeFileSync(`${SITE}/withindex/index.html`, "<h1>INDEX</h1>");
 	// 16桁hex でない id は path 分岐に落ち serveIdFor(resolve("short1")) のハッシュに
 	// 化けて「実在するのに解除できない」状態だった。#34 の修正後はレジストリ内の
 	// 完全一致が常に勝つ。ここはレジストリに手書き id を直接置いて固定する。
-	const registry = `${HOME_DIR}/.pi/kanban/serve.json`;
+	const registry = `${join(HOME_DIR, ".pi/kanban/serve.json")}`;
 	const SHORT_ID = "short1";
 	const before = JSON.parse(readFileSync(registry, "utf8"));
 	writeFileSync(
@@ -367,4 +374,4 @@ writeFileSync(`${SITE}/withindex/index.html`, "<h1>INDEX</h1>");
 
 console.log(`${passed} passed, ${failures.length} failed`);
 for (const failure of failures) console.log(`  FAIL ${failure}`);
-process.exit(failures.length === 0 ? 0 : 1);
+setTimeout(() => process.exit(failures.length === 0 ? 0 : 1), 100);

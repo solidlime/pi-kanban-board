@@ -1,6 +1,9 @@
 // kanban _inbox (serve ページからの書き戻し) の自己検証。フレームワーク無しで
 // `node tests/kanban-inbox.test.mjs`。HOME と KANBAN_PORT を差し替えるので本番の
 // ~/.pi/kanban と 8789 には触れない。A1-A6 の安全策 + Part B の再発防止を実測で固定する。
+import { fileURLToPath } from "node:url";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer as netServer } from "node:net";
@@ -11,12 +14,16 @@ import { authFetch, tokenHeader } from "./helpers/token.mjs";
 // #83b: HTTP routes need the server token now; tf = fetch + the kb_auth cookie.
 const tf = (input, init) => authFetch(input, init);
 
-const HOME_DIR = "/tmp/kb-inbox-home";
+const TMP_ROOT = tmpdir();
+const HOME_DIR = TMP_ROOT + "/kb-inbox-home";
 rmSync(HOME_DIR, { recursive: true, force: true });
-mkdirSync(`${HOME_DIR}/.pi/kanban/sessions`, { recursive: true });
-mkdirSync(`${HOME_DIR}/workspace/site/segments`, { recursive: true });
-mkdirSync(`${HOME_DIR}/outside-inbox`, { recursive: true });
+mkdirSync(`${join(HOME_DIR, ".pi/kanban/sessions")}`, { recursive: true });
+mkdirSync(`${join(HOME_DIR, "workspace/site/segments")}`, { recursive: true });
+mkdirSync(`${join(HOME_DIR, "outside-inbox")}`, { recursive: true });
 process.env.HOME = HOME_DIR;
+// Windows: os.homedir() prefers USERPROFILE over HOME, so keep them in step or the
+// server writes its token to the real profile and this test reads a missing file.
+process.env.USERPROFILE = process.env.HOME;
 
 const PORT = await new Promise((resolve) => {
 	const s = netServer();
@@ -29,10 +36,10 @@ process.env.KANBAN_PORT = String(PORT);
 
 const require = createRequire(import.meta.url);
 const { createJiti } = require(
-	"/root/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/jiti/lib/jiti.cjs",
+	process.env.KANBAN_JITI ?? createRequire(import.meta.url).resolve("jiti"),
 );
 const jiti = createJiti(import.meta.url);
-const SRC = new URL("../extensions/kanban.ts", import.meta.url).pathname;
+const SRC = fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url));
 const mod = await jiti.import(SRC);
 
 const failures = [];
@@ -79,8 +86,8 @@ const serve = tools.get("serve");
 assert.ok(serve, "serve ツールが registerTool されている");
 const call = (args) => serve.execute("t", args, null, () => {});
 const base = `http://127.0.0.1:${PORT}`;
-const SITE = `${HOME_DIR}/workspace/site`;
-const INBOX = `${SITE}/_inbox`;
+const SITE = `${join(HOME_DIR, "workspace/site")}`;
+const INBOX = `${join(SITE, "_inbox")}`;
 
 // fetch は URL を正規化して `..` を消してしまうので、生パスは http.request で送る。
 function raw(method, path, body) {
@@ -178,15 +185,15 @@ const NOTE = JSON.stringify({ take: 14, approved: true });
 
 // --- A2: symlink 脱出拒否 -------------------------------------------------------
 {
-	mkdirSync(`${HOME_DIR}/workspace/evil`, { recursive: true });
-	symlinkSync(`${HOME_DIR}/outside-inbox`, `${HOME_DIR}/workspace/evil/_inbox`);
-	const evilAdd = await call({ action: "add", path: `${HOME_DIR}/workspace/evil` });
+	mkdirSync(`${join(HOME_DIR, "workspace/evil")}`, { recursive: true });
+	symlinkSync(`${join(HOME_DIR, "outside-inbox")}`, `${join(HOME_DIR, "workspace/evil/_inbox")}`);
+	const evilAdd = await call({ action: "add", path: `${join(HOME_DIR, "workspace/evil")}` });
 	const evilId = evilAdd.details.id;
 	const res = await post(`/serve/${evilId}/_inbox/leak.json`, "leak");
 	await checkAsync("A2 _inbox が外を指す symlink なら 403", async () =>
 		assert.equal(res.status, 403, `status=${res.status} body=${res.body}`));
 	check("A2 脱出先にファイルは書かれていない", () =>
-		assert.ok(!existsSync(`${HOME_DIR}/outside-inbox/leak.json`)));
+		assert.ok(!existsSync(`${join(HOME_DIR, "outside-inbox/leak.json")}`)));
 }
 
 // --- A6: nudge の INBOX 行 ------------------------------------------------------
@@ -241,7 +248,7 @@ const board = (cards) => ({ cards, nextId: 99 });
 	});
 	// watermark の保存先は inbox-seen.json の1ファイルだけ
 	check("A5 watermark は inbox-seen.json に { entryId: epochMs }", () => {
-		const seen = JSON.parse(readFileSync(`${HOME_DIR}/.pi/kanban/inbox-seen.json`, "utf8"));
+		const seen = JSON.parse(readFileSync(`${join(HOME_DIR, ".pi/kanban/inbox-seen.json")}`, "utf8"));
 		assert.equal(typeof seen[id], "number");
 		assert.ok(seen[id] > 0);
 	});
@@ -340,4 +347,4 @@ check("B 空ボードは null のまま（既存挙動）", () => assert.equal(m
 
 console.log(`${passed} passed, ${failures.length} failed`);
 for (const failure of failures) console.log(`  FAIL ${failure}`);
-process.exit(failures.length === 0 ? 0 : 1);
+setTimeout(() => process.exit(failures.length === 0 ? 0 : 1), 100);

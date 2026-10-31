@@ -2,6 +2,7 @@
 // 列にファイルを落としても何も起きなかった（dragover が Files を見ていなかった）。
 // ここは公開経路だけ: 実サーバの /api/upload と、配信される DASHBOARD_HTML の挙動。
 // HOME と KANBAN_PORT を差し替えるので本番の ~/.pi/kanban と 8789 には触れない。
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
@@ -17,6 +18,9 @@ rmSync(HOME_DIR, { recursive: true, force: true });
 mkdirSync(`${HOME_DIR}/.pi/kanban/sessions`, { recursive: true });
 mkdirSync(`${HOME_DIR}/.pi/kanban/media`, { recursive: true });
 process.env.HOME = HOME_DIR;
+// Windows: os.homedir() prefers USERPROFILE over HOME, so keep them in step or the
+// server writes its token to the real profile and this test reads a missing file.
+process.env.USERPROFILE = process.env.HOME;
 const PORT = await new Promise((resolve) => {
 	const s = createServer();
 	s.listen(0, "127.0.0.1", () => {
@@ -30,10 +34,10 @@ const MEDIA = `${HOME_DIR}/.pi/kanban/media`;
 const GLOBAL = `${HOME_DIR}/.pi/kanban/global.json`;
 
 const { createJiti } = createRequire(import.meta.url)(
-	"/root/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/jiti/lib/jiti.cjs",
+	process.env.KANBAN_JITI ?? createRequire(import.meta.url).resolve("jiti"),
 );
 const jiti = createJiti(import.meta.url);
-const mod = await jiti.import(new URL("../extensions/kanban.ts", import.meta.url).pathname);
+const mod = await jiti.import(fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url)));
 
 const failures = [];
 let passed = 0;
@@ -468,4 +472,4 @@ const hasCls = (el, c) => el.className.split(" ").includes(c);
 // --- 集計 ---------------------------------------------------------------------
 for (const f of failures) console.error(`FAIL ${f}`);
 console.log(`kanban-dashboard-drop: ${passed} passed, ${failures.length} failed`);
-process.exit(failures.length === 0 ? 0 : 1);
+setTimeout(() => process.exit(failures.length === 0 ? 0 : 1), 100);

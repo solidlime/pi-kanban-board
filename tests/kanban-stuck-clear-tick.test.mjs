@@ -6,6 +6,7 @@
 // 修正前は解除時に lastActivityAt=0（= 活動の記録なし）を書いていたため quiet が
 // starved（interval * 3）まで開かず、5 分の窓が 15 分に伸びていた（#88 実験A）。
 // HOME と KANBAN_PORT を差し替えるので、本番の ~/.pi/kanban と 8789 には触れない。
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { appendFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
@@ -17,6 +18,9 @@ rmSync(HOME_DIR, { recursive: true, force: true });
 rmSync(ERR_LOG, { force: true });
 mkdirSync(`${HOME_DIR}/.pi/kanban/sessions`, { recursive: true });
 process.env.HOME = HOME_DIR;
+// Windows: os.homedir() prefers USERPROFILE over HOME, so keep them in step or the
+// server writes its token to the real profile and this test reads a missing file.
+process.env.USERPROFILE = process.env.HOME;
 process.env.KANBAN_DEBUG = "1";
 process.env.KANBAN_PORT = String(
 	await new Promise((resolve) => {
@@ -36,10 +40,10 @@ process.stderr.write = (chunk, ...rest) => {
 
 const require = createRequire(import.meta.url);
 const { createJiti } = require(
-	"/root/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/jiti/lib/jiti.cjs",
+	process.env.KANBAN_JITI ?? createRequire(import.meta.url).resolve("jiti"),
 );
 const jiti = createJiti(import.meta.url);
-const mod = await jiti.import(new URL("../extensions/kanban.ts", import.meta.url).pathname);
+const mod = await jiti.import(fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url)));
 
 const failures = [];
 let passed = 0;
@@ -168,4 +172,4 @@ try {
 
 console.log(`${passed} passed, ${failures.length} failed`);
 for (const failure of failures) console.log(`  FAIL ${failure}`);
-process.exit(failures.length === 0 ? 0 : 1);
+setTimeout(() => process.exit(failures.length === 0 ? 0 : 1), 100);

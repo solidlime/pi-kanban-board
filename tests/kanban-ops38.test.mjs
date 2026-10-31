@@ -3,6 +3,7 @@
 // フレームワーク無しで `node tests/kanban-ops38.test.mjs`。
 // HOME と KANBAN_PORT を差し替えるので本番の ~/.pi/kanban と 8789 には触れない。
 // 実ブラウザ操作は #057 領域なので、ここは配信 HTML の文字列 + サーバ側の実応答まで。
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer as netServer } from "node:net";
@@ -17,6 +18,9 @@ rmSync(HOME_DIR, { recursive: true, force: true });
 mkdirSync(`${HOME_DIR}/.pi/kanban/sessions`, { recursive: true });
 mkdirSync(`${HOME_DIR}/.pi/kanban/media`, { recursive: true });
 process.env.HOME = HOME_DIR;
+// Windows: os.homedir() prefers USERPROFILE over HOME, so keep them in step or the
+// server writes its token to the real profile and this test reads a missing file.
+process.env.USERPROFILE = process.env.HOME;
 const PORT = await new Promise((resolve) => {
 	const s = netServer();
 	s.listen(0, "127.0.0.1", () => {
@@ -28,10 +32,10 @@ process.env.KANBAN_PORT = String(PORT);
 const BASE = `http://127.0.0.1:${PORT}`;
 
 const { createJiti } = createRequire(import.meta.url)(
-	"/root/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/jiti/lib/jiti.cjs",
+	process.env.KANBAN_JITI ?? createRequire(import.meta.url).resolve("jiti"),
 );
 const jiti = createJiti(import.meta.url);
-const mod = await jiti.import(new URL("../extensions/kanban.ts", import.meta.url).pathname);
+const mod = await jiti.import(fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url)));
 const { renderInjectionText } = mod;
 
 const failures = [];
@@ -194,4 +198,4 @@ await check("#38-2 board ツール check は /api/selftest と同じ JSON を返
 // --- 結果 ---------------------------------------------------------------------
 for (const f of failures) console.error(`FAIL ${f}`);
 console.log(`kanban-ops38: ${passed} passed, ${failures.length} failed`);
-process.exit(failures.length === 0 ? 0 : 1);
+setTimeout(() => process.exit(failures.length === 0 ? 0 : 1), 100);

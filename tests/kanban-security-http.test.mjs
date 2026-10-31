@@ -3,6 +3,7 @@
 //   (c) 既定 allowlist から KANBAN_DIR を外した（明示追加なら従来通り）
 //   (d) GET /api/serve?del=1 は実ファイルを消さない
 //   (e) selftest の detail に sid を出さない
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer as netServer } from "node:net";
@@ -19,6 +20,9 @@ const WORKSPACE = `${HOME_DIR}/workspace`;
 mkdirSync(`${KANBAN_DIR}/sessions`, { recursive: true });
 mkdirSync(WORKSPACE, { recursive: true });
 process.env.HOME = HOME_DIR;
+// Windows: os.homedir() prefers USERPROFILE over HOME, so keep them in step or the
+// server writes its token to the real profile and this test reads a missing file.
+process.env.USERPROFILE = process.env.HOME;
 
 const PORT = await new Promise((resolve) => {
 	const s = netServer();
@@ -31,10 +35,10 @@ process.env.KANBAN_PORT = String(PORT);
 
 const require = createRequire(import.meta.url);
 const { createJiti } = require(
-	"/root/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/jiti/lib/jiti.cjs",
+	process.env.KANBAN_JITI ?? createRequire(import.meta.url).resolve("jiti"),
 );
 const jiti = createJiti(import.meta.url);
-const SRC = new URL("../extensions/kanban.ts", import.meta.url).pathname;
+const SRC = fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url));
 const mod = await jiti.import(SRC);
 
 const failures = [];
@@ -132,4 +136,4 @@ await check("(e) /api/selftest の detail に 32桁 hex の sid が無い", asyn
 
 console.log(`${passed} passed, ${failures.length} failed`);
 for (const f of failures) console.log(`  FAIL ${f}`);
-process.exit(failures.length === 0 ? 0 : 1);
+setTimeout(() => process.exit(failures.length === 0 ? 0 : 1), 100);

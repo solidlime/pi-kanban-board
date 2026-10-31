@@ -1,6 +1,9 @@
 // #45 ダッシュボードからのカード追加・削除の自己検証 (#011)。
 // フレームワーク無しで `node tests/kanban-dashboard-addremove.test.mjs`。
 // HOME と KANBAN_PORT を差し替えるので本番の ~/.pi/kanban と 8789 には触れない。
+import { fileURLToPath } from "node:url";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import assert from "node:assert/strict";
 import { mkdirSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
@@ -11,11 +14,15 @@ import { authFetch } from "./helpers/token.mjs";
 // #83b: HTTP routes need the server token now; tf = fetch + the kb_auth cookie.
 const tf = (input, init) => authFetch(input, init);
 
-const HOME_DIR = "/tmp/kb-dashboard-addremove-home";
+const TMP_ROOT = tmpdir();
+const HOME_DIR = TMP_ROOT + "/kb-dashboard-addremove-home";
 rmSync(HOME_DIR, { recursive: true, force: true });
-mkdirSync(`${HOME_DIR}/.pi/kanban/sessions`, { recursive: true });
-mkdirSync(`${HOME_DIR}/workspace`, { recursive: true });
+mkdirSync(`${join(HOME_DIR, ".pi/kanban/sessions")}`, { recursive: true });
+mkdirSync(`${join(HOME_DIR, "workspace")}`, { recursive: true });
 process.env.HOME = HOME_DIR;
+// Windows: os.homedir() prefers USERPROFILE over HOME, so keep them in step or the
+// server writes its token to the real profile and this test reads a missing file.
+process.env.USERPROFILE = process.env.HOME;
 process.env.KANBAN_PORT = String(
 	await new Promise((resolve) => {
 		const s = createServer();
@@ -29,10 +36,10 @@ const PORT = process.env.KANBAN_PORT;
 const BASE = `http://127.0.0.1:${PORT}`;
 
 const { createJiti } = createRequire(import.meta.url)(
-	"/root/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/jiti/lib/jiti.cjs",
+	process.env.KANBAN_JITI ?? createRequire(import.meta.url).resolve("jiti"),
 );
 const jiti = createJiti(import.meta.url);
-const mod = await jiti.import(new URL("../extensions/kanban.ts", import.meta.url).pathname);
+const mod = await jiti.import(fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url)));
 
 const failures = [];
 let passed = 0;
@@ -86,7 +93,8 @@ await check("DASHBOARD_HTML: 各列の + ボタン（addbtn）を持つ", () => 
 });
 
 await check("DASHBOARD_HTML: + は /api/add を act() 経由で叩く", () => {
-	assert.ok(SRC.includes('act("/api/add", { col: key, text: v }, ctx)'), "/api/add の呼び出しが無い");
+	assert.ok(SRC.includes('var p = { col: key, text: v };'), "col と text を p に詰めていない");
+	assert.ok(SRC.includes('act("/api/add", p, ctx)'), "p を /api/add に渡していない");
 	// 移植元の右パネル版 send() ではなく act() であること（#84 で右パネルは廃止）
 	assert.ok(!SRC.includes('send(board, "add?col='), "廃止した右パネルの send() が混ざっている");
 });
@@ -490,6 +498,5 @@ await check("/api/remove: 存在しない id は 404", async () => {
 // --- 5. 集計 -----------------------------------------------------------------
 for (const f of failures) console.error("FAIL", f);
 console.log(`kanban-dashboard-addremove: ${passed} passed, ${failures.length} failed`);
-if (failures.length) process.exit(1);
-console.log("OK");
-process.exit(0);
+if (!failures.length) console.log("OK");
+setTimeout(() => process.exit(failures.length ? 1 : 0), 100);

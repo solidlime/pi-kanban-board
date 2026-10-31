@@ -8,6 +8,7 @@
 // The label is resolved once at import time, so the fixture has to exist before the
 // import. Each test file runs in its own process, so this does not disturb the other
 // tests' isolated HOME.
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
@@ -22,6 +23,9 @@ rmSync(HOME_DIR, { recursive: true, force: true });
 mkdirSync(`${HOME_DIR}/.pi/kanban/sessions`, { recursive: true });
 mkdirSync(`${HOME_DIR}/workspace`, { recursive: true });
 process.env.HOME = HOME_DIR;
+// Windows: os.homedir() prefers USERPROFILE over HOME, so keep them in step or the
+// server writes its token to the real profile and this test reads a missing file.
+process.env.USERPROFILE = process.env.HOME;
 process.env.KANBAN_PORT = String(
 	await new Promise((resolve) => {
 		const s = createServer();
@@ -41,10 +45,10 @@ writeFileSync(
 );
 
 const { createJiti } = createRequire(import.meta.url)(
-	"/root/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/jiti/lib/jiti.cjs",
+	process.env.KANBAN_JITI ?? createRequire(import.meta.url).resolve("jiti"),
 );
 const jiti = createJiti(import.meta.url);
-const mod = await jiti.import(new URL("../extensions/kanban.ts", import.meta.url).pathname);
+const mod = await jiti.import(fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url)));
 
 // A stand-in for the extension API: enough to make the factory start the HTTP server.
 const pi = {
@@ -99,4 +103,4 @@ if (failures.length > 0) {
 	for (const f of failures) console.error(`  FAIL ${f}`);
 }
 // The extension keeps the HTTP server open; exiting is how the other suites end too.
-process.exit(failures.length === 0 ? 0 : 1);
+setTimeout(() => process.exit(failures.length === 0 ? 0 : 1), 100);

@@ -3,6 +3,7 @@
 // そこで Host ヘッダのホスト部を「このマシンが名乗る名前の有限集合」と照合し、外れたら 403。
 // フレームワーク無しで `node tests/kanban-security-80h.test.mjs`。HOME と KANBAN_PORT を
 // 差し替えるので本番の ~/.pi/kanban と 8789 には触れない。
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import http from "node:http";
 import { mkdirSync, rmSync } from "node:fs";
@@ -15,6 +16,9 @@ const HOME_DIR = "/tmp/kb80h/home";
 rmSync(HOME_DIR, { recursive: true, force: true });
 mkdirSync(`${HOME_DIR}/.pi/kanban/sessions`, { recursive: true });
 process.env.HOME = HOME_DIR;
+// Windows: os.homedir() prefers USERPROFILE over HOME, so keep them in step or the
+// server writes its token to the real profile and this test reads a missing file.
+process.env.USERPROFILE = process.env.HOME;
 
 const PORT = await new Promise((resolve) => {
 	const s = netServer();
@@ -34,10 +38,10 @@ const LAN_IP = (() => {
 
 const require = createRequire(import.meta.url);
 const { createJiti } = require(
-	"/root/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/jiti/lib/jiti.cjs",
+	process.env.KANBAN_JITI ?? createRequire(import.meta.url).resolve("jiti"),
 );
 const jiti = createJiti(import.meta.url);
-const mod = await jiti.import(new URL("../extensions/kanban.ts", import.meta.url).pathname);
+const mod = await jiti.import(fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url)));
 
 const failures = [];
 let passed = 0;
@@ -159,4 +163,4 @@ await check("KANBAN_HOSTS=myhost.ts.net で別名が通る", async () => {
 
 console.log(`kanban-security-80h: ${passed} passed, ${failures.length} failed`);
 for (const f of failures) console.error(`  FAIL ${f}`);
-process.exit(failures.length === 0 ? 0 : 1);
+setTimeout(() => process.exit(failures.length === 0 ? 0 : 1), 100);

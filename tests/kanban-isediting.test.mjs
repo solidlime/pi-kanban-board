@@ -1,9 +1,10 @@
 // #70 回帰: 編集中判定が「打鍵を受け付ける入力」だけを拾い、静止要素では止まらないこと。
+import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-const SRC = new URL("../extensions/kanban.ts", import.meta.url).pathname;
+const SRC = fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url));
 const defs = [...readFileSync(SRC, "utf8").matchAll(/var NO_TYPE_INPUT[\s\S]*?\n  \}/g)].map(m => m[0]);
 
 const el = (tagName, opts = {}) => ({

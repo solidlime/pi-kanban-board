@@ -1,6 +1,7 @@
 // kanban auto-tick の自己検証。フレームワーク無しで `node tests/kanban-auto-tick.test.mjs`。
 // 対象: shouldAutoTick / tickCardFor（純関数）と、実タイマー → sendUserMessage の経路。
 // HOME と KANBAN_PORT を差し替えるので、本番の ~/.pi/kanban と 8789 には触れない。
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
@@ -10,6 +11,9 @@ const HOME_DIR = "/tmp/kb-autotick-home";
 rmSync(HOME_DIR, { recursive: true, force: true });
 mkdirSync(`${HOME_DIR}/.pi/kanban/sessions`, { recursive: true });
 process.env.HOME = HOME_DIR;
+// Windows: os.homedir() prefers USERPROFILE over HOME, so keep them in step or the
+// server writes its token to the real profile and this test reads a missing file.
+process.env.USERPROFILE = process.env.HOME;
 // Free port before the module reads KANBAN_PORT at import time.
 process.env.KANBAN_PORT = String(
 	await new Promise((resolve) => {
@@ -24,11 +28,11 @@ process.env.KANBAN_PORT = String(
 // dist/jiti.cjs は壊れているので lib/jiti.cjs を使う。
 const require = createRequire(import.meta.url);
 const { createJiti } = require(
-	"/root/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/jiti/lib/jiti.cjs",
+	process.env.KANBAN_JITI ?? createRequire(import.meta.url).resolve("jiti"),
 );
 const jiti = createJiti(import.meta.url);
 // KANBAN_TS は Phase 4 前のモジュール（関数が無い）で赤を確認するためだけの差し替え口。
-const target = process.env.KANBAN_TS ?? new URL("../extensions/kanban.ts", import.meta.url).pathname;
+const target = process.env.KANBAN_TS ?? fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url));
 const mod = await jiti.import(target);
 const { shouldAutoTick, tickCardFor, AUTO_TICK_MS } = mod;
 
@@ -197,4 +201,4 @@ try {
 
 console.log(`${passed} passed, ${failures.length} failed`);
 for (const failure of failures) console.log(`  FAIL ${failure}`);
-process.exit(failures.length === 0 ? 0 : 1);
+setTimeout(() => process.exit(failures.length === 0 ? 0 : 1), 100);

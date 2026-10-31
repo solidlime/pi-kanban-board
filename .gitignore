@@ -2,3 +2,8 @@ node_modules/
 *.log
 .DS_Store
 npm-debug.log*
+
+# local debug artifacts (probe scripts, browser profiles, restart notes with tokens)
+.probe*.mjs
+.browser-home/
+.restart-note.txt

@@ -7,6 +7,7 @@
 //   2. 他人の DOING は奪わない（#10 の懸念は DOING 側で保たれる）
 //   3. 2セッションが同時に拾っても DOING は1枚だけ（並行プロセスで実測）
 // HOME と KANBAN_PORT を差し替えるので、本番の ~/.pi/kanban と 8789 には触れない。
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -17,6 +18,9 @@ const HOME_DIR = "/tmp/kb87-test-home";
 rmSync(HOME_DIR, { recursive: true, force: true });
 mkdirSync(`${HOME_DIR}/.pi/kanban/sessions`, { recursive: true });
 process.env.HOME = HOME_DIR;
+// Windows: os.homedir() prefers USERPROFILE over HOME, so keep them in step or the
+// server writes its token to the real profile and this test reads a missing file.
+process.env.USERPROFILE = process.env.HOME;
 const PORT = await new Promise((resolve) => {
 	const s = createServer();
 	s.listen(0, "127.0.0.1", () => {
@@ -27,11 +31,11 @@ const PORT = await new Promise((resolve) => {
 process.env.KANBAN_PORT = String(PORT);
 
 const require = createRequire(import.meta.url);
-const JITI = "/root/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/jiti/lib/jiti.cjs";
+const JITI = process.env.KANBAN_JITI ?? createRequire(import.meta.url).resolve("jiti");
 const { createJiti } = require(JITI);
 const jiti = createJiti(import.meta.url);
 // KB87_SRC: 修正前の kanban.ts を差して「修正前は人格になる」ことを同じテストで実測する。
-const SRC = process.env.KB87_SRC ?? new URL("../extensions/kanban.ts", import.meta.url).pathname;
+const SRC = process.env.KB87_SRC ?? fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url));
 const mod = await jiti.import(SRC);
 const { nextTodo, tickCardFor, pickFirstTodo, continuationPrompt } = mod;
 const { readToken } = await import("./helpers/token.mjs");
@@ -223,10 +227,10 @@ const startAt = ${startAt};
 while (Date.now() < startAt) {} // 同じ瞬間に read-modify-write へ入る
 const r = mod.pickFirstTodo(${JSON.stringify(sid)}, "global");
 console.log("__R__" + JSON.stringify({ sid: ${JSON.stringify(sid)}, id: r === null ? null : r.id }));
-process.exit(0);
+setTimeout(() => process.exit(0), 100);
 `,
 			);
-			const p = spawn(process.execPath, [harness], { env: { ...process.env, HOME: HOME_DIR } });
+			const p = spawn(process.execPath, [harness], { env: { ...process.env, HOME: HOME_DIR, USERPROFILE: HOME_DIR } });
 			let out = "";
 			p.stdout.on("data", (d) => (out += d));
 			return new Promise((resolve) =>
@@ -248,4 +252,4 @@ process.exit(0);
 
 console.log(`${passed} passed, ${failures.length} failed`);
 for (const failure of failures) console.log(`  FAIL ${failure}`);
-process.exit(failures.length === 0 ? 0 : 1);
+setTimeout(() => process.exit(failures.length === 0 ? 0 : 1), 100);

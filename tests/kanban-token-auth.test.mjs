@@ -5,14 +5,19 @@
 //
 // Each scenario runs in a child process: `ensureToken` caches in module scope and the HTTP
 // server binds once per process, so "restart" has to mean a real process.
+import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer as netServer } from "node:net";
 
-const ROOT = new URL("..", import.meta.url).pathname.replace(/\/$/, "");
-const JITI = "/root/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/jiti/lib/jiti.cjs";
-const WORK = "/tmp/kb83b-token-home";
+const ROOT = fileURLToPath(new URL("..", import.meta.url)).replace(/\/$/, "");
+const JITI = process.env.KANBAN_JITI ?? createRequire(import.meta.url).resolve("jiti");
+const TMP_ROOT = tmpdir();
+const WORK = TMP_ROOT + "/kb83b-token-home";
 rmSync(WORK, { recursive: true, force: true });
 mkdirSync(WORK, { recursive: true });
 
@@ -84,7 +89,7 @@ process.exit(0);`
 }`,
 	);
 	const child = spawn(process.execPath, [harness], {
-		env: { ...process.env, HOME: home, KANBAN_PORT: String(port) },
+		env: { ...process.env, HOME: home, USERPROFILE: home, KANBAN_PORT: String(port) },
 		stdio: ["ignore", "pipe", "pipe"],
 	});
 	let stdout = "";
@@ -125,11 +130,13 @@ const stop = (child) =>
 	});
 
 const tokenPath = (home) => `${home}/.pi/kanban/token`;
+// Windows has no POSIX mode bits: statSync reports 0o666/0o777 there for everything.
+const POSIX_MODES = process.platform !== "win32";
 const mode = (p) => statSync(p).mode & 0o777;
 
 /** A fresh isolated HOME with a running server, plus the token it generated. */
 async function boot(homeName, { preToken } = {}) {
-	const home = `${WORK}/${homeName}`;
+	const home = `${join(WORK, `${homeName}`)}`;
 	rmSync(home, { recursive: true, force: true });
 	mkdirSync(`${home}/.pi/kanban/sessions`, { recursive: true });
 	// #11: a hand-made 0644 file must be corrected, not trusted.
@@ -142,7 +149,7 @@ async function boot(homeName, { preToken } = {}) {
 // --- 1. startup creates the token, 0600 ---------------------------------------
 const A = await boot("a");
 await check("1. 起動時に ~/.pi/kanban/token が 0600 で生成される", () => {
-	assert.equal(mode(tokenPath(A.home)), 0o600, `mode=${mode(tokenPath(A.home)).toString(8)}`);
+	if (POSIX_MODES) assert.equal(mode(tokenPath(A.home)), 0o600, `mode=${mode(tokenPath(A.home)).toString(8)}`);
 	assert.match(A.token, /^[0-9a-f]{64}$/);
 });
 await check("1b. server.log にトークンが書かれていない", () => {
@@ -157,7 +164,7 @@ await check("1c. 起動が2回目の ensureToken でも同じトークン（再�
 	assert.equal(readFileSync(tokenPath(A.home), "utf8").trim(), A.token);
 });
 await check("1d. ~/.pi/kanban は 0700（#85: ディレクトリごと閉じる）", () => {
-	assert.equal(mode(`${A.home}/.pi/kanban`), 0o700, `mode=${mode(`${A.home}/.pi/kanban`).toString(8)}`);
+	if (POSIX_MODES) assert.equal(mode(`${A.home}/.pi/kanban`), 0o700, `mode=${mode(`${A.home}/.pi/kanban`).toString(8)}`);
 });
 
 // --- 2/3. GET /?token= --------------------------------------------------------
@@ -276,7 +283,7 @@ await check("10b. 認証が通れば従来どおり（Origin ゲートは内側�
 	const old = "a".repeat(64);
 	const B = await boot("perm", { preToken: old });
 	await check("11. 0644 のトークンファイルは起動時に 0600 へ是正される", () => {
-		assert.equal(mode(tokenPath(B.home)), 0o600, `mode=${mode(tokenPath(B.home)).toString(8)}`);
+		if (POSIX_MODES) assert.equal(mode(tokenPath(B.home)), 0o600, `mode=${mode(tokenPath(B.home)).toString(8)}`);
 	});
 	await check("11b. 中身は書き換えない（既存トークンを尊重する）", () => {
 		assert.equal(B.token, old);
@@ -297,7 +304,7 @@ await check("10b. 認証が通れば従来どおり（Origin ゲートは内側�
 	await check("12. トークン削除＋再起動で新しいトークンが生成される", () => {
 		assert.match(newToken, /^[0-9a-f]{64}$/);
 		assert.notEqual(newToken, oldToken, "同じトークンが再生された");
-		assert.equal(mode(tokenPath(C.home)), 0o600);
+		if (POSIX_MODES) assert.equal(mode(tokenPath(C.home)), 0o600);
 	});
 	await check("12b. 古いトークンは 401、新しいトークンは 200", async () => {
 		const stale = await fetch(`http://127.0.0.1:${C.port}/api/dashboard`, {
@@ -314,7 +321,7 @@ await check("10b. 認証が通れば従来どおり（Origin ゲートは内側�
 
 // --- 13. the `kanban` tool's url action --------------------------------------
 {
-	const home = `${WORK}/tool`;
+	const home = `${join(WORK, "tool")}`;
 	rmSync(home, { recursive: true, force: true });
 	const r = await runHarness({
 		home,
@@ -338,7 +345,7 @@ out.res = await spec.execute("t1", { action: "url" }, undefined, undefined, {
 
 // --- 14. /kanban url command -------------------------------------------------
 {
-	const home = `${WORK}/cmd`;
+	const home = `${join(WORK, "cmd")}`;
 	rmSync(home, { recursive: true, force: true });
 	const r = await runHarness({
 		home,
@@ -363,4 +370,4 @@ await A.srv.stop();
 
 for (const f of failures) console.log(`  FAIL ${f}`);
 console.log(`kanban-token-auth: ${passed} passed, ${failures.length} failed`);
-process.exit(failures.length === 0 ? 0 : 1);
+setTimeout(() => process.exit(failures.length === 0 ? 0 : 1), 100);

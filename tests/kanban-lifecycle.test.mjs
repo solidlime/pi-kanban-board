@@ -1,6 +1,10 @@
 // #64/#66: HTTP サーバのライフサイクルと同一性。各シナリオは子プロセスで隔離
 // （モジュールスコープの状態を1プロセス1回しか作れないため）。HOME と KANBAN_PORT を
 // 差し替えるので本番の ~/.pi/kanban と 8789 には触れない。
+import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createServer as netServer } from "node:net";
@@ -13,9 +17,10 @@ import {
 } from "node:fs";
 import http from "node:http";
 
-const ROOT = new URL("..", import.meta.url).pathname.replace(/\/$/, "");
-const JITI = "/root/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/jiti/lib/jiti.cjs";
-const WORK = "/tmp/kb-lifecycle";
+const ROOT = fileURLToPath(new URL("..", import.meta.url)).replace(/\/$/, "");
+const JITI = process.env.KANBAN_JITI ?? createRequire(import.meta.url).resolve("jiti");
+const TMP_ROOT = tmpdir();
+const WORK = TMP_ROOT + "/kb-lifecycle";
 rmSync(WORK, { recursive: true, force: true });
 mkdirSync(WORK, { recursive: true });
 
@@ -95,12 +100,12 @@ globalThis.fetch = (input, init = {}) => {
 };
 ${waitFor}
 console.log("__RESULT__" + JSON.stringify(out));
-process.exit(0);
+setTimeout(() => process.exit(0), 100);
 `,
 	);
 	return new Promise((resolve) => {
 		const child = spawn(process.execPath, [harness], {
-			env: { ...process.env, HOME: home, KANBAN_PORT: String(port) },
+			env: { ...process.env, HOME: home, USERPROFILE: home, KANBAN_PORT: String(port) },
 			stdio: ["ignore", "pipe", "pipe"],
 		});
 		let stdout = "";
@@ -126,7 +131,7 @@ const PKG_VERSION = JSON.parse(readFileSync(`${ROOT}/package.json`, "utf8")).ver
 
 // --- A. 正常起動: identity を返す --------------------------------------------
 {
-	const home = `${WORK}/ok`;
+	const home = `${join(WORK, "ok")}`;
 	const port = await freePort();
 	const waitFor = `
 const out = {};
@@ -166,7 +171,7 @@ out.pkgVersion = ${JSON.stringify(PKG_VERSION)};`;
 
 // --- B. EACCES は 1 回で打ち切り、KANBAN_PORT の不正値は 8789 に落とす --------
 {
-	const home = `${WORK}/eacces`;
+	const home = `${join(WORK, "eacces")}`;
 	const r = await runScenario({
 		home,
 		port: "not-a-port",
@@ -191,7 +196,7 @@ out.pkgVersion = ${JSON.stringify(PKG_VERSION)};`;
 
 // --- C. 版が違うサーバは reuse せず stale にする -----------------------------
 {
-	const home = `${WORK}/stale`;
+	const home = `${join(WORK, "stale")}`;
 	const port = await freePort();
 	const squat = http.createServer((req, res) => {
 		if (req.url === "/api/selftest") {
@@ -202,7 +207,7 @@ out.pkgVersion = ${JSON.stringify(PKG_VERSION)};`;
 		res.writeHead(200, { "content-type": "application/json" });
 		res.end(JSON.stringify({ cards: [] }));
 	});
-	await new Promise((resolve) => squat.listen(port, "127.0.0.1", resolve));
+	await new Promise((resolve) => squat.listen(port, "0.0.0.0", resolve));
 	const r = await runScenario({
 		home,
 		port,
@@ -233,4 +238,4 @@ out.pkgVersion = ${JSON.stringify(PKG_VERSION)};`;
 
 console.log(`${passed} passed, ${failures.length} failed`);
 for (const f of failures) console.log(`  FAIL ${f}`);
-process.exit(failures.length === 0 ? 0 : 1);
+setTimeout(() => process.exit(failures.length === 0 ? 0 : 1), 100);

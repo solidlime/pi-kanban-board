@@ -3,6 +3,7 @@
 // 本番の ~/.pi/kanban と 8789 には触れない。
 // 画像は media/ にコピーされ `Card.img` には basename が入る（/api/upload と同じ規則）。
 // ファイルが無い / 画像でない / 8MB 超は notify だけでボードに触らない。
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer as netServer } from "node:net";
@@ -17,6 +18,9 @@ rmSync(HOME_DIR, { recursive: true, force: true });
 mkdirSync(`${HOME_DIR}/.pi/kanban/sessions`, { recursive: true });
 mkdirSync(`${HOME_DIR}/.pi/kanban/media`, { recursive: true });
 process.env.HOME = HOME_DIR;
+// Windows: os.homedir() prefers USERPROFILE over HOME, so keep them in step or the
+// server writes its token to the real profile and this test reads a missing file.
+process.env.USERPROFILE = process.env.HOME;
 
 const PORT = await new Promise((resolve) => {
 	const s = netServer();
@@ -29,10 +33,10 @@ process.env.KANBAN_PORT = String(PORT);
 
 const require = createRequire(import.meta.url);
 const { createJiti } = require(
-	"/root/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/jiti/lib/jiti.cjs",
+	process.env.KANBAN_JITI ?? createRequire(import.meta.url).resolve("jiti"),
 );
 const jiti = createJiti(import.meta.url);
-const SRC = new URL("../extensions/kanban.ts", import.meta.url).pathname;
+const SRC = fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url));
 const mod = await jiti.import(SRC);
 const { parseKanbanArgs } = mod;
 
@@ -181,4 +185,4 @@ writeFileSync(SRC_IMG, PNG);
 
 for (const f of failures) console.log(`FAIL ${f}`);
 console.log(`passed=${passed} failed=${failures.length}`);
-process.exit(failures.length === 0 ? 0 : 1);
+setTimeout(() => process.exit(failures.length === 0 ? 0 : 1), 100);

@@ -19,6 +19,9 @@ rmSync(HOME_DIR, { recursive: true, force: true });
 mkdirSync(`${HOME_DIR}/.pi/kanban/sessions`, { recursive: true });
 mkdirSync(`${HOME_DIR}/workspace`, { recursive: true });
 process.env.HOME = HOME_DIR;
+// Windows: os.homedir() prefers USERPROFILE over HOME, so keep them in step or the
+// server writes its token to the real profile and this test reads a missing file.
+process.env.USERPROFILE = process.env.HOME;
 process.env.USERPROFILE = HOME_DIR; // Windows: os.homedir() reads this
 process.env.KANBAN_PORT = String(
 	await new Promise((resolve) => {
@@ -34,7 +37,7 @@ const BASE = `http://127.0.0.1:${PORT}`;
 
 const { createJiti } = createRequire(import.meta.url)(
 	process.env.KANBAN_JITI ??
-		"/root/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/jiti/lib/jiti.cjs",
+		process.env.KANBAN_JITI ?? createRequire(import.meta.url).resolve("jiti"),
 );
 const jiti = createJiti(import.meta.url);
 const mod = await jiti.import(
@@ -427,8 +430,7 @@ await check("ダッシュボード: #proj セレクト / .proj バッジ / projP
 if (failures.length > 0) {
 	console.error(`FAIL ${failures.length} / ${passed + failures.length}`);
 	for (const f of failures) console.error(`  - ${f}`);
-	process.exit(1);
 }
-console.log(`ok ${passed} checks (kanban-project)`);
+if (!failures.length) console.log(`ok ${passed} checks (kanban-project)`);
 // サーバは extension のプロセス内で listen したまま。テストは終わったので明示的に落とす。
-process.exit(0);
+setTimeout(() => process.exit(failures.length ? 1 : 0), 100);

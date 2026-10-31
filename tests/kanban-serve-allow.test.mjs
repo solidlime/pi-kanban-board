@@ -1,6 +1,10 @@
+const hostLower = () => hostname().toLowerCase();
+import { tmpdir } from "node:os";
 // #19 / #20: serve add の拒否コードと baseUrl。フレームワーク無しで
 // `node tests/kanban-serve-allow.test.mjs`。HOME と KANBAN_PORT を差し替えるので
 // 本番の ~/.pi/kanban と 8789 には触れない。
+import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer as netServer } from "node:net";
@@ -12,16 +16,20 @@ import { authFetch, tokenHeader } from "./helpers/token.mjs";
 // #83b: HTTP routes need the server token now; tf = fetch + the kb_auth cookie.
 const tf = (input, init) => authFetch(input, init);
 
-const HOME_DIR = "/tmp/kb-serve-allow-home";
-const OUTSIDE = "/tmp/kb-serve-allow-outside"; // 隔離 HOME の外 = allowlist 外
+const TMP_ROOT = tmpdir();
+const HOME_DIR = TMP_ROOT + "/kb-serve-allow-home";
+const OUTSIDE = TMP_ROOT + "/kb-serve-allow-outside"; // 隔離 HOME の外 = allowlist 外
 rmSync(HOME_DIR, { recursive: true, force: true });
 rmSync(OUTSIDE, { recursive: true, force: true });
-const KANBAN_DIR = `${HOME_DIR}/.pi/kanban`;
-const SITE = `${HOME_DIR}/workspace/site`;
+const KANBAN_DIR = `${join(HOME_DIR, ".pi/kanban")}`;
+const SITE = `${join(HOME_DIR, "workspace/site")}`;
 mkdirSync(`${KANBAN_DIR}/sessions`, { recursive: true });
 mkdirSync(SITE, { recursive: true });
-mkdirSync(`${OUTSIDE}/dir`, { recursive: true });
+mkdirSync(`${join(OUTSIDE, "dir")}`, { recursive: true });
 process.env.HOME = HOME_DIR;
+// Windows: os.homedir() prefers USERPROFILE over HOME, so keep them in step or the
+// server writes its token to the real profile and this test reads a missing file.
+process.env.USERPROFILE = process.env.HOME;
 
 const PORT = await new Promise((resolve) => {
 	const s = netServer();
@@ -34,10 +42,10 @@ process.env.KANBAN_PORT = String(PORT);
 
 const require = createRequire(import.meta.url);
 const { createJiti } = require(
-	"/root/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/jiti/lib/jiti.cjs",
+	process.env.KANBAN_JITI ?? createRequire(import.meta.url).resolve("jiti"),
 );
 const jiti = createJiti(import.meta.url);
-const SRC = new URL("../extensions/kanban.ts", import.meta.url).pathname;
+const SRC = fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url));
 const mod = await jiti.import(SRC);
 
 const failures = [];
@@ -81,10 +89,10 @@ const writeAllow = (obj) => writeFileSync(ALLOW_JSON, JSON.stringify(obj));
 
 // --- #19: allowlist 外は 403、存在しないは 404 --------------------------------
 // serve-allow.json 無し = 既定 allowlist (~/workspace と ~/.pi/kanban)
-const outside = await call({ action: "add", path: `${OUTSIDE}/dir` });
+const outside = await call({ action: "add", path: `${join(OUTSIDE, "dir")}` });
 const inside = await call({ action: "add", path: SITE });
-const missingIn = await call({ action: "add", path: `${HOME_DIR}/workspace/nope` });
-const missingOut = await call({ action: "add", path: `${OUTSIDE}/nope` });
+const missingIn = await call({ action: "add", path: `${join(HOME_DIR, "workspace/nope")}` });
+const missingOut = await call({ action: "add", path: `${join(OUTSIDE, "nope")}` });
 
 check("19-1 allowlist 外の実在パスは 403", () => {
 	assert.equal(outside.isError, true, JSON.stringify(outside.details));
@@ -114,7 +122,7 @@ check("19-4 403 本文は allowlist と読め、404 本文と異なる", () => {
 // --- #20: baseUrl -------------------------------------------------------------
 const ID = inside.details.id;
 const urlHost = (u) => new URL(u).host;
-const fallback = `${hostname()}:${PORT}`;
+const fallback = `${hostLower()}:${PORT}`;
 
 const defaultList = await call({ action: "list" });
 check("20-5 baseUrl 未設定なら従来どおりホスト名", () => {
@@ -167,7 +175,7 @@ check("20-7c 不正な baseUrl は警告してフォールバック", () => {
 });
 writeAllow({ roots: [SITE], baseUrl: "http://km.example:9000" });
 const both = await call({ action: "list" });
-const bothDenied = await call({ action: "add", path: `${HOME_DIR}/workspace/nope` });
+const bothDenied = await call({ action: "add", path: `${join(HOME_DIR, "workspace/nope")}` });
 check("20-7e roots 指定時は allowlist も上書きされる", () => {
 	assert.equal(both.details.entries.find((e) => e.id === ID).url, `http://km.example:9000/serve/${ID}/`);
 	assert.equal(bothDenied.details.status, 403, JSON.stringify(bothDenied.details));
@@ -277,4 +285,4 @@ delete process.env.KANBAN_BASE_URL;
 
 console.log(`${passed} passed, ${failures.length} failed`);
 for (const failure of failures) console.log(`  FAIL ${failure}`);
-process.exit(failures.length === 0 ? 0 : 1);
+setTimeout(() => process.exit(failures.length === 0 ? 0 : 1), 100);

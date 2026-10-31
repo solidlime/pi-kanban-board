@@ -2,15 +2,20 @@
 // 人間が切り分けられること。各シナリオは子プロセスで隔離（モジュールスコープの状態は
 // 1プロセス1回しか作れないため）。HOME と KANBAN_PORT を差し替えるので本番の
 // ~/.pi/kanban と 8789 には触れない。
+import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { createServer as netServer } from "node:net";
 
-const ROOT = new URL("..", import.meta.url).pathname.replace(/\/$/, "");
-const JITI = "/root/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/jiti/lib/jiti.cjs";
-const WORK = "/tmp/kb-port-conflict";
+const ROOT = fileURLToPath(new URL("..", import.meta.url)).replace(/\/$/, "");
+const JITI = process.env.KANBAN_JITI ?? createRequire(import.meta.url).resolve("jiti");
+const TMP_ROOT = tmpdir();
+const WORK = TMP_ROOT + "/kb-port-conflict";
 rmSync(WORK, { recursive: true, force: true });
 mkdirSync(WORK, { recursive: true });
 
@@ -40,7 +45,7 @@ const freePort = () =>
 function squat(port, answer) {
 	const srv = http.createServer(answer);
 	return new Promise((resolve) =>
-		srv.listen(port, "127.0.0.1", () =>
+		srv.listen(port, "0.0.0.0", () =>
 			resolve({ close: () => new Promise((done) => srv.close(done)) }),
 		),
 	);
@@ -82,12 +87,12 @@ const t = mod.default(pi).__test;
 const out = {};
 ${body}
 console.log("__RESULT__" + JSON.stringify(out));
-process.exit(0);
+setTimeout(() => process.exit(0), 100);
 `,
 	);
 	return new Promise((resolve) => {
 		const child = spawn(process.execPath, [harness], {
-			env: { ...process.env, HOME: home, KANBAN_PORT: String(port) },
+			env: { ...process.env, HOME: home, USERPROFILE: home, KANBAN_PORT: String(port) },
 			stdio: ["ignore", "pipe", "pipe"],
 		});
 		let stdout = "";
@@ -122,7 +127,7 @@ process.exit(0);
 		res.end(JSON.stringify({ cards: [], version: "0.1.0" }));
 	});
 	const r = await runScenario({
-		home: `${WORK}/oldkanban`,
+		home: `${join(WORK, "oldkanban")}`,
 		port,
 		body: `out.log = await waitLog(/refusing to reuse stale server/);
 out.probe = await t.probe();
@@ -168,7 +173,7 @@ out.finalLog = readLog();`,
 		res.end(JSON.stringify({ cards: [] }));
 	});
 	const r = await runScenario({
-		home: `${WORK}/pidknown`,
+		home: `${join(WORK, "pidknown")}`,
 		port,
 		body: `out.log = await waitLog(/refusing to reuse stale server/);
 out.state = t.apiState();
@@ -200,7 +205,7 @@ out.finalLog = readLog();`,
 		res.end(JSON.stringify({ ok: false, error: "not found" }));
 	});
 	const r = await runScenario({
-		home: `${WORK}/notkanban`,
+		home: `${join(WORK, "notkanban")}`,
 		port,
 		body: `out.log = await waitLog(/refusing to reuse stale server/);
 out.probe = await t.probe();
@@ -227,9 +232,9 @@ out.finalLog = readLog();`,
 	const port = await freePort();
 	// HTTP を話さない握り手（accept 即切断）。probe は到達不能、bind は EADDRINUSE。
 	const s = netServer((sock) => sock.destroy());
-	await new Promise((resolve) => s.listen(port, "127.0.0.1", resolve));
+	await new Promise((resolve) => s.listen(port, "0.0.0.0", resolve));
 	const r = await runScenario({
-		home: `${WORK}/down`,
+		home: `${join(WORK, "down")}`,
 		port,
 		body: `out.log = await waitLog(/API DOWN/);
 out.state = t.apiState();`,
@@ -273,7 +278,7 @@ out.state = t.apiState();`,
 		res.end(JSON.stringify({ ok: false, error: "not found" }));
 	});
 	const r = await runScenario({
-		home: `${WORK}/legacykanban`,
+		home: `${join(WORK, "legacykanban")}`,
 		port,
 		body: `out.log = await waitLog(/refusing to reuse stale server/);
 out.probe = await t.probe();
@@ -326,7 +331,7 @@ out.state = t.apiState();`,
 		res.end(JSON.stringify({ ok: false, error: "not found" }));
 	});
 	const r = await runScenario({
-		home: `${WORK}/currentkanban`,
+		home: `${join(WORK, "currentkanban")}`,
 		port,
 		body: `out.log = await waitLog(/refusing to reuse stale server/);
 out.probe = await t.probe();
@@ -356,7 +361,7 @@ out.finalLog = readLog();`,
 {
 	const port = await freePort();
 	const r = await runScenario({
-		home: `${WORK}/escape`,
+		home: `${join(WORK, "escape")}`,
 		port,
 		body: `out.log = await waitLog(/listening on/);
 out.probe = await t.probe();
@@ -375,4 +380,4 @@ out.state = t.apiState();`,
 
 console.log(`${passed} passed, ${failures.length} failed`);
 for (const f of failures) console.log(`  FAIL ${f}`);
-process.exit(failures.length === 0 ? 0 : 1);
+setTimeout(() => process.exit(failures.length === 0 ? 0 : 1), 100);

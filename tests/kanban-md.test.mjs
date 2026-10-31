@@ -1,6 +1,7 @@
 // カード本文の Markdown 記法 (md) の自己検証 (#011)。
 // フレームワーク無しで `node tests/kanban-md.test.mjs`。
 // KANBAN_MD_JS はブラウザ側と同じ関数ソースなので、それを評価して純関数として検査する。
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
@@ -10,6 +11,9 @@ const HOME_DIR = "/tmp/kb-md-home";
 rmSync(HOME_DIR, { recursive: true, force: true });
 mkdirSync(`${HOME_DIR}/.pi/kanban/sessions`, { recursive: true });
 process.env.HOME = HOME_DIR;
+// Windows: os.homedir() prefers USERPROFILE over HOME, so keep them in step or the
+// server writes its token to the real profile and this test reads a missing file.
+process.env.USERPROFILE = process.env.HOME;
 // モジュールは import 時に KANBAN_PORT を読むので、空きポートを先に確保する。
 process.env.KANBAN_PORT = String(
 	await new Promise((resolve) => {
@@ -22,10 +26,10 @@ process.env.KANBAN_PORT = String(
 );
 
 const { createJiti } = createRequire(import.meta.url)(
-	"/root/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/jiti/lib/jiti.cjs",
+	process.env.KANBAN_JITI ?? createRequire(import.meta.url).resolve("jiti"),
 );
 const jiti = createJiti(import.meta.url);
-const mod = await jiti.import(new URL("../extensions/kanban.ts", import.meta.url).pathname);
+const mod = await jiti.import(fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url)));
 
 // ブラウザが受け取るのと同じソースを評価する (バッククォート無し / ${無し なので new Function で安全)。
 const { md } = new Function(`${mod.KANBAN_MD_JS}\nreturn { esc: esc, md: md };`)();
@@ -79,7 +83,7 @@ check("生の HTML は常にエスケープ (< が残らない)", () => {
 });
 
 // --- 適用範囲 (dashboard だけが md を使う / esc(c.text) は消えている) -----------
-const SRC = readFileSync(new URL("../extensions/kanban.ts", import.meta.url).pathname, "utf8");
+const SRC = readFileSync(fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url)), "utf8");
 check("カード本文は md(c.text) （#84: テンプレートは dashboard のみ）", () => {
 	assert.equal((SRC.match(/md\(c\.text\)/g) || []).length, 1);
 	assert.ok(!SRC.includes("esc(c.text)"));
@@ -92,6 +96,6 @@ check("md() の定義は KANBAN_MD_JS の 1 箇所だけ", () => {
 if (failures.length) {
 	console.error(`FAIL ${failures.length} / pass ${passed}`);
 	for (const f of failures) console.error(" -", f);
-	process.exit(1);
+	setTimeout(() => process.exit(1), 100);
 }
-console.log(`ok ${passed} pass`);
+if (!failures.length) console.log(`ok ${passed} pass`);

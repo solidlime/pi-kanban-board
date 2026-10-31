@@ -2,6 +2,9 @@
 // バグで消えても 7 日以内なら `~/.pi/kanban/media/.trash/` から手で戻せる。ここは公開経路
 // (/api/upload → /api/remove) と trashMedia のパス検証・配信の遮断を実測する。
 // HOME と KANBAN_PORT を差し替えるので本番の ~/.pi/kanban と 8789 には触れない。
+import { fileURLToPath } from "node:url";
+import { join, sep } from "node:path";
+import { tmpdir } from "node:os";
 import assert from "node:assert/strict";
 import http from "node:http";
 import {
@@ -20,11 +23,15 @@ import { authFetch, tokenHeader } from "./helpers/token.mjs";
 const tf = (input, init) => authFetch(input, init);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const HOME_DIR = "/tmp/kb80t/home";
+const TMP_ROOT = tmpdir();
+const HOME_DIR = TMP_ROOT + "/kb80t/home";
 rmSync(HOME_DIR, { recursive: true, force: true });
-mkdirSync(`${HOME_DIR}/.pi/kanban/sessions`, { recursive: true });
-mkdirSync(`${HOME_DIR}/workspace/site`, { recursive: true });
+mkdirSync(`${join(HOME_DIR, ".pi/kanban/sessions")}`, { recursive: true });
+mkdirSync(`${join(HOME_DIR, "workspace/site")}`, { recursive: true });
 process.env.HOME = HOME_DIR;
+// Windows: os.homedir() prefers USERPROFILE over HOME, so keep them in step or the
+// server writes its token to the real profile and this test reads a missing file.
+process.env.USERPROFILE = process.env.HOME;
 
 const PORT = await new Promise((resolve) => {
 	const s = netServer();
@@ -38,10 +45,10 @@ const BASE = `http://127.0.0.1:${PORT}`;
 
 const require = createRequire(import.meta.url);
 const { createJiti } = require(
-	"/root/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/jiti/lib/jiti.cjs",
+	process.env.KANBAN_JITI ?? createRequire(import.meta.url).resolve("jiti"),
 );
 const jiti = createJiti(import.meta.url);
-const mod = await jiti.import(new URL("../extensions/kanban.ts", import.meta.url).pathname);
+const mod = await jiti.import(fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url)));
 
 const failures = [];
 let passed = 0;
@@ -74,8 +81,8 @@ for (let i = 0; i < 60; i++) {
 	await sleep(100);
 }
 
-const MEDIA = `${HOME_DIR}/.pi/kanban/media`;
-const TRASH = `${MEDIA}/.trash`;
+const MEDIA = `${join(HOME_DIR, ".pi/kanban/media")}`;
+const TRASH = `${join(MEDIA, ".trash")}`;
 const PNG = Buffer.from(
 	"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M8AAAMBAQDJ/pLvAAAAAElFTkSuQmCC",
 	"base64",
@@ -118,13 +125,13 @@ await check("前提: /api/upload で実ファイルが出来る", async () => {
 	assert.equal(r.status, 200, `status=${r.status}`);
 	const j = await r.json();
 	first = j.card;
-	assert.ok(existsSync(`${MEDIA}/${first.img}`), `media にファイルが無い: ${first.img}`);
+	assert.ok(existsSync(`${join(MEDIA, `${first.img}`)}`), `media にファイルが無い: ${first.img}`);
 });
 
 await check("/api/remove: MEDIA_DIR/<name> は消え、.trash/<epoch>-<name> が残る", async () => {
 	const r = await tf(`${BASE}/api/remove?scope=global&id=${first.id}`);
 	assert.equal(r.status, 200, `status=${r.status} ${await r.text()}`);
-	assert.ok(!existsSync(`${MEDIA}/${first.img}`), "実ファイルが残っている（消えていない）");
+	assert.ok(!existsSync(`${join(MEDIA, `${first.img}`)}`), "実ファイルが残っている（消えていない）");
 	const twins = trashedAs(first.img);
 	assert.equal(twins.length, 1, `.trash に退避されていない: ${JSON.stringify(readdirSync(MEDIA))}`);
 	assert.match(twins[0], new RegExp(`^\\d{13}-${first.img.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`));
@@ -136,7 +143,7 @@ await check("前提: 2 枚目をアップロード", async () => {
 	const r = await post("scope=global&ext=png&col=todo");
 	const j = await r.json();
 	second = j.card;
-	assert.ok(existsSync(`${MEDIA}/${second.img}`), "2 枚目のファイルが無い");
+	assert.ok(existsSync(`${join(MEDIA, `${second.img}`)}`), "2 枚目のファイルが無い");
 });
 
 await check("TTL 8 日超の .trash は掃除され、新しい退避ファイルは残る", async () => {
@@ -160,15 +167,15 @@ await check("TTL 8 日超の .trash は掃除され、新しい退避ファイ�
 // --- 3. trashMedia は MEDIA_DIR の外を触らない --------------------------------
 await check("trashMedia: MEDIA_DIR の外のパスは null を返し、ファイルは残る", async () => {
 	const t = api.__test;
-	const outside = `${HOME_DIR}/outside.txt`;
+	const outside = `${join(HOME_DIR, "outside.txt")}`;
 	writeFileSync(outside, "keep me");
 	assert.equal(t.trashMedia(outside), null, "MEDIA_DIR 外なのに移動した");
 	assert.ok(existsSync(outside), "MEDIA_DIR 外のファイルが消えた");
 
 	// ../ での脱出（MEDIA_DIR の兄弟）
-	const sibling = `${HOME_DIR}/.pi/kanban/sessions/sneak.json`;
+	const sibling = `${join(HOME_DIR, ".pi/kanban/sessions/sneak.json")}`;
 	writeFileSync(sibling, "{}");
-	assert.equal(t.trashMedia(`${MEDIA}/../sessions/sneak.json`), null, "../ で脱出できている");
+	assert.equal(t.trashMedia(`${join(MEDIA, "../sessions/sneak.json")}`), null, "../ で脱出できている");
 	assert.ok(existsSync(sibling), "../ 経由で消えた");
 
 	// 前方一致のなりすまし（/media と /media-evil）
@@ -181,10 +188,10 @@ await check("trashMedia: MEDIA_DIR の外のパスは null を返し、ファイ
 
 await check("trashMedia: MEDIA_DIR の中なら .trash へ移す（原子的 rename）", async () => {
 	const name = "999-deadbeef.png";
-	writeFileSync(`${MEDIA}/${name}`, "bytes");
-	const dest = api.__test.trashMedia(`${MEDIA}/${name}`);
-	assert.ok(dest && dest.startsWith(`${TRASH}/`), `戻り値が .trash のパスでない: ${dest}`);
-	assert.ok(!existsSync(`${MEDIA}/${name}`), "元ファイルが残っている");
+	writeFileSync(`${join(MEDIA, `${name}`)}`, "bytes");
+	const dest = api.__test.trashMedia(`${join(MEDIA, `${name}`)}`);
+	assert.ok(dest && dest.startsWith(TRASH + sep), `戻り値が .trash のパスでない: ${dest}`);
+	assert.ok(!existsSync(`${join(MEDIA, `${name}`)}`), "元ファイルが残っている");
 	assert.ok(existsSync(dest), "退避先が無い");
 });
 
@@ -192,15 +199,15 @@ await check("trashMedia: 古い mtime のファイルでも猶予の起点は「
 	// 8 日前にアップロードされたファイルを今捨てる。rename は mtime を引き継ぐので、
 	// 起点を打ち直さないと次の削除で即座に掃除されてしまう。
 	const name = "998-oldface.png";
-	writeFileSync(`${MEDIA}/${name}`, "bytes");
+	writeFileSync(`${join(MEDIA, `${name}`)}`, "bytes");
 	const old = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
-	utimesSync(`${MEDIA}/${name}`, old, old);
-	const dest = api.__test.trashMedia(`${MEDIA}/${name}`);
+	utimesSync(`${join(MEDIA, `${name}`)}`, old, old);
+	const dest = api.__test.trashMedia(`${join(MEDIA, `${name}`)}`);
 	assert.ok(dest && existsSync(dest), "退避できていない");
 
 	// もう一度捨てる -> 掃除が走る。直前の退避分は TTL 内なので残ること。
-	writeFileSync(`${MEDIA}/997-trigger.png`, "bytes");
-	api.__test.trashMedia(`${MEDIA}/997-trigger.png`);
+	writeFileSync(`${join(MEDIA, "997-trigger.png")}`, "bytes");
+	api.__test.trashMedia(`${join(MEDIA, "997-trigger.png")}`);
 	assert.ok(existsSync(dest), "古い mtime を引き継いで即座に掃除されている");
 });
 
@@ -240,7 +247,7 @@ await check("GET /api/media/<通常ファイル> は今も 200（塞ぎすぎて
 // --- 5. .trash もディスク総量に数える (#80-⑪ の mediaDirBytes) -----------------
 // mediaDirBytes を呼ぶのは _inbox への POST だけなので、そちらで測る。
 await check("総量計算は .trash を含む（1GiB を .trash に置くと _inbox POST が 413）", async () => {
-	const add = await tools.get("serve").execute("t", { action: "add", path: `${HOME_DIR}/workspace/site` }, null, () => {});
+	const add = await tools.get("serve").execute("t", { action: "add", path: `${join(HOME_DIR, "workspace/site")}` }, null, () => {});
 	const sid = add.details.id;
 	assert.ok(sid, `serve add が id を返す: ${JSON.stringify(add.details)}`);
 
@@ -259,9 +266,9 @@ await check("総量計算は .trash を含む（1GiB を .trash に置くと _in
 	const body = await r.text();
 	rmSync(hog, { force: true });
 	assert.equal(r.status, 413, `.trash が総量計算に入っていない: status=${r.status} ${body.slice(0, 200)}`);
-	assert.ok(!existsSync(`${HOME_DIR}/workspace/site/_inbox/over.json`), "413 なのにファイルが出来ている");
+	assert.ok(!existsSync(`${join(HOME_DIR, "workspace/site/_inbox/over.json")}`), "413 なのにファイルが出来ている");
 });
 
 console.log(`${passed} passed, ${failures.length} failed`);
 for (const failure of failures) console.log(`  FAIL ${failure}`);
-process.exit(failures.length === 0 ? 0 : 1);
+setTimeout(() => process.exit(failures.length === 0 ? 0 : 1), 100);

@@ -3,6 +3,7 @@
 // 本番の ~/.pi/kanban と 8789 には触れない。
 // 固定するもの: (1) /serve の能動型 MIME 降格 + attachment + nosniff / (2) 書き込み系の
 // cross-origin 門前払い（ヘッダ無しは通す）/ (3) /api/kanban の sid 規則 / (4) 死んだルート。
+import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer as netServer } from "node:net";
@@ -18,6 +19,9 @@ rmSync(HOME_DIR, { recursive: true, force: true });
 mkdirSync(`${HOME_DIR}/.pi/kanban/sessions`, { recursive: true });
 mkdirSync(`${HOME_DIR}/workspace/site`, { recursive: true });
 process.env.HOME = HOME_DIR;
+// Windows: os.homedir() prefers USERPROFILE over HOME, so keep them in step or the
+// server writes its token to the real profile and this test reads a missing file.
+process.env.USERPROFILE = process.env.HOME;
 
 const PORT = await new Promise((resolve) => {
 	const s = netServer();
@@ -30,10 +34,10 @@ process.env.KANBAN_PORT = String(PORT);
 
 const require = createRequire(import.meta.url);
 const { createJiti } = require(
-	"/root/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/jiti/lib/jiti.cjs",
+	process.env.KANBAN_JITI ?? createRequire(import.meta.url).resolve("jiti"),
 );
 const jiti = createJiti(import.meta.url);
-const SRC = new URL("../extensions/kanban.ts", import.meta.url).pathname;
+const SRC = fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url));
 const mod = await jiti.import(SRC);
 
 const failures = [];
@@ -408,4 +412,4 @@ for (const path of ["/api/upload?scope=session&sid=s1&col=todo&ext=png", "/api/s
 // --- 結果 ---------------------------------------------------------------------
 for (const f of failures) console.log(`  FAIL ${f}`);
 console.log(`kanban-security-phaseA: ${passed} passed, ${failures.length} failed`);
-process.exit(failures.length === 0 ? 0 : 1);
+setTimeout(() => process.exit(failures.length === 0 ? 0 : 1), 100);
