@@ -195,12 +195,12 @@ for (let i = 0; i < 40; i++) {
 	});
 }
 
-// #84: the template is gone, so the 404 guard went with it — a stale caller hits the
-// board gate (400). Await first, then check(), because check() is synchronous and would
-// count a rejected promise as a pass.
+// #84: the template is gone. A stale caller falls through the board gate, which answers
+// 404 (not 400: a bare path like .html is not a board write). Await first, then check(),
+// because check() is synchronous and would count a rejected promise as a pass.
 {
 	const res = await tf(`http://127.0.0.1:${PORT}/api/kanban.html`);
-	check("/api/kanban.html は配信されない（ボードゲートの 400）", () => assert.equal(res.status, 400));
+	check("/api/kanban.html は配信されない（404）", () => assert.equal(res.status, 404));
 }
 
 // --- B1/B2: ハンドラ実測（add は session TODO に入り、無言でないこと） ------------

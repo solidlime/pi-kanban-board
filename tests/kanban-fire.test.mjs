@@ -9,6 +9,7 @@ import { createServer } from "node:net";
 import { createRequire } from "node:module";
 import { authFetch } from "./helpers/token.mjs";
 import { readBoardAt, seedBoard, useKanban } from "./helpers/board.mjs";
+import { settleMigration, useMigrate } from "./helpers/migrate.mjs";
 
 // #83b: HTTP routes need the server token now; tf = fetch + the kb_auth cookie.
 const tf = (input, init) => authFetch(input, init);
@@ -38,6 +39,11 @@ const jiti = createJiti(import.meta.url);
 const target = process.env.KANBAN_TS ?? fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url));
 const mod = await jiti.import(target);
 useKanban(mod);
+// 起動時の scope migration（session/global -> project）は fire-and-forget なので、
+// 空の DB のうちに先に消化しておく（meta を立てると起動時の pass は no-op になる）。
+// 消化しないと、このテストが seed した session ボードが起動直後に掃き集められて消える。
+useMigrate(mod);
+await settleMigration();
 const {
 	isBlockedCard,
 	fireAtMs,
@@ -331,7 +337,7 @@ const tool = () => {
 
 checkA("kanban ツール add: blocked / 相対 nextFireAt を絶対時刻で保存", async () => {
 	const before = Date.now();
-	const r = await tool().execute("c1", { action: "add", text: "sched", blocked: "外部待ち", nextFireAt: "+90m" }, undefined, undefined, ctxFor("fire-tool"));
+	const r = await tool().execute("c1", { action: "add", text: "sched", blocked: "外部待ち", nextFireAt: "+90m", scope: "session" }, undefined, undefined, ctxFor("fire-tool"));
 	assert.ok(!r.isError, r.content[0].text);
 	const c = board("fire-tool").cards.find((x) => x.text === "sched");
 	assert.equal(c.blocked, "外部待ち");
@@ -342,7 +348,7 @@ checkA("kanban ツール add: blocked / 相対 nextFireAt を絶対時刻で保�
 });
 
 checkA("kanban ツール move: blocked 解除 / nextFireAt 解除", async () => {
-	const r = await tool().execute("c2", { action: "move", id: 1, col: "doing", blocked: "", nextFireAt: "" }, undefined, undefined, ctxFor("fire-tool"));
+	const r = await tool().execute("c2", { action: "move", id: 1, col: "doing", blocked: "", nextFireAt: "", scope: "session" }, undefined, undefined, ctxFor("fire-tool"));
 	assert.ok(!r.isError, r.content[0].text);
 	const c = board("fire-tool").cards.find((x) => x.id === 1);
 	assert.equal(c.col, "doing");
@@ -351,14 +357,15 @@ checkA("kanban ツール move: blocked 解除 / nextFireAt 解除", async () => 
 });
 
 checkA("kanban ツール add: 不正な nextFireAt は保存せずエラー", async () => {
-	const r = await tool().execute("c3", { action: "add", text: "bad", nextFireAt: "garbage" }, undefined, undefined, ctxFor("fire-tool"));
+	const r = await tool().execute("c3", { action: "add", text: "bad", nextFireAt: "garbage", scope: "session" }, undefined, undefined, ctxFor("fire-tool"));
 	assert.ok(r.isError, "エラーになる");
 	assert.equal(board("fire-tool").cards.some((x) => x.text === "bad"), false, "カードは追加されない");
 });
 
 // add は params.col を尊重する（未指定のみ todo にフォールバック）。
+// scope は session を明示する（既定は project ボードなので、下の board(sid) 読みと一致させる）。
 const addCol = async (text, params, sid) => {
-	const r = await tool().execute(`c-${text}`, { action: "add", text, ...params }, undefined, undefined, ctxFor(sid));
+	const r = await tool().execute(`c-${text}`, { action: "add", text, scope: "session", ...params }, undefined, undefined, ctxFor(sid));
 	assert.ok(!r.isError, r.content[0].text);
 	return { card: board(sid).cards.find((x) => x.text === text), message: r.content[0].text };
 };
@@ -411,23 +418,23 @@ checkA("/api/schedule: blocked 設定（GET+query）-> 保存される", async (
 	// fire-api is the driver for this block.
 	quiet("fire-api");
 	writeSession("fire-api", { cards: [{ id: 1, text: "g", col: "todo" }], nextId: 2 });
-	const { status, body } = await api("/api/schedule?id=1&blocked=%E5%A4%96%E9%83%A8%E5%BE%85%E3%81%A1", "fire-api");
+	const { status, body } = await api("/api/schedule?id=1&blocked=%E5%A4%96%E9%83%A8%E5%BE%85%E3%81%A1&scope=session", "fire-api");
 	assert.equal(status, 200, JSON.stringify(body));
 	assert.equal(board("fire-api").cards[0].blocked, "外部待ち");
-	const r2 = await api("/api/schedule?id=1&at=%2B3h", "fire-api");
+	const r2 = await api("/api/schedule?id=1&at=%2B3h&scope=session", "fire-api");
 	assert.equal(r2.status, 200);
 	assert.match(board("fire-api").cards[0].nextFireAt, /^\d{4}-\d{2}-\d{2}T.*Z$/);
-	const r3 = await api("/api/schedule?id=1&at=&blocked=", "fire-api");
+	const r3 = await api("/api/schedule?id=1&at=&blocked=&scope=session", "fire-api");
 	assert.equal(r3.status, 200);
 	assert.equal(board("fire-api").cards[0].nextFireAt, undefined, '"" で解除');
 	assert.equal(board("fire-api").cards[0].blocked, undefined);
 	// at も blocked も無い = 呼び出し側のミス。黙って書き込み成功にしない。
-	const r4 = await api("/api/schedule?id=1", "fire-api");
+	const r4 = await api("/api/schedule?id=1&scope=session", "fire-api");
 	assert.equal(r4.status, 400, JSON.stringify(r4.body));
 });
 
 checkA("/api/schedule: 不正な at は 400（黙って解除しない）", async () => {
-	const { status } = await api("/api/schedule?id=1&at=garbage", "fire-api");
+	const { status } = await api("/api/schedule?id=1&at=garbage&scope=session", "fire-api");
 	assert.equal(status, 400);
 });
 

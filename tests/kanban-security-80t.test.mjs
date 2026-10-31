@@ -123,7 +123,7 @@ const rawGet = (path) =>
 // --- 1. /api/remove は消さずに .trash へ移す ----------------------------------
 let first;
 await check("前提: /api/upload で実ファイルが出来る", async () => {
-	const r = await post("scope=global&ext=png&col=todo");
+	const r = await post("scope=project&ext=png&col=todo");
 	assert.equal(r.status, 200, `status=${r.status}`);
 	const j = await r.json();
 	first = j.card;
@@ -131,7 +131,7 @@ await check("前提: /api/upload で実ファイルが出来る", async () => {
 });
 
 await check("/api/remove: MEDIA_DIR/<name> は消え、.trash/<epoch>-<name> が残る", async () => {
-	const r = await tf(`${BASE}/api/remove?scope=global&id=${first.id}`);
+	const r = await tf(`${BASE}/api/remove?scope=project&id=${first.id}`);
 	assert.equal(r.status, 200, `status=${r.status} ${await r.text()}`);
 	assert.ok(!existsSync(`${join(MEDIA, `${first.img}`)}`), "実ファイルが残っている（消えていない）");
 	const twins = trashedAs(first.img);
@@ -142,7 +142,7 @@ await check("/api/remove: MEDIA_DIR/<name> は消え、.trash/<epoch>-<name> が
 // --- 2. TTL を超えた .trash のファイルは次の削除で消える -----------------------
 let second;
 await check("前提: 2 枚目をアップロード", async () => {
-	const r = await post("scope=global&ext=png&col=todo");
+	const r = await post("scope=project&ext=png&col=todo");
 	const j = await r.json();
 	second = j.card;
 	assert.ok(existsSync(`${join(MEDIA, `${second.img}`)}`), "2 枚目のファイルが無い");
@@ -156,7 +156,7 @@ await check("TTL 8 日超の .trash は掃除され、新しい退避ファイ�
 	utimesSync(dummy, old, old);
 	assert.ok(existsSync(dummy), "ダミーを置けていない");
 
-	const r = await tf(`${BASE}/api/remove?scope=global&id=${second.id}`);
+	const r = await tf(`${BASE}/api/remove?scope=project&id=${second.id}`);
 	assert.equal(r.status, 200, `status=${r.status}`);
 
 	assert.ok(!existsSync(dummy), "TTL を超えたダミーが掃除されていない");
@@ -226,8 +226,9 @@ await check("GET /api/media/../.trash/<file> は生パスでも取れない", as
 	const [victim] = trashedAs(first.img);
 	const res = await rawGet(`/api/media/../.trash/${encodeURIComponent(victim)}`);
 	// new URL() が `..` を畳んで /api/.trash/<file> にするので MEDIA_PREFIX に当たらず、
-	// board gate（scope=session に sid 無し）で 400。実ファイルには届かない。
-	assert.equal(res.status, 400, `.. 経由で配信されている: ${res.status} ${res.body.slice(0, 120)}`);
+	// 未知の経路として board ルータの default で 404（scope 既定が project になったため、
+	// 以前の「scope=session に sid 無し」400 は通らない）。実ファイルには届かない。
+	assert.equal(res.status, 404, `.. 経由で配信されている: ${res.status} ${res.body.slice(0, 120)}`);
 });
 
 await check("GET /api/media/%2e%2e%2f.trash%2f<file> も取れない", async () => {
@@ -238,12 +239,12 @@ await check("GET /api/media/%2e%2e%2f.trash%2f<file> も取れない", async () 
 });
 
 await check("GET /api/media/<通常ファイル> は今も 200（塞ぎすぎていない）", async () => {
-	const r = await post("scope=global&ext=png&col=todo");
+	const r = await post("scope=project&ext=png&col=todo");
 	const j = await r.json();
 	const res = await tf(`${BASE}/api/media/${encodeURIComponent(j.card.img)}`);
 	assert.equal(res.status, 200, `status=${res.status}`);
 	// 後片付け: この経路も削除は .trash 経由になる
-	await tf(`${BASE}/api/remove?scope=global&id=${j.card.id}`);
+	await tf(`${BASE}/api/remove?scope=project&id=${j.card.id}`);
 });
 
 // --- 5. .trash もディスク総量に数える (#80-⑪ の mediaDirBytes) -----------------

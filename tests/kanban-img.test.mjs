@@ -10,6 +10,7 @@ import { createServer as netServer } from "node:net";
 import { createRequire } from "node:module";
 import { authFetch } from "./helpers/token.mjs";
 import { readBoardAt, seedBoard, useKanban, removeBoard } from "./helpers/board.mjs";
+import { settleMigration, useMigrate } from "./helpers/migrate.mjs";
 
 // #83b: HTTP routes need the server token now; tf = fetch + the kb_auth cookie.
 const tf = (input, init) => authFetch(input, init);
@@ -40,6 +41,10 @@ const jiti = createJiti(import.meta.url);
 const SRC = fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url));
 const mod = await jiti.import(SRC);
 useKanban(mod);
+// 起動時 migration は fire-and-forget。seed より先に消化しないと、seed した session/global
+// ボードが起動直後の移行に食われる（旧レイアウトを seed するテストの前提）。
+useMigrate(mod);
+await settleMigration();
 const { parseKanbanArgs } = mod;
 
 const failures = [];

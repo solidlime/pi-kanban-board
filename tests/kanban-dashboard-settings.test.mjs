@@ -192,7 +192,7 @@ test("#11: セッションカードと GLOBAL ボードからは ctl が消え�
 test("#11: 設定行の書き込みはそのボードの scope= / sid= を載せる", async () => {
 	const { byId, urls } = await boot();
 	const want = [
-		["kotomi", "scope=global", "sid=s1"], // GLOBAL の modes は active sid で引く（従来どおり）
+		null, // GLOBAL 行は読み取り専用（boardCtx の active=false）。書き込みが出ないのが正しい
 		["kotomi", "scope=session", "sid=s1"],
 		["other", "scope=session", "sid=s2"],
 	];
@@ -205,6 +205,10 @@ test("#11: 設定行の書き込みはそのボードの scope= / sid= を載せ
 			await flush();
 		}
 		const wrote = urls.slice(start).filter((u) => !u.startsWith("/api/dashboard"));
+		if (want[i] === null) {
+			assert.equal(wrote.length, 0, `GLOBAL 行で書き込みが出た: ${wrote.slice(0, 2)}`);
+			continue;
+		}
 		assert.ok(wrote.length >= 5, `行 ${i} の書き込みが少なすぎる: ${wrote.length}`);
 		const [, scope, sid] = want[i];
 		for (const u of wrote) {

@@ -12,6 +12,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
 import { useKanban, seedBoard } from "./helpers/board.mjs";
+import { useMigrate, settleMigration } from "./helpers/migrate.mjs";
 
 const HOME_DIR = "/tmp/kb-polls89-home";
 rmSync(HOME_DIR, { recursive: true, force: true });
@@ -38,6 +39,9 @@ const { createJiti } = require(
 const jiti = createJiti(import.meta.url);
 const mod = await jiti.import(fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url)));
 useKanban(mod);
+useMigrate(mod);
+// phase 0: 起動時移行がシードした session ボードを畳むので、先に消化する。
+await settleMigration();
 
 const failures = [];
 let passed = 0;

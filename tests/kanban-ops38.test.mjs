@@ -79,28 +79,29 @@ for (let i = 0; i < 40; i++) {
 // --- 4. サーバ側: id 付き upload は新規カードを作らず既存カードに紐付く -------
 const SID = "ops38-session";
 const boardFile = `${HOME_DIR}/.pi/kanban/sessions/${SID}.json`;
-// upload の書き込みは scope=global を使う（#55 で scope=session も 403 にならなくなったが、
-// このテストは GLOBAL 側の id 付き upload を見るので分岐を維持する）。
-const globalFile = `${HOME_DIR}/.pi/kanban/global.json`;
+// upload の書き込みは scope=project を使う（global は読み取り専用の集約ビューになった。
+// このテストは project ボード側の id 付き upload を見るため sid は要らない）。
+// project ボードの実パスは実装の projectSlugOf(process.cwd()) から引く。
+const projectFile = `${HOME_DIR}/.pi/kanban/projects/${mod.projectSlugOf(process.cwd())}.json`;
 const readCards = () => readBoardAt(boardFile).cards;
-const readGlobal = () => readBoardAt(globalFile).cards;
+const readProject = () => readBoardAt(projectFile).cards;
 seedBoard(boardFile, { cards: [{ id: 1, text: "既存カード", col: "doing" }], nextId: 50 });
-seedBoard(globalFile, { cards: [{ id: 1, text: "既存カード", col: "doing" }], nextId: 50 });
+seedBoard(projectFile, { cards: [{ id: 1, text: "既存カード", col: "doing" }], nextId: 50 });
 // 1x1 PNG の最小バイト列 (media に書ければ中身は問わない)。
 const PNG = Buffer.from(
 	"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M8AAAMBAQDJ/pLvAAAAAElFTkSuQmCC",
 	"base64",
 );
 await check("#38-4 /api/upload?id= は既存カードに紐付き、新規カードを作らない", async () => {
-	const before = readGlobal().length;
-	const r = await tf(`${BASE}/api/upload?scope=global&ext=png&id=1`, {
+	const before = readProject().length;
+	const r = await tf(`${BASE}/api/upload?scope=project&ext=png&id=1`, {
 		method: "POST",
 		body: PNG,
 		headers: { "Content-Type": "application/octet-stream" },
 	});
 	const j = await r.json();
 	assert.equal(j.ok, true, JSON.stringify(j));
-	const after = readGlobal();
+	const after = readProject();
 	assert.equal(after.length, before, "id 指定なのにカードが増えた");
 	const card = after.find((c) => c.id === 1);
 	assert.ok(typeof card.img === "string" && card.img.endsWith(".png"), `img が付いていない: ${JSON.stringify(card)}`);

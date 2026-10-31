@@ -121,7 +121,8 @@ await check("#31 ループ/ピックは /api/modes、間隔は /api/interval を
 });
 
 await check("#31 GLOBAL は scope=global、セッションは scope=session + sid", () => {
-	assert.ok(html.includes('boardCtx("global", sid, true)'), "GLOBAL の ctx が無い");
+	// global は読み取り専用の集約ビュー: 書き込み可フラグは false（サーバも 400）。
+	assert.ok(html.includes('boardCtx("global", sid, false)'), "GLOBAL の ctx が無い（読み取り専用でない）");
 	// #55: session ボードも active を落とさない（boardCtx の既定で true）。
 	assert.ok(html.includes('boardCtx("session", s.id)'), "SESSION の ctx が無い");
 	assert.ok(!html.includes('boardCtx("session", s.id, s.isActive)'), "isActive をまだ渡している");
@@ -348,7 +349,11 @@ await check("CSS は既存トークンのみ（新色を発明していない）
 		assert.ok(has("/api/priority?", "&id=1&", "n=6", "scope=session", "sid=s1"), "priority ▲ が無い");
 		assert.ok(has("/api/priority?", "&id=1&", "n=4", "scope=session", "sid=s1"), "priority ▼ が無い");
 		assert.ok(has("/api/schedule?", "&id=4&", "blocked=%E4%B8%80%E6%99%82%E5%81%9C%E6%AD%A2", "scope=session", "sid=s1"), "DOING 全停止が無い");
-		assert.ok(has("/api/modes?", "key=autoPick", "value=on", "scope=global", "sid=s1"), "GLOBAL のモードが global スコープでない");
+		// global は読み取り専用の集約ビュー。GLOBAL ボードのスイッチを押しても書き込みは飛ばない。
+		assert.ok(
+			!writes.some((u) => u.includes("/api/modes?") && u.includes("scope=global")),
+			"GLOBAL ボードの読み取り専用スイッチが書き込んだ",
+		);
 		assert.ok(has("/api/serve", "action=remove", "id=abcdef0123456789", "scope=global", "sid=s1"), "serve 停止が無い");
 		// #66-security: 元は del=1 (実ファイル削除) も飛ばしていた。削除経路は撤去済み。
 		assert.ok(!writes.some((u) => u.includes("del=1")), "del=1 を飛ばす操作が残っている");

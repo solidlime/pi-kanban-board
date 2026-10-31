@@ -10,6 +10,7 @@ import { createServer } from "node:net";
 import { createRequire } from "node:module";
 import { authFetch } from "./helpers/token.mjs";
 import { readBoardAt, seedBoard, useKanban } from "./helpers/board.mjs";
+import { settleMigration, useMigrate } from "./helpers/migrate.mjs";
 
 // #83b: HTTP routes need the server token now; tf = fetch + the kb_auth cookie.
 const tf = (input, init) => authFetch(input, init);
@@ -38,6 +39,10 @@ const { createJiti } = require(
 const jiti = createJiti(import.meta.url);
 const mod = await jiti.import(fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url)));
 useKanban(mod);
+// 起動時の scope migration（session/global -> project）は fire-and-forget。先に消化しておかないと、
+// 我々が seed した session ボードが起動直後に project ボードへ吸い上げられて空になる。
+useMigrate(mod);
+await settleMigration();
 const { orderTodos, isValidPriority, priorityOf, parseKanbanArgs, pickFirstTodo } = mod;
 
 const failures = [];
@@ -134,8 +139,10 @@ check("［］ -> menu", () => eq(parseKanbanArgs([]), { kind: "menu" }));
 
 // --- 3: priority が autoPick の選定を実際に変える ------------------------------
 const SID = "phase7-sid";
-// global 層は /api/priority の scope=global ケース用に1枚だけ用意する。
-seedBoard(`${HOME_DIR}/.pi/kanban/global.json`, { cards: [{ id: 3, text: "global", col: "todo" }], nextId: 4 });
+// project 層は /api/priority の scope=project ケース用に1枚だけ用意する（global は書き込み禁止になった）。
+// パスは実装の projectSlugOf(process.cwd()) から引く（sid 無しの書き込みは cwd で解決される）。
+const projectFile = `${HOME_DIR}/.pi/kanban/projects/${mod.projectSlugOf(process.cwd())}.json`;
+seedBoard(projectFile, { cards: [{ id: 3, text: "project", col: "todo" }], nextId: 4 });
 const boardFile = `${HOME_DIR}/.pi/kanban/sessions/${SID}.json`;
 const readBoardFile = () => readBoardAt(boardFile);
 seedBoard(boardFile, {
@@ -243,11 +250,11 @@ for (const bad of ["100", "-100", "2.5", "abc"]) {
 	check("GET /api/priority?id=99（無い id）-> 404", () => assert.equal(res.status, 404));
 }
 {
-	const res = await tf(`http://127.0.0.1:${PORT}/api/priority?scope=global&id=3&n=-4`);
+	const res = await tf(`http://127.0.0.1:${PORT}/api/priority?scope=project&id=3&n=-4`);
 	const body = await res.json();
-	check("GET /api/priority?scope=global -> 200（global ボード側に書く）", () => {
+	check("GET /api/priority?scope=project -> 200（project ボード側に書く）", () => {
 		assert.equal(res.status, 200);
-		const g = readBoardAt(`${HOME_DIR}/.pi/kanban/global.json`);
+		const g = readBoardAt(projectFile);
 		assert.equal(g.cards.find((c) => c.id === 3).priority, -4);
 	});
 }

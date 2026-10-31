@@ -211,9 +211,16 @@ async function runDashboard() {
 							now: "2026-01-01T00:00:00.000Z",
 							stats: { sessions: 1, active: 1, todo: 1, doing: 0, done: 0, serve: 0, media: 0 },
 							global: {
+								counts: { todo: 0, doing: 0, done: 0 },
+								modes: { doingLoop: true, autoPick: false, intervalMin: 5 },
+								cards: [],
+							},
+							// global は読み取り専用の集約ビューなので、添付の書き込み先は project。
+							project: {
+								id: "demo",
 								counts: { todo: 1, doing: 0, done: 0 },
 								modes: { doingLoop: true, autoPick: false, intervalMin: 5 },
-								cards: [{ id: 7, text: "global card", col: "todo" }],
+								cards: [{ id: 7, text: "project card", col: "todo" }],
 							},
 							sessions: [],
 							serve: [],
@@ -248,10 +255,10 @@ async function dropOn(card, file) {
 	return calls.find((u) => u.includes("/api/upload")) || null;
 }
 
-const mineCard = () => walk(byId["global"]).find((n) => hasCls(n, "card"));
+const mineCard = () => walk(byId["project"]).find((n) => hasCls(n, "card"));
 
 await check("前提: カードが描画されている", () => {
-	assert.ok(mineCard(), "GLOBAL 看板のカードが無い");
+	assert.ok(mineCard(), "PROJECT 看板のカードが無い");
 });
 
 await check("#59 type が空でもファイル名から拡張子を引いて送る（x.png）", async () => {

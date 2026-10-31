@@ -60,6 +60,9 @@ const writeBoardFile = (sid, cards) =>
 	seedBoard(boardFile(sid), { cards, nextId: 1 });
 const writeGlobalFile = (cards) => seedBoard(GLOBAL, { cards, nextId: 1 });
 const readGlobal = () => readBoardAt(GLOBAL).cards;
+// /api/add の書き込み先は project ボード（実装の projectSlugOf(process.cwd())）。
+const PROJECT = `${HOME_DIR}/.pi/kanban/projects/${mod.projectSlugOf(process.cwd())}.json`;
+const readProject = () => readBoardAt(PROJECT).cards;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const A = "kb87-driver";
@@ -138,10 +141,13 @@ function startDriver() {
 const settle = (sess) =>
 	sess.handlers.get("agent_before_settle")({ context: { contextMessages: [{ role: "assistant" }] } }, sess.ctx);
 
-/** B の sid で GLOBAL に TODO を足す（ダッシュボードと同じ /api/add 経路）。 */
-async function addGlobalAsB(text) {
+/** B の sid で project ボードに TODO を足す（ダッシュボードと同じ /api/add 経路）。
+ * global は読み取り専用の集約ビューになった（書き込みは 400）ので、共有ボードへの書き込みは
+ * project スコープ。sid 明示は「cache に無い sid は 400」で弾かれるので渡さない（movedBy は
+ * active session になる）。B の所有を刻むのは呼び出し側の責務。 */
+async function addProjectAsB(text) {
 	const res = await fetch(
-		`http://127.0.0.1:${PORT}/api/add?scope=global&sid=${B}&text=${encodeURIComponent(text)}`,
+		`http://127.0.0.1:${PORT}/api/add?scope=project&text=${encodeURIComponent(text)}`,
 		{ headers: { Cookie: `kb_auth=${readToken()}` } },
 	);
 	assert.equal(res.status, 200, `api/add failed: ${res.status}`);
@@ -154,13 +160,19 @@ try {
 	writeBoardFile(A, []); // SESSION に拾うものは無い -> GLOBAL を見る
 	writeGlobalFile([]);
 
-	// --- 1: B の sid で足した GLOBAL TODO を A の tick が拾う -------------------
-	await addGlobalAsB("sibling work");
-	const added = readGlobal();
+	// --- 1: B の sid で足した共有ボードの TODO を A の tick が拾う -------------------
+	// 書き込みは project ボード（global は 400）。だが poll が見るのは session/global の
+	// 経路のままなので、書けたカードを同じ形で global ボードに置いて wake を実測する。
+	await addProjectAsB("sibling work");
+	const added = readProject();
 	assert.equal(added.length, 1, `add されていない: ${JSON.stringify(added)}`);
-	assert.equal(added[0].movedBy, B, "add は movedBy=B を刻む（この状態が人質の原因）");
-	const card = added[0];
-
+	// sid 無しの /api/add は movedBy に active session を刻む。このテストの主題は「movedBy が
+	// 他人の共有 TODO を A が拾う」なので、ボード側で B を刻んで状態を作る。
+	const card = { ...added[0], movedBy: B };
+	writeGlobalFile([card]);
+	// settle は project ボードも走査する（同一 cwd の未着手 TODO を見る）。この wake の実測からは
+	// 外すため、add で作った project カードを消す。
+	seedBoard(PROJECT, { cards: [], nextId: 1 });
 	let woke = null;
 	for (let i = 0; i < 60 && woke === null; i++) {
 		await sleep(100);

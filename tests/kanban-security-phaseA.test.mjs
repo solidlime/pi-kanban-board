@@ -275,11 +275,13 @@ const NOTE = JSON.stringify({ take: 1 });
 // --- 6. 死んだルート -----------------------------------------------------------
 {
 	const res = await send("GET", "/api/kanban.html");
-	// #84: the template is gone, so the 404 branch went with it. A stale caller now falls
-	// through to the board gate (400, sid required) — still "not served", which is all the
-	// #83 generation probe needs.
-	await checkAsync("/api/kanban.html は 404 ではなくボードゲートの 400", async () =>
-		assert.equal(res.status, 400, `status=${res.status} body=${res.body.slice(0, 80)}`));
+	// #84: the template is gone. A stale caller falls through to the board gate, which
+	// answers 404 not found for a bare path — still "not served", which is all the
+	// #83 generation probe needs. 404 is asserted exactly: a 200 here is a regression.
+	await checkAsync("/api/kanban.html は配信されない（404）", async () => {
+		assert.equal(res.status, 404, `status=${res.status} body=${res.body.slice(0, 80)}`);
+		assert.equal(JSON.parse(res.body).error, "not found");
+	});
 	check("KANBAN_HTML 定数は消えている（#84 の削除対象）", () => {
 		assert.equal(typeof mod.KANBAN_HTML, "undefined");
 	});

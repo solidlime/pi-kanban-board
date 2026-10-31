@@ -220,7 +220,7 @@ await check("8. 401 の本文にトークン値が含まれない", async () => 
 		await (await dash()).text(),
 		await (await fetch(`${A.base}/api/dashboard?token=${"2".repeat(64)}`)).text(),
 		await (await fetch(`${A.base}/?token=${"3".repeat(64)}`, { redirect: "manual" })).text(),
-		await (await fetch(`${A.base}/api/add?text=x&scope=global`)).text(),
+		await (await fetch(`${A.base}/api/add?text=x&scope=project`)).text(),
 	];
 	for (const b of bodies) assert.ok(!b.includes(A.token), `本文にトークン: ${b}`);
 });
@@ -252,9 +252,9 @@ await check("10. 無認証で届く端点は無い（/api/*, /serve/*）", async
 	const paths = [
 		"/api/kanban",
 		"/api/sessions",
-		"/api/modes?scope=global",
+		"/api/modes?scope=project",
 		"/api/selftest",
-		"/api/add?text=x&scope=global",
+		"/api/add?text=x&scope=project",
 		"/api/serve",
 		"/serve/",
 		"/serve/1/x.png",
@@ -268,11 +268,11 @@ await check("10. 無認証で届く端点は無い（/api/*, /serve/*）", async
 	assert.equal(post.status, 401, `POST /api/selftest -> ${post.status}`);
 });
 await check("10b. 認証が通れば従来どおり（Origin ゲートは内側に残っている）", async () => {
-	const r = await fetch(`${A.base}/api/add?text=auth_ok&scope=global`, {
+	const r = await fetch(`${A.base}/api/add?text=auth_ok&scope=project`, {
 		headers: { Cookie: `kb_auth=${A.token}` },
 	});
 	assert.equal(r.status, 200, `status=${r.status}`);
-	const evil = await fetch(`${A.base}/api/add?text=evil&scope=global`, {
+	const evil = await fetch(`${A.base}/api/add?text=evil&scope=project`, {
 		headers: { Cookie: `kb_auth=${A.token}`, Origin: "http://evil.example" },
 	});
 	assert.equal(evil.status, 403, `cross-origin -> ${evil.status}`);

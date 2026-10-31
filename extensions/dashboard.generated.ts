@@ -257,8 +257,14 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
           <button class="sw" type="button" id="f-overdue" aria-pressed="false">期限超過</button>
           <button class="sw" type="button" id="f-blocked" aria-pressed="false">ブロック中</button>
         </div>
+        <!-- phase0: project が既定のボード。作業ディレクトリ（git ルート）単位で全セッションが共有する -->
+        <section aria-labelledby="h-project">
+          <div class="hd" id="h-project">このプロジェクト（<span id="project-slug">—</span>）</div>
+          <div id="project"></div>
+        </section>
+        <!-- global への書き込みは 400 になった（読み取り専用の集約ビュー） -->
         <section aria-labelledby="h-global">
-          <div class="hd" id="h-global">GLOBAL（全セッション共有）</div>
+          <div class="hd" id="h-global">GLOBAL（全セッション共有・読み取り専用）</div>
           <div id="global"></div>
         </section>
         <section aria-labelledby="h-sessions">
@@ -456,7 +462,7 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
     var typing = tg === "TEXTAREA" || a.isContentEditable === true ||
       (tg === "INPUT" && !NO_TYPE_INPUT.test(a.type || "text"));
     if (!typing) return false;
-    return !!(a.closest && a.closest("#stats, #sessions, #global, #serve, #projects, #settings-loops"));
+    return !!(a.closest && a.closest("#stats, #project, #sessions, #global, #serve, #projects, #settings-loops"));
   }
   // sig は「今 DOM に描かれている状態」を記述する（query を落とすと検索語の変化を取り逃す）。
   // cardFilter はクリック時に redraw() が sig を揃えるので、ここには載せない（既存テストの形を保つ）。
@@ -569,7 +575,8 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
     return e;
   }
   // #55: どのセッションの看板も編集できる（セッション単位の書き込みロックは無い）。
-  // ctx.active は常に true なので RO_MSG / RO_TITLE は発火しない。
+  // ctx.active が false なのは今は GLOBAL だけ（サーバが 400 を返す読み取り専用の集約ビュー）。
+  // 見出しに「読み取り専用」と出るので、ツールチップの文言はセッション時代のままにしてある。
   var RO_MSG = "この看板は読み取り専用 — 編集するにはそのセッションをアクティブにして";
   var RO_TITLE = "読み取り専用（編集するにはセッションをアクティブに）";
   var noteTimer = null;
@@ -869,7 +876,8 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
   // (the server 403s a write coming from a session that is not the active one).
   function boardCtl(ctx, m, cards){
     var box = el("div", "ctl");
-    if (!ctx.active) box.title = "このセッションはアクティブではないので読み取り専用";
+    // GLOBAL は「アクティブでない」のではなく読み取り専用（/api/schedule?scope=global は 400）。
+    if (!ctx.active) box.title = ctx.scope === "global" ? "GLOBAL は読み取り専用" : "このセッションはアクティブではないので読み取り専用";
     function sw(key, label){
       var on = !m || m[key] !== false; // absent means ON, same as modesFor
       var b = el("button", "sw" + (on ? " on" : ""), label + " " + (on ? "ON" : "OFF"));
@@ -1265,6 +1273,7 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
   function cardStats(d){
     var boards = [];
     if (d && d.global) boards.push(d.global.cards || []);
+    if (d && d.project) boards.push(d.project.cards || []);
     ((d && d.sessions) || []).forEach(function(s){ boards.push((s && s.cards) || []); });
     var today = todayISO(), ok = 0, over = 0, blocked = 0, done = 0, total = 0;
     boards.forEach(function(list){
@@ -1399,6 +1408,34 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
     });
   }
 
+  // phase0: このプロセス（＝この cwd の git ルート）のボード。同じリポジトリの全セッションが共有する。
+  // 中身の描画は renderGlobal / renderSessions と同じ板（board()）を使い回す。
+  // 古いサーバは project を返さない: その場合は空の見出しだけ出して落ちない。
+  function renderProject(p, nowMs, sid){
+    void sid; // 書き込みの宛先はサーバが cwd で解決する（scope=project に sid は要らない）。
+    // ここに slug を載せると act() が sid=<slug> を送ってしまい、サーバはそれをセッション id として
+    // 別の cwd に解決しうる。空にしておけば sid ごと送られない。
+    var box = document.getElementById("project");
+    if (!box) return;
+    box.innerHTML = "";
+    var slug = document.getElementById("project-slug");
+    if (slug) slug.textContent = (p && p.id) || "—";
+    if (!p) {
+      empty(box, "\\u25A1", "<b>プロジェクト看板なし</b> — サーバが古いと出ないよ");
+      return;
+    }
+    var all = p.cards || [];
+    // 絞り込みは GLOBAL / SESSIONS と同じ規則（上部の絞り込みバーは全看板に効く）。
+    var search = query !== "";
+    var filtered = search || projPick !== "" || cardFilter !== "";
+    var cards = all.filter(function(x){
+      return projOk(x) && cardFilterOk(x, all) && (!search || String(x.text || "").toLowerCase().indexOf(query) >= 0);
+    });
+    if (!cards.length && filtered) { box.appendChild(el("div", "sess-empty", "該当なし")); return; }
+    // 空でも board() を描く（project は既定のボードなので、空のときこそ + が要る）。
+    box.appendChild(board(cards, nowMs, boardCtx("project", "", true)));
+  }
+
   function renderGlobal(g, nowMs, sid){
     var box = document.getElementById("global");
     box.innerHTML = "";
@@ -1437,9 +1474,10 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
       toggleGlobal(e);
     });
     if (!gexpanded) return;
-    // GLOBAL writes carry scope=global; the modes key still needs the active sid.
+    // GLOBAL への書き込みはサーバが 400 で断るので、読み取り専用の ctx で描く
+    // （追加・ドラッグ・削除・添付の導線が aria-disabled + 理由表示になる）。
     // 操作系は従来どおり絞り込み前の全カード（サーバの件数）を見る。
-    var ctx = boardCtx("global", sid, true);
+    var ctx = boardCtx("global", sid, false);
     if (!cards.length) {
       if (filtered) box.appendChild(el("div", "sess-empty", "該当なし"));
       else empty(box, "\\u25A1", "<b>GLOBAL 看板は空</b> — 全セッション共有のカードを置くとここに現れるよ");
@@ -1499,7 +1537,7 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
       // Serve has no per-entry process to stop: 停止 deregisters the URL, 削除 also
       // drops the served file (server unlinks regular files only, never a directory).
       var ops = el("span", "ops");
-      var sctx = boardCtx("global", sid, true);
+      var sctx = boardCtx("global", sid, false);
       // 永久トグル。変更は既存の /api/serve 経由（scope+sid が載る）。
       var perm = el("label", "permx");
       perm.title = "永久にする（自動削除なし）";
@@ -1534,7 +1572,8 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
     if (!box) return;
     box.innerHTML = "";
     var g = d.global || {};
-    var rows = [{ label: "GLOBAL（全セッション共有）", ctx: boardCtx("global", activeSid, true),
+    // global は読み取り専用（/api/schedule?scope=global は 400）なので、行の操作は非活性にする。
+    var rows = [{ label: "GLOBAL（全セッション共有）", ctx: boardCtx("global", activeSid, false),
       modes: g.modes, cards: g.cards || [], halted: null, cap: null }];
     (d.sessions || []).forEach(function(s){
       var m = s.modes ? s.modes.session : null;
@@ -1844,6 +1883,7 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
     (d.sessions || []).forEach(function(s){ if (s.isActive && !activeSid) activeSid = s.id; });
     renderStats(d.stats);
     renderSessions(d.sessions || [], nowMs);
+    renderProject(d.project, nowMs, d.driver);
     renderGlobal(d.global, nowMs, activeSid);
     renderServe(d.serve || [], nowMs, activeSid);
     renderSettings(d, activeSid); // #11
@@ -1992,7 +2032,7 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
       setConn(false, !document.getElementById("banner").classList.contains("on"));
       if (!lastData) {
         // never got any data: draw the empty states instead of blank sections
-        renderStats(null); renderSessions([], null); renderGlobal(null, null); renderServe([], null);
+        renderStats(null); renderSessions([], null); renderProject(null, null); renderGlobal(null, null); renderServe([], null);
       }
     }).then(function(){
       // プロジェクトは別エンドポイントなので、タブを開いている時だけ相乗りで取る（専用タイマーは作らない）

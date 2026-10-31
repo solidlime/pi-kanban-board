@@ -287,7 +287,7 @@ await check("#71 maxLoopsRequest: 不正な scope は専用の文言で拒否", 
 	for (const scope of ["foo", "SESSION", "Global", "globals", " "]) {
 		const p = req({ scope, sid: SID, n: "3" });
 		assert.equal(p.kind, "error", `scope=${JSON.stringify(scope)}`);
-		assert.equal(p.error, "scope must be global or session", `scope=${JSON.stringify(scope)}`);
+		assert.equal(p.error, "scope must be global, session or project", `scope=${JSON.stringify(scope)}`);
 	}
 });
 
@@ -323,7 +323,7 @@ await check("#71 maxLoopsRequest: scope 省略は session 扱い（parseScope �
 	});
 	await check("#71 不正 scope の文言はセッション用ではない", async () => {
 		const r = await get("/api/maxloops?scope=foo&n=5");
-		assert.equal(r.body.error, "scope must be global or session", JSON.stringify(r.body));
+		assert.equal(r.body.error, "scope must be global, session or project", JSON.stringify(r.body));
 	});
 	await check("#71 session + sid の文言は従来どおり", async () => {
 		const r = await get("/api/maxloops?scope=session&n=5");

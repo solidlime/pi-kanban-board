@@ -101,7 +101,7 @@ const MB = 1024 * 1024;
 
 // --- 1: mp4 は 8MB 超（9MB）でも 200 ------------------------------------------
 {
-	const res = await post("/api/upload?scope=global&ext=mp4", Buffer.alloc(9 * MB, 0x11));
+	const res = await post("/api/upload?scope=project&ext=mp4", Buffer.alloc(9 * MB, 0x11));
 	let card;
 	try {
 		card = JSON.parse(res.body).card;
@@ -116,7 +116,7 @@ const MB = 1024 * 1024;
 
 // --- 2: webm も 200 ----------------------------------------------------------
 {
-	const res = await post("/api/upload?scope=global&ext=webm", Buffer.alloc(9 * MB, 0x12));
+	const res = await post("/api/upload?scope=project&ext=webm", Buffer.alloc(9 * MB, 0x12));
 	const card = res.status === 200 ? JSON.parse(res.body).card : undefined;
 	check("webm 9MB のアップロードは 200", () =>
 		assert.equal(res.status, 200, `status=${res.status} body=${res.body.slice(0, 200)}`));
@@ -125,7 +125,7 @@ const MB = 1024 * 1024;
 
 // --- 3: 画像は 9MB で 413（8MB 上限が変わっていない） -------------------------
 {
-	const res = await post("/api/upload?scope=global&ext=png", Buffer.alloc(9 * MB, 0x13));
+	const res = await post("/api/upload?scope=project&ext=png", Buffer.alloc(9 * MB, 0x13));
 	check("png 9MB は 413（画像の上限は 8MB のまま）", () =>
 		assert.equal(res.status, 413, `status=${res.status} body=${res.body.slice(0, 200)}`));
 	check("png の 413 文言に 8MB が出る", () => assert.match(res.body, /8MB/));
@@ -133,7 +133,7 @@ const MB = 1024 * 1024;
 
 // --- 4: 動画は 65MB で 413（64MB 上限） --------------------------------------
 {
-	const res = await post("/api/upload?scope=global&ext=mp4", Buffer.alloc(65 * MB, 0x14));
+	const res = await post("/api/upload?scope=project&ext=mp4", Buffer.alloc(65 * MB, 0x14));
 	check("mp4 65MB は 413（動画の上限は 64MB）", () =>
 		assert.equal(res.status, 413, `status=${res.status} body=${res.body.slice(0, 200)}`));
 	check("mp4 の 413 文言に 64MB が出る", () => assert.match(res.body, /64MB/));
@@ -141,7 +141,7 @@ const MB = 1024 * 1024;
 
 // --- 5: 未知拡張子は 415 のまま -----------------------------------------------
 {
-	const res = await post("/api/upload?scope=global&ext=exe", Buffer.alloc(16, 0x15));
+	const res = await post("/api/upload?scope=project&ext=exe", Buffer.alloc(16, 0x15));
 	check(".exe は 415 のまま", () =>
 		assert.equal(res.status, 415, `status=${res.status} body=${res.body.slice(0, 200)}`));
 }

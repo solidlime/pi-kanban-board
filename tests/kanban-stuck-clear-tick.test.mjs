@@ -12,6 +12,7 @@ import { appendFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
 import { readBoardAt, seedBoard, useKanban, removeBoard } from "./helpers/board.mjs";
+import { settleMigration, useMigrate } from "./helpers/migrate.mjs";
 
 const HOME_DIR = "/tmp/kb-stuck-clear-home";
 const ERR_LOG = "/tmp/kb-stuck-clear.err";
@@ -46,6 +47,10 @@ const { createJiti } = require(
 const jiti = createJiti(import.meta.url);
 const mod = await jiti.import(fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url)));
 useKanban(mod);
+// 起動時 migration は fire-and-forget。seed より先に消化しないと、seed した session/global
+// ボードが起動直後の移行に食われる（旧レイアウトを seed するテストの前提）。
+useMigrate(mod);
+await settleMigration();
 
 const failures = [];
 let passed = 0;

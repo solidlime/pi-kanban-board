@@ -41,10 +41,12 @@
  * drop box the agent picks up with ordinary `ls` / `read` / `grep` (A14 revised).
  */
 
+import { execFileSync } from "node:child_process";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import {
 	appendFileSync,
 	chmodSync,
+	copyFileSync,
 	createReadStream,
 	existsSync,
 	mkdirSync,
@@ -73,7 +75,9 @@ import type { BoardKey, Decision, KanbanDb } from "./db.ts";
 // Types & state
 // ---------------------------------------------------------------------------
 
-type Scope = "session" | "global";
+// "project" is the working directory (git root) - the board two sessions in the same repo
+// share. "global" is a read-only aggregate. "session" is chosen explicitly only.
+type Scope = "session" | "global" | "project";
 type Col = "todo" | "doing" | "done";
 // movedAt/movedBy are optional on purpose: boards written before they existed still
 // load. movedBy = the session id that last changed this card's COLUMN. A rename or
@@ -127,6 +131,8 @@ type ModesFile = {
 	autoPick?: boolean;
 	SESSION?: Record<string, ModePair>;
 	GLOBAL?: Record<string, ModePair>;
+	// Keyed by project board slug (a cwd slug), not by session id.
+	PROJECT?: Record<string, ModePair>;
 };
 type LoopState = {
 	count: number; // continuations granted in this session (persisted)
@@ -186,6 +192,12 @@ let server: Server | null = null;
 //   fatal - the bind can never succeed as configured (EACCES/EPERM/bad port). No retry.
 let apiState: "starting" | "up" | "down" | "stale" | "fatal" = "starting";
 let apiStarting = false;
+/**
+ * Phase 0: the one-shot scope fold, while it runs. It ENDS by deleting the session/global
+ * rows it folded, so a write accepted in that window is thrown away. The bind does not wait
+ * for it (a cold start must answer its first request); the write routes do.
+ */
+let migrationPending: Promise<void> | null = null;
 // #64: one pending retry while "stale" (the old server dies -> the port frees up).
 let staleRetryTimer: NodeJS.Timeout | null = null;
 // #64: no `ensured` flag. It was set BEFORE listen succeeded, so one failed bind
@@ -218,8 +230,14 @@ const KANBAN_DIR = join(homedir(), ".pi", "kanban");
 const GLOBAL_JSON = join(KANBAN_DIR, "global.json");
 const MODES_JSON = join(KANBAN_DIR, "modes.json");
 const SESSIONS_DIR = join(KANBAN_DIR, "sessions");
+// Phase 0 (D1): the project board is a pseudo-path, not a directory anyone reads.
+// The row is (scope='project', sid=slug); this path exists only so boardPath/boardKeyOf
+// keep one shared (path -> key) mapping.
+const PROJECTS_DIR = join(KANBAN_DIR, "projects");
 const DB_FILE = join(KANBAN_DIR, "boards.sqlite"); // #11: 設定タブが大きさを出す（db.ts は触らない）
 const LEGACY_JSON = join(KANBAN_DIR, "board.json");
+/** Where a card with no project (and a session with no cwd) lands during the scope migration. */
+const INBOX_SLUG = "_inbox";
 const DASHBOARD_HTML_PATH = join(KANBAN_DIR, "dashboard.html");
 const SERVER_LOG = join(KANBAN_DIR, "server.log");
 const TOKEN_FILE = join(KANBAN_DIR, "token"); // #83b: the one secret every HTTP route needs
@@ -314,14 +332,82 @@ function uploadLimitOf(ext: string): number {
 
 const fmtMB = (bytes: number): string => `${Math.round(bytes / (1024 * 1024))}MB`;
 
-/** The one place that maps (scope, sessionId) to a file. */
+/**
+ * The one place that maps (scope, sessionId) to a file. boardKeyOf() is its inverse and
+ * this pair is the ONLY path<->key conversion in the file: a scope added to one has to be
+ * added to the other, or a write lands in a row the reader never looks at.
+ * For "project", sessionId is the slug (see projectSlugOf).
+ */
 function boardPath(scope: Scope, sessionId: string): string {
 	if (scope === "global") return GLOBAL_JSON;
+	// Slugs keep dots; session ids never had them.
+	if (scope === "project") return join(PROJECTS_DIR, `${sessionId.replace(/[^A-Za-z0-9._-]/g, "_")}.json`);
 	// The id becomes a filename, so strip anything path-like.
 	return join(SESSIONS_DIR, `${sessionId.replace(/[^A-Za-z0-9_-]/g, "_")}.json`);
 }
 
-const parseScope = (value: string | null): Scope => (value === "global" ? "global" : "session");
+/** global/session pass through; anything else (a missing or unknown scope) means project. */
+const parseScope = (value: string | null): Scope =>
+	value === "global" ? "global" : value === "session" ? "session" : "project";
+
+// cwd -> slug, and slug -> the root it first came from (for the collision warning).
+const slugByCwd = new Map<string, string>();
+const rootBySlug = new Map<string, string>();
+
+/**
+ * The board key for a working directory: the git root's basename, normalized like a
+ * card's project. Two sessions opened in the same repo therefore share one board.
+ * shortcut: two different roots with the same basename collapse into one board (a warning
+ * on stderr is all we do); upgrade to a path-derived suffix when the db `project` table
+ * can hold the mapping (phase 2).
+ */
+export function projectSlugOf(cwd: string): string {
+	const cached = slugByCwd.get(cwd);
+	if (cached !== undefined) return cached;
+	let root = cwd;
+	try {
+		// A missing repo answers immediately; the timeout keeps a wedged git from stalling a write.
+		const top = execFileSync("git", ["-C", cwd, "rev-parse", "--show-toplevel"], {
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "ignore"],
+			timeout: 2000,
+		}).trim();
+		if (top !== "") root = top;
+	} catch {
+		// not a repo (or no git at all): the cwd itself is the scope
+	}
+	const slug = normalizeProject(basename(root)) || "inbox";
+	const owner = rootBySlug.get(slug);
+	if (owner === undefined) rootBySlug.set(slug, root);
+	else if (owner !== root) {
+		process.stderr.write(`kanban: project slug "${slug}" is shared by ${owner} and ${root}\n`);
+	}
+	slugByCwd.set(cwd, slug);
+	return slug;
+}
+
+/**
+ * The cwd behind a sid, for the HTTP routes (which are sync). sessionInfoById() is the
+ * only filler of that cache and the dashboard poll calls it, so it is warm in practice;
+ * a cold cache reads as this process's cwd rather than adding a second async door.
+ */
+function cwdOfSidSync(sid: string | null): string {
+	const id = sid === null || sid === "" ? activeSessionId : sid;
+	const info = id === null || id === "" ? undefined : sessionInfoCache?.byId.get(id);
+	return info?.cwd ?? process.cwd();
+}
+
+/** The tool's cwd. A context without getCwd (an older host, a test double) reads as ours. */
+function cwdOfCtx(ctx: ExtensionContext): string {
+	const sm = (ctx as { sessionManager?: { getCwd?: () => string } }).sessionManager;
+	try {
+		const cwd = sm?.getCwd?.();
+		if (typeof cwd === "string" && cwd !== "") return cwd;
+	} catch {
+		// fall through to the process cwd
+	}
+	return process.cwd();
+}
 
 function readRaw(path: string): string {
 	try {
@@ -368,12 +454,13 @@ function readBoardJson(path: string): Board {
 
 let db: KanbanDb | null = null;
 
-/** The one place a path becomes a board key. boardPath() is the inverse. */
+/** The one place a path becomes a board key. boardPath() is the inverse (see its note). */
 function boardKeyOf(path: string): BoardKey {
 	// Callers pass paths they built themselves (a temp dir, a raw string), so compare by
 	// resolved location rather than by string identity with GLOBAL_JSON.
 	const abs = resolve(path);
 	if (abs === resolve(GLOBAL_JSON)) return { scope: "global", sid: "" };
+	if (dirname(abs) === resolve(PROJECTS_DIR)) return { scope: "project", sid: basename(abs, ".json") };
 	return { scope: "session", sid: basename(abs, ".json") };
 }
 
@@ -438,6 +525,113 @@ function importBoards(target: KanbanDb): void {
 }
 
 /**
+ * Append `source` cards to `target`, renumbering ids and remapping `blocks`. Duplicate text
+ * is kept (a silent drop loses a card). A `blocks` id from outside `source` is dropped: the
+ * target has no such card, and the bare number would hit an unrelated one after renumbering.
+ */
+export function mergeBoardInto(target: Board, source: Board): void {
+	const idMap = new Map<number, number>();
+	for (const c of source.cards) idMap.set(c.id, target.nextId++);
+	for (const c of source.cards) {
+		const copy: Card = { ...c, id: idMap.get(c.id) as number };
+		if (c.blocks !== undefined) {
+			const blocks = c.blocks.map((id) => idMap.get(id)).filter((id): id is number => id !== undefined);
+			if (blocks.length === 0) delete copy.blocks;
+			else copy.blocks = blocks;
+		}
+		target.cards.push(copy);
+	}
+}
+
+/**
+ * Phase 0: the fold is the write gate for every other write route, so it must not wait on a
+ * host that never answers. On timeout it is abandoned with meta still unset (the next start
+ * retries) and the gate opens: an unfolded board is recoverable, a frozen server is not.
+ */
+const LIST_ALL_TIMEOUT_MS = 5000;
+
+/**
+ * Phase 0 (D7): fold the old boards into project boards, once.
+ * - every session board (scope='session') -> the project board of its cwd's slug
+ * - every global card -> the project board named by card.project, or "_inbox"
+ * - session + global rows are deleted; meta.scope_migrated stops a second run
+ */
+export async function migrateScopeOnce(): Promise<void> {
+	const kdb = kanbanDb();
+	if (kdb.getMeta("scope_migrated") === "1") return;
+	// A copy that fails stops the run: a database with cards we cannot recover is worse than
+	// no migration at all.
+	const backup = `${DB_FILE}.pre-scope-migration`;
+	try {
+		// WAL: the newest pages are not in DB_FILE yet, so a plain copy would lose them.
+		kdb.checkpoint();
+		if (!existsSync(backup)) copyFileSync(DB_FILE, backup);
+	} catch (err) {
+		process.stderr.write("kanban: scope migration aborted: " + err + "\n");
+		return;
+	}
+	// cwd -> board slug. An unreadable session store leaves this empty, which sends every
+	// session card to _inbox: a card in the wrong board is recoverable, a dropped one is not.
+	const cwdBySid = new Map<string, string>();
+	const timedOut = Symbol("timedOut");
+	let listAllTimer: NodeJS.Timeout | undefined;
+	try {
+		const list = await Promise.race([
+			SessionManager.listAll(),
+			new Promise<typeof timedOut>((done) => {
+				listAllTimer = setTimeout(() => done(timedOut), LIST_ALL_TIMEOUT_MS);
+				listAllTimer.unref();
+			}),
+		]);
+		if (list === timedOut) {
+			process.stderr.write(`kanban: scope migration deferred: session store silent for ${LIST_ALL_TIMEOUT_MS}ms\n`);
+			return;
+		}
+		for (const s of list) {
+			if (typeof s.cwd === "string" && s.cwd !== "") cwdBySid.set(s.id, s.cwd);
+		}
+	} catch {
+		// no session store (a fresh HOME, a test): every session card goes to _inbox below
+	} finally {
+		if (listAllTimer !== undefined) clearTimeout(listAllTimer);
+	}
+	const targets = new Map<string, Board>();
+	const sessionKeys: string[] = [];
+	const targetOf = (slug: string): Board => {
+		const known = targets.get(slug);
+		if (known !== undefined) return known;
+		const b = readBoard(boardPath("project", slug));
+		targets.set(slug, b);
+		return b;
+	};
+	let moved = 0;
+	let writeError: string | null = null;
+	for (const { sid } of kdb.sessionKeys()) {
+		const source = kdb.readBoard({ scope: "session", sid }) ?? { cards: [], nextId: 1 };
+		const cwd = cwdBySid.get(sid) ?? "";
+		mergeBoardInto(targetOf(cwd === "" ? INBOX_SLUG : projectSlugOf(cwd)), source);
+		moved += source.cards.length;
+		sessionKeys.push(sid);
+	}
+	// One card at a time: the target depends on the card's own project.
+	for (const card of kdb.readBoard({ scope: "global", sid: "" })?.cards ?? []) {
+		const slug = card.project === undefined || card.project === "" ? INBOX_SLUG : card.project;
+		mergeBoardInto(targetOf(slug), { cards: [card], nextId: card.id + 1 });
+		moved++;
+	}
+	// Write before deleting: a failed write leaves meta unset, so the next start retries.
+	for (const [slug, b] of targets) {
+		const err = writeBoard(boardPath("project", slug), b);
+		if (err !== null && writeError === null) writeError = err;
+	}
+	if (writeError !== null) return;
+	for (const sid of sessionKeys) kdb.deleteBoard({ scope: "session", sid });
+	kdb.deleteBoard({ scope: "global", sid: "" });
+	kdb.setMeta("scope_migrated", "1");
+	process.stderr.write(`kanban: scope migration: ${moved} cards into ${targets.size} project boards\n`);
+}
+
+/**
  * The loop switches. A missing (or unreadable) file is created with both modes off,
  * so "no config" and "off" behave identically.
  */
@@ -474,7 +668,7 @@ function writeModesFile(f: ModesFile): void {
 
 /** One (scope, sid) pair, falling back to the legacy flat keys when it has no entry. */
 function modesFor(f: ModesFile, sid: string, scope: Scope): ModePair {
-	const scoped = scope === "global" ? f.GLOBAL : f.SESSION;
+	const scoped = modesBucket(f, scope);
 	// Absent key means ON; only an explicit false turns a switch off.
 	const base: ModePair = { doingLoop: f.doingLoop !== false, autoPick: f.autoPick !== false };
 	const entry = scoped?.[sid];
@@ -489,36 +683,38 @@ function modesFor(f: ModesFile, sid: string, scope: Scope): ModePair {
 	};
 }
 
+/** The bucket a scope lives in; an absent bucket reads as empty. */
+function modesBucket(f: ModesFile, scope: Scope): Record<string, ModePair> {
+	if (scope === "global") return f.GLOBAL ?? {};
+	if (scope === "project") return f.PROJECT ?? {};
+	return f.SESSION ?? {};
+}
+
+/** Same bucket for a writer: an absent bucket is created on the file. */
+function modesBucketForWrite(f: ModesFile, scope: Scope): Record<string, ModePair> {
+	if (scope === "global") return (f.GLOBAL ??= {});
+	if (scope === "project") return (f.PROJECT ??= {});
+	return (f.SESSION ??= {});
+}
+
 /** read-modify-write one (scope, sid) pair. The flat legacy keys are never touched. */
 function setMode(f: ModesFile, sid: string, scope: Scope, key: SwitchKey, val: boolean): void {
-	const next = (scope === "global" ? f.GLOBAL : f.SESSION) ?? {};
-	next[sid] = { ...modesFor(f, sid, scope), [key]: val };
-	if (scope === "global") f.GLOBAL = next;
-	else f.SESSION = next;
+	modesBucketForWrite(f, scope)[sid] = { ...modesFor(f, sid, scope), [key]: val };
 }
 
 /** Persist one board's auto-tick interval (minutes); same read-modify-write as setMode. */
 function setIntervalMin(f: ModesFile, sid: string, scope: Scope, minutes: number): void {
-	const next = (scope === "global" ? f.GLOBAL : f.SESSION) ?? {};
-	next[sid] = { ...modesFor(f, sid, scope), intervalMin: minutes };
-	if (scope === "global") f.GLOBAL = next;
-	else f.SESSION = next;
+	modesBucketForWrite(f, scope)[sid] = { ...modesFor(f, sid, scope), intervalMin: minutes };
 }
 
 /** Persist one board's stuck threshold (settle count); same read-modify-write as setMode. */
 function setStuckLimit(f: ModesFile, sid: string, scope: Scope, count: number): void {
-	const next = (scope === "global" ? f.GLOBAL : f.SESSION) ?? {};
-	next[sid] = { ...modesFor(f, sid, scope), stuckLimit: count };
-	if (scope === "global") f.GLOBAL = next;
-	else f.SESSION = next;
+	modesBucketForWrite(f, scope)[sid] = { ...modesFor(f, sid, scope), stuckLimit: count };
 }
 
 /** Persist one board's doing-loop budget; same read-modify-write as setMode. */
 function setMaxLoops(f: ModesFile, sid: string, scope: Scope, n: number): void {
-	const next = (scope === "global" ? f.GLOBAL : f.SESSION) ?? {};
-	next[sid] = { ...modesFor(f, sid, scope), maxLoops: n };
-	if (scope === "global") f.GLOBAL = next;
-	else f.SESSION = next;
+	modesBucketForWrite(f, scope)[sid] = { ...modesFor(f, sid, scope), maxLoops: n };
 }
 
 /** Displayed minutes for a pair: an entry written before intervalMin existed still means 5. */
@@ -581,14 +777,21 @@ type MaxLoopsInput = { scope?: string | null; sid?: string | null; n?: string | 
  *
  * scope=global needs no sid: it writes the GLOBAL layer keyed by the active session (so
  * it does need one of those) — answering "scope=session requires sid" there was a lie.
+ * scope=project is keyed by the cwd slug: a session id is not a slug, so the sid goes
+ * through projectKeyOfWrite (an unknown sid has no cwd and would write PROJECT[<sid>]).
  */
 export function maxLoopsRequest(q: MaxLoopsInput): { kind: "error"; error: string } | { kind: "ok"; scope: Scope; sid: string; n: number } {
 	const raw = q.scope ?? "";
-	if (raw !== "" && raw !== "global" && raw !== "session") {
-		return { kind: "error", error: "scope must be global or session" };
+	if (raw !== "" && raw !== "global" && raw !== "session" && raw !== "project") {
+		return { kind: "error", error: "scope must be global, session or project" };
 	}
-	const scope: Scope = raw === "global" ? "global" : "session";
+	const scope: Scope = raw === "global" ? "global" : raw === "project" ? "project" : "session";
 	const given = q.sid ?? "";
+	if (scope === "project") {
+		const key = projectKeyOfWrite(given);
+		if (key === null) return { kind: "error", error: "unknown sid" };
+		return { kind: "ok", scope, sid: key, n: Number(q.n) };
+	}
 	if (scope === "session") {
 		if (given === "") return { kind: "error", error: "scope=session requires sid" };
 		return { kind: "ok", scope, sid: given, n: Number(q.n) };
@@ -829,7 +1032,7 @@ function sweepSessions(): void {
 	if (swept > 0) process.stderr.write(`kanban: swept ${swept} session board(s) older than 30d\n`);
 
 	// A modes entry whose board file is gone (and that is not the live session) is a
-	// dead key: both scope buckets are keyed by session id.
+	// dead key: SESSION and GLOBAL are keyed by session id, PROJECT by project slug.
 	const f = readModesFile();
 	let pruned = 0;
 	for (const scope of ["SESSION", "GLOBAL"] as const) {
@@ -838,6 +1041,15 @@ function sweepSessions(): void {
 		for (const sid of Object.keys(bucket)) {
 			if (sid === activeSessionId || readBoardOrNull(boardPath("session", sid)) !== null) continue;
 			delete bucket[sid];
+			pruned++;
+		}
+	}
+	// Slugs and session ids are different namespaces: a project entry survives on its board alone.
+	const projects = f.PROJECT;
+	if (projects !== undefined) {
+		for (const slug of Object.keys(projects)) {
+			if (readBoardOrNull(boardPath("project", slug)) !== null) continue;
+			delete projects[slug];
 			pruned++;
 		}
 	}
@@ -905,6 +1117,15 @@ function staleTag(b: Board, now = Date.now()): string {
 }
 
 /**
+ * The board key for a scope: project is keyed by the cwd's slug, everything else by the
+ * session. paintLoop, refresh and settle all read it from here — the three copies it
+ * replaces drifted, and a project halt landed on a key nobody ever drew.
+ */
+function boardKeyFor(ctx: ExtensionContext, sid: string, scope: Scope): string {
+	return scope === "project" ? projectSlugOf(cwdOfCtx(ctx)) : sid;
+}
+
+/**
  * Redraw the footer widget from disk. Reading both layers here (instead of
  * accepting callers' copies) is what keeps a session from rendering a sibling's
  * board; the cost is two small reads per draw.
@@ -918,6 +1139,18 @@ function refresh(ctx: ExtensionContext, sessionId: string): void {
 	const session = readBoard(boardPath("session", sessionId));
 	const global = readBoard(GLOBAL_JSON);
 	const f = readModesFile();
+	// The footer has exactly two lines and project is the default board: its halt tag and
+	// count ride the SESSION line, or a project halt stops the board with nothing on screen.
+	// The DRIVING scope (the one with a tag or a count) wins, so its numbers are not hidden
+	// behind an idle sibling that still has doingLoop ON.
+	const own: { scope: Scope; key: string }[] = [
+		{ scope: "session", key: sessionId },
+		{ scope: "project", key: boardKeyFor(ctx, sessionId, "project") },
+	];
+	const driving = own.find((s) => loopTagFor(sessionId, s.scope) !== "" || loopCount.has(tagKey(sessionId, s.scope)));
+	const ownTag = driving === undefined ? "" : loopTagFor(sessionId, driving.scope);
+	const ownModes =
+		driving === undefined ? modeTags(f, sessionId, "session") : modeTags(f, driving.key, driving.scope, sessionId);
 	// Appended to the existing GLOBAL line: still exactly two lines, no third.
 	// #64: `stale` and `fatal` are states the human must see, not just "DOWN".
 	const apiTag =
@@ -933,7 +1166,7 @@ function refresh(ctx: ExtensionContext, sessionId: string): void {
 		WIDGET_KEY,
 		[
 			`GLOBAL: ${countsOf(global)}${staleTag(global)}${apiTag}${loopTagFor(sessionId, "global")}${modeTags(f, sessionId, "global")}`,
-			`SESSION: ${displayName(nameOf(ctx))}: ${countsOf(session)}${staleTag(session)}${loopTagFor(sessionId, "session")}${modeTags(f, sessionId, "session")}`,
+			`SESSION: ${displayName(nameOf(ctx))}: ${countsOf(session)}${staleTag(session)}${ownTag}${ownModes}`,
 		],
 		{ placement: "aboveEditor" },
 	);
@@ -959,18 +1192,30 @@ function loopTagFor(sessionId: string, scope: Scope): string {
 	return loopTags.get(tagKey(sessionId, scope)) ?? "";
 }
 
-/** " loop pick 3/10" — only what is ON is shown, so an idle footer never grows. */
-function modeTags(f: ModesFile, sessionId: string, scope: Scope): string {
-	const m = modesFor(f, sessionId, scope);
+/**
+ * " loop pick 3/10" — only what is ON is shown, so an idle footer never grows.
+ * `key` is the board key (a slug for project); the COUNT is always published per
+ * (session, scope), so `countSid` stays the session even when the board is a slug.
+ */
+function modeTags(f: ModesFile, key: string, scope: Scope, countSid = key): string {
+	const m = modesFor(f, key, scope);
 	const tags = `${m.doingLoop ? " loop" : ""}${m.autoPick ? " pick" : ""}`;
 	if (tags === "") return "";
-	const count = loopCount.get(tagKey(sessionId, scope));
+	const count = loopCount.get(tagKey(countSid, scope));
 	return tags + (count === undefined ? "" : ` ${loopRestText(maxLoopsOf(m), count)}`);
 }
 
-/** The count this session has used, for the dashboard's 「残り N / 上限」 row. */
+/**
+ * The count this session has used, for the dashboard's 「残り N / 上限」 row.
+ * project counts too: it is the default board, and leaving it out showed 「残り 10/10」
+ * for a loop that was one wake from its cap.
+ */
 function loopCountOf(sessionId: string): number {
-	return Math.max(loopCount.get(tagKey(sessionId, "session")) ?? 0, loopCount.get(tagKey(sessionId, "global")) ?? 0);
+	return Math.max(
+		loopCount.get(tagKey(sessionId, "session")) ?? 0,
+		loopCount.get(tagKey(sessionId, "global")) ?? 0,
+		loopCount.get(tagKey(sessionId, "project")) ?? 0,
+	);
 }
 
 /** Redraw the last footer we drew (the listen race resolves long after session_start). */
@@ -1145,25 +1390,30 @@ function headOwnedDoing(b: Board, sid: string, now: number): Card | undefined {
 		.sort((a, c) => a.id - c.id)[0];
 }
 
-/** The DOING card a scope holds, ignoring that scope's switch. */
-function doingHeadOf(sid: string, scope: Scope, now: number = Date.now()): Card | undefined {
-	return scope === "global"
-		? headOwnedDoing(readBoard(GLOBAL_JSON), sid, now)
-		: headDoing(readBoard(boardPath("session", sid)), now);
+/**
+ * The DOING card a scope holds, ignoring that scope's switch. `key` names the board (a
+ * session sid or a project slug); `actor` is the session whose moves count, because a
+ * global/project board is shared and only our own DOING may drive us.
+ */
+function doingHeadOf(key: string, scope: Scope, actor: string = key, now: number = Date.now()): Card | undefined {
+	return scope === "session"
+		? headDoing(readBoard(boardPath("session", key)), now)
+		: headOwnedDoing(readBoard(boardPath(scope, key)), actor, now);
 }
 
 /** The card a scope may drive: nothing at all when its doingLoop switch is off. */
-function candidates(sid: string, scope: Scope, f: ModesFile): Card | undefined {
-	return modesFor(f, sid, scope).doingLoop ? doingHeadOf(sid, scope) : undefined;
+function candidates(key: string, scope: Scope, f: ModesFile, actor: string = key): Card | undefined {
+	return modesFor(f, key, scope).doingLoop ? doingHeadOf(key, scope, actor) : undefined;
 }
 
 /**
  * Head of DOING for a scope, from cards already in hand. Same ownership rule as
- * headOwnedDoing: GLOBAL only counts cards THIS session moved.
+ * headOwnedDoing: every shared board (global, project) counts only cards THIS session
+ * moved. Only the session board is private enough to trust an ownerless card.
  */
 export function tickCardFor(cards: Card[], scope: Scope, sid: string, now: number = Date.now()): Card | undefined {
 	const doing = cards.filter((c) => c.col === "doing");
-	const owned = scope === "global" ? doing.filter((c) => c.movedBy === sid) : doing;
+	const owned = scope === "session" ? doing : doing.filter((c) => c.movedBy === sid);
 	return owned
 		.filter((c) => !isSilent(c, now))
 		.sort((a, c) => a.id - c.id)[0];
@@ -1415,7 +1665,7 @@ export function nextTodo(cards: Card[], _scope: Scope, _sid: string, now: number
  * in 2e5d4ca); inside one process the whole read/verify/write block is synchronous, so
  * the only remaining window is another process pre-empting between the two file ops.
  */
-export function pickFirstTodo(sessionId: string, scope: Scope): Card | null {
+export function pickFirstTodo(sessionId: string, scope: Scope, actor: string = sessionId): Card | null {
 	const path = boardPath(scope, sessionId);
 	const target = nextTodo(readBoard(path).cards, scope, sessionId);
 	if (target === undefined) return null;
@@ -1423,12 +1673,14 @@ export function pickFirstTodo(sessionId: string, scope: Scope): Card | null {
 	const live = b.cards.find((c) => c.id === target.id);
 	if (live === undefined || live.col !== "todo" || isSilent(live)) return null; // lost the race
 	live.col = "doing";
-	stampMove(live, sessionId);
+	// The claim is the SESSION, not the board key: a project board's key is a slug, and
+	// the poll's ownership filter compares movedBy against the session.
+	stampMove(live, actor);
 	writeBoard(path, b);
 	// Read back: if a sibling wrote between our verify and our rename, its movedBy is what
 	// survived and this session must not go on working as if it owned the card.
 	const claimed = readBoard(path).cards.find((c) => c.id === target.id);
-	if (claimed === undefined || claimed.movedBy !== sessionId) return null;
+	if (claimed === undefined || claimed.movedBy !== actor) return null;
 	return claimed;
 }
 
@@ -3182,6 +3434,15 @@ export function projectRollup(
 	});
 }
 
+/**
+ * The project board this process looks at: this process's project board (one cwd per
+ * process). Other sessions' cwds are NOT ours to read here - a sibling repo's board is
+ * that process's business, and collecting them made this one answer for the whole machine.
+ */
+function projectSlugs(): string[] {
+	return [projectSlugOf(process.cwd())];
+}
+
 /** GET /api/projects: the project tab's whole payload. */
 async function projectsPayload(): Promise<unknown> {
 	const { sessions } = await sessionRows();
@@ -3189,6 +3450,10 @@ async function projectsPayload(): Promise<unknown> {
 	const cards = [
 		...gb.cards.map((card) => ({ scope: "global", sid: "", card })),
 		...sessions.flatMap((s) => s.cards.map((card) => ({ scope: "session", sid: s.id, card }))),
+		// project is where cards live now; global/session stay in the sum for un-migrated rows.
+		...projectSlugs().flatMap((slug) =>
+			readBoard(boardPath("project", slug)).cards.map((card) => ({ scope: "project", sid: slug, card })),
+		),
 	];
 	const db = kanbanDb();
 	return {
@@ -3219,7 +3484,10 @@ function dbInfo(cards: number): DbInfo | null {
 		return {
 			file: basename(DB_FILE),
 			bytes: st.size,
-			boards: store.sessionKeys().length + 1, // +1 = GLOBAL 看板
+			// +1 = GLOBAL board. Project boards are named by cwd, so their number is this
+			// process's own slug (one cwd per process). The +1 is conceptual: after the scope
+			// migration no GLOBAL row exists, but global is always shown in the heading.
+			boards: store.sessionKeys().length + 1 + projectSlugs().length,
 			cards,
 			projects: store.listProjects().length,
 			decisions: store.listDecisions().length,
@@ -3281,6 +3549,14 @@ async function dashboardPayload(): Promise<unknown> {
 	const f = readModesFile();
 	// stats.todo/doing/done = GLOBAL plus every session board.
 	const totals = totalCounts(gb, sessions);
+	// Phase 0: project is where cards live now, so its counts join the sum. A card on a
+	// different board is a different card - a shared text counts once per board.
+	const slug = projectSlugOf(process.cwd());
+	const pb = readBoard(boardPath("project", slug));
+	const projectCounts = countCols(pb);
+	totals.todo += projectCounts.todo;
+	totals.doing += projectCounts.doing;
+	totals.done += projectCounts.done;
 	// Dead registrations stay listed; `exists` is the flag that tells the UI.
 	// 期限切れも残す: dashboard が「期限切れ」と出し、そこから解除できるようにする。
 	const serve = readServeFile().map((e) => ({
@@ -3321,6 +3597,9 @@ async function dashboardPayload(): Promise<unknown> {
 		// #11: 設定タブの「保存データ」。絶対パスは出さない（#80-⑦）。
 		db: dbInfo(totals.todo + totals.doing + totals.done),
 		global: { counts: globalCounts, cards: gb.cards, modes: modesFor(f, activeSessionId ?? "", "global") },
+		// Phase 0: the board of THIS process's cwd (one server = one cwd). global/session
+		// stay above for the un-migrated rows the tests and the UI still read.
+		project: { id: slug, counts: projectCounts, cards: pb.cards, modes: modesFor(f, slug, "project") },
 		sessions: sessions.map((s) => ({
 			id: s.id,
 			name: s.name, // raw on purpose: the dashboard sets it with textContent
@@ -3341,16 +3620,48 @@ async function dashboardPayload(): Promise<unknown> {
 	};
 }
 
+/** The file a write targets, or the 400 reason. Never both. */
+type WriteTarget = { ok: true; path: string } | { ok: false; error: string };
+
+/**
+ * Paths dispatched below this gate that are switches, not board writes: they own their
+ * sid (settingsSidOf) and must keep answering scope=global&sid= with 200.
+ */
+const SWITCH_PATHS = new Set(["/api/modes", "/api/interval", "/api/stuck", "/api/resume"]);
+
+/**
+ * The project board key a request may write, or null when its sid cannot name one.
+ * A sid we have never seen has no cwd, so cwdOfSidSync would silently fall back to OUR
+ * cwd and touch the wrong repo's board: refuse instead. (The UI sends no sid.)
+ * Both gates (board writes and the switch routes) read the key from here, so the two
+ * answers cannot drift: /api/add and /api/modes accept exactly the same sids.
+ */
+function projectKeyOfWrite(sid: string | null): string | null {
+	if (sid !== null && sid !== "" && sessionInfoCache?.byId.has(sid) !== true) return null;
+	return projectSlugOf(cwdOfSidSync(sid));
+}
+
 /**
  * Board file for a write. Any session's board is writable: the caller names it with sid.
  * A concurrent write from that session's own pi can still overwrite us, but that is the
  * same condition GLOBAL writes already accept — so it is not a reason to refuse here.
+ * Phase 0 (D5): global is a read-only aggregate, so a board write there is a 400 - not a
+ * silent merge into a board no session owns. project needs no sid: the cwd names the board.
+ * `switchPath` exempts the loop switches, the one global caller that is not a board write.
  */
-function writeBoardPath(q: URLSearchParams): string | null {
-	if (parseScope(q.get("scope")) === "global") return GLOBAL_JSON;
+function writeBoardPath(q: URLSearchParams, switchPath = false): WriteTarget {
+	const scope = parseScope(q.get("scope"));
+	if (scope === "global") {
+		return switchPath ? { ok: true, path: GLOBAL_JSON } : { ok: false, error: "global board is read-only" };
+	}
+	if (scope === "project") {
+		const key = projectKeyOfWrite(q.get("sid"));
+		if (key === null) return { ok: false, error: "unknown sid" };
+		return { ok: true, path: boardPath("project", key) };
+	}
 	const sid = q.get("sid");
-	if (sid === null || sid === "") return null; // sid required: no activeSession fallback
-	return boardPath("session", sid);
+	if (sid === null || sid === "") return { ok: false, error: "scope=session requires sid" }; // no activeSession fallback
+	return { ok: true, path: boardPath("session", sid) };
 }
 
 /**
@@ -3362,6 +3673,14 @@ function writeBoardPath(q: URLSearchParams): string | null {
  */
 function settingsSidOf(q: URLSearchParams, res: ServerResponse): string | null {
 	const scope = parseScope(q.get("scope"));
+	// project keys its settings by board (the slug); the sid only says whose cwd to use.
+	if (scope === "project") {
+		const key = projectKeyOfWrite(q.get("sid"));
+		if (key !== null) return key;
+		// Same 400 as a board write: an unknown sid must not land on OUR cwd's board.
+		sendJson(res, 400, { ok: false, error: "unknown sid" });
+		return null;
+	}
 	const sid = q.get("sid") ?? (scope === "global" ? activeSessionId : null);
 	if (sid !== null && sid !== "") return sid;
 	sendJson(res, 400, {
@@ -3391,12 +3710,13 @@ function handleUpload(req: IncomingMessage, res: ServerResponse, q: URLSearchPar
 		req.resume();
 		return;
 	}
-	const path = writeBoardPath(q);
-	if (path === null) {
-		sendJson(res, 400, { ok: false, error: "scope=session requires sid" });
+	const target = writeBoardPath(q);
+	if (!target.ok) {
+		sendJson(res, 400, { ok: false, error: target.error });
 		req.resume();
 		return;
 	}
+	const path = target.path;
 	collectBody(req, res, uploadLimitOf(ext), (buf) => {
 		if (buf === null) return; // 413/400 already sent
 		// #86: the per-file limit above bounds ONE request; this bounds the volume. The
@@ -3559,6 +3879,16 @@ function projectBoard(b: Board, keys: string[]): Board {
 
 
 function handle(req: IncomingMessage, res: ServerResponse): void {
+	// Phase 0: a write must not land between the fold's read and its deletes. Waiting here
+	// (only while the one startup pass runs) keeps the bind immediate and the write safe.
+	if (migrationPending !== null && isWritePath(new URL(req.url ?? "/", "http://127.0.0.1").pathname, req.method ?? "GET")) {
+		void migrationPending.then(() => route(req, res));
+		return;
+	}
+	route(req, res);
+}
+
+function route(req: IncomingMessage, res: ServerResponse): void {
 	// #80-⑨: the Host gate runs FIRST — before CORS, before the token gate. It is the layer
 	// that decides whether this request is even addressed to us, and a rebound attacker's
 	// page carries the kb_auth cookie (the browser thinks it is same-origin), so the token
@@ -3751,15 +4081,22 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
 		const keys = fieldsRaw === null ? null : fieldsRaw.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
 		const global = readBoard(GLOBAL_JSON);
 		const session = sid === null ? { cards: [], nextId: 1 } : readBoard(boardPath("session", sid));
+		// Phase 0: the project board needs no sid - the browser's session names the cwd, and
+		// without one the active session (or this process) stands in for it.
+		const projectSid = projectSlugOf(cwdOfSidSync(sid));
+		const project = readBoard(boardPath("project", projectSid));
 		sendJson(res, 200, {
 			ok: true,
 			sessionId: sid,
+			projectId: projectSid,
 			global: keys === null ? global : projectBoard(global, keys),
 			session: keys === null ? session : projectBoard(session, keys),
+			project: keys === null ? project : projectBoard(project, keys),
 			// GLOBAL mode is keyed by session: the panel shows THIS session's switches.
 			modes: {
 				session: modesFor(f, sid ?? "", "session"),
 				global: modesFor(f, activeSessionId ?? "", "global"),
+				project: modesFor(f, projectSid, "project"),
 			},
 		});
 		return;
@@ -3880,7 +4217,11 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
 		writeModesFile(f);
 		sendJson(res, 200, {
 			ok: true,
-			modes: { session: modesFor(f, sid, "session"), global: modesFor(f, sid, "global") },
+			// project's key is a slug, so it gets its own row instead of a session/global pair.
+			modes:
+				scope === "project"
+					? { project: modesFor(f, sid, "project") }
+					: { session: modesFor(f, sid, "session"), global: modesFor(f, sid, "global") },
 		});
 		return;
 	}
@@ -3889,11 +4230,12 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
 	// caller now falls through to the board gate's sid 400 — still "no such document"
 	// for the #83 probe, which only needs "not served".
 
-	const path = writeBoardPath(q);
-	if (path === null) {
-		sendJson(res, 400, { ok: false, error: "scope=session requires sid" });
+	const target = writeBoardPath(q, SWITCH_PATHS.has(url.pathname));
+	if (!target.ok) {
+		sendJson(res, 400, { ok: false, error: target.error });
 		return;
 	}
+	const path = target.path;
 	const b = readBoard(path);
 
 	switch (url.pathname) {
@@ -4289,19 +4631,39 @@ function ensureServer(): void {
 		// the first request after bind answers 401. A token file that cannot be written
 		// still leaves a process-local token, so the board stays reachable for this run.
 		ensureToken();
-		// #84: listen before the housekeeping. listenLoop issues s.listen() before its
-		// first await, so the bind is in flight while the sweeps below run. The other
-		// order made the first request of a cold start wait for all of them.
-		void startListening();
-		// Startup-only: the guards above keep this block to a real first attempt.
-		migrateLegacyBoard();
-		sweepSessions();
-		sweepServe(); // 起動時に一度。以降は poll が 1 時間 throttle で回す。
-		lastServeSweep = Date.now();
-		writeBoardHtml();
+		// Startup-only: the branch above keeps this to a real first attempt.
+		void firstStart();
 		return;
 	}
 	void startListening();
+}
+
+/**
+ * The first real attempt. The scope fold runs before the sweeps that delete boards, and
+ * every write route waits for it (see `migrationPending`); the bind does not, so #84's
+ * "the first request of a cold start does not wait" still holds.
+ */
+async function firstStart(): Promise<void> {
+	// Sync, and its global board must exist before the fold picks it up.
+	migrateLegacyBoard();
+	// Phase 0: only a fold with legacy rows can swallow a write, so only that one closes the
+	// gate. Leaving it closed for an already-folded board would make every write route answer
+	// one microtask late for nothing (a settle right after session_start would see a promise).
+	if (kanbanDb().getMeta("scope_migrated") !== "1") {
+		migrationPending = migrateScopeOnce().catch((err: unknown) => {
+			// A throwing migration must not brick the server; it retries on the next start.
+			process.stderr.write("kanban: scope migration failed: " + err + "\n");
+		});
+		// #84: listenLoop issues s.listen() before its first await, so the bind is in flight
+		// while the fold runs. The other order made the first request wait for the fold.
+		void startListening();
+		await migrationPending;
+		migrationPending = null;
+	} else void startListening();
+	sweepSessions();
+	sweepServe(); // 起動時に一度。以降は poll が 1 時間 throttle で回す。
+	lastServeSweep = Date.now();
+	writeBoardHtml();
 }
 
 /**
@@ -4516,7 +4878,7 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 				loop = {
 					count: typeof d.count === "number" ? d.count : 0,
 					halted: d.halted === "limit" || d.halted === "stuck" ? d.halted : null,
-					scope: d.scope === "global" || d.scope === "session" ? d.scope : null,
+					scope: d.scope === "global" || d.scope === "session" || d.scope === "project" ? d.scope : null,
 					stuckId: typeof d.stuckId === "number" ? d.stuckId : null,
 					stuckCount: typeof d.stuckCount === "number" ? d.stuckCount : 0,
 					lastActivityAt: typeof d.lastActivityAt === "number" ? d.lastActivityAt : 0,
@@ -4539,8 +4901,9 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 	const paintLoop = (ctx: ExtensionContext, sid: string): void => {
 		const scope = loop.scope ?? "session";
 		const tag = haltTag(loop);
-		// One settle drives one board: leaving a tag on the other line would be a lie.
-		for (const s of ["session", "global"] as const) {
+		// One settle drives one board: leaving a tag on another line would be a lie. project is
+		// included even though it has no line of its own - refresh draws it on the SESSION line.
+		for (const s of ["session", "global", "project"] as const) {
 			setLoopTag(sid, s, s === scope ? tag : "");
 			loopCount.delete(tagKey(sid, s));
 		}
@@ -4550,16 +4913,19 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 		// Same value the footer shows, published for the HTTP dashboard (see haltedBySid).
 		if (loop.halted === null) haltedBySid.delete(sid);
 		else {
-			const cap = maxLoopsOf(modesFor(readModesFile({ repair: false }), sid, scope));
+			const cap = maxLoopsOf(modesFor(readModesFile({ repair: false }), boardKeyFor(ctx, sid, scope), scope));
 			haltedBySid.set(sid, { halted: loop.halted, stuckId: loop.stuckId, stuckCount: loop.stuckCount, cap });
 		}
 		refresh(ctx, sid);
 	};
 
 	/**
-	 * Clear the halt and give the loop its budget back. Both doingLoop switches go ON
-	 * because turning them off is what caused a `limit` halt; a `stuck` halt is lifted
-	 * too, since a resume is the user saying "try again". Shared by `/kanban loop on`
+	 * Clear the halt and give the loop its budget back. All three doingLoop switches go ON
+	 * because turning them off is what caused a `limit` halt (the cap turns off session,
+	 * global AND project: project is the default board, and resume is the only path that
+	 * turns all three back on at once - the mode routes take `scope=project`, but they flip
+	 * one bucket at a time); a `stuck` halt is lifted too, since a resume is the user
+	 * saying "try again". Shared by `/kanban loop on`
 	 * and the `kanban` tool's resume so the two can never drift.
 	 */
 	const resetLoopForResume = (): { was: string; oldCount: number } => {
@@ -4585,6 +4951,7 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 		const f = readModesFile();
 		setMode(f, sid, "session", "doingLoop", true);
 		setMode(f, sid, "global", "doingLoop", true);
+		setMode(f, projectSlugOf(cwdOfCtx(ctx)), "project", "doingLoop", true);
 		writeModesFile(f);
 		// #89: a resume turns the loop back ON, so the timer must exist. No-op when it already
 		// does (the /api/resume path runs inside poll) and when this process has no ownCtx yet;
@@ -4842,6 +5209,10 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 	};
 
 	const poll = (): void => {
+		// Phase 0: the fold deletes the session/global rows it just read, so a firedFor recorded
+		// now dies with them. The wake itself still goes out: a dropped tick costs the loop a
+		// whole interval, and the fold is over in a microtask.
+		const folding = migrationPending !== null;
 		sweepServeThrottled(); // 1 時間に 1 回だけ実際に走る
 		// #46: a restart that never delivers session_start leaves ownCtx null and this
 		// tick returns silently. That is the one case the trace below cannot show.
@@ -4871,14 +5242,24 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 		// so a still board would never wake the agent.
 		if (!tickInFlight) {
 			const f = readModesFile({ repair: false }); // 1.5s cadence: never rewrite here
-			for (const scope of ["session", "global"] as const) {
+			// Phase 0: project is the default board, so it is polled too. `key` is the board
+			// key (slug for project, sid otherwise); `sid` stays the actor - movedBy and
+			// haltedBySid must keep naming the session or todo-ownership breaks.
+			const boards: { scope: Scope; key: string }[] = [
+				{ scope: "session", key: sid },
+				// global switches are keyed by the acting session, so global keeps `sid` here.
+				{ scope: "global", key: sid },
+				...projectSlugs().map((slug) => ({ scope: "project" as Scope, key: slug })),
+			];
+			for (const { scope, key } of boards) {
 				// Read the switch first: with doingLoop off this costs one
 				// modes.json read per poll and no board reads at all.
-				const m = modesFor(f, sid, scope);
-				const cards = m.doingLoop ? readBoard(boardPath(scope, sid)).cards : [];
+				const m = modesFor(f, key, scope);
+				const cards = m.doingLoop ? readBoard(boardPath(scope, key)).cards : [];
 				// Phase 10: DOING empty + autoPick ON wakes on the first TODO instead of
 				// staying silent forever. The wake only asks for the move; the board is never
 				// written here (pickFirstTodo runs in the settle that follows this turn).
+				// The ownership filter always takes the ACTOR (sid), never the board key.
 				const card = m.doingLoop
 					? (tickCardFor(cards, scope, sid) ?? (m.autoPick ? nextTodo(cards, scope, sid) : undefined))
 					: undefined;
@@ -4927,7 +5308,7 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 					// firedFor goes in AFTER the dispatch returned: a throw leaves the schedule
 					// unfired so the next settle retries, instead of going silent forever.
 					// A failed writeBoard here only buys one extra wake - loud beats a hole.
-					markFired(card, sid, scope);
+					if (!folding) markFired(card, key, scope);
 				} catch (err) {
 					// A throw out of a setInterval callback reaches uncaughtException: log it and
 					// let the next interval try again instead of taking the process down.
@@ -5179,7 +5560,7 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 		name: "kanban",
 		label: "Kanban board",
 		description:
-			"Manage a 3-column kanban board (todo/doing/done). action=list shows the board, add creates a card, move changes its column, remove deletes it, edit rewrites a card's text (column and ownership stay), check runs the board/serve/media/modes self-test and returns its JSON, resume clears a doing-loop halt (same reset as /kanban loop on: budget back to 10, doingLoop ON in both scopes) — the GUI's loop switch cannot clear it, because the halt lives in the extension process, not in modes.json. scope selects the board: 'session' (default, this conversation's board) or 'global' (shared by every session). Card IDs are unique only within one board — global #7 and session #7 are different cards. url returns the token-bearing dashboard URL to open in a browser. The board is shared with the user's GUI and persisted under ~/.pi/kanban/. project is an optional slug (lowercase [a-z0-9._-], max 24 chars) naming the project a card belongs to; add and edit set it, an empty value clears it, an unnormalizable value is an error, and it never affects the loop or auto-pick.",
+			"Manage a 3-column kanban board (todo/doing/done). action=list shows the board, add creates a card, move changes its column, remove deletes it, edit rewrites a card's text (column and ownership stay), check runs the board/serve/media/modes self-test and returns its JSON, resume clears a doing-loop halt (same reset as /kanban loop on: budget back to 10, doingLoop ON in all three scopes — session, global and this project) — the GUI's loop switch cannot clear it, because the halt lives in the extension process, not in modes.json. scope selects the board: 'project' (default, the board of this working directory's git root - every session in the same repo shares it), 'session' (this conversation's own board) or 'global' (a read-only aggregate of every session's cards; writes there are rejected). Card IDs are unique only within one board — global #7 and project #7 are different cards. url returns the token-bearing dashboard URL to open in a browser. The board is shared with the user's GUI and persisted under ~/.pi/kanban/. project is an optional slug (lowercase [a-z0-9._-], max 24 chars) naming the project a card belongs to; add and edit set it, an empty value clears it, an unnormalizable value is an error, and it never affects the loop or auto-pick.",
 		parameters: Type.Object({
 			action: Type.Union([
 				Type.Literal("list"),
@@ -5195,7 +5576,9 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 				// movedAt/movedBy stay (a rename does not transfer ownership), empty text is an error.
 				Type.Literal("edit"),
 			]),
-			scope: Type.Optional(Type.Union([Type.Literal("session"), Type.Literal("global")])),
+			scope: Type.Optional(
+				Type.Union([Type.Literal("session"), Type.Literal("global"), Type.Literal("project")]),
+			),
 			text: Type.Optional(Type.String()),
 			id: Type.Optional(Type.Number()),
 			col: Type.Optional(
@@ -5210,8 +5593,14 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 			project: Type.Optional(Type.String()),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const scope: Scope = params.scope ?? "session";
-			const sid = sidOf(ctx);
+			// Phase 0: the HTTP gate cannot see an in-process write, so the tool waits for the
+			// fold itself - a card added in that window was overwritten by its final write.
+			if (migrationPending !== null) await migrationPending;
+			const scope: Scope = params.scope ?? "project";
+			// A project board's key is the cwd slug, NOT the session (D4). The actor stays the
+			// session, so movedBy/modes/loop reads keep naming this conversation.
+			const sessionSid = sidOf(ctx);
+			const sid = scope === "project" ? projectSlugOf(cwdOfCtx(ctx)) : sessionSid;
 			const path = boardPath(scope, sid);
 			const b = readBoard(path);
 			let persistError: string | null = null;
@@ -5225,6 +5614,11 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 				},
 			});
 			const fail = (text: string) => ({ ...done(text), isError: true });
+			// Phase 0 D5: global is a read-only aggregate. The HTTP routes already 400 it
+			// (writeBoardPath); without this the in-process tool is the one back door.
+			if (scope === "global" && (["add", "move", "remove", "edit"] as readonly string[]).includes(params.action)) {
+				return fail("global board is read-only");
+			}
 
 			/** blocked/nextFireAt on a card; returns an error message or null. */
 			const applyGate = (card: Card): string | null => {
@@ -5256,7 +5650,7 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 					const project = normalizeProject(params.project);
 					if (project === "" && (params.project ?? "") !== "") return fail("project must match [a-z0-9._-]");
 					const card: Card = { id: b.nextId++, text, col };
-					stampMove(card, sid);
+					stampMove(card, sessionSid);
 					const gateError = applyGate(card);
 					if (gateError !== null) return fail(gateError);
 					if (project !== "") card.project = project;
@@ -5270,7 +5664,7 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 					if (card === undefined) return fail(`no card with id ${params.id} in the ${scope} board`);
 					if (params.col === undefined) return fail("move requires col");
 					card.col = params.col;
-					stampMove(card, sid);
+					stampMove(card, sessionSid);
 					const gateError = applyGate(card);
 					if (gateError !== null) return fail(gateError);
 					persistError = writeBoard(path, b);
@@ -5319,9 +5713,9 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 					// #67: the reset itself lives in resumeWithModes, shared with /api/resume.
 					const was = loop.halted === null ? "なし" : `halted:${loop.halted}`;
 					const oldCount = loop.count;
-					resumeWithModes(ctx, sid);
-					const capNow = maxLoopsOf(modesFor(readModesFile(), sid, "session"));
-					message = `resumed: ${was} / count ${oldCount} → 0 / doingLoop ON (session+global) / ${loopBudgetText(capNow, 0)}`;
+					resumeWithModes(ctx, sessionSid);
+					const capNow = maxLoopsOf(modesFor(readModesFile(), sessionSid, "session"));
+					message = `resumed: ${was} / count ${oldCount} → 0 / doingLoop ON (session+global+project) / ${loopBudgetText(capNow, 0)}`;
 					break;
 				}
 				case "url": {
@@ -5333,7 +5727,7 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 					message = `[${scope}]\n${renderLines(b).join("\n")}`;
 			}
 
-			refresh(ctx, sid);
+			refresh(ctx, sessionSid);
 			return done(message);
 		},
 	});
@@ -5433,18 +5827,27 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 	// Auto-loop. Off by default (modes.json), and it never blocks input: this
 	// handler only decides whether the settled run gets one more request.
 	pi.on("agent_before_settle", (event, ctx) => {
+		// Phase 0: the settle writes the board (pickFirstTodo, markFired), and the fold's last
+		// write would overwrite it. Dropping the continuation is the safe outcome (the next
+		// settle resumes the loop), and staying sync keeps every other caller's result a value.
+		if (migrationPending !== null) return;
 		const sid = sidOf(ctx);
 		const f = readModesFile();
+		// `key` names the board (modes, boardPath); `sid` stays the actor (movedBy, paint,
+		// halt state). project is keyed by the cwd slug, never by the session.
+		const projectKey = boardKeyFor(ctx, sid, "project");
+		const keyOf = (s: Scope): string => boardKeyFor(ctx, sid, s);
 		const ms = modesFor(f, sid, "session");
 		const mg = modesFor(f, sid, "global");
+		const mp = modesFor(f, projectKey, "project");
 		// (1) every switch off -> nothing to drive.
-		if (!ms.doingLoop && !ms.autoPick && !mg.doingLoop && !mg.autoPick) return;
+		if (!ms.doingLoop && !ms.autoPick && !mg.doingLoop && !mg.autoPick && !mp.doingLoop && !mp.autoPick) return;
 
 		// A stuck halt belongs to the board that was driving it: checking the other
 		// board too would clear the halt on its emptiness and restart the loop.
 		if (loop.halted === "stuck") {
 			const driving = loop.scope ?? "session";
-			if (!cardsIn(readBoard(boardPath(driving, sid)), "doing").some((c) => c.id === loop.stuckId)) {
+			if (!cardsIn(readBoard(boardPath(driving, keyOf(driving))), "doing").some((c) => c.id === loop.stuckId)) {
 				// #90: the activity clock says "active NOW", not 0. 0 reads as "no activity recorded"
 				// (poll passes `|| undefined` and the gate treats undefined as just-active), so quiet
 				// only opened at starved = 3 intervals: a 5-minute window became 15 (measured in #88).
@@ -5463,16 +5866,17 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 		// prompt at the head flips this.
 		if (isUserInputHead(event.context.contextMessages)) return;
 
-		// autoPick: SESSION first, then GLOBAL. The first scope with a TODO to move ends
+		// autoPick: SESSION first, then GLOBAL, then PROJECT. The first scope with a TODO to move ends
 		// the scan, so one settle still picks at most one card. WIP=1: a scope that already
 		// holds one of THIS session's DOING cards does not pick another. A scope whose DOING
 		// is empty and whose only work is TODO is still woken (Phase 10: an idle agent must
 		// not stall), and doingHeadOf is ownership-filtered for GLOBAL, so a sibling
 		// session's DOING card never counts as ours.
-		for (const scope of ["session", "global"] as const) {
-			if (!modesFor(f, sid, scope).autoPick) continue;
-			if (doingHeadOf(sid, scope) !== undefined) continue; // WIP=1: already working
-			if (pickFirstTodo(sid, scope) !== null) {
+		for (const scope of ["session", "global", "project"] as const) {
+			const key = keyOf(scope);
+			if (!modesFor(f, key, scope).autoPick) continue;
+			if (doingHeadOf(key, scope, sid) !== undefined) continue; // WIP=1: already working
+			if (pickFirstTodo(key, scope, sid) !== null) {
 				refresh(ctx, sid); // the board moved: redraw now
 				break;
 			}
@@ -5486,12 +5890,16 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 			scope = "global";
 			card = candidates(sid, "global", f);
 		}
-		if (card === undefined) return; // (2) nothing to drive on either board
+		if (card === undefined) {
+			scope = "project";
+			card = candidates(projectKey, "project", f, sid);
+		}
+		if (card === undefined) return; // (2) nothing to drive on any board
 
 		// stuckId is a per-board id: it only means anything together with the scope.
 		// The threshold belongs to the board that is driving (`loop.scope`), not to a
 		// hard-coded constant: /kanban stuck must actually move where the loop halts.
-		const next = nextStuckState(loop, card.id, scope, stuckLimitOf(modesFor(f, sid, scope)));
+		const next = nextStuckState(loop, card.id, scope, stuckLimitOf(modesFor(f, keyOf(scope), scope)));
 		loop.scope = scope;
 		loop.stuckId = next.stuckId;
 		loop.stuckCount = next.stuckCount;
@@ -5502,14 +5910,15 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 			return;
 		}
 
-		// (3) the cap: turn doingLoop off so the NEXT settle is a real stop. Both scopes,
-		// or the other one keeps running on the next settle and the cap is no cap.
+		// (3) the cap: turn doingLoop off so the NEXT settle is a real stop. All three
+		// buckets, or the other two keep running on the next settle and the cap is no cap.
 		// #67: the cap is stored per (scope, sid); 0 means unlimited, so no halt at all.
-		const cap = maxLoopsOf(modesFor(f, sid, loop.scope ?? scope));
+		const cap = maxLoopsOf(modesFor(f, keyOf(loop.scope ?? scope), loop.scope ?? scope));
 		if (cap > 0 && loop.count >= cap) {
 			loop.halted = "limit";
 			setMode(f, sid, "session", "doingLoop", false);
 			setMode(f, sid, "global", "doingLoop", false);
+			setMode(f, projectKey, "project", "doingLoop", false);
 			writeModesFile(f);
 			persistLoop();
 			paintLoop(ctx, sid);
@@ -5523,7 +5932,7 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 		// throws here, before the wake is recorded, so the next settle retries instead of
 		// going silent forever. A failed writeBoard only means one extra wake next settle.
 		const prompt = continuationPrompt(card, scope);
-		markFired(card, sid, scope);
+		markFired(card, keyOf(scope), scope);
 		return {
 			continue: true,
 			// A continuation needs a trailing non-assistant message; this entry is also
@@ -5615,6 +6024,11 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 			// (/api/resume parks a token, poll consumes it); these let a test assert
 			// the parked state instead of sleeping on a timer.
 			resumeRequests,
+			// Phase 0: the fold gate is only reachable while the real migration runs, so the
+			// tests drive it directly instead of racing a startup they cannot pause.
+			setMigrationPending: (p: Promise<void> | null) => {
+				migrationPending = p;
+			},
 			// #83: the listen/probe path is only reachable through a real port conflict,
 			// so the tests drive the two halves directly.
 			probe: probeServer,

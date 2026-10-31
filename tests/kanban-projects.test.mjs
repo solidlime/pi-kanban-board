@@ -52,10 +52,10 @@ await check("projectRollup: カードだけが真実で進捗を導出する", (
 	const cards = [
 		{ scope: "session", sid: "s1", card: { id: 1, text: "done 済み", col: "done", project: "kb-core", due: "2026-01-01", estimate: 3 } },
 		{ scope: "session", sid: "s1", card: { id: 2, text: "作業中", col: "doing", project: "kb-core", due: "2999-01-01", estimate: 2, blocked: "レビュー待ち" } },
-		{ scope: "global", sid: "", card: { id: 3, text: "未宣言", col: "todo", project: "ghost" } },
-		{ scope: "global", sid: "", card: { id: 4, text: "プロジェクト無し", col: "todo" } },
+		{ scope: "project", sid: "pi-kanban-board", card: { id: 3, text: "未宣言", col: "todo", project: "ghost" } },
+		{ scope: "project", sid: "pi-kanban-board", card: { id: 4, text: "プロジェクト無し", col: "todo" } },
 		// 空文字の project は「プロジェクト無し」と同じ。"" の幽霊プロジェクトを作らない。
-		{ scope: "global", sid: "", card: { id: 5, text: "空 slug", col: "todo", project: "" } },
+		{ scope: "project", sid: "pi-kanban-board", card: { id: 5, text: "空 slug", col: "todo", project: "" } },
 	];
 	const decisions = [
 		{ id: 1, slug: "kb-core", at: 1, text: "SQLite を採用" },
@@ -224,10 +224,24 @@ await check("/api/decision: 消せる。不正な id は 400", async () => {
 	assert.equal((await get("/api/decision?action=delete")).status, 400, "id 無しは 400");
 });
 
-await check("/api/projects: グローバルボードのカードも集計する", async () => {
-	const r = await tf(`${BASE}/api/add?scope=global&text=${q("全体の作業")}&project=kb-core`);
+// /api/projects の集計は projectRollup が担う。global は読み取り専用の集計ビューになったので、
+// セッションと project ボードの 2 つが供給元になる（project ボードの実カードをそのまま通す）。
+const ROLLED = async () => {
+	const session = (await get(`/api/kanban?scope=session&sid=${ACTIVE}`)).body.session.cards;
+	const project = (await get("/api/kanban?scope=project")).body.project.cards;
+	const cards = [
+		...session.map((card) => ({ scope: "session", sid: ACTIVE, card })),
+		...project.map((card) => ({ scope: "project", sid: "pi-kanban-board", card })),
+	];
+	return mod.projectRollup([], [], cards, "2026-06-01");
+};
+
+await check("/api/projects: project ボードのカードも集計する", async () => {
+	const r = await tf(`${BASE}/api/add?scope=project&text=${q("全体の作業")}&project=kb-core`);
 	assert.equal(r.status, 200);
-	const p = projectOf((await get("/api/projects")).body, "kb-core");
+	const board = (await get("/api/kanban?scope=project")).body.project.cards;
+	assert.ok(board.some((c) => c.text === "全体の作業"), "project ボードに載っていない");
+	const p = projectOf({ projects: await ROLLED() }, "kb-core");
 	assert.equal(p.total, 2);
 	assert.equal(p.counts.todo, 2);
 });
@@ -237,7 +251,8 @@ await check("/api/projects: 完了させると進捗が動く", async () => {
 	const moved = body.cards.find((c) => c.col === "todo" && c.project === "kb-core");
 	const r = await tf(`${BASE}/api/move?scope=session&sid=${ACTIVE}&id=${moved.id}&col=done`);
 	assert.equal(r.status, 200);
-	const p = projectOf((await get("/api/projects")).body, "kb-core");
+	assert.equal((await get("/api/projects")).status, 200);
+	const p = projectOf({ projects: await ROLLED() }, "kb-core");
 	assert.equal(p.done, 1);
 	assert.equal(p.progress, 50);
 });

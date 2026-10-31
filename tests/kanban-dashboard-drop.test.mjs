@@ -32,7 +32,10 @@ const PORT = await new Promise((resolve) => {
 process.env.KANBAN_PORT = String(PORT);
 const BASE = `http://127.0.0.1:${PORT}`;
 const MEDIA = `${HOME_DIR}/.pi/kanban/media`;
-const GLOBAL = `${HOME_DIR}/.pi/kanban/global.json`;
+// project ボード（global は読み取り専用の集約ビューになったので、upload の書き込み先は project）。
+// パスは実装の projectSlugOf(process.cwd()) から引く（sid 無しの HTTP 書き込みは cwd で解決される）。
+// mod はこの下で読み込むので、パスは遅延して求める。
+const projectFile = () => `${HOME_DIR}/.pi/kanban/projects/${mod.projectSlugOf(process.cwd())}.json`;
 
 const { createJiti } = createRequire(import.meta.url)(
 	process.env.KANBAN_JITI ?? createRequire(import.meta.url).resolve("jiti"),
@@ -92,9 +95,9 @@ const post = (query, body) =>
 		body,
 		headers: { "Content-Type": "application/octet-stream" },
 	});
-const readGlobal = () => {
+const readProject = () => {
 	try {
-		return readBoardAt(GLOBAL).cards;
+		return readBoardAt(projectFile()).cards;
 	} catch {
 		return [];
 	}
@@ -105,12 +108,12 @@ const readGlobal = () => {
 // ===========================================================================
 await check("/api/upload?ext=png&col=todo (id なし) は 200 で新規カードが増える", async () => {
 	// col と ext だけ渡す形（クライアントが実際に送る組み合わせ）を固定する。
-	const before = readGlobal().length;
-	const r = await post("scope=global&ext=png&col=todo", PNG);
+	const before = readProject().length;
+	const r = await post("scope=project&ext=png&col=todo", PNG);
 	assert.equal(r.status, 200, `status が 200 でない: ${r.status}`);
 	const j = await r.json();
 	assert.equal(j.ok, true, JSON.stringify(j));
-	const after = readGlobal();
+	const after = readProject();
 	assert.equal(after.length, before + 1, "新規カードが増えていない");
 	const card = after.find((c) => c.id === j.card.id);
 	assert.ok(card, "返ってきたカードがボードに無い");
@@ -124,24 +127,24 @@ await check("/api/upload?ext=png&col=todo (id なし) は 200 で新規カード
 });
 
 await check("/api/upload?id= は既存カードの img を差し替える", async () => {
-	const target = readGlobal().find((c) => c.col === "todo" && c.img);
+	const target = readProject().find((c) => c.col === "todo" && c.img);
 	assert.ok(target, "対象カードが無い");
 	const oldImg = target.img;
-	const r = await post(`scope=global&ext=gif&id=${target.id}`, PNG);
+	const r = await post(`scope=project&ext=gif&id=${target.id}`, PNG);
 	assert.equal(r.status, 200, `status が 200 でない: ${r.status}`);
 	const j = await r.json();
 	assert.equal(j.ok, true, JSON.stringify(j));
-	assert.equal(readGlobal().length, readGlobal().length, "id 指定で枚数が変わった");
-	const card = readGlobal().find((c) => c.id === target.id);
+	assert.equal(readProject().length, readProject().length, "id 指定で枚数が変わった");
+	const card = readProject().find((c) => c.id === target.id);
 	assert.notEqual(card.img, oldImg, "img が変わっていない");
 	assert.ok(card.img.endsWith(".gif"), `ext が反映されていない: ${card.img}`);
 	assert.ok(existsSync(`${MEDIA}/${card.img}`), `新しい media が無い: ${card.img}`);
 });
 
 await check("ext 無し / 不正な ext は 415", async () => {
-	const noExt = await post("scope=global&col=todo", PNG);
+	const noExt = await post("scope=project&col=todo", PNG);
 	assert.equal(noExt.status, 415, `ext 無しが 415 でない: ${noExt.status}`);
-	const badExt = await post("scope=global&ext=exe&col=todo", PNG);
+	const badExt = await post("scope=project&ext=exe&col=todo", PNG);
 	assert.equal(badExt.status, 415, `ext=exe が 415 でない: ${badExt.status}`);
 });
 
@@ -294,6 +297,13 @@ const hasCls = (el, c) => el.className.split(" ").includes(c);
 							now: "2026-01-01T00:00:00.000Z",
 							stats: { sessions: 0, active: 1, todo: 1, doing: 0, done: 0, serve: 0, media: 0 },
 							global: {
+								counts: { todo: 0, doing: 0, done: 0 },
+								modes: { doingLoop: true, autoPick: false, intervalMin: 5 },
+								cards: [],
+							},
+							// global は読み取り専用の集約ビュー。upload / move の書き込み先は project。
+							project: {
+								id: "demo",
 								counts: { todo: 1, doing: 0, done: 0 },
 								modes: { doingLoop: true, autoPick: false, intervalMin: 5 },
 								cards,
@@ -316,7 +326,7 @@ const hasCls = (el, c) => el.className.split(" ").includes(c);
 	vm.runInContext(apiScript, sandbox);
 	for (let i = 0; i < 8; i++) await flush();
 
-	const root = byId.global;
+	const root = byId.project;
 	const col = walk(root).find((n) => n.getAttribute("data-col") === "todo");
 	const card = walk(root).find((n) => hasCls(n, "card"));
 
@@ -344,7 +354,7 @@ const hasCls = (el, c) => el.className.split(" ").includes(c);
 		assert.ok(up, `upload していない: ${JSON.stringify(calls)}`);
 		assert.ok(up.includes("ext=png"), `ext が小文字の png でない: ${up}`);
 		assert.ok(up.includes("col=todo"), `col が載っていない: ${up}`);
-		assert.ok(up.includes("scope=global"), `scope が載っていない: ${up}`);
+		assert.ok(up.includes("scope=project"), `scope が載っていない: ${up}`);
 		assert.ok(!up.includes("id="), `id 無しのはずが載っている: ${up}`);
 		assert.equal(stopped, true, "stopPropagation していない");
 	});

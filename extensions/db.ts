@@ -40,8 +40,12 @@ export type Card = {
 
 export type Board = { cards: Card[]; nextId: number };
 
-/** A board is a (scope, sid) pair. Global boards use sid = "". */
-export type BoardKey = { scope: "global" | "session"; sid: string };
+/**
+ * A board is a (scope, sid) pair. Global boards use sid = "".
+ * "project" boards key on a cwd slug (kanban.ts owns what a slug is); this module only
+ * stores the string.
+ */
+export type BoardKey = { scope: "global" | "session" | "project"; sid: string };
 
 /** A project lives outside any board: `card.project` is its slug, so one project can span boards. */
 export type Project = {
@@ -86,6 +90,11 @@ export type KanbanDb = {
 	listDecisions(slug?: string): Decision[];
 	addDecision(slug: string, text: string, why?: string, at?: number): Decision;
 	deleteDecision(id: number): boolean;
+	/** Small key/value store for one-shot flags (schema work). */
+	getMeta(k: string): string | null;
+	setMeta(k: string, v: string): void;
+	/** Fold the WAL back into the main file so a plain file copy is complete. */
+	checkpoint(): void;
 	/** #13: read-only health numbers for the settings tab. */
 	maintenance(): { integrity: string; pages: number; freelist: number; pageSize: number };
 	/** #13: compact the file. Throws on failure; the caller turns it into a 500. */
@@ -272,6 +281,10 @@ export function openKanbanDb(file: string): KanbanDb {
 	const insertDecision = db.prepare("INSERT INTO decision (slug, at, text, why) VALUES (?, ?, ?, ?)");
 	const deleteDecisionsBySlug = db.prepare("DELETE FROM decision WHERE slug = ?");
 	const deleteDecisionRow = db.prepare("DELETE FROM decision WHERE id = ?");
+	const selectMeta = db.prepare("SELECT v FROM meta WHERE k = ?");
+	const upsertMeta = db.prepare(
+		"INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v",
+	);
 	const sweep = db.prepare("DELETE FROM board WHERE scope = 'session' AND touched_at < ?");
 	const sweepDeps = db.prepare(
 		"DELETE FROM card_dep WHERE scope = 'session' AND sid IN (SELECT sid FROM board WHERE scope = 'session' AND touched_at < ?)",
@@ -426,6 +439,17 @@ export function openKanbanDb(file: string): KanbanDb {
 				db.exec("ROLLBACK");
 				throw err;
 			}
+		},
+		getMeta(k) {
+			const row = selectMeta.get(k) as Row | undefined;
+			return row === undefined ? null : String(row.v);
+		},
+		setMeta(k, v) {
+			upsertMeta.run(k, v);
+		},
+		// TRUNCATE also empties the -wal file, so the backup needs no -wal/-shm sidecar.
+		checkpoint() {
+			db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
 		},
 		// One pragma at a time and every failure ends in the same answer: node:sqlite is
 		// experimental and the settings tab must still open on a file it cannot read.

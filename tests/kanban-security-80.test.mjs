@@ -191,12 +191,12 @@ for (const name of ["evil.html", "evil.svg", "evil.js", "evil.exe", "evil.sh", "
 	const junk = `${MEDIA}/upload-budget-junk.mp4`;
 	writeFileSync(junk, "");
 	truncateSync(junk, 1024 * 1024 * 1024);
-	const res = await send("POST", "/api/upload?ext=png&scope=global", { body: Buffer.from([0x89]) });
+	const res = await send("POST", "/api/upload?ext=png&scope=project", { body: Buffer.from([0x89]) });
 	await checkAsync("#86 総量上限を超える /api/upload は 413", async () => {
 		assert.equal(res.status, 413, `status=${res.status} body=${res.body}`);
 	});
 	rmSync(junk, { force: true });
-	const after = await send("POST", "/api/upload?ext=png&scope=global", { body: Buffer.from([0x89]) });
+	const after = await send("POST", "/api/upload?ext=png&scope=project", { body: Buffer.from([0x89]) });
 	await checkAsync("#86 空になったら /api/upload は再び通る", async () =>
 		assert.equal(after.status, 200, `status=${after.status} body=${after.body}`));
 }

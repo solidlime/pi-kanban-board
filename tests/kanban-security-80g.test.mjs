@@ -97,29 +97,29 @@ const refused = (res) => {
 
 // --- 実測表（そのまま固定する） ------------------------------------------------
 await check("Sec-Fetch-Site: same-origin の GET /api/add は 200（従来どおり）", async () => {
-	const res = await send("/api/add?scope=global&text=sameorigin", { headers: { "Sec-Fetch-Site": "same-origin" } });
+	const res = await send("/api/add?scope=project&text=sameorigin", { headers: { "Sec-Fetch-Site": "same-origin" } });
 	assert.equal(res.status, 200, `${res.status} ${res.body}`);
 	assert.equal(JSON.parse(res.body).ok, true);
 });
 
 await check("Sec-Fetch-Site: none の GET /api/add は 405", async () => {
-	refused(await send("/api/add?scope=global&text=none", { headers: { "Sec-Fetch-Site": "none" } }));
+	refused(await send("/api/add?scope=project&text=none", { headers: { "Sec-Fetch-Site": "none" } }));
 });
 
 await check("Sec-Fetch-Site: cross-site の GET /api/add は 405", async () => {
-	refused(await send("/api/add?scope=global&text=xsite", { headers: { "Sec-Fetch-Site": "cross-site" } }));
+	refused(await send("/api/add?scope=project&text=xsite", { headers: { "Sec-Fetch-Site": "cross-site" } }));
 });
 
 // same-site は #68 のゲートが 403 で通していた（右パネルの別ポートを想定）。GET 書き込みに
 // 関しては 405 が新しい答え。same-origin だけが「そのページ自身の操作」。
 await check("Sec-Fetch-Site: same-site の GET /api/add は 405", async () => {
-	refused(await send("/api/add?scope=global&text=xsite2", { headers: { "Sec-Fetch-Site": "same-site" } }));
+	refused(await send("/api/add?scope=project&text=xsite2", { headers: { "Sec-Fetch-Site": "same-site" } }));
 });
 
 // 暫定受理: Sec-Fetch-Site を送らない相手はブラウザではない（curl / 古いブラウザ / 別 pi）。
 // ここを 405 にすると、この文書化された逃げ道ごと壊れる。
 await check("ヘッダ無しの GET /api/add は 200（暫定受理）", async () => {
-	const res = await send("/api/add?scope=global&text=nofetch");
+	const res = await send("/api/add?scope=project&text=nofetch");
 	assert.equal(res.status, 200, `${res.status} ${res.body}`);
 	assert.equal(JSON.parse(res.body).ok, true);
 });
@@ -128,7 +128,7 @@ await check("ヘッダ無しの GET /api/add は 200（暫定受理）", async (
 // ディスパッチは POST を /api/host, /api/selftest, /api/upload にしか通さない（POST で
 // カードを足す経路は存在しない）。この変更で POST の答えが動いていないことを固定する。
 await check("POST /api/add は 405 のまま（この変更で POST の意味は変わらない）", async () => {
-	const res = await send("/api/add?scope=global&text=post", { method: "POST" });
+	const res = await send("/api/add?scope=project&text=post", { method: "POST" });
 	assert.equal(res.status, 405, `${res.status} ${res.body}`);
 });
 
@@ -147,29 +147,29 @@ await check("Sec-Fetch-Site: none のダッシュボード GET / は 200（既�
 // 認証との順序: 未認証は 401 が先。405 を先に返すと「この経路は書き込みだ」という
 // 情報をトークン無しの相手に渡し、既存の 401 契約も変わる。
 await check("トークン無しの GET /api/add は 405 ではなく 401（認証が先）", async () => {
-	const res = await send("/api/add?scope=global&text=nokey", { headers: { "Sec-Fetch-Site": "none" }, noToken: true });
+	const res = await send("/api/add?scope=project&text=nokey", { headers: { "Sec-Fetch-Site": "none" }, noToken: true });
 	assert.equal(res.status, 401, `${res.status} ${res.body}`);
 	assert.deepEqual(JSON.parse(res.body), { ok: false, error: "unauthorized" });
 });
 
 // --- 書き込み面の全数（GET で書ける経路 × Sec-Fetch-Site: none） ---------------
 const WRITE_GET_ROUTES = [
-	"add?text=x&col=todo&scope=global",
-	"move?id=1&col=done&scope=global",
-	"remove?id=1&scope=global",
-	"rename?id=1&text=x&scope=global",
-	"modes?key=doingLoop&value=on&scope=global",
-	"interval?min=30&scope=global",
-	"stuck?n=3&scope=global",
-	"maxloops?n=5&scope=global",
-	"resume?scope=global",
-	"priority?id=1&n=2&scope=global",
-	"schedule?id=1&at=2030-01-01T00:00:00Z&scope=global",
+	"add?text=x&col=todo&scope=project",
+	"move?id=1&col=done&scope=project",
+	"remove?id=1&scope=project",
+	"rename?id=1&text=x&scope=project",
+	"modes?key=doingLoop&value=on&scope=project",
+	"interval?min=30&scope=project",
+	"stuck?n=3&scope=project",
+	"maxloops?n=5&scope=project",
+	"resume?scope=project",
+	"priority?id=1&n=2&scope=project",
+	"schedule?id=1&at=2030-01-01T00:00:00Z&scope=project",
 	"serve?id=deadbeef&action=remove",
 	"project?project=revex&name=x",
 	"decision?project=revex&text=x",
 	// 普段は POST 専用。GET では元々 400/404 だったが、書き込み面として 405 に揃える。
-	"upload?scope=global&col=todo&ext=png",
+	"upload?scope=project&col=todo&ext=png",
 	"host",
 	"selftest",
 ];
@@ -192,7 +192,7 @@ for (const route of WRITE_GET_ROUTES) {
 // 405 に Allow: GET を付けない（GET は同じ資源で認められている。断っているのは呼び出し元の
 // 種類なので Allow は嘘になる）。ヘッダが増えていないことを固定する。
 await check("405 に Allow ヘッダを付けない（判定は method ではなく caller）", async () => {
-	const res = await send("/api/add?text=x&scope=global", { headers: { "Sec-Fetch-Site": "none" } });
+	const res = await send("/api/add?text=x&scope=project", { headers: { "Sec-Fetch-Site": "none" } });
 	assert.equal(res.status, 405);
 	assert.equal(res.allow, undefined, `allow=${res.allow}`);
 });
@@ -220,7 +220,7 @@ await check("GET /api/media/ + none は 405 にしない（読み取り）", asy
 
 // #68 の既存ゲートは POST については手を入れていない: cross-site は 403 のまま。
 await check("POST /api/upload + cross-site は従来どおり 403", async () => {
-	const res = await send("/api/upload?scope=global&col=todo&ext=png", {
+	const res = await send("/api/upload?scope=project&col=todo&ext=png", {
 		method: "POST",
 		headers: { "Sec-Fetch-Site": "cross-site", "Content-Type": "application/octet-stream" },
 		body: Buffer.from([0x89, 0x50, 0x4e, 0x47]),
@@ -229,7 +229,7 @@ await check("POST /api/upload + cross-site は従来どおり 403", async () => 
 });
 
 await check("POST /api/upload + same-origin は通る（405 にしない）", async () => {
-	const res = await send("/api/upload?scope=global&col=todo&ext=png", {
+	const res = await send("/api/upload?scope=project&col=todo&ext=png", {
 		method: "POST",
 		headers: { "Sec-Fetch-Site": "same-origin", "Content-Type": "application/octet-stream" },
 		body: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]),

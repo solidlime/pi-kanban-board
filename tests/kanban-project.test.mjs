@@ -80,6 +80,8 @@ for (let i = 0; i < 40; i++) {
 
 const SID = "proj-session";
 const KANBAN = `${HOME_DIR}/.pi/kanban`;
+// ツールの書き込み先: 既定 scope=project はこのプロセスの cwd の slug。
+const PROJ_BOARD = `${KANBAN}/projects/${mod.projectSlugOf(process.cwd())}.json`;
 const boardOf = (sid = SID) => readBoardAt(`${KANBAN}/sessions/${sid}.json`);
 const cardNamed = (text, sid = SID) => boardOf(sid).cards.find((c) => c.text === text);
 
@@ -193,33 +195,44 @@ await check("project 無しの既存カードが混ざったボードが壊れ�
 });
 
 
-await check("tool add/edit: project を正規化して付け、text を消さずに付け替えられる", async () => {
+await check("tool add/edit (project scope): project を正規化して付け、text を消さずに付け替えられる", async () => {
 	const tool = tools.kanban;
 	assert.ok(tool, "kanban tool が登録されていない");
 	const ctx = { sessionManager: { getSessionId: () => SID } };
-	seedBoard(KANBAN + "/global.json", { cards: [], nextId: 1 });
-	const add = await tool.execute("c1", { action: "add", scope: "global", text: "tool alpha", project: "Gamma" }, null, null, ctx);
+	seedBoard(PROJ_BOARD, { cards: [], nextId: 1 });
+	const add = await tool.execute("c1", { action: "add", scope: "project", text: "tool alpha", project: "Gamma" }, null, null, ctx);
 	assert.ok(!JSON.stringify(add).includes("error"), JSON.stringify(add).slice(0, 300));
-	const gb = readBoardAt(KANBAN + "/global.json");
+	const gb = readBoardAt(PROJ_BOARD);
 	const card = gb.cards.find((c) => c.text === "tool alpha");
 	assert.ok(card, "tool add でカードが作られていない");
 	assert.equal(card.project, "gamma", "tool add が project を正規化していない");
-	const edit = await tool.execute("c2", { action: "edit", scope: "global", id: card.id, project: "delta" }, null, null, ctx);
+	const edit = await tool.execute("c2", { action: "edit", scope: "project", id: card.id, project: "delta" }, null, null, ctx);
 	assert.ok(!JSON.stringify(edit).includes("error"), JSON.stringify(edit).slice(0, 300));
-	const after = readBoardAt(KANBAN + "/global.json").cards.find((c) => c.id === card.id);
+	const after = readBoardAt(PROJ_BOARD).cards.find((c) => c.id === card.id);
 	assert.equal(after.project, "delta", "tool edit で付け替えられない");
 	assert.equal(after.text, "tool alpha", "project だけの edit で text が消えた");
 });
 
-await check("tool add/edit: 正規化不能な project は fail（無言で無視しない）", async () => {
+await check("tool add/edit (project scope): 正規化不能な project は fail（無言で無視しない）", async () => {
 	const tool = tools.kanban;
 	const ctx = { sessionManager: { getSessionId: () => SID } };
-	const count = () => readBoardAt(KANBAN + "/global.json").cards.length;
+	const count = () => readBoardAt(PROJ_BOARD).cards.length;
 	const before = count();
-	const add = await tool.execute("c3", { action: "add", scope: "global", text: "bad tool", project: "日本語" }, null, null, ctx);
+	const add = await tool.execute("c3", { action: "add", scope: "project", text: "bad tool", project: "日本語" }, null, null, ctx);
 	assert.equal(add.isError, true, "fail なのに isError でない: " + JSON.stringify(add).slice(0, 200));
 	assert.ok(JSON.stringify(add).includes("must match"), "理由が返っていない");
 	assert.equal(count(), before, "fail なのにカードが増えた");
+});
+
+// D5: global は読み取り専用の集約ビュー。ツール経由でも書き込みは通さない（HTTP は 400）。
+await check("tool add scope=global は読み取り専用で fail", async () => {
+	const tool = tools.kanban;
+	const ctx = { sessionManager: { getSessionId: () => SID } };
+	const before = readBoardAt(KANBAN + "/global.json").cards.length;
+	const add = await tool.execute("c4", { action: "add", scope: "global", text: "must not land" }, null, null, ctx);
+	assert.equal(add.isError, true, "fail なのに isError でない: " + JSON.stringify(add).slice(0, 200));
+	assert.ok(JSON.stringify(add).includes("read-only"), "理由が read-only でない: " + JSON.stringify(add).slice(0, 200));
+	assert.equal(readBoardAt(KANBAN + "/global.json").cards.length, before, "fail なのに global に書けた");
 });
 
 // --- 3. ダッシュボード ----------------------------------------------------------
