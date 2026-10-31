@@ -3,7 +3,7 @@
 // HOME と KANBAN_PORT を差し替えるので本番の ~/.pi/kanban と 8789 には触れない。
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
-import { mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
 import { authFetch } from "./helpers/token.mjs";
@@ -197,8 +197,10 @@ check("本文の updatedAt は分の頭に丸まる（形は ISO のまま）", 
 	assert.ok(row.updatedAt, `updatedAt=${row.updatedAt}`);
 });
 
-// 分が変われば ETag も変わる（丸めすぎで本当の更新を潰していないことの確認）。
-setMtime();
+// 内容が変われば ETag も変わる（丸めすぎで本当の更新を潰していないことの確認）。
+// 分の頭を待つ代わりに、同じ分のままカードを1枚足す。setMtime() では中身が同じなので
+// payload が動かず、このテストは何も検証しなくなる。
+seedBoard(SESS_PATH, { cards: [{ id: 50, text: "changed", col: "todo" }], nextId: 51 });
 const nextMin = await get("/api/dashboard", { "If-None-Match": sameMin1Etag });
 const nextMinBody = await nextMin.text();
 

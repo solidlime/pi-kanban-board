@@ -370,10 +370,7 @@ async function pollFollowsTreeCtx() {
 		`${HOME_DIR}/.pi/kanban/modes.json`,
 		JSON.stringify({ SESSION: { [SID]: { doingLoop: true, autoPick: false } }, GLOBAL: {} }),
 	);
-	writeFileSync(
-		`${HOME_DIR}/.pi/kanban/sessions/${SID}.json`,
-		JSON.stringify({ cards: [{ id: 1, text: "tree tick", col: "doing" }], nextId: 2 }),
-	);
+seedBoard(`${HOME_DIR}/.pi/kanban/sessions/${SID}.json`, { cards: [{ id: 1, text: "tree tick", col: "doing" }], nextId: 2 });
 	handlers.get("session_tree")({}, ctxNew);
 	await sleep(1800);
 	assert.equal(sent.length, 1, `poll must use the newest ctx (got ${sent.length})`);

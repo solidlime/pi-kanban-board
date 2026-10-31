@@ -56,7 +56,7 @@ const writeBoardFile = (sid, cards) =>
 const writeGlobalFile = (cards) => seedBoard(GLOBAL, { cards, nextId: 90 });
 const readCards = (sid) => readBoardAt(boardFile(sid)).cards;
 const readGlobal = () => readBoardAt(GLOBAL).cards;
-const readModes = () => readBoardAt(MODES);
+const readModes = () => JSON.parse(readFileSync(MODES, "utf8"));
 
 // 全セッション分を毎回書き戻す: poll は 1.5s ごとに modes.json を読み直す。
 const modesState = { SESSION: {}, GLOBAL: {} };

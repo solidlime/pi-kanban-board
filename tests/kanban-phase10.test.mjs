@@ -53,7 +53,7 @@ const boardFile = (sid) => `${HOME_DIR}/.pi/kanban/sessions/${sid}.json`;
 const writeBoardFile = (sid, cards) =>
 	seedBoard(boardFile(sid), { cards, nextId: 90 });
 const readCards = (sid) => readBoardAt(boardFile(sid)).cards;
-const readModes = () => readBoardAt(MODES);
+const readModes = () => JSON.parse(readFileSync(MODES, "utf8"));
 
 // 全セッション分を毎回書き戻す: poll は 1.5s ごとに modes.json を読み直す。
 const modesState = { SESSION: {}, GLOBAL: {} };
