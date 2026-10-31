@@ -16,6 +16,7 @@ rmSync(HOME_DIR, { recursive: true, force: true });
 mkdirSync(`${HOME_DIR}/.pi/kanban/sessions`, { recursive: true });
 mkdirSync(`${HOME_DIR}/workspace`, { recursive: true });
 process.env.HOME = HOME_DIR;
+process.env.USERPROFILE = HOME_DIR;
 process.env.KANBAN_PORT = String(
 	await new Promise((resolve) => {
 		const s = createServer();
@@ -29,7 +30,7 @@ const PORT = process.env.KANBAN_PORT;
 const BASE = `http://127.0.0.1:${PORT}`;
 
 const { createJiti } = createRequire(import.meta.url)(
-	"/root/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/jiti/lib/jiti.cjs",
+	process.env.KANBAN_JITI ??	"/root/.npm-global/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/jiti/lib/jiti.cjs",
 );
 const jiti = createJiti(import.meta.url);
 const mod = await jiti.import(new URL("../extensions/kanban.ts", import.meta.url).pathname);
@@ -92,7 +93,7 @@ check("既定は全開（undefined なら true）", () => {
 
 check("検索中は強制展開（query !== \"\"）", () => {
 	assert.match(html, /var search = query !== ""/);
-	assert.match(html, /var expanded = \(sessOpen\[s\.id\] === undefined \? true : sessOpen\[s\.id\]\) \|\| search;/);
+	assert.match(html, /var expanded = \(sessOpen\[s\.id\] === undefined \? true : sessOpen\[s\.id\]\) \|\| filtered;/);
 });
 
 check("検索欄は SESSIONS ヘッダの直後、#sessions の手前", () => {
@@ -130,7 +131,7 @@ check("renderGlobal が query を見てカードを絞る", () => {
 		/String\(x?\.?text \|\| ""\)\.toLowerCase\(\)\.indexOf\(query\)/,
 		"renderGlobal に query フィルタが無い",
 	);
-	assert.match(body, /countsText\(c, cards, search\)/, "GLOBAL の件数が検索中 n/m にならない");
+	assert.match(body, /countsText\(c, cards, filtered\)/, "GLOBAL の件数が検索中 n/m にならない");
 	assert.match(body, /el\("div", "sess-empty", "該当なし"\)/, "GLOBAL の該当なしが無い");
 });
 

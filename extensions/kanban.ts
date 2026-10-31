@@ -3112,10 +3112,17 @@ function handleUpload(req: IncomingMessage, res: ServerResponse, q: URLSearchPar
 			card = { id: b.nextId++, text: "", col: parseCol(q.get("col")) ?? "todo" };
 			stampMove(card, actorOf(q));
 			card.text = `#${card.id} (${MIME_BY_EXT[ext].startsWith("video/") ? "video" : "image"})`;
-			const project = normalizeProject(q.get("project"));
+			const projectRaw = q.get("project");
+			const project = normalizeProject(projectRaw);
+			// Only an exact empty string clears (a fresh upload card only); anything else unnormalizable is a typo.
+			if (project === "" && (projectRaw ?? "") !== "") {
+				sendJson(res, 400, { ok: false, error: "project must match [a-z0-9._-]" });
+				return;
+			}
 			if (project !== "") card.project = project;
 			b.cards.push(card);
 		} else {
+			// Uploading to an existing card leaves its project label alone (the dashboard only sends project for a new card).
 			const found = b.cards.find((c) => c.id === Number(idParam));
 			if (found === undefined) {
 				sendJson(res, 404, { ok: false, error: `no card with id ${idParam}` });
@@ -3531,7 +3538,13 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
 			const col = parseCol(colParam) ?? "todo";
 			const card: Card = { id: b.nextId++, text, col };
 			stampMove(card, actorOf(q));
-			const project = normalizeProject(q.get("project"));
+			const projectRaw = q.get("project");
+			const project = normalizeProject(projectRaw);
+			// Only an exact empty string clears; anything else unnormalizable is a typo.
+			if (project === "" && (projectRaw ?? "") !== "") {
+				sendJson(res, 400, { ok: false, error: "project must match [a-z0-9._-]" });
+				return;
+			}
 			if (project !== "") card.project = project;
 			b.cards.push(card);
 			writeBoard(path, b);
@@ -3696,28 +3709,34 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
 				sendJson(res, 404, { ok: false, error: `no card with id ${idParam}` });
 				return;
 			}
+			// Validate every parameter before mutating: a 400 must not leave half the change applied.
 			const at = q.get("at");
-			if (at !== null) {
-				const iso = normalizeFireAt(at);
-				// Non-empty but unparseable is a user mistake, not a clear.
-				if (iso === null && at.trim().length > 0) {
-					sendJson(res, 400, { ok: false, error: "at must be ISO 8601 or +Nm/+Nh/+Nd" });
-					return;
-				}
-				if (iso === null) {
-					delete card.nextFireAt;
-					delete card.firedFor;
-				} else card.nextFireAt = iso;
+			const atIso = at === null ? null : normalizeFireAt(at);
+			// Non-empty but unparseable is a user mistake, not a clear.
+			if (at !== null && atIso === null && at.trim().length > 0) {
+				sendJson(res, 400, { ok: false, error: "at must be ISO 8601 or +Nm/+Nh/+Nd" });
+				return;
 			}
 			const blocked = q.get("blocked");
+			const projectParam = q.get("project");
+			const p = projectParam === null ? null : normalizeProject(projectParam);
+			// Only an exact empty string clears; anything else unnormalizable (incl. spaces) is a typo.
+			if (p !== null && p.length === 0 && projectParam !== "") {
+				sendJson(res, 400, { ok: false, error: "project must match [a-z0-9._-]" });
+				return;
+			}
+			if (at !== null) {
+				if (atIso === null) {
+					delete card.nextFireAt;
+					delete card.firedFor;
+				} else card.nextFireAt = atIso;
+			}
 			if (blocked !== null) {
 				const t = blocked.trim();
 				if (t.length === 0) delete card.blocked;
 				else card.blocked = t;
 			}
-			const projectParam = q.get("project");
-			if (projectParam !== null) {
-				const p = normalizeProject(projectParam);
+			if (p !== null) {
 				if (p.length === 0) delete card.project;
 				else card.project = p;
 			}
@@ -5236,6 +5255,7 @@ ${KANBAN_MD_JS}
       return;
     }
     var search = query !== "";
+    var filtered = search || projPick !== "";
     sessions.forEach(function(s){
       var doing = (s.counts && s.counts.doing) || 0;
       var art = el("article", "sess" + (doing ? " doing" : ""));
@@ -5316,6 +5336,7 @@ ${KANBAN_MD_JS}
     // #49: GLOBAL も検索で絞る。絞らないと SESSIONS だけ減って GLOBAL が残り、
     // ヒットしていないカードが検索結果に混ざる（実ブラウザ検証で発見）。
     var search = query !== "";
+    var filtered = search || projPick !== "";
     var cards = all.filter(function(x){
       return projOk(x) && (!search || String(x.text || "").toLowerCase().indexOf(query) >= 0);
     });
@@ -5563,12 +5584,13 @@ ${KANBAN_MD_JS}
     var t = d && d.now ? new Date(d.now).getTime() : NaN;
     return isNaN(t) ? Date.now() : t;
   }
-  // #74: sig を進めるのはここだけ。redraw()/reload() の両方が呼ぶ。
+  // #74: redraw()/reload() の両方が呼ぶ共通の描画点。
   function paint(){
     var d = lastData;
     var nowMs = baseOf(d);
-    sig = sigOf(d) + uiSig();
+    // Render first: if render throws, sig must not advance or the board freezes until the payload changes.
     render(d, nowMs);
+    sig = sigOf(d) + uiSig();
     tick(nowMs); // 描いた瞬間に揃える。次の ticker はちょうど +60 秒
   }
   function reload(){
@@ -5584,7 +5606,9 @@ ${KANBAN_MD_JS}
       // #65: 編集中で描画を見送ったら sig は進めない。次に編集が終わったポーリングで
       // 「変わっていない」と誤判定され、永久に再描画されなくなるため。
       if (isEditing()) return;
-      paint();
+      // A render bug must not look like a dropped connection: catch it here so the .catch below
+      // never sees it, and advance sig so we retry once per new payload instead of every poll.
+      try { paint(); } catch (e) { sig = s; console.error("kanban: render failed", e); }
     }).catch(function(){
       fails += 1;
       // keep lastData on screen; just flag the reconnect state
@@ -6350,7 +6374,7 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 		name: "kanban",
 		label: "Kanban board",
 		description:
-			"Manage a 3-column kanban board (todo/doing/done). action=list shows the board, add creates a card, move changes its column, remove deletes it, edit rewrites a card's text (column and ownership stay), check runs the board/serve/media/modes self-test and returns its JSON, resume clears a doing-loop halt (same reset as /kanban loop on: budget back to 10, doingLoop ON in both scopes) — the GUI's loop switch cannot clear it, because the halt lives in the extension process, not in modes.json. scope selects the board: 'session' (default, this conversation's board) or 'global' (shared by every session). Card IDs are unique only within one board — global #7 and session #7 are different cards. url returns the token-bearing dashboard URL to open in a browser. The board is shared with the user's GUI and persisted under ~/.pi/kanban/. project is an optional slug (lowercase [a-z0-9._-], max 24 chars) naming the project a card belongs to; add and edit set it, an empty value clears it, and it never affects the loop or auto-pick.",
+			"Manage a 3-column kanban board (todo/doing/done). action=list shows the board, add creates a card, move changes its column, remove deletes it, edit rewrites a card's text (column and ownership stay), check runs the board/serve/media/modes self-test and returns its JSON, resume clears a doing-loop halt (same reset as /kanban loop on: budget back to 10, doingLoop ON in both scopes) — the GUI's loop switch cannot clear it, because the halt lives in the extension process, not in modes.json. scope selects the board: 'session' (default, this conversation's board) or 'global' (shared by every session). Card IDs are unique only within one board — global #7 and session #7 are different cards. url returns the token-bearing dashboard URL to open in a browser. The board is shared with the user's GUI and persisted under ~/.pi/kanban/. project is an optional slug (lowercase [a-z0-9._-], max 24 chars) naming the project a card belongs to; add and edit set it, an empty value clears it, an unnormalizable value is an error, and it never affects the loop or auto-pick.",
 		parameters: Type.Object({
 			action: Type.Union([
 				Type.Literal("list"),
@@ -6423,11 +6447,13 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 					const text = (params.text ?? "").trim();
 					if (text.length === 0) return fail("add requires a non-empty text");
 					const col = params.col ?? "todo";
+					// Validate before touching nextId: a failed add must not consume and report an unsaved id.
+					const project = normalizeProject(params.project);
+					if (project === "" && (params.project ?? "") !== "") return fail("project must match [a-z0-9._-]");
 					const card: Card = { id: b.nextId++, text, col };
 					stampMove(card, sid);
 					const gateError = applyGate(card);
 					if (gateError !== null) return fail(gateError);
-					const project = normalizeProject(params.project);
 					if (project !== "") card.project = project;
 					b.cards.push(card);
 					persistError = writeBoard(path, b);
@@ -6451,13 +6477,15 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 					const text = (params.text ?? "").trim();
 					// project alone is a valid edit (relabeling a card without touching its text).
 					if (text.length === 0 && params.project === undefined) return fail("edit requires a non-empty text");
+					const proj = params.project === undefined ? undefined : normalizeProject(params.project);
+					// Validate before mutating: a failed edit must not report text that was never saved.
+					if (proj === "" && params.project !== undefined && params.project !== "") return fail("project must match [a-z0-9._-]");
 					const card = b.cards.find((c) => c.id === params.id);
 					if (card === undefined) return fail(`no card with id ${params.id} in the ${scope} board`);
 					if (text.length > 0) card.text = text;
-					if (params.project !== undefined) {
-						const project = normalizeProject(params.project);
-						if (project.length === 0) delete card.project;
-						else card.project = project;
+					if (proj !== undefined) {
+						if (proj === "") delete card.project;
+						else card.project = proj;
 					}
 					persistError = writeBoard(path, b);
 					message = `edited #${card.id} (${scope})`;

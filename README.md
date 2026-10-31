@@ -55,13 +55,13 @@ pi -e npm:pi-kanban-board
 
 The model calls this directly. Actions include `list`, `add`, `move`, `remove`, `schedule`, `blocked`, `priority`, and `check` (a self-diagnosis of the board, serve registry, media directory, and mode files).
 
-`add` and `edit` take an optional `project` slug (lowercase `[a-z0-9._-]`, cut to 24 chars) that tags a card. An empty value clears it. A card project is only a label — the auto-pick loop never reads it.
+`add` and `edit` take an optional `project` slug (lowercase `[a-z0-9._-]`, cut to 24 chars) that tags a card. An empty value clears it; anything else unnormalizable is rejected. To relabel a card, use `edit` with `project`, or `/api/schedule?project=`. `/api/upload` only reads `project` when it creates a card; uploading to an existing `id` leaves that card's label alone. A card project is only a label — the auto-pick loop never reads it.
 
 ### Dashboard
 
 The extension starts an HTTP server on port 8789 the first time a session begins. Open `http://<host>:8789/` for the dashboard — it is the only view.
 
-The dashboard shows sessions, agents, and served files in tabs, with per-board loop and pick toggles, live counters, and inline card editing (double-click the body; `Shift+Enter` inserts a newline). The project selector beside the search box filters every board by project (including `(unassigned)`), and a card created while a project is selected inherits it.
+The dashboard shows sessions, agents, and served files in tabs, with per-board loop and pick toggles, live counters, and inline card editing (double-click the body; `Shift+Enter` inserts a newline). The project selector beside the search box filters every board by project (including `(unassigned)`), and a card created while a project is selected inherits it. The session totals in the header follow the filter, so "TODO 1/3" while a project is selected means one card of that project out of the three cards in that session.
 
 ### Serve
 
