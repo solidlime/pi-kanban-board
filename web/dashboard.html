@@ -18,8 +18,8 @@
 </script>
 <style>
   /* dark tokens = the existing palette, untouched; light tokens override the same names */
-  :root{color-scheme:dark;--bg:#18181b;--panel:#1f1f23;--card:#27272a;--border:#27272a;--border-strong:#3f3f46;--text:#e4e4e7;--muted:#a1a1aa;--accent:#a78bfa;--accent-hover:#c4b5fd;--accent-soft:#241f38;--accent-soft-2:#1e1b2e;--ok:#4ade80;--bad-dot:#f87171;--danger-bg:#7f1d1d;--danger-fg:#fee2e2;--danger-soft-fg:#fecaca;--danger-border:#7f1d1d;--empty-big:#52525b}
-  :root[data-theme="light"]{color-scheme:light;--bg:#fafafa;--panel:#ffffff;--card:#ececf1;--border:#e4e4e7;--border-strong:#d4d4d8;--text:#18181b;--muted:#62626b;--accent:#6d28d9;--accent-hover:#7c3aed;--accent-soft:#ede9fa;--accent-soft-2:#e4e0f7;--ok:#15803d;--bad-dot:#dc2626;--danger-bg:#b91c1c;--danger-fg:#fef2f2;--danger-soft-fg:#b91c1c;--danger-border:#dc2626;--empty-big:#a1a1aa}
+  :root{color-scheme:dark;--bg:#18181b;--panel:#1f1f23;--card:#27272a;--border:#27272a;--border-strong:#3f3f46;--text:#e4e4e7;--muted:#a1a1aa;--accent:#a78bfa;--accent-hover:#c4b5fd;--accent-soft:#241f38;--accent-soft-2:#1e1b2e;--ok:#4ade80;--bad-dot:#f87171;--warn:#fbbf24;--bad:#f87171;--danger-bg:#7f1d1d;--danger-fg:#fee2e2;--danger-soft-fg:#fecaca;--danger-border:#7f1d1d;--empty-big:#52525b}
+  :root[data-theme="light"]{color-scheme:light;--bg:#fafafa;--panel:#ffffff;--card:#ececf1;--border:#e4e4e7;--border-strong:#d4d4d8;--text:#18181b;--muted:#62626b;--accent:#6d28d9;--accent-hover:#7c3aed;--accent-soft:#ede9fa;--accent-soft-2:#e4e0f7;--ok:#15803d;--bad-dot:#dc2626;--warn:#a16207;--bad:#dc2626;--danger-bg:#b91c1c;--danger-fg:#fef2f2;--danger-soft-fg:#b91c1c;--danger-border:#dc2626;--empty-big:#a1a1aa}
   *{box-sizing:border-box}
   body{margin:0;padding:14px;background:var(--bg);color:var(--text);font:13px/1.5 system-ui,-apple-system,sans-serif}
   a{color:var(--accent)}
@@ -46,11 +46,15 @@
   #banner.on{display:block}
   #note{background:var(--panel);border:1px solid var(--border-strong);color:var(--text);padding:6px 10px;border-radius:6px;margin-bottom:10px;font-size:12px}
   /* stats */
-  .stats{display:grid;grid-template-columns:repeat(7,1fr);gap:8px;margin-bottom:6px}
+  /* 指標は7個→11個に増えたので、幅に応じて折り返す（メディアクエリ側が下で上書きする） */
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(88px,1fr));gap:8px;margin-bottom:6px}
   .stat{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:10px 12px}
   .stat .n{display:block;font-size:24px;font-weight:600;line-height:1.2;color:var(--text);font-variant-numeric:tabular-nums}
   .stat .l{display:block;font-size:10px;letter-spacing:.1em;color:var(--muted);text-transform:uppercase}
   .stat.hot .n{color:var(--accent)}
+  /* 期限・依存の指標は色だけでなくラベルの文字でも意味が通る（色は補助） */
+  .stat.warn .n{color:var(--warn)}
+  .stat.bad .n{color:var(--bad)}
   /* boards */
   .cols{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
   .col{background:var(--panel);border-radius:8px;padding:8px;min-height:52px}
@@ -90,6 +94,10 @@
   .card .prio{flex:none;font-size:10px;color:var(--accent);border:1px solid var(--border-strong);border-radius:999px;padding:0 5px}
   .card .blocked{flex:none;font-size:10px;color:var(--danger-soft-fg);border:1px solid var(--danger-border);border-radius:999px;padding:0 5px}
   .card .sched{flex:none;font-size:10px;color:var(--muted);font-variant-numeric:tabular-nums}
+  /* 期限の小片: 3日以内 = --warn / 超過 = --bad。超過は文字も「期限切れ」にするが、
+     完了済みは色も語も付けない（dueCls）—— 期限超過の集計も完了を数えないので。 */
+  .card .sched.warn{color:var(--warn)}
+  .card .sched.bad{color:var(--bad)}
   .card .ops,.srv .ops{display:flex;gap:3px;flex-wrap:wrap;align-items:center;flex-basis:100%}
   .srv .ops{flex-basis:auto}
   /* ▲▼ は組で一行に保つ（折返しで片方だけ落ちない） */
@@ -148,8 +156,8 @@
   .badge.on{border-color:var(--ok);color:var(--ok)}
   .badge.db{border-color:var(--accent);color:var(--accent);background:var(--accent-soft-2)}
   .badge.gone{border-color:var(--danger-bg);background:var(--danger-bg);color:var(--danger-fg)}
-  /* #58: a halted loop is process memory, so the ON/OFF switches below are placebo until
-     it is lifted. The banner is the only place that says so. */
+  /* #58: a halted loop is process memory, so the ON/OFF switches (now in the 設定 tab) are placebo
+     until it is lifted. The banner is the only place that says so. */
   .halt{border:1px solid var(--danger-bg);background:var(--danger-bg);color:var(--danger-fg);border-radius:6px;padding:6px 10px;margin-bottom:8px;font-size:12px;line-height:1.5}
   .halt b{font-weight:600}
   .halt code{background:none;border:1px solid currentColor;border-radius:4px;padding:0 4px;font-size:11px}
@@ -166,6 +174,34 @@
   .srv .x.dead{color:var(--danger-fg)}
   .srv .permx{font-size:11px;color:var(--muted);display:inline-flex;align-items:center;gap:3px;white-space:nowrap;cursor:pointer}
   .srv.gone{opacity:.55}
+  /* #8 プロジェクト: 1 件 = 1 ブロック。器は .sess と同じ見た目、中身の並びだけ足す */
+  .pj{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:10px}
+  .pmeta{display:flex;gap:2px 10px;align-items:baseline;flex-wrap:wrap;font-size:11px;color:var(--muted);margin-left:auto;font-variant-numeric:tabular-nums}
+  .pmeta .bad{color:var(--bad)}
+  .pmeta .warn{color:var(--warn)}
+  /* 進捗バーは補助（真実は role=progressbar の aria-valuenow と隣の文字） */
+  .pbar{flex:1 1 120px;min-width:80px;height:8px;background:var(--card);border:1px solid var(--border-strong);border-radius:999px;overflow:hidden}
+  .pbar>span{display:block;height:100%;background:var(--accent)}
+  .pct{flex:none;font-size:12px;color:var(--accent);font-variant-numeric:tabular-nums}
+  /* 日付・状態・操作は潰さず、本文だけ折り返す（スマホ幅で 1 行に詰め込まない）。
+     本文は伸ばさない: 伸ばすと続く補足（なぜ・ブロック理由）が行の真ん中に宙吹きする。 */
+  .prow{display:flex;gap:2px 10px;align-items:baseline;flex-wrap:wrap;font-size:12px;padding:2px 0}
+  /* #11: 設定タブの 1 行 = ボード名 + 操作。名前は折り返さず、操作は右で折り返す。 */
+  .srow{display:flex;gap:2px 12px;align-items:center;flex-wrap:wrap;padding:6px 0;border-bottom:1px solid var(--border)}
+  .srow .ctl{margin:0}
+  .rowlabel{font-size:12px;font-weight:600;color:var(--text);min-width:8em;overflow-wrap:anywhere}
+  .srow .halt{margin:0;font-size:11px}
+  .prow .d{flex:none;font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
+  .prow .t{flex:0 1 auto;min-width:0;overflow-wrap:anywhere}
+  .prow .w{flex:0 1 auto;min-width:0;font-size:11px;color:var(--muted);overflow-wrap:anywhere}
+  .prow .x{flex:none;font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
+  .prow .x.bad{color:var(--bad)}
+  .prow .x.warn{color:var(--warn)}
+  /* 行末の列: マイルストーンの状態と削除ボタンの位置を揃える */
+  .prow .ra,.prow .mini{margin-left:auto}
+  .pform{display:flex;gap:4px;flex-wrap:wrap;align-items:center;margin-top:6px}
+  .pform input{flex:1 1 140px;min-width:0;font:inherit;font-size:11px;background:var(--card);color:var(--text);border:1px solid var(--border-strong);border-radius:4px;padding:3px 6px}
+  .pform input:focus{border-color:var(--accent)}
   /* empty states */
   .empty{border:1px dashed var(--border-strong);border-radius:8px;padding:18px 14px;text-align:center;color:var(--muted);font-size:12px}
   .empty .big{display:block;font-size:20px;margin-bottom:4px;color:var(--empty-big)}
@@ -201,7 +237,9 @@
   <div class="dash">
     <nav class="tabs" role="tablist" aria-label="ダッシュボード">
       <button class="tab active" id="tab-sessions" type="button" role="tab" aria-selected="true" aria-controls="pane-sessions">セッション</button>
+      <button class="tab" id="tab-projects" type="button" role="tab" aria-selected="false" aria-controls="pane-projects">プロジェクト</button>
       <button class="tab" id="tab-serve" type="button" role="tab" aria-selected="false" aria-controls="pane-serve">配信サーバー</button>
+      <button class="tab" id="tab-settings" type="button" role="tab" aria-selected="false" aria-controls="pane-settings">設定</button>
     </nav>
     <div class="panes">
       <div class="pane" id="pane-sessions" role="tabpanel" aria-labelledby="tab-sessions">
@@ -210,6 +248,14 @@
           <h2 id="h-stats">STATS</h2>
           <div class="stats" id="stats" aria-label="統計サマリ"></div>
         </section>
+        <!-- 1-4: 絞り込みはクライアント側だけ（API は変えない）。状態は cardFilter（モジュールスコープ） -->
+        <div class="ctl" id="filters" role="group" aria-label="カードの絞り込み">
+          <span>絞り込み</span>
+          <button class="sw on" type="button" id="f-all" aria-pressed="true">全部</button>
+          <button class="sw" type="button" id="f-ok" aria-pressed="false">着手可能</button>
+          <button class="sw" type="button" id="f-overdue" aria-pressed="false">期限超過</button>
+          <button class="sw" type="button" id="f-blocked" aria-pressed="false">ブロック中</button>
+        </div>
         <section aria-labelledby="h-global">
           <div class="hd" id="h-global">GLOBAL（全セッション共有）</div>
           <div id="global"></div>
@@ -221,10 +267,28 @@
           <div id="sessions"></div>
         </section>
       </div>
+      <div class="pane" id="pane-projects" role="tabpanel" aria-labelledby="tab-projects" hidden>
+        <div id="projects"></div>
+      </div>
       <div class="pane" id="pane-serve" role="tabpanel" aria-labelledby="tab-serve" hidden>
         <section aria-labelledby="h-serve">
           <div class="hd" id="h-serve">SERVE（配信中のサーバー）</div>
           <div id="serve"></div>
+        </section>
+      </div>
+      <!-- #11: ボードごとの設定はここに集約する。ボード側は状態（halt と 再開）だけ。 -->
+      <div class="pane" id="pane-settings" role="tabpanel" aria-labelledby="tab-settings" hidden>
+        <section aria-labelledby="h-loops">
+          <div class="hd" id="h-loops">ボードのループ</div>
+          <div id="settings-loops"></div>
+        </section>
+        <section aria-labelledby="h-db">
+          <div class="hd" id="h-db">保存データ</div>
+          <div id="settings-db"></div>
+        </section>
+        <section aria-labelledby="h-selftest">
+          <div class="hd" id="h-selftest">自己診断</div>
+          <div id="settings-selftest"></div>
         </section>
       </div>
     </div>
@@ -246,6 +310,9 @@
   // プロジェクト絞り込み: "" = 全部 / "\u0000" = 無所属 / それ以外は slug 完全一致。
   // "\u0000" は normalizeProject（[a-z0-9._-] のみ許可）を通らないので、本物の slug と同値化できない。
   var projPick = "";
+  // 1-4: カードの絞り込み（"" = 全部 / "ok" 着手可能 / "overdue" 期限超過 / "blocked" ブロック中）。
+  // 再描画のたびに DOM を作り直すので、選択状態はここに持つ（query / projPick と同じ流儀）。
+  var cardFilter = "";
   var sessOpen = {};     // sid -> expanded（既定は全開）
   // #38-7/#38-11: どちらもクライアントだけの状態（サーバには保存しない）。
   // #62: 列のキーは "session.<sid>:col" / "global:col"（GLOBAL に active sid を混ぜない）。
@@ -329,9 +396,10 @@
     var typing = tg === "TEXTAREA" || a.isContentEditable === true ||
       (tg === "INPUT" && !NO_TYPE_INPUT.test(a.type || "text"));
     if (!typing) return false;
-    return !!(a.closest && a.closest("#stats, #sessions, #global, #serve"));
+    return !!(a.closest && a.closest("#stats, #sessions, #global, #serve, #projects, #settings-loops"));
   }
   // sig は「今 DOM に描かれている状態」を記述する（query を落とすと検索語の変化を取り逃す）。
+  // cardFilter はクリック時に redraw() が sig を揃えるので、ここには載せない（既存テストの形を保つ）。
   function uiSig(){ return JSON.stringify([sessOpen, gOpen, collapsed, query, projPick]); }
   function persist(){ persistCore(); }
   // #72: 展開状態の読み直し + 消えたカードの掃除。render() からも呼ぶので例外は握りつぶす。
@@ -390,7 +458,7 @@
 
   // #29 tabs: the sidebar only toggles the hidden attribute — no navigation.
   // activeTab survives the 5s re-render because render() re-applies it.
-  var TABS = ["sessions", "serve"]; // #36: エージェントタブ廃止（STATS はセッション表紙の上部へ）
+  var TABS = ["sessions", "projects", "serve", "settings"]; // #36: エージェントタブ廃止。 #8: プロジェクトは真ん中。 #11: 設定は最後
   var activeTab = "sessions";
   function selectTab(name){
     if (TABS.indexOf(name) < 0) name = "sessions";
@@ -405,7 +473,12 @@
   }
   TABS.forEach(function(n){
     var b = document.getElementById("tab-" + n);
-    if (b && b.addEventListener) b.addEventListener("click", function(){ selectTab(n); });
+    // プロジェクトは別エンドポイントなので、開いた時に取りに行く。render() は毎描画で
+    // selectTab(activeTab) を呼び直すので、そちらに置くとポーリングごとに二重に取る。
+    if (b && b.addEventListener) b.addEventListener("click", function(){
+      selectTab(n);
+      if (n === "projects") loadProjects();
+    });
   });
   selectTab(activeTab);
 
@@ -622,8 +695,8 @@
   function haltText(h, cap){
     if (!h) return "";
     var c = (cap === undefined || cap === null) ? 10 : cap;
-    if (h.halted === "limit") return "ループ上限（" + (c > 0 ? c + "回" : "無制限") + "）に達して停止 — 下の「再開」、kanban ツールの resume、または /kanban loop on（スイッチを ON にしても再開しない）";
-    if (h.halted === "stuck") return "同じカード（#" + h.stuckId + "）で " + h.stuckCount + " 回スタックして停止 — カードを直してから下の「再開」、kanban ツールの resume、または /kanban loop on（スイッチを ON にしても再開しない）";
+    if (h.halted === "limit") return "ループ上限（" + (c > 0 ? c + "回" : "無制限") + "）に達して停止 — セッションカードの「再開」、kanban ツールの resume、または /kanban loop on（スイッチを ON にしても再開しない）";
+    if (h.halted === "stuck") return "同じカード（#" + h.stuckId + "）で " + h.stuckCount + " 回スタックして停止 — カードを直してからセッションカードの「再開」、kanban ツールの resume、または /kanban loop on（スイッチを ON にしても再開しない）";
     return "";
   }
 
@@ -643,6 +716,19 @@
   // #30: schedule + priority live on the card itself.
   function cardOps(c, ctx){
     var ops = el("div", "ops");
+    // 1-3: 期限 / 依存 / 見積の小片。値が無ければ何も出さない（API がまだ返さなくても壊れない）。
+    var due = dueOf(c);
+    if (due) {
+      var left = daysLeft(due);
+      // 完了済みに「期限切れ」は嘘なので、事実（期限と超過日数）だけ残す
+      var chip = el("span", "sched" + dueCls(due, c.col),
+        (left < 0 && c.col !== "done" ? "期限切れ " : "期限 ") + due.slice(5, 10).replace("-", "/"));
+      chip.title = left < 0 ? (-left) + " 日超過" : left === 0 ? "今日が期限" : "期限まで " + left + " 日";
+      ops.appendChild(chip);
+    }
+    var deps = Array.isArray(c.blocks) ? c.blocks : [];
+    if (deps.length) ops.appendChild(el("span", "sched", "\u2295 依存 " + deps.length));
+    if (typeof c.estimate === "number" && isFinite(c.estimate)) ops.appendChild(el("span", "sched", c.estimate + "pt"));
     // 表示は MM/DD HH:MM に削るので、年を含む完全な日時はホバーで補う
     var sched = el("span", "sched", "発火 " + shortFire(c.nextFireAt));
     sched.title = full(c.nextFireAt) || "発火予定なし";
@@ -1017,6 +1103,22 @@
     var box = document.getElementById("stats");
     box.innerHTML = "";
     var allZero = true; // #36: sessions/active は自分自身なので数えない（常時 ≥1 のため）
+    // 1-4: カードから数える4つを先頭に足す（既存の7つは後ろに残す）。
+    var cs = cardStats(lastData);
+    [
+      ["着手可能", "", cs.ok, ""],
+      ["期限超過", cs.over > 0 ? "bad" : "", cs.over, ""],
+      ["ブロック中", cs.blocked > 0 ? "warn" : "", cs.blocked, ""],
+      ["進捗率", "", cs.rate, "%"]
+    ].forEach(function(p){
+      var txt = String(p[2]) + p[3];
+      if (p[2] > 0) allZero = false;
+      var s = el("div", "stat" + (p[1] ? " " + p[1] : ""));
+      s.setAttribute("aria-label", p[0] + " " + txt);
+      s.appendChild(el("span", "n", txt));
+      s.appendChild(el("span", "l", p[0]));
+      box.appendChild(s);
+    });
     STAT_KEYS.forEach(function(p){
       var v = st ? (st[p[0]] || 0) : 0;
       if (v > 0 && p[0] !== "sessions" && p[0] !== "active") allZero = false;
@@ -1041,6 +1143,61 @@
     if (projPick === "") return true;
     var p = c && typeof c.project === "string" ? c.project : "";
     return projPick === "\u0000" ? p === "" : p === projPick;
+  }
+  // 1-3/1-4: 期限と依存はクライアントで計算する（API を増やさない）。due は "YYYY-MM-DD"
+  // （UTC の日付のみ）。形が違う値や未実装APIの undefined は「無い」として扱う。
+  function dueOf(c){
+    var v = c && c.due;
+    return typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : "";
+  }
+  function todayISO(){ return new Date().toISOString().slice(0, 10); }
+  // 期限までの日数（今日 = 0、過去は負）。UTC の日付同士なのでミリ秒差の丸めで足りる。
+  function daysLeft(due){
+    return Math.round((Date.parse(due + "T00:00:00Z") - Date.parse(todayISO() + "T00:00:00Z")) / 86400000);
+  }
+  // 期限の色は看板とプロジェクトタブで同じ規則。完了済みは色を付けない —— 期限超過の集計も
+  // 完了済みを数えないので、片方だけ赤いと「超えているのに 0 件」と読めてしまう。
+  function dueCls(due, col){
+    if (!due || col === "done") return "";
+    var left = daysLeft(due);
+    return left < 0 ? " bad" : left <= 3 ? " warn" : "";
+  }
+  // 依存の解決状態。blocks の id を同じ看板のカードから引く（引けない = 未完了扱い）。
+  function depState(c, pool){
+    var deps = c && Array.isArray(c.blocks) ? c.blocks : [];
+    if (!deps.length) return "ok";
+    var byId = {};
+    for (var i = 0; i < pool.length; i++) if (pool[i]) byId[pool[i].id] = pool[i];
+    for (var j = 0; j < deps.length; j++){
+      var d = byId[deps[j]];
+      if (!d || d.col !== "done") return "blocked";
+    }
+    return "ok";
+  }
+  // pool は絞り込み前の看板のカード（検索やプロジェクトで依存先が画面から消えても判定できる）。
+  function cardFilterOk(c, pool){
+    if (cardFilter === "ok") return depState(c, pool) === "ok";
+    if (cardFilter === "blocked") return depState(c, pool) === "blocked";
+    if (cardFilter === "overdue") { var d = dueOf(c); return !!d && d < todayISO() && c.col !== "done"; }
+    return true;
+  }
+  // 1-4: カードから数える指標（API の stats には無い）。看板ごとに依存を解いて足し上げる。
+  function cardStats(d){
+    var boards = [];
+    if (d && d.global) boards.push(d.global.cards || []);
+    ((d && d.sessions) || []).forEach(function(s){ boards.push((s && s.cards) || []); });
+    var today = todayISO(), ok = 0, over = 0, blocked = 0, done = 0, total = 0;
+    boards.forEach(function(list){
+      list.forEach(function(c){
+        if (!c) return;
+        total += 1;
+        if (c.col === "done") done += 1;
+        if (depState(c, list) === "ok") ok += 1; else blocked += 1;
+        var due = dueOf(c);
+        if (due && due < today && c.col !== "done") over += 1;
+      });
+    });
+    return { ok: ok, over: over, blocked: blocked, rate: total ? Math.round(done * 100 / total) : 0 };
   }
   // 選択肢は描画のたび lastData から作り直す。選択中の値は失わない
   // （消えた slug を選んでいたら全部に戻す）。
@@ -1089,7 +1246,7 @@
       return;
     }
     var search = query !== "";
-    var filtered = search || projPick !== "";
+    var filtered = search || projPick !== "" || cardFilter !== "";
     sessions.forEach(function(s){
       var doing = (s.counts && s.counts.doing) || 0;
       var art = el("article", "sess" + (doing ? " doing" : ""));
@@ -1097,7 +1254,7 @@
       // #48: 既定は全開。検索中は畳んでいても中身を見せる（ヒットを隠さない）。
       var expanded = (sessOpen[s.id] === undefined ? true : sessOpen[s.id]) || filtered;
       var cards = (s.cards || []).filter(function(c){
-        return projOk(c) && (!search || String(c.text || "").toLowerCase().indexOf(query) >= 0);
+        return projOk(c) && cardFilterOk(c, s.cards || []) && (!search || String(c.text || "").toLowerCase().indexOf(query) >= 0);
       });
       var hd = el("header", "sess-hd");
       hd.title = "クリックで折りたたみ";
@@ -1136,7 +1293,7 @@
         toggle(e);
       });
       art.appendChild(hd);
-      // #58: reason + way back. Without it the ctl switches below look like they work.
+      // #58: reason + way back. Without it the ctl switches in the 設定 tab look like they work.
       // #67: the cap in force for THIS row, and a 再開 button for a limit halt — the
       // switch alone still cannot lift a halt (it lives in the extension process).
       var halt = haltText(s.halted, maxLoopsOf(s.modes && s.modes.session));
@@ -1155,7 +1312,7 @@
       if (filtered && !cards.length) {
         art.appendChild(el("div", "sess-empty", "該当なし"));
       } else {
-        art.appendChild(boardCtl(ctx, s.modes ? s.modes.session : null, s.cards || []));
+        // #11: ループ設定は設定タブへ移した（この看板はカードだけ）。
         art.appendChild(board(cards, nowMs, ctx));
       }
       box.appendChild(art);
@@ -1170,9 +1327,9 @@
     // #49: GLOBAL も検索で絞る。絞らないと SESSIONS だけ減って GLOBAL が残り、
     // ヒットしていないカードが検索結果に混ざる（実ブラウザ検証で発見）。
     var search = query !== "";
-    var filtered = search || projPick !== "";
+    var filtered = search || projPick !== "" || cardFilter !== "";
     var cards = all.filter(function(x){
-      return projOk(x) && (!search || String(x.text || "").toLowerCase().indexOf(query) >= 0);
+      return projOk(x) && cardFilterOk(x, all) && (!search || String(x.text || "").toLowerCase().indexOf(query) >= 0);
     });
     // #62: GLOBAL もセッション見出しと同じ操作感で畳める（既定は開。検索中は強制展開）。
     var gexpanded = gOpen || filtered;
@@ -1203,7 +1360,6 @@
     // GLOBAL writes carry scope=global; the modes key still needs the active sid.
     // 操作系は従来どおり絞り込み前の全カード（サーバの件数）を見る。
     var ctx = boardCtx("global", sid, true);
-    box.appendChild(boardCtl(ctx, g ? g.modes : null, all));
     if (!cards.length) {
       if (filtered) box.appendChild(el("div", "sess-empty", "該当なし"));
       else empty(box, "\u25A1", "<b>GLOBAL 看板は空</b> — 全セッション共有のカードを置くとここに現れるよ");
@@ -1290,6 +1446,265 @@
     return gone ? "消失した登録を一覧から消す" : "配信を止める（/serve/<id>/ が 404 になる）";
   }
 
+  // #11: 設定タブ。ボードごとのループ設定を 1 列に並べる（従来の boardCtl をそのまま使う）。
+  // 並びは GLOBAL が先頭、その後に d.sessions の順（サーバの並びを尊重する）。
+  function renderSettings(d, activeSid){
+    var box = document.getElementById("settings-loops");
+    if (!box) return;
+    box.innerHTML = "";
+    var g = d.global || {};
+    var rows = [{ label: "GLOBAL（全セッション共有）", ctx: boardCtx("global", activeSid, true),
+      modes: g.modes, cards: g.cards || [], halted: null, cap: null }];
+    (d.sessions || []).forEach(function(s){
+      var m = s.modes ? s.modes.session : null;
+      rows.push({ label: s.name, ctx: boardCtx("session", s.id), modes: m,
+        cards: s.cards || [], halted: s.halted, cap: maxLoopsOf(m) });
+    });
+    rows.forEach(function(r){
+      var row = el("div", "srow");
+      row.appendChild(el("div", "rowlabel", r.label));
+      row.appendChild(boardCtl(r.ctx, r.modes, r.cards));
+      // #58: スイッチだけ見て「効く」と誤解させない。解除ボタンはセッションカード側にある。
+      if (r.halted) row.appendChild(el("div", "halt", haltText(r.halted, r.cap)));
+      box.appendChild(row);
+    });
+    renderDb(d.db);
+    renderSelfTest();
+  }
+
+  // #80-⑦: 絶対パスは出さない（サーバはファイル名だけ送る）。
+  function kbSize(n){
+    if (typeof n !== "number" || !isFinite(n) || n < 0) return "—";
+    if (n < 1024) return n + " B";
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+    return (n / (1024 * 1024)).toFixed(1) + " MB";
+  }
+  // 旧サーバーは db を送らない。その場合は何も置かない（空欄で埋めない）。
+  function renderDb(dbInfo){
+    var box = document.getElementById("settings-db");
+    if (!box) return;
+    box.innerHTML = "";
+    if (!dbInfo) return;
+    var row = el("div", "srow");
+    row.appendChild(el("div", "rowlabel", String(dbInfo.file || "")));
+    row.appendChild(el("span", null, kbSize(dbInfo.bytes)));
+    row.appendChild(el("span", "rest", "ボード " + numOr0(dbInfo.boards) + " / カード " + numOr0(dbInfo.cards) +
+      " / プロジェクト " + numOr0(dbInfo.projects) + " / 決定 " + numOr0(dbInfo.decisions)));
+    box.appendChild(row);
+  }
+  function numOr0(v){ return typeof v === "number" && isFinite(v) ? v : 0; }
+
+  // #38-1 の自己診断を GUI から。POST /api/selftest は NG を 503 で返すので、
+  // !ok で throw する api() は通さない（503 も本文は正しい診断結果）。
+  var selfTest = null; // 最後の結果。ポーリングの再描画でも消さない
+  // #11: 実行中フラグはボタンのノードではなくここに持つ。renderSelfTest() は 5 秒ポーリングの
+  // render() から毎回呼ばれ、ボタン DOM ごと作り直されるので、btn() の flightGate（ノードに残る）
+  // だけでは実行中の再描画で新品の有効ボタンが生えて 2 回目の POST が通る。
+  var selfTestBusy = false;
+  function runSelfTest(){
+    if (selfTestBusy) return;
+    selfTestBusy = true;
+    return fetch("/api/selftest", { method: "POST" }).then(function(r){
+      if (r.status === 401) authFail(); // #85: api() と同じ扱い
+      return r.json();
+    }).then(function(d){
+      selfTest = d && typeof d === "object" ? d : { ok: false, checks: [] };
+      selfTestBusy = false;
+      renderSelfTest();
+    }, function(){
+      selfTestBusy = false;
+      renderSelfTest();
+      note("自己診断を実行できません");
+    });
+  }
+  function renderSelfTest(){
+    var box = document.getElementById("settings-selftest");
+    if (!box) return;
+    box.innerHTML = "";
+    var row = el("div", "srow");
+    // busy 中は disabled で描く（btn() は disabled のときリスナを張らないので、再描画後の
+    // 新品ノードも正しく死ぬ）
+    row.appendChild(btn("診断を実行", "サーバの自己診断（/api/selftest）を実行", function(){ runSelfTest(); }, selfTestBusy));
+    if (selfTest) {
+      var checks = selfTest.checks || [];
+      var bad = [];
+      checks.forEach(function(c, i){
+        if (c && c.ok === true) return;
+        bad.push(c && c.name ? c.name : "#" + (i + 1));
+      });
+      row.appendChild(el("span", selfTest.ok === true ? "badge on" : "halt",
+        selfTest.ok === true ? "OK（" + checks.length + " 件）" : "NG: " + (bad.length ? bad.join(", ") : "理由不明")));
+    }
+    box.appendChild(row);
+  }
+
+  // #8: プロジェクトタブ。ボードとは別エンドポイントなので、専用のタイマーは作らずに
+  // reload() の末尾（とタブのクリック）からのみ取りに行く。
+  var projectData = null;
+  var projectsBusy = false;     // 多重 fetch 防止。古い応答で新しい表示を塗り替えない
+  function loadProjects(){
+    if (projectsBusy) return;
+    projectsBusy = true;
+    api("/api/projects").then(function(d){
+      projectsBusy = false;
+      projectData = d;
+      // 決定を打っている最中に描き直すと入力が消えるので、描くのは次の取得（5 秒ポーリングか、
+      // タブを開き直した時）まで待つ。その時には新しい応答で projectData は置き換わっている
+      if (!isEditing()) renderProjects();
+    }, function(){
+      projectsBusy = false;
+      // 前回の表示は消さない（空と「取れなかった」を取り違えないため）
+      note("プロジェクトを取得できません");
+    });
+  }
+  function leftText(left){
+    if (left < 0) return -left + "日超過";
+    if (left === 0) return "今日";
+    return "あと" + left + "日";
+  }
+  // /api/decision はボードに属さない（scope/sid を見ない）ので act() は通さない。
+  // ダミーの scope を渡すと「ボード書き込み」に見えて、契約が読めなくなる。
+  function decisionRow(d){
+    var row = el("div", "prow");
+    var when = el("span", "d", ago(d.at));
+    when.title = full(d.at);
+    row.appendChild(when);
+    row.appendChild(el("span", "t", d.text));
+    if (d.why) row.appendChild(el("span", "w", "なぜ: " + d.why));
+    var del = btn("\u00D7", "この決定を削除", function(){
+      // 決定は記録なので、カード削除と同じく一度確認する（誤クリックで履歴を失わない）
+      if (!window.confirm("「" + String(d.text || "").slice(0, 40) + "」を削除しますか？")) return;
+      return api("/api/decision", { action: "delete", id: d.id }).then(loadProjects, function(){ note("決定を削除できません"); });
+    });
+    // 内容が「×」なので accname は title では決まらない。カード削除（:757）と同じく両方付ける
+    del.setAttribute("aria-label", "この決定を削除");
+    row.appendChild(del);
+    return row;
+  }
+  // slug を渡さない呼び出しが『プロジェクト横断』（slug "" に書かれる）。
+  function decisionForm(slug){
+    var form = el("div", "pform");
+    // 同じ画面に 2 つ並ぶので、どちらのプロジェクトに書くのかをラベルに入れる
+    var where = slug ? "プロジェクト " + slug : "プロジェクト横断";
+    var ti = el("input");
+    ti.type = "text";
+    ti.placeholder = "決定";
+    ti.setAttribute("aria-label", "決定（本文）— " + where);
+    var wi = el("input");
+    wi.type = "text";
+    wi.placeholder = "なぜ（任意）";
+    wi.setAttribute("aria-label", "なぜ（任意）— " + where);
+    form.appendChild(ti);
+    form.appendChild(wi);
+    form.appendChild(btn("追記", "決定を記録する", function(){
+      var text = String(ti.value || "").trim();
+      if (!text) { note("決定の本文を入れて"); return; }
+      var p = { text: text };
+      if (slug) p.project = slug;
+      var why = String(wi.value || "").trim();
+      if (why) p.why = why;
+      return api("/api/decision", p).then(function(){
+        ti.value = "";
+        wi.value = "";
+        note("決定を記録した");
+        loadProjects();
+      }, function(){ note("決定を記録できません"); });
+    }));
+    return form;
+  }
+  function projectBlock(p){
+    var ms = p.milestones || [], bl = p.blockers || [], ds = p.decisions || [];
+    var pts = p.points || { total: 0, done: 0 };
+    var art = el("article", "pj");
+    var hd = el("div", "sess-hd");
+    var name = el("span", "sess-t");
+    name.appendChild(el("span", null, p.name || p.slug));
+    // 名前が slug と同じなのは「宣言されていない」から。理由が見えるように添える。
+    if (!p.declared) name.appendChild(el("span", "badge", "未宣言"));
+    hd.appendChild(name);
+    var meta = el("span", "pmeta");
+    meta.appendChild(el("span", null, (p.done || 0) + "/" + (p.total || 0) + " 枚"));
+    // 0 の行は出さない（色だけの行で場所を取らない）
+    if (p.overdue > 0) meta.appendChild(el("span", "bad", "期限超過 " + p.overdue));
+    if (bl.length) meta.appendChild(el("span", "warn", "ブロッカー " + bl.length));
+    meta.appendChild(el("span", null, "決定 " + ds.length + " 件"));
+    hd.appendChild(meta);
+    art.appendChild(hd);
+    // 見積が入っているなら pt 比、無ければ枚数比。どちらで描いたかは隣の文字に出す
+    // （サーバの progress は枚数比なので、pt 比で描くときはここで計算し直す）。
+    var byPt = pts.total > 0;
+    var pct = byPt ? Math.round(pts.done * 100 / pts.total) : (p.progress || 0);
+    var grow = el("div", "prow");
+    var bar = el("div", "pbar");
+    bar.setAttribute("role", "progressbar");
+    bar.setAttribute("aria-valuemin", "0");
+    bar.setAttribute("aria-valuemax", "100");
+    bar.setAttribute("aria-valuenow", String(pct));
+    bar.setAttribute("aria-label", (p.name || p.slug) + " の進捗 " + pct + "%");
+    var fill = el("span", null);
+    fill.style.width = pct + "%";
+    bar.appendChild(fill);
+    grow.appendChild(bar);
+    grow.appendChild(el("span", "pct", pct + "%"));
+    grow.appendChild(el("span", "x", byPt
+      ? pts.total + "pt 中 " + pts.done + "pt"
+      : (p.total || 0) + " 枚中 " + (p.done || 0) + " 枚"));
+    art.appendChild(grow);
+    if (ms.length) {
+      art.appendChild(el("div", "hd", "マイルストーン"));
+      ms.forEach(function(m){
+        // dueOf() を通す: 手編集した board.json の壊れた日付で「あとNaN日」を出さない
+        var due = dueOf(m);
+        var left = due ? daysLeft(due) : null;
+        var row = el("div", "prow");
+        row.appendChild(el("span", "d", due ? due.slice(5, 10).replace("-", "/") : "—"));
+        row.appendChild(el("span", "t", m.text));
+        // 列名は看板と同じ表記（COLS の大文字側）に合わせる
+        row.appendChild(el("span", "x ra", String(m.col).toUpperCase()));
+        // 色の規則は看板と共通（dueCls）。ここで独自の条件を書かない
+        var lclass = dueCls(due, m.col);
+        row.appendChild(el("span", "x" + lclass, left === null ? "—" : leftText(left)));
+        art.appendChild(row);
+      });
+    }
+    if (bl.length) {
+      art.appendChild(el("div", "hd", "ブロッカー"));
+      bl.forEach(function(b){
+        var row = el("div", "prow");
+        row.appendChild(el("span", "d", "#" + b.id));
+        row.appendChild(el("span", "t", b.text));
+        row.appendChild(el("span", "w", b.blocked));
+        art.appendChild(row);
+      });
+    }
+    // 空の見出しは墓標になるので出さない。フォームだけは常に出す（1 件目を書く場所が消える）。
+    if (ds.length) {
+      // 件数は上の要約行（pmeta）に 1 回だけ出す。同じ数字を 2 回書かない
+      art.appendChild(el("div", "hd", "決定ログ"));
+      ds.forEach(function(d){ art.appendChild(decisionRow(d)); });
+    }
+    art.appendChild(decisionForm(p.slug));
+    return art;
+  }
+  function renderProjects(){
+    var box = document.getElementById("projects");
+    if (!box) return;
+    box.innerHTML = "";
+    var list = (projectData && projectData.projects) || [];
+    if (!list.length) {
+      empty(box, "\u25A1", "<b>プロジェクトはまだ無い</b> — カードに project:&lt;slug&gt; を付けると、ここに現れるよ");
+    } else {
+      list.forEach(function(p){ box.appendChild(projectBlock(p)); });
+    }
+    // 横断ログは末尾の別セクション。プロジェクトが 0 件でも書けるよう常に出す。
+    var cross = el("section");
+    var cds = (projectData && projectData.decisions) || [];
+    cross.appendChild(el("div", "hd", "プロジェクト横断 " + cds.length));
+    cds.forEach(function(d){ cross.appendChild(decisionRow(d)); });
+    cross.appendChild(decisionForm(""));
+    box.appendChild(cross);
+  }
+
   function render(d, nowMs){
     if (isEditing()) return; // #65: 編集中は描画しない（sig を進める判断は呼び出し元）
     nowBase = nowMs;
@@ -1304,6 +1719,7 @@
     renderSessions(d.sessions || [], nowMs);
     renderGlobal(d.global, nowMs, activeSid);
     renderServe(d.serve || [], nowMs, activeSid);
+    renderSettings(d, activeSid); // #11
     selectTab(activeTab); // a poll re-render must keep the tab the user picked
   }
 
@@ -1451,7 +1867,11 @@
         // never got any data: draw the empty states instead of blank sections
         renderStats(null); renderSessions([], null); renderGlobal(null, null); renderServe([], null);
       }
-    }).then(schedule);
+    }).then(function(){
+      // プロジェクトは別エンドポイントなので、タブを開いている時だけ相乗りで取る（専用タイマーは作らない）
+      if (activeTab === "projects") loadProjects();
+      schedule();
+    });
   }
   // #48: 入力のたびに再描画（fetch はしない。lastData を使い回す）
   var qEl = document.getElementById("q");
@@ -1464,6 +1884,26 @@
     projPick = projEl.value || "";
     redraw();
   });
+  // 1-4: フィルタバー。静的なボタンなので、押された時だけ aria-pressed と見た目を揃える。
+  var FBTNS = [["f-all", ""], ["f-ok", "ok"], ["f-overdue", "overdue"], ["f-blocked", "blocked"]];
+  function syncFilters(){
+    FBTNS.forEach(function(p){
+      var b = document.getElementById(p[0]);
+      if (!b) return;
+      var on = cardFilter === p[1];
+      b.setAttribute("aria-pressed", on ? "true" : "false");
+      if (on) b.classList.add("on"); else b.classList.remove("on");
+    });
+  }
+  FBTNS.forEach(function(p){
+    var b = document.getElementById(p[0]);
+    if (b) b.addEventListener("click", function(){
+      cardFilter = p[1];
+      syncFilters();
+      redraw();
+    });
+  });
+  syncFilters();
   reload();
   // #74: 相対時刻の ticker は新しい setInterval ではなく既存のポーリングに乗る。
   // reload() の「sig が変わらない」分岐が tick() を呼ぶので、通信も再描画も増やさず
