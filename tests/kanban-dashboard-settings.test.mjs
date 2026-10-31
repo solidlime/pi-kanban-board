@@ -231,7 +231,7 @@ test("#11: 診断ボタンは POST /api/selftest を 1 回だけ叩き、OK を�
 	});
 	const btn = writeButtons(byId["settings-selftest"])[0];
 	assert.ok(btn, "診断ボタンが無い");
-	// 連打しても flightGate で 1 回
+	// 連打してもモジュールフラグで 1 回
 	btn._lis.click[0]();
 	btn._lis.click[0]();
 	for (let i = 0; i < 6; i++) await flush();

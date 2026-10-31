@@ -1585,6 +1585,7 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
   function runSelfTest(){
     if (selfTestBusy) return;
     selfTestBusy = true;
+    renderSelfTest(); // 押したノードも即 disabled に（btn() は戻り値 promise が無いと disabled にしない）
     return fetch("/api/selftest", { method: "POST" }).then(function(r){
       if (r.status === 401) authFail(); // #85: api() と同じ扱い
       return r.json();
