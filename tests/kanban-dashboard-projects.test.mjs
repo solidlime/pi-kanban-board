@@ -137,7 +137,8 @@ const decision = (id, text, why) => ({ id, slug: "", at: Date.now() - 3600000, t
 
 // --- 1. 骨組み: ペイン・取り込み口・アクセシビリティ -------------------------
 test("#8 ペインと取り込み先がある", () => {
-	const pane = html.slice(html.indexOf('id="pane-projects"'), html.indexOf('id="pane-serve"'));
+	// #12: 配信サーバーは設定ペインのセクションになったので、境界は pane-settings。
+	const pane = html.slice(html.indexOf('id="pane-projects"'), html.indexOf('id="pane-settings"'));
 	assert.ok(pane.includes('id="projects"'), "pane-projects に #projects が無い");
 	assert.match(html, /id="pane-projects"[^>]*hidden/, "初期は隠れている");
 	// 専用タイマーは作らない: 既存の 5 秒ポーリング（reload）に相乗りする

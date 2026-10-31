@@ -28,3 +28,10 @@
 - `db` フィールドでサイズと件数が出る
 - selftest ボタンが `POST /api/selftest` を1回叩き、ok/NG を出す（多重クリックは flightGate で1回）
 - `npm test` 緑、実ブラウザで表示確認
+
+## #12 配信サーバータブを設定に吸収（完了）
+- 「配信サーバー」タブを廃止し、設定ペインの 1 セクションにする（`#serve` の入れ物はそのまま `#pane-settings` 内へ移す＝`renderServe()` は無変更）。
+- `TABS` は `["sessions", "projects", "settings"]` の 3 つ。`#tab-serve` / `#pane-serve` は削除。
+- 並び順: ボードのループ → 保存データ → 配信サーバー → 自己診断（インフラ系を後ろに寄せる）。
+- テストのスライス境界が `id="pane-serve"` を marker にしているので `id="pane-settings"` に付け替える（tabs / cards / collapse-search / projects）。
+- `isEditing()` の `#serve` は残る（入力欄は同じ id のまま設定ペイン内にある）。

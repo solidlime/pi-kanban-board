@@ -238,7 +238,6 @@
     <nav class="tabs" role="tablist" aria-label="ダッシュボード">
       <button class="tab active" id="tab-sessions" type="button" role="tab" aria-selected="true" aria-controls="pane-sessions">セッション</button>
       <button class="tab" id="tab-projects" type="button" role="tab" aria-selected="false" aria-controls="pane-projects">プロジェクト</button>
-      <button class="tab" id="tab-serve" type="button" role="tab" aria-selected="false" aria-controls="pane-serve">配信サーバー</button>
       <button class="tab" id="tab-settings" type="button" role="tab" aria-selected="false" aria-controls="pane-settings">設定</button>
     </nav>
     <div class="panes">
@@ -270,12 +269,6 @@
       <div class="pane" id="pane-projects" role="tabpanel" aria-labelledby="tab-projects" hidden>
         <div id="projects"></div>
       </div>
-      <div class="pane" id="pane-serve" role="tabpanel" aria-labelledby="tab-serve" hidden>
-        <section aria-labelledby="h-serve">
-          <div class="hd" id="h-serve">SERVE（配信中のサーバー）</div>
-          <div id="serve"></div>
-        </section>
-      </div>
       <!-- #11: ボードごとの設定はここに集約する。ボード側は状態（halt と 再開）だけ。 -->
       <div class="pane" id="pane-settings" role="tabpanel" aria-labelledby="tab-settings" hidden>
         <section aria-labelledby="h-loops">
@@ -285,6 +278,11 @@
         <section aria-labelledby="h-db">
           <div class="hd" id="h-db">保存データ</div>
           <div id="settings-db"></div>
+        </section>
+        <!-- #12: 配信サーバーのタブを廃止してここへ吸収。入れ物の id は #serve のまま（renderServe は無変更）。 -->
+        <section aria-labelledby="h-serve">
+          <div class="hd" id="h-serve">配信サーバー</div>
+          <div id="serve"></div>
         </section>
         <section aria-labelledby="h-selftest">
           <div class="hd" id="h-selftest">自己診断</div>
@@ -458,7 +456,8 @@
 
   // #29 tabs: the sidebar only toggles the hidden attribute — no navigation.
   // activeTab survives the 5s re-render because render() re-applies it.
-  var TABS = ["sessions", "projects", "serve", "settings"]; // #36: エージェントタブ廃止。 #8: プロジェクトは真ん中。 #11: 設定は最後
+  // #11: 設定タブ。#12: 配信サーバーもここに吸収（タブはセッション / プロジェクト / 設定の 3 つ）。
+  var TABS = ["sessions", "projects", "settings"]; // #36: エージェントタブ廃止。 #8: プロジェクトは真ん中。 #11: 設定は最後 #12: 配信サーバーは設定へ
   var activeTab = "sessions";
   function selectTab(name){
     if (TABS.indexOf(name) < 0) name = "sessions";
