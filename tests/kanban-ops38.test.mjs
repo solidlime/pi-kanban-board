@@ -9,6 +9,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer as netServer } from "node:net";
 import { createRequire } from "node:module";
 import { authFetch } from "./helpers/token.mjs";
+import { readBoardAt, seedBoard, useKanban } from "./helpers/board.mjs";
 
 // #83b: HTTP routes need the server token now; tf = fetch + the kb_auth cookie.
 const tf = (input, init) => authFetch(input, init);
@@ -36,6 +37,7 @@ const { createJiti } = createRequire(import.meta.url)(
 );
 const jiti = createJiti(import.meta.url);
 const mod = await jiti.import(fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url)));
+useKanban(mod);
 const { renderInjectionText } = mod;
 
 const failures = [];
@@ -80,16 +82,10 @@ const boardFile = `${HOME_DIR}/.pi/kanban/sessions/${SID}.json`;
 // upload の書き込みは scope=global を使う（#55 で scope=session も 403 にならなくなったが、
 // このテストは GLOBAL 側の id 付き upload を見るので分岐を維持する）。
 const globalFile = `${HOME_DIR}/.pi/kanban/global.json`;
-const readCards = () => JSON.parse(readFileSync(boardFile, "utf8")).cards;
-const readGlobal = () => JSON.parse(readFileSync(globalFile, "utf8")).cards;
-writeFileSync(
-	boardFile,
-	JSON.stringify({ cards: [{ id: 1, text: "既存カード", col: "doing" }], nextId: 50 }, null, 2),
-);
-writeFileSync(
-	globalFile,
-	JSON.stringify({ cards: [{ id: 1, text: "既存カード", col: "doing" }], nextId: 50 }, null, 2),
-);
+const readCards = () => readBoardAt(boardFile).cards;
+const readGlobal = () => readBoardAt(globalFile).cards;
+seedBoard(boardFile, { cards: [{ id: 1, text: "既存カード", col: "doing" }], nextId: 50 });
+seedBoard(globalFile, { cards: [{ id: 1, text: "既存カード", col: "doing" }], nextId: 50 });
 // 1x1 PNG の最小バイト列 (media に書ければ中身は問わない)。
 const PNG = Buffer.from(
 	"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M8AAAMBAQDJ/pLvAAAAAElFTkSuQmCC",
@@ -137,14 +133,7 @@ await check("#38-10 movedAt 無しの DOING は何も足さない (「0分」を
 
 // --- 14. /api/kanban?fields= の射影 (既存呼び出しは無指定で不変) --------------
 await check("#38-14 fields 射影は指定キーだけ返し、無指定は従来どおり", async () => {
-	writeFileSync(
-		boardFile,
-		JSON.stringify(
-			{ cards: [{ id: 7, text: "t", col: "todo", img: "x.png", priority: 3 }], nextId: 8 },
-			null,
-			2,
-		),
-	);
+	seedBoard(boardFile, { cards: [{ id: 7, text: "t", col: "todo", img: "x.png", priority: 3 }], nextId: 8 });
 	const proj = await (await tf(`${BASE}/api/kanban?sid=${SID}&fields=id,col,text`)).json();
 	const c = proj.session.cards[0];
 	assert.deepEqual(Object.keys(c).sort(), ["col", "id", "text"], `余計なキー: ${JSON.stringify(Object.keys(c))}`);

@@ -8,6 +8,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
+import { readBoardAt, seedBoard, useKanban } from "./helpers/board.mjs";
 
 const HOME_DIR = "/tmp/kb-loopctx-home";
 rmSync(HOME_DIR, { recursive: true, force: true });
@@ -32,6 +33,7 @@ const { createJiti } = require(
 );
 const jiti = createJiti(import.meta.url);
 const mod = await jiti.import(fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url)));
+useKanban(mod);
 
 const failures = [];
 let passed = 0;
@@ -49,9 +51,9 @@ const SESSIONS = `${HOME_DIR}/.pi/kanban/sessions`;
 const MODES = `${HOME_DIR}/.pi/kanban/modes.json`;
 const board = (sid) => `${SESSIONS}/${sid}.json`;
 const writeBoardFile = (sid) =>
-	writeFileSync(board(sid), JSON.stringify({ cards: [{ id: 1, text: "t", col: "doing" }], nextId: 2 }));
+	seedBoard(board(sid), { cards: [{ id: 1, text: "t", col: "doing" }], nextId: 2 });
 const writeModes = (sid) =>
-	writeFileSync(MODES, JSON.stringify({ SESSION: { [sid]: { doingLoop: true, autoPick: false } }, GLOBAL: {} }));
+	writeFileSync(MODES, JSON.stringify({ SESSION: { [sid]: { doingLoop: true, autoPick: false } }, GLOBAL: {} }, null, 2));
 const readJson = (p) => JSON.parse(readFileSync(p, "utf8"));
 
 // factory は 1 呼び出し = 1 クロージャ。テストごとに新しい pi を作って隔離する。

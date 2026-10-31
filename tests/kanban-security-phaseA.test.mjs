@@ -10,6 +10,7 @@ import { createServer as netServer } from "node:net";
 import http from "node:http";
 import { createRequire } from "node:module";
 import { authFetch, tokenHeader } from "./helpers/token.mjs";
+import { seedBoard, useKanban } from "./helpers/board.mjs";
 
 // #83b: HTTP routes need the server token now; tf = fetch + the kb_auth cookie.
 const tf = (input, init) => authFetch(input, init);
@@ -39,6 +40,7 @@ const { createJiti } = require(
 const jiti = createJiti(import.meta.url);
 const SRC = fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url));
 const mod = await jiti.import(SRC);
+useKanban(mod);
 
 const failures = [];
 let passed = 0;
@@ -249,10 +251,7 @@ const NOTE = JSON.stringify({ take: 1 });
 	// 別セッションのボードが sid 無しで読めないこと（旧 activeSessionId フォールバックの再発防止）。
 	const other = "other-session-sid";
 	mkdirSync(`${HOME_DIR}/.pi/kanban/sessions`, { recursive: true });
-	writeFileSync(
-		`${HOME_DIR}/.pi/kanban/sessions/${other}.json`,
-		JSON.stringify({ cards: [{ id: 1, text: "secret-other", col: "todo" }], nextId: 2 }),
-	);
+	seedBoard(`${HOME_DIR}/.pi/kanban/sessions/${other}.json`, { cards: [{ id: 1, text: "secret-other", col: "todo" }], nextId: 2 });
 	const bare = await send("GET", "/api/kanban");
 	const leak = await send("GET", `/api/kanban?sid=${other}`);
 	await checkAsync("sid 無しの /api/kanban は他セッションのボードを返さない", async () => {

@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
+import { useKanban, seedBoard } from "./helpers/board.mjs";
 
 const HOME_DIR = "/tmp/kb-polls89-home";
 rmSync(HOME_DIR, { recursive: true, force: true });
@@ -36,6 +37,7 @@ const { createJiti } = require(
 );
 const jiti = createJiti(import.meta.url);
 const mod = await jiti.import(fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url)));
+useKanban(mod);
 
 const failures = [];
 let passed = 0;
@@ -52,10 +54,7 @@ const SESSIONS = `${HOME_DIR}/.pi/kanban/sessions`;
 const MODES = `${HOME_DIR}/.pi/kanban/modes.json`;
 writeFileSync(MODES, JSON.stringify({ SESSION: {}, GLOBAL: {} }));
 const writeBoardFile = (sid) =>
-	writeFileSync(
-		`${SESSIONS}/${sid}.json`,
-		JSON.stringify({ cards: [{ id: 1, text: "t", col: "doing" }], nextId: 2 }),
-	);
+	seedBoard(`${SESSIONS}/${sid}.json`, { cards: [{ id: 1, text: "t", col: "doing" }], nextId: 2 });
 const writeModes = (sid) =>
 	writeFileSync(MODES, JSON.stringify({ SESSION: { [sid]: { doingLoop: true, autoPick: false } }, GLOBAL: {} }));
 

@@ -7,6 +7,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
 import { authFetch } from "./helpers/token.mjs";
+import { readBoardAt, seedBoard, useKanban } from "./helpers/board.mjs";
 
 // #83b: HTTP routes need the server token now; tf = fetch + the kb_auth cookie.
 const tf = (input, init) => authFetch(input, init);
@@ -35,6 +36,7 @@ const { createJiti } = require(
 );
 const jiti = createJiti(import.meta.url);
 const mod = await jiti.import(fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url)));
+useKanban(mod);
 
 const failures = [];
 let passed = 0;
@@ -51,7 +53,7 @@ const eq = (a, b) => assert.deepEqual(a, b);
 const MODES = `${HOME_DIR}/.pi/kanban/modes.json`;
 const board = (sid) => `${HOME_DIR}/.pi/kanban/sessions/${sid}.json`;
 const writeBoardFile = (sid, cards = [{ id: 1, text: "t", col: "doing" }]) =>
-	writeFileSync(board(sid), JSON.stringify({ cards, nextId: cards.length + 1 }));
+	seedBoard(board(sid), { cards, nextId: cards.length + 1 });
 // doingLoop を ON にした modes.json を、指定 sid ぶんまとめて書く。
 const writeModes = (...sids) =>
 	writeFileSync(

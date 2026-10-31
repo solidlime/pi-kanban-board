@@ -9,6 +9,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
 import { authFetch } from "./helpers/token.mjs";
+import { readBoardAt, seedBoard, useKanban } from "./helpers/board.mjs";
 
 const HOME_DIR = "/tmp/kb-edit-home";
 rmSync(HOME_DIR, { recursive: true, force: true });
@@ -34,16 +35,17 @@ const { createJiti } = require(
 const jiti = createJiti(import.meta.url);
 const target = process.env.KANBAN_TS ?? fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url));
 const mod = await jiti.import(target);
+useKanban(mod);
 
 const HOME = `${HOME_DIR}/.pi/kanban`;
 const SESSION_DIR = `${HOME}/sessions`;
 const API_BASE = `http://127.0.0.1:${process.env.KANBAN_PORT}`;
 const tf = (input, init) => authFetch(input, init);
 
-const board = (sid) => JSON.parse(readFileSync(`${SESSION_DIR}/${sid}.json`, "utf8"));
-const readGlobal = () => JSON.parse(readFileSync(`${HOME}/global.json`, "utf8"));
-const writeSession = (sid, b) => writeFileSync(`${SESSION_DIR}/${sid}.json`, JSON.stringify(b));
-const writeGlobal = (b) => writeFileSync(`${HOME}/global.json`, JSON.stringify(b));
+const board = (sid) => readBoardAt(`${SESSION_DIR}/${sid}.json`);
+const readGlobal = () => readBoardAt(`${HOME}/global.json`);
+const writeSession = (sid, b) => seedBoard(`${SESSION_DIR}/${sid}.json`, b);
+const writeGlobal = (b) => seedBoard(`${HOME}/global.json`, b);
 
 const ctxFor = (sid) => ({
 	hasUI: false,

@@ -9,6 +9,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
 import { authFetch } from "./helpers/token.mjs";
+import { useKanban, readBoardAt, seedBoard } from "./helpers/board.mjs";
 
 // #83b: HTTP routes need the server token now; tf = fetch + the kb_auth cookie.
 const tf = (input, init) => authFetch(input, init);
@@ -36,6 +37,7 @@ const { createJiti } = require(
 );
 const jiti = createJiti(import.meta.url);
 const mod = await jiti.import(fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url)));
+useKanban(mod);
 const { parseKanbanArgs, shouldAutoTick, intervalMinOf, intervalMsOf, withMenuGuard, AUTO_TICK_MS } = mod;
 
 const MIN = 60_000;
@@ -237,7 +239,7 @@ const kanbanCmd = () => commands.get("kanban").handler;
 {
 	const ctx = mkCtx();
 	await kanbanCmd()("買い物に行く", ctx);
-	const b = readJson(boardFile);
+	const b = readBoardAt(boardFile);
 	check("［買い物に行く］で TODO カードが 1 枚入る", () => {
 		assert.equal(b.cards.length, 1);
 		assert.equal(b.cards[0].text, "買い物に行く");
@@ -251,7 +253,7 @@ const kanbanCmd = () => commands.get("kanban").handler;
 	const ctx2 = mkCtx();
 	await kanbanCmd()("add 牛乳を買う", ctx2);
 	check("［add 牛乳を買う］も同じ結果（add を剥がす）", () => {
-		const b2 = readJson(boardFile);
+		const b2 = readBoardAt(boardFile);
 		assert.equal(b2.cards.length, 2);
 		assert.equal(b2.cards[1].text, "牛乳を買う");
 	});
@@ -259,7 +261,7 @@ const kanbanCmd = () => commands.get("kanban").handler;
 	const ctx3 = mkCtx();
 	await kanbanCmd()("add", ctx3);
 	check("［add］単体は拒否してカードを増やさない", () => {
-		assert.equal(readJson(boardFile).cards.length, 2);
+		assert.equal(readBoardAt(boardFile).cards.length, 2);
 		assert.match(ctx3.notes[0], /空のカードは作りません/);
 	});
 
@@ -332,10 +334,7 @@ async function perSessionIntervals() {
 	const sentA = mk("sess-AAA");
 	const sentB = mk("sess-BBB");
 	for (const sid of ["sess-AAA", "sess-BBB"]) {
-		writeFileSync(
-			`${HOME_DIR}/.pi/kanban/sessions/${sid}.json`,
-			JSON.stringify({ cards: [{ id: 1, text: "t", col: "doing" }], nextId: 2 }),
-		);
+		seedBoard(`${HOME_DIR}/.pi/kanban/sessions/${sid}.json`, { cards: [{ id: 1, text: "t", col: "doing" }], nextId: 2 });
 	}
 	writeFileSync(
 		modesFile,

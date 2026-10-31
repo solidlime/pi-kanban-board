@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
+import { readBoardAt, seedBoard, useKanban } from "./helpers/board.mjs";
 
 const HOME_DIR = "/tmp/kb-pollobs-home";
 rmSync(HOME_DIR, { recursive: true, force: true });
@@ -35,6 +36,7 @@ const { createJiti } = require(
 );
 const jiti = createJiti(import.meta.url);
 const mod = await jiti.import(fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url)));
+useKanban(mod);
 const SOURCE = readFileSync(new URL("../extensions/kanban.ts", import.meta.url), "utf8");
 
 const failures = [];
@@ -52,10 +54,7 @@ const eq = (a, b) => assert.deepEqual(a, b);
 const SESSIONS = `${HOME_DIR}/.pi/kanban/sessions`;
 const MODES = `${HOME_DIR}/.pi/kanban/modes.json`;
 const writeBoardFile = (sid) =>
-	writeFileSync(
-		`${SESSIONS}/${sid}.json`,
-		JSON.stringify({ cards: [{ id: 7, text: "t", col: "todo" }], nextId: 8 }),
-	);
+	seedBoard(`${SESSIONS}/${sid}.json`, { cards: [{ id: 7, text: "t", col: "todo" }], nextId: 8 });
 const writeModes = (sid) =>
 	writeFileSync(
 		MODES,
@@ -171,7 +170,7 @@ function mkCtx(sid) {
 // 4c: TODO が無ければ skip:no-card（ゲートの理由が読める）。
 {
 	process.env.KANBAN_DEBUG = "1";
-	writeFileSync(`${SESSIONS}/${SID}.json`, JSON.stringify({ cards: [], nextId: 1 }));
+	seedBoard(`${SESSIONS}/${SID}.json`, { cards: [], nextId: 1 });
 	const { pi, handlers } = mkPi();
 	const t = mod.default(pi).__test;
 	pollLines.length = 0;
@@ -192,10 +191,7 @@ function mkCtx(sid) {
 // 初回 tick で発火する。#46 の「再起動後に一度も動かない」をゲート側で押さえる。
 {
 	process.env.KANBAN_DEBUG = "1";
-	writeFileSync(
-		`${SESSIONS}/${SID}.json`,
-		JSON.stringify({ cards: [{ id: 46, text: "t", col: "doing", movedBy: SID }], nextId: 47 }),
-	);
+	seedBoard(`${SESSIONS}/${SID}.json`, { cards: [{ id: 46, text: "t", col: "doing", movedBy: SID }], nextId: 47 });
 	const { pi, handlers, sent } = mkPi();
 	const loopEntry = {
 		type: "custom",

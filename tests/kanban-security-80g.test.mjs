@@ -16,6 +16,7 @@ import { mkdirSync, rmSync } from "node:fs";
 import { createServer as netServer } from "node:net";
 import { createRequire } from "node:module";
 import { tokenHeader } from "./helpers/token.mjs";
+import { useKanban } from "./helpers/board.mjs";
 
 const HOME_DIR = "/tmp/kb80g/home";
 rmSync(HOME_DIR, { recursive: true, force: true });
@@ -40,6 +41,7 @@ const { createJiti } = require(
 );
 const jiti = createJiti(import.meta.url);
 const mod = await jiti.import(fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url)));
+useKanban(mod);
 
 const failures = [];
 let passed = 0;

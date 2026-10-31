@@ -66,6 +66,8 @@ import { Type } from "typebox";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext, SessionInfo } from "@earendil-works/pi-coding-agent";
 import { DASHBOARD_TEMPLATE } from "./dashboard.generated.ts";
+import { openKanbanDb } from "./db.ts";
+import type { BoardKey, KanbanDb } from "./db.ts";
 
 // ---------------------------------------------------------------------------
 // Types & state
@@ -339,8 +341,8 @@ export function fileSig(path: string): string {
 	}
 }
 
-/** Pure: parse one board file. */
-function readBoard(path: string): Board {
+/** Pure: parse one board file. The JSON path is import/migration only. */
+function readBoardJson(path: string): Board {
 	try {
 		const raw = JSON.parse(readRaw(path)) as Board;
 		if (raw && Array.isArray(raw.cards) && typeof raw.nextId === "number") {
@@ -350,6 +352,81 @@ function readBoard(path: string): Board {
 		// fall through to empty
 	}
 	return { cards: [], nextId: 1 };
+}
+
+// ---------------------------------------------------------------------------
+// Board storage (sqlite)
+// ---------------------------------------------------------------------------
+
+let db: KanbanDb | null = null;
+
+/** The one place a path becomes a board key. boardPath() is the inverse. */
+function boardKeyOf(path: string): BoardKey {
+	// Callers pass paths they built themselves (a temp dir, a raw string), so compare by
+	// resolved location rather than by string identity with GLOBAL_JSON.
+	const abs = resolve(path);
+	if (abs === resolve(GLOBAL_JSON)) return { scope: "global", sid: "" };
+	return { scope: "session", sid: basename(abs, ".json") };
+}
+
+/** Read one board, or null when it was never written. */
+export function readBoardOrNull(path: string): Board | null {
+	return kanbanDb().readBoard(boardKeyOf(path));
+}
+/**
+ * Read one board. A board that was never written reads as empty - the JSON path did the
+ * same, and 43 call sites depend on it. What must NOT happen is a broken database
+ * reading as empty: that would persist a wipe on the next write.
+ */
+export function readBoard(path: string): Board {
+	return readBoardOrNull(path) ?? { cards: [], nextId: 1 };
+}
+/** Drop a board entirely. Only tests use this; the server never deletes one. */
+export function deleteBoardPath(path: string): void {
+	kanbanDb().deleteBoard(boardKeyOf(path));
+}
+
+/** Open once per process and import whatever JSON is already on disk. */
+function kanbanDb(): KanbanDb {
+	if (db !== null) return db;
+	mkdirSync(KANBAN_DIR, { recursive: true });
+	db = openKanbanDb(join(KANBAN_DIR, "boards.sqlite"));
+	importBoards(db);
+	return db;
+}
+
+let imported = false;
+
+/**
+ * One-way migration: every board file on disk becomes a row, once. importBoard() is
+ * INSERT-only, so a JSON file left behind can never overwrite newer sqlite state.
+ */
+function importBoards(target: KanbanDb): void {
+	if (imported) return;
+	imported = true;
+	let names: string[] = [];
+	try {
+		names = readdirSync(SESSIONS_DIR);
+	} catch {
+		// no sessions dir yet
+	}
+	let moved = 0;
+	const importOne = (path: string, key: BoardKey): void => {
+		try {
+			if (target.importBoard(key, readBoardJson(path))) moved++;
+		} catch (err) {
+			const e = err as NodeJS.ErrnoException;
+			process.stderr.write(`kanban: import failed (${path}): ${e.message}
+`);
+		}
+	};
+	importOne(GLOBAL_JSON, { scope: "global", sid: "" });
+	for (const name of names) {
+		if (!name.endsWith(".json")) continue; // leave tmp files alone: a live writer owns them
+		importOne(join(SESSIONS_DIR, name), { scope: "session", sid: name.slice(0, -5) });
+	}
+	// Silent on purpose: a test that asserts on stderr would read this as a failure.
+	void moved;
 }
 
 /**
@@ -627,16 +704,12 @@ function writeBoardHtml(): void {
  * Returns the persist error (null on success) — the caller may surface it.
  * Write failure is not fatal: the board keeps being served from memory.
  */
-function writeBoard(path: string, b: Board): string | null {
+export function writeBoard(path: string, b: Board): string | null {
 	let persistError: string | null = null;
 	try {
-		mkdirSync(dirname(path), { recursive: true });
-		// pid-unique tmp: a fixed name lets a concurrent writer (the resident
-		// server vs. the in-process extension) rename our tmp and persist ITS
-		// content under our name, silently dropping cards.
-		const tmp = `${path}.${process.pid}.tmp`;
-		writeFileSync(tmp, JSON.stringify(b, null, 2));
-		renameSync(tmp, path);
+		// One transaction: a concurrent writer waits instead of overwriting, and a reader
+		// never sees half a board. This is the whole point of the move off JSON.
+		kanbanDb().writeBoard(boardKeyOf(path), b);
 	} catch (err) {
 		// best-effort; keep serving from memory, but never silently
 		const e = err as NodeJS.ErrnoException;
@@ -657,8 +730,8 @@ function stampMove(card: Card, sid: string): void {
 
 /** Modes entry <=> board file: create the empty session board if it is missing. */
 function ensureSessionBoard(sid: string): void {
-	const path = boardPath("session", sid);
-	if (!existsSync(path)) writeBoard(path, { cards: [], nextId: 1 });
+	const key = boardKeyOf(boardPath("session", sid));
+	if (kanbanDb().readBoard(key) === null) kanbanDb().writeBoard(key, { cards: [], nextId: 1 });
 }
 
 /** Once per process: the pre-2-layer board becomes the global layer. */
@@ -672,14 +745,16 @@ function migrateLegacyBoard(): void {
 
 /** Once per process: drop session boards nobody touched for 30 days. */
 function sweepSessions(): void {
+	const cutoff = Date.now() - SESSION_TTL_MS;
+	let swept = kanbanDb().sweepSessions(cutoff);
+	// The JSON files are no longer read, but leaving one behind would re-import a swept
+	// board if the database were ever rebuilt, so they go with the rows.
 	let names: string[];
 	try {
 		names = readdirSync(SESSIONS_DIR);
 	} catch {
-		return; // no sessions dir yet
+		names = []; // no sessions dir yet
 	}
-	const cutoff = Date.now() - SESSION_TTL_MS;
-	let swept = 0;
 	for (const name of names) {
 		if (!name.endsWith(".json")) continue; // leave tmp files alone: a live writer owns them
 		try {
@@ -702,7 +777,7 @@ function sweepSessions(): void {
 		const bucket = f[scope];
 		if (bucket === undefined) continue;
 		for (const sid of Object.keys(bucket)) {
-			if (sid === activeSessionId || existsSync(boardPath("session", sid))) continue;
+			if (sid === activeSessionId || readBoardOrNull(boardPath("session", sid)) !== null) continue;
 			delete bucket[sid];
 			pruned++;
 		}
@@ -2898,25 +2973,13 @@ function countCols(b: Board): { todo: number; doing: number; done: number } {
 async function sessionRows(): Promise<{ activeSessionId: string | null; sessions: SessionRow[] }> {
 	const info = await sessionInfoById();
 	const f = readModesFile(); // per-row modes: another session's toggles are read-only here
-	let names: string[] = [];
-	try {
-		names = readdirSync(SESSIONS_DIR);
-	} catch {
-		// no sessions dir yet -> nothing to list
-	}
-	const sessions: SessionRow[] = names
-		.filter((n) => n.endsWith(".json"))
-		.map((n) => {
-			const id = n.slice(0, -5);
-			const path = join(SESSIONS_DIR, n);
-			const b = readBoard(path);
+	// The boards are rows in sqlite, not files under SESSIONS_DIR: listing the directory
+	// would show nothing at all. touched_at is the mtime replacement.
+	const sessions: SessionRow[] = kanbanDb()
+		.sessionKeys()
+		.map(({ sid: id, touchedAt: modified }) => {
+			const b = readBoard(boardPath("session", id));
 			const meta = info.get(id);
-			let modified = 0;
-			try {
-				modified = statSync(path).mtimeMs;
-			} catch {
-				// deleted mid-scan -> sort it last
-			}
 			return {
 				id,
 				name: labelOf(meta?.name, meta?.firstMessage, id),
@@ -4412,8 +4475,10 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 	// is adopted.
 
 	/** Stat signature of every board layer plus modes.json; any disk change (ours or a sibling's) flips it. */
+	// Boards live in sqlite now, so there is no per-board inode to stat. rev is a
+	// per-board counter bumped inside the write transaction; modes.json is still a file.
 	const diskSnapshot = (sessionId: string): string =>
-		`${fileSig(boardPath("session", sessionId))}\u0000${fileSig(GLOBAL_JSON)}\u0000${fileSig(MODES_JSON)}`;
+		`${kanbanDb().revOf(boardKeyOf(boardPath("session", sessionId)))}\u0000${kanbanDb().revOf({ scope: "global", sid: "" })}\u0000${fileSig(MODES_JSON)}`;
 
 	/** Stop the timer and release the owned ctx (session end, or a ctx that cannot answer). */
 	const stopPoll = (): void => {

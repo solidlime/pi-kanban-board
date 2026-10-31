@@ -19,6 +19,7 @@ import {
 import { createServer as netServer } from "node:net";
 import { createRequire } from "node:module";
 import { authFetch, tokenHeader } from "./helpers/token.mjs";
+import { useKanban } from "./helpers/board.mjs";
 
 const tf = (input, init) => authFetch(input, init);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -49,6 +50,7 @@ const { createJiti } = require(
 );
 const jiti = createJiti(import.meta.url);
 const mod = await jiti.import(fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url)));
+useKanban(mod);
 
 const failures = [];
 let passed = 0;

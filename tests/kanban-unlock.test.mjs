@@ -9,6 +9,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync 
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
 import { authFetch } from "./helpers/token.mjs";
+import { readBoardAt, seedBoard, useKanban, boardExists, removeBoard } from "./helpers/board.mjs";
 
 // #83b: HTTP routes need the server token now; tf = fetch + the kb_auth cookie.
 const tf = (input, init) => authFetch(input, init);
@@ -36,6 +37,7 @@ const { createJiti } = require(
 const jiti = createJiti(import.meta.url);
 const SRC = fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url));
 const mod = await jiti.import(SRC);
+useKanban(mod);
 
 const failures = [];
 let passed = 0;
@@ -74,7 +76,7 @@ const ctxFor = (sid) => ({
 	sessionManager: { getSessionId: () => sid, getEntries: () => [] },
 });
 const boardFile = (sid) => `${HOME_DIR}/.pi/kanban/sessions/${sid}.json`;
-const readBoard = (sid) => JSON.parse(readFileSync(boardFile(sid), "utf8"));
+const readBoard = (sid) => readBoardAt(boardFile(sid));
 const get = (path) => tf(`http://127.0.0.1:${PORT}${path}`);
 const sessionsJson = async () => (await get("/api/sessions")).json();
 
@@ -84,7 +86,7 @@ const B = "unlock-b";
 handlers.get("session_start")({}, ctxFor(A));
 handlers.get("session_start")({}, ctxFor(B));
 // A のボードをディスクに置く（B はファイル無し = 合成行の対象）。
-writeFileSync(boardFile(A), JSON.stringify({ cards: [{ id: 1, text: "最初", col: "todo" }], nextId: 2 }));
+seedBoard(boardFile(A), { cards: [{ id: 1, text: "最初", col: "todo" }], nextId: 2 });
 
 await check("driver は A のまま（B の session_start では動かない）", async () => {
 	const j = await sessionsJson();
@@ -108,7 +110,7 @@ await check("driver のボードに /api/rename が 200 で反映される", asy
 await check("driver でない B のボードにも /api/add が 200 で入る（#55）", async () => {
 	const res = await get(`/api/add?scope=session&sid=${B}&text=${encodeURIComponent("B追加")}`);
 	assert.equal(res.status, 200);
-	assert.ok(existsSync(boardFile(B)), "B のボードファイルが作られていない");
+	assert.ok(readBoardAt(boardFile(B)), "B のボードファイルが作られていない");
 	assert.ok(readBoard(B).cards.some((c) => c.text === "B追加"), "B のボードに入っていない");
 });
 
@@ -120,16 +122,16 @@ await check("driver でない B のボードにも /api/rename が 200 で反映
 
 await check("ディスクに無い sid でも /api/add が 200 でそのボードが作られる", async () => {
 	const fresh = "unlock-fresh";
-	assert.equal(existsSync(boardFile(fresh)), false, "前提が壊れている: 既にファイルがある");
+	assert.equal(boardExists(boardFile(fresh)), false, "前提が壊れている: 既にファイルがある");
 	const res = await get(`/api/add?scope=session&sid=${fresh}&text=${encodeURIComponent("新規")}`);
 	assert.equal(res.status, 200);
-	assert.ok(existsSync(boardFile(fresh)), "ボードファイルが作られていない");
+	assert.ok(readBoardAt(boardFile(fresh)), "ボードファイルが作られていない");
 	assert.ok(readBoard(fresh).cards.some((c) => c.text === "新規"));
 });
 
 await check("ボードファイルが無い driver は一覧に出るが ACTIVE 扱いにはならない", async () => {
 	// 合成行（ディスクに無い sid を一覧に足す）は残すが、mine は false。
-	unlinkSync(boardFile(A));
+	removeBoard(boardFile(A));
 	const j = await sessionsJson();
 	const row = j.sessions.find((s) => s.id === A);
 	assert.ok(row, "合成行が一覧に無い");
@@ -141,7 +143,7 @@ await check("ボードファイルが無い driver は一覧に出るが ACTIVE 
 	// 再び書けばファイルが戻る。
 	const res = await get(`/api/add?scope=session&sid=${A}&text=${encodeURIComponent("復帰")}`);
 	assert.equal(res.status, 200);
-	assert.ok(existsSync(boardFile(A)), "ボードファイルが戻っていない");
+	assert.ok(readBoardAt(boardFile(A)), "ボードファイルが戻っていない");
 });
 
 await check("session_shutdown で driver の pin が解放される（#55）", async () => {

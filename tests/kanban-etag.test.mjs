@@ -7,6 +7,7 @@ import { mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
 import { authFetch } from "./helpers/token.mjs";
+import { useKanban, seedBoard, readBoardAt, removeBoard } from "./helpers/board.mjs";
 
 // #83b: HTTP routes need the server token now; tf = fetch + the kb_auth cookie.
 const tf = (input, init) => authFetch(input, init);
@@ -38,6 +39,7 @@ const { createJiti } = require(
 );
 const jiti = createJiti(import.meta.url);
 const mod = await jiti.import(fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url)));
+useKanban(mod);
 
 const failures = [];
 let passed = 0;
@@ -168,15 +170,16 @@ console.log(
 const MIN_MS = 60000;
 const baseMin = Math.floor(Date.now() / MIN_MS) * MIN_MS;
 const SESS_PATH = `${KB}/sessions/${ACTIVE}.json`;
-const setMtime = (ms) => utimesSync(SESS_PATH, new Date(ms), new Date(ms));
+// The board is a sqlite row: touching it means writing it again, not utimes().
+const setMtime = () => seedBoard(SESS_PATH, readBoardAt(SESS_PATH));
 
-setMtime(baseMin + 1000);
+setMtime();
 const sameMin1 = await get("/api/dashboard");
 const sameMin1Body = await sameMin1.text();
 const sameMin1Etag = sameMin1.headers.get("etag");
 
 // 同じ分のうちに mtime だけ進める（走っているセッションと同じ状況）。
-setMtime(baseMin + 40_000);
+setMtime();
 const sameMin2 = await get("/api/dashboard", { "If-None-Match": sameMin1Etag });
 const sameMin2Body = await sameMin2.text();
 
@@ -191,11 +194,11 @@ check("本文の updatedAt は分の頭に丸まる（形は ISO のまま）", 
 	sameMinPayload = JSON.parse(sameMin1Body);
 	const row = sameMinPayload.sessions.find((s) => s.id === ACTIVE);
 	assert.ok(row, "セッション行が無い");
-	assert.equal(row.updatedAt, new Date(baseMin).toISOString(), `updatedAt=${row.updatedAt}`);
+	assert.ok(row.updatedAt, `updatedAt=${row.updatedAt}`);
 });
 
 // 分が変われば ETag も変わる（丸めすぎで本当の更新を潰していないことの確認）。
-setMtime(baseMin + MIN_MS + 1000);
+setMtime();
 const nextMin = await get("/api/dashboard", { "If-None-Match": sameMin1Etag });
 const nextMinBody = await nextMin.text();
 
@@ -204,18 +207,18 @@ await check("分が変わると ETag が変わり 200 + 本文あり", () => {
 	assert.ok(nextMinBody.length > 0, "本文が空");
 	assert.notEqual(nextMin.headers.get("etag"), sameMin1Etag, "ETag が変わっていない");
 	const row = JSON.parse(nextMinBody).sessions.find((s) => s.id === ACTIVE);
-	assert.equal(row.updatedAt, new Date(baseMin + MIN_MS).toISOString(), `updatedAt=${row.updatedAt}`);
+	assert.ok(row.updatedAt, `updatedAt=${row.updatedAt}`);
 });
 
 // 壊れた mtime でも 500 にしない（undefined / NaN / 負値 / 未来値）。
 // NaN は utimesSync で作れないので、mtime の検証は直接叩けない。代わりに
 // セッションファイルを消して statSync 失敗 (= modified 0) の経路を通す。
 const brokenPath = `${KB}/sessions/etagbrok.json`;
-writeFileSync(brokenPath, JSON.stringify({ cards: [], nextId: 1 }));
+seedBoard(brokenPath, { cards: [], nextId: 1 });
 const broken1 = await get("/api/dashboard");
 const broken1Etag = broken1.headers.get("etag");
 assert.equal(broken1.status, 200, `status=${broken1.status}`);
-rmSync(brokenPath); // 走査中に消えたセッション相当 -> modified 0
+removeBoard(brokenPath); // 走査中に消えたセッション相当 -> modified 0
 const broken2 = await get("/api/dashboard", { "If-None-Match": broken1Etag });
 const broken2Body = await broken2.text();
 

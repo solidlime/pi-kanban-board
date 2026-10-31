@@ -9,6 +9,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync
 import { createServer as netServer } from "node:net";
 import { createRequire } from "node:module";
 import { authFetch } from "./helpers/token.mjs";
+import { readBoardAt, seedBoard, useKanban, removeBoard } from "./helpers/board.mjs";
 
 // #83b: HTTP routes need the server token now; tf = fetch + the kb_auth cookie.
 const tf = (input, init) => authFetch(input, init);
@@ -38,6 +39,7 @@ const { createJiti } = require(
 const jiti = createJiti(import.meta.url);
 const SRC = fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url));
 const mod = await jiti.import(SRC);
+useKanban(mod);
 const { parseKanbanArgs } = mod;
 
 const failures = [];
@@ -55,17 +57,10 @@ const eq = (a, b) => assert.deepEqual(a, b);
 const SID = "img-session";
 const boardFile = `${HOME_DIR}/.pi/kanban/sessions/${SID}.json`;
 const MEDIA = `${HOME_DIR}/.pi/kanban/media`;
-const readCards = () => JSON.parse(readFileSync(boardFile, "utf8")).cards;
+const readCards = () => readBoardAt(boardFile).cards;
 const imgOf = (id) => readCards().find((c) => c.id === id).img;
 const mediaNames = () => readdirSync(MEDIA).sort();
-writeFileSync(
-	boardFile,
-	JSON.stringify(
-		{ cards: [{ id: 3, text: "a", col: "todo" }, { id: 4, text: "b", col: "doing" }], nextId: 90 },
-		null,
-		2,
-	),
-);
+seedBoard(boardFile, { cards: [{ id: 3, text: "a", col: "todo" }, { id: 4, text: "b", col: "doing" }], nextId: 90 });
 
 // --- 0: parseKanbanArgs（純粋） ----------------------------------------------
 check("parse: img 3 /tmp/x.png", () =>
@@ -156,7 +151,7 @@ writeFileSync(SRC_IMG, PNG);
 	check("サイズ超過: notify のみ", () => assert.match(out, /大きすぎる/));
 	check("サイズ超過: ボードは書かれない (#4 は img 無しのまま)", () => eq(imgOf(4), undefined));
 	check("サイズ超過: media は増えない", () => eq(mediaNames(), before));
-	rmSync(BIG, { force: true });
+	removeBoard(BIG);
 }
 
 // --- 5: id が無い -------------------------------------------------------------

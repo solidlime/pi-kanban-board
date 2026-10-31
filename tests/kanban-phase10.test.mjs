@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
+import { readBoardAt, seedBoard, useKanban } from "./helpers/board.mjs";
 
 const HOME_DIR = "/tmp/kb-phase10-home";
 rmSync(HOME_DIR, { recursive: true, force: true });
@@ -32,6 +33,7 @@ const { createJiti } = require(
 const jiti = createJiti(import.meta.url);
 const SRC = fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url));
 const mod = await jiti.import(SRC);
+useKanban(mod);
 const { nextTodo, continuationPrompt, tickCardFor, pickFirstTodo, parseKanbanArgs } = mod;
 
 const failures = [];
@@ -49,9 +51,9 @@ const eq = (a, b) => assert.deepEqual(a, b);
 const MODES = `${HOME_DIR}/.pi/kanban/modes.json`;
 const boardFile = (sid) => `${HOME_DIR}/.pi/kanban/sessions/${sid}.json`;
 const writeBoardFile = (sid, cards) =>
-	writeFileSync(boardFile(sid), JSON.stringify({ cards, nextId: 90 }, null, 2));
-const readCards = (sid) => JSON.parse(readFileSync(boardFile(sid), "utf8")).cards;
-const readModes = () => JSON.parse(readFileSync(MODES, "utf8"));
+	seedBoard(boardFile(sid), { cards, nextId: 90 });
+const readCards = (sid) => readBoardAt(boardFile(sid)).cards;
+const readModes = () => readBoardAt(MODES);
 
 // 全セッション分を毎回書き戻す: poll は 1.5s ごとに modes.json を読み直す。
 const modesState = { SESSION: {}, GLOBAL: {} };

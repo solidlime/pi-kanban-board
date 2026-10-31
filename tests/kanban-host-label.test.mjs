@@ -15,6 +15,7 @@ import { hostname } from "node:os";
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
 import { authFetch } from "./helpers/token.mjs";
+import { useKanban } from "./helpers/board.mjs";
 
 const tf = (input, init) => authFetch(input, init);
 
@@ -49,6 +50,7 @@ const { createJiti } = createRequire(import.meta.url)(
 );
 const jiti = createJiti(import.meta.url);
 const mod = await jiti.import(fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url)));
+useKanban(mod);
 
 // A stand-in for the extension API: enough to make the factory start the HTTP server.
 const pi = {

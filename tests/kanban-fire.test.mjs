@@ -8,6 +8,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
 import { authFetch } from "./helpers/token.mjs";
+import { readBoardAt, seedBoard, useKanban } from "./helpers/board.mjs";
 
 // #83b: HTTP routes need the server token now; tf = fetch + the kb_auth cookie.
 const tf = (input, init) => authFetch(input, init);
@@ -36,6 +37,7 @@ const { createJiti } = require(
 const jiti = createJiti(import.meta.url);
 const target = process.env.KANBAN_TS ?? fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url));
 const mod = await jiti.import(target);
+useKanban(mod);
 const {
 	isBlockedCard,
 	fireAtMs,
@@ -68,10 +70,10 @@ const checkA = (name, fn) => {
 	asyncChecks.push([name, fn]);
 };
 
-const board = (sid) => JSON.parse(readFileSync(`${SESSION_DIR}/${sid}.json`, "utf8"));
-const readRaw = (p) => JSON.parse(readFileSync(p, "utf8"));
-const writeSession = (sid, b) => writeFileSync(`${SESSION_DIR}/${sid}.json`, JSON.stringify(b));
-const writeGlobal = (b) => writeFileSync(`${HOME}/global.json`, JSON.stringify(b));
+const board = (sid) => readBoardAt(`${SESSION_DIR}/${sid}.json`);
+const readRaw = (p) => readBoardAt(p);
+const writeSession = (sid, b) => seedBoard(`${SESSION_DIR}/${sid}.json`, b);
+const writeGlobal = (b) => seedBoard(`${HOME}/global.json`, b);
 
 const ctxFor = (sid) => ({
 	hasUI: false,
@@ -189,7 +191,7 @@ check("tickCardFor: 沈黙 head は後続を飢えさせない", () => {
 // 3: pickFirstTodo（実ファイル）
 // ---------------------------------------------------------------------------
 const PICK = "fire-pick";
-writeFileSync(MODES, JSON.stringify({ SESSION: {}, GLOBAL: {} }));
+writeFileSync(MODES, JSON.stringify({ SESSION: {}, GLOBAL: {} }, null, 2));
 writeSession(PICK, { cards: [TODO_BLOCKED, TODO_PLAIN], nextId: 9 });
 check("pickFirstTodo: blocked を飛ばして次の TODO を DOING に上げる", () => {
 	const picked = pickFirstTodo(PICK, "session");
@@ -455,7 +457,7 @@ async function liveFire() {
 	const modesPath = `${HOME}/modes.json`;
 	const boardPath2 = `${SESSION_DIR}/${SID}.json`;
 	const writeModes = (m) => writeFileSync(modesPath, JSON.stringify({ SESSION: { [SID]: m }, GLOBAL: {} }));
-	const writeBoard2 = (cards) => writeFileSync(boardPath2, JSON.stringify({ cards, nextId: 9 }));
+	const writeBoard2 = (cards) => seedBoard(boardPath2, { cards, nextId: 9 });
 	const due = new Date(Date.now() - 5 * 60_000).toISOString();
 	const later = new Date(Date.now() + 6 * 24 * 3600 * 1000).toISOString();
 	// 1.2s 間隔なら 1.8s のポーリングで連続発火の間隔判定を満たす。
@@ -471,8 +473,8 @@ async function liveFire() {
 	await sleep(1800);
 	assert.equal(sent.length, 1, `due で1回注入 (got ${sent.length})`);
 	assert.match(sent[0], /#1 "fire me"/);
-	assert.equal(JSON.parse(readFileSync(boardPath2, "utf8")).cards[0].firedFor, due, "firedFor は注入後に書かれる");
-	assert.equal(JSON.parse(readFileSync(boardPath2, "utf8")).cards[0].nextFireAt, due, "nextFireAt は動かない");
+	assert.equal(readBoardAt(boardPath2).cards[0].firedFor, due, "firedFor は注入後に書かれる");
+	assert.equal(readBoardAt(boardPath2).cards[0].nextFireAt, due, "nextFireAt は動かない");
 
 	// (C) 同じ nextFireAt のまま -> もう鳴らない（firedFor と等値）。
 	await sleep(2400);

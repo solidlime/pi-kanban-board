@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
+import { useKanban } from "./helpers/board.mjs";
 
 const HOME_DIR = "/tmp/kb-md-home";
 rmSync(HOME_DIR, { recursive: true, force: true });
@@ -30,6 +31,7 @@ const { createJiti } = createRequire(import.meta.url)(
 );
 const jiti = createJiti(import.meta.url);
 const mod = await jiti.import(fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url)));
+useKanban(mod);
 // md() now lives in web/md.js; the build inlines it into the dashboard literal.
 const MD_JS = readFileSync(fileURLToPath(new URL("../web/md.js", import.meta.url)), "utf8");
 

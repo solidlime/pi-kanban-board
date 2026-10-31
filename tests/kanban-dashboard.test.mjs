@@ -8,6 +8,7 @@ import { createServer } from "node:net";
 import { createRequire } from "node:module";
 import vm from "node:vm";
 import { authFetch } from "./helpers/token.mjs";
+import { readBoardAt, seedBoard, useKanban, removeBoard } from "./helpers/board.mjs";
 
 // #83b: HTTP routes need the server token now; tf = fetch + the kb_auth cookie.
 const tf = (input, init) => authFetch(input, init);
@@ -40,6 +41,7 @@ const { createJiti } = require(
 );
 const jiti = createJiti(import.meta.url);
 const mod = await jiti.import(fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url)));
+useKanban(mod);
 
 const failures = [];
 let passed = 0;
@@ -71,7 +73,7 @@ for (let i = 0; i < 40; i++) {
 
 const card = (id, text, col) => ({ id, text, col });
 const writeBoard = (path, cards) =>
-	writeFileSync(path, JSON.stringify({ cards, nextId: cards.length + 1 }));
+	seedBoard(path, { cards, nextId: cards.length + 1 });
 
 // --- 対象データを用意する -----------------------------------------------------
 // GLOBAL: todo 2 / doing 1 / done 1
@@ -320,9 +322,9 @@ check("exists=false のエントリも一覧に残る", () => {
 }
 
 // --- 5. 全空状態 --------------------------------------------------------------
-rmSync(`${KB}/global.json`, { force: true });
-rmSync(`${KB}/sessions/aaaa1111.json`, { force: true });
-rmSync(`${KB}/sessions/bbbb2222.json`, { force: true });
+removeBoard(`${KB}/global.json`);
+removeBoard(`${KB}/sessions/aaaa1111.json`);
+removeBoard(`${KB}/sessions/bbbb2222.json`);
 rmSync(`${KB}/serve.json`, { force: true });
 rmSync(`${KB}/media/one.png`, { force: true });
 rmSync(`${KB}/media/two.mp4`, { force: true });

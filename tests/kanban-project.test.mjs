@@ -10,6 +10,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 import { authFetch } from "./helpers/token.mjs";
+import { readBoardAt, seedBoard, useKanban } from "./helpers/board.mjs";
 
 // #83b: HTTP routes need the server token now; tf = fetch + the kb_auth cookie.
 const tf = (input, init) => authFetch(input, init);
@@ -43,6 +44,7 @@ const jiti = createJiti(import.meta.url);
 const mod = await jiti.import(
 	process.env.KANBAN_TS ?? fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url)),
 );
+useKanban(mod);
 
 const failures = [];
 let passed = 0;
@@ -78,7 +80,7 @@ for (let i = 0; i < 40; i++) {
 
 const SID = "proj-session";
 const KANBAN = `${HOME_DIR}/.pi/kanban`;
-const boardOf = (sid = SID) => JSON.parse(readFileSync(`${KANBAN}/sessions/${sid}.json`, "utf8"));
+const boardOf = (sid = SID) => readBoardAt(`${KANBAN}/sessions/${sid}.json`);
 const cardNamed = (text, sid = SID) => boardOf(sid).cards.find((c) => c.text === text);
 
 // --- 1. 純関数 -----------------------------------------------------------------
@@ -179,7 +181,7 @@ await check("/api/upload?project=<不正> → 400 かつカードも media も�
 
 await check("project 無しの既存カードが混ざったボードが壊れない", async () => {
 	const legacy = { cards: [{ id: 1, text: "legacy", col: "todo", movedBy: "old" }], nextId: 2 };
-	writeFileSync(`${KANBAN}/sessions/legacy-session.json`, JSON.stringify(legacy));
+	seedBoard(`${KANBAN}/sessions/legacy-session.json`, legacy);
 	const r = await tf(`${BASE}/api/kanban?scope=session&sid=legacy-session`);
 	assert.equal(r.status, 200);
 	const j = await r.json();
@@ -195,16 +197,16 @@ await check("tool add/edit: project を正規化して付け、text を消さず
 	const tool = tools.kanban;
 	assert.ok(tool, "kanban tool が登録されていない");
 	const ctx = { sessionManager: { getSessionId: () => SID } };
-	writeFileSync(KANBAN + "/global.json", JSON.stringify({ cards: [], nextId: 1 }));
+	seedBoard(KANBAN + "/global.json", { cards: [], nextId: 1 });
 	const add = await tool.execute("c1", { action: "add", scope: "global", text: "tool alpha", project: "Gamma" }, null, null, ctx);
 	assert.ok(!JSON.stringify(add).includes("error"), JSON.stringify(add).slice(0, 300));
-	const gb = JSON.parse(readFileSync(KANBAN + "/global.json", "utf8"));
+	const gb = readBoardAt(KANBAN + "/global.json");
 	const card = gb.cards.find((c) => c.text === "tool alpha");
 	assert.ok(card, "tool add でカードが作られていない");
 	assert.equal(card.project, "gamma", "tool add が project を正規化していない");
 	const edit = await tool.execute("c2", { action: "edit", scope: "global", id: card.id, project: "delta" }, null, null, ctx);
 	assert.ok(!JSON.stringify(edit).includes("error"), JSON.stringify(edit).slice(0, 300));
-	const after = JSON.parse(readFileSync(KANBAN + "/global.json", "utf8")).cards.find((c) => c.id === card.id);
+	const after = readBoardAt(KANBAN + "/global.json").cards.find((c) => c.id === card.id);
 	assert.equal(after.project, "delta", "tool edit で付け替えられない");
 	assert.equal(after.text, "tool alpha", "project だけの edit で text が消えた");
 });
@@ -212,7 +214,7 @@ await check("tool add/edit: project を正規化して付け、text を消さず
 await check("tool add/edit: 正規化不能な project は fail（無言で無視しない）", async () => {
 	const tool = tools.kanban;
 	const ctx = { sessionManager: { getSessionId: () => SID } };
-	const count = () => JSON.parse(readFileSync(KANBAN + "/global.json", "utf8")).cards.length;
+	const count = () => readBoardAt(KANBAN + "/global.json").cards.length;
 	const before = count();
 	const add = await tool.execute("c3", { action: "add", scope: "global", text: "bad tool", project: "日本語" }, null, null, ctx);
 	assert.equal(add.isError, true, "fail なのに isError でない: " + JSON.stringify(add).slice(0, 200));

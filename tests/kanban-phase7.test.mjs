@@ -9,6 +9,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
 import { authFetch } from "./helpers/token.mjs";
+import { readBoardAt, seedBoard, useKanban } from "./helpers/board.mjs";
 
 // #83b: HTTP routes need the server token now; tf = fetch + the kb_auth cookie.
 const tf = (input, init) => authFetch(input, init);
@@ -36,6 +37,7 @@ const { createJiti } = require(
 );
 const jiti = createJiti(import.meta.url);
 const mod = await jiti.import(fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url)));
+useKanban(mod);
 const { orderTodos, isValidPriority, priorityOf, parseKanbanArgs, pickFirstTodo } = mod;
 
 const failures = [];
@@ -133,22 +135,16 @@ check("［］ -> menu", () => eq(parseKanbanArgs([]), { kind: "menu" }));
 // --- 3: priority が autoPick の選定を実際に変える ------------------------------
 const SID = "phase7-sid";
 // global 層は /api/priority の scope=global ケース用に1枚だけ用意する。
-writeFileSync(
-	`${HOME_DIR}/.pi/kanban/global.json`,
-	JSON.stringify({ cards: [{ id: 3, text: "global", col: "todo" }], nextId: 4 }),
-);
+seedBoard(`${HOME_DIR}/.pi/kanban/global.json`, { cards: [{ id: 3, text: "global", col: "todo" }], nextId: 4 });
 const boardFile = `${HOME_DIR}/.pi/kanban/sessions/${SID}.json`;
-const readBoardFile = () => JSON.parse(readFileSync(boardFile, "utf8"));
-writeFileSync(
-	boardFile,
-	JSON.stringify({
+const readBoardFile = () => readBoardAt(boardFile);
+seedBoard(boardFile, {
 		cards: [
 			{ id: 3, text: "優先度なし", col: "todo" },
 			{ id: 4, text: "優先度10", col: "todo", priority: 10 },
 		],
 		nextId: 5,
-	}),
-);
+	});
 {
 	const picked = pickFirstTodo(SID, "session");
 	check("#3(p=0) と #4(p=10) があると pickFirstTodo は #4 を選ぶ", () => assert.equal(picked && picked.id, 4));
@@ -251,23 +247,20 @@ for (const bad of ["100", "-100", "2.5", "abc"]) {
 	const body = await res.json();
 	check("GET /api/priority?scope=global -> 200（global ボード側に書く）", () => {
 		assert.equal(res.status, 200);
-		const g = JSON.parse(readFileSync(`${HOME_DIR}/.pi/kanban/global.json`, "utf8"));
+		const g = readBoardAt(`${HOME_DIR}/.pi/kanban/global.json`);
 		assert.equal(g.cards.find((c) => c.id === 3).priority, -4);
 	});
 }
 {
 	// #55: セッション単位の書き込みロックは無い。他セッションのボードもその sid で書ける。
 	const otherBoardFile = `${HOME_DIR}/.pi/kanban/sessions/other-session.json`;
-	writeFileSync(
-		otherBoardFile,
-		JSON.stringify({ cards: [{ id: 3, text: "other", col: "todo" }], nextId: 4 }),
-	);
+	seedBoard(otherBoardFile, { cards: [{ id: 3, text: "other", col: "todo" }], nextId: 4 });
 	const otherRes = await api(`sid=other-session&scope=session&id=3&n=3`);
 	const otherBody = await otherRes.json();
 	check("GET /api/priority 他セッション -> 200 かつそのボードに書かれる", () => {
 		assert.equal(otherRes.status, 200);
 		assert.equal(otherBody.ok, true);
-		const written = JSON.parse(readFileSync(otherBoardFile, "utf8"));
+		const written = readBoardAt(otherBoardFile);
 		assert.equal(written.cards.find((c) => c.id === 3).priority, 3);
 		// driver 側のボードは変わらない
 		assert.equal(readBoardFile().cards.find((c) => c.id === 3).priority, 7);

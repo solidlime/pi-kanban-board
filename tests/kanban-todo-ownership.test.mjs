@@ -13,6 +13,7 @@ import { spawn } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
+import { readBoardAt, seedBoard, useKanban } from "./helpers/board.mjs";
 
 const HOME_DIR = "/tmp/kb87-test-home";
 rmSync(HOME_DIR, { recursive: true, force: true });
@@ -37,6 +38,7 @@ const jiti = createJiti(import.meta.url);
 // KB87_SRC: 修正前の kanban.ts を差して「修正前は人格になる」ことを同じテストで実測する。
 const SRC = process.env.KB87_SRC ?? fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url));
 const mod = await jiti.import(SRC);
+useKanban(mod);
 const { nextTodo, tickCardFor, pickFirstTodo, continuationPrompt } = mod;
 const { readToken } = await import("./helpers/token.mjs");
 
@@ -55,9 +57,9 @@ const MODES = `${HOME_DIR}/.pi/kanban/modes.json`;
 const GLOBAL = `${HOME_DIR}/.pi/kanban/global.json`;
 const boardFile = (sid) => `${HOME_DIR}/.pi/kanban/sessions/${sid}.json`;
 const writeBoardFile = (sid, cards) =>
-	writeFileSync(boardFile(sid), JSON.stringify({ cards, nextId: 1 }, null, 2));
-const writeGlobalFile = (cards) => writeFileSync(GLOBAL, JSON.stringify({ cards, nextId: 1 }, null, 2));
-const readGlobal = () => JSON.parse(readFileSync(GLOBAL, "utf8")).cards;
+	seedBoard(boardFile(sid), { cards, nextId: 1 });
+const writeGlobalFile = (cards) => seedBoard(GLOBAL, { cards, nextId: 1 });
+const readGlobal = () => readBoardAt(GLOBAL).cards;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const A = "kb87-driver";

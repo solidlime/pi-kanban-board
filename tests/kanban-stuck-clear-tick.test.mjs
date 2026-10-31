@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import { appendFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
+import { readBoardAt, seedBoard, useKanban, removeBoard } from "./helpers/board.mjs";
 
 const HOME_DIR = "/tmp/kb-stuck-clear-home";
 const ERR_LOG = "/tmp/kb-stuck-clear.err";
@@ -44,6 +45,7 @@ const { createJiti } = require(
 );
 const jiti = createJiti(import.meta.url);
 const mod = await jiti.import(fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url)));
+useKanban(mod);
 
 const failures = [];
 let passed = 0;
@@ -101,7 +103,7 @@ const writeModes = (extra = {}) =>
 		MODES,
 		JSON.stringify({ SESSION: { [SID]: { doingLoop: true, autoPick: false, intervalMin: INTERVAL_MIN, ...extra } }, GLOBAL: {} }),
 	);
-const writeBoard = (cards) => writeFileSync(BOARDS, JSON.stringify({ cards, nextId: 9 }));
+const writeBoard = (cards) => seedBoard(BOARDS, { cards, nextId: 9 });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // stuckLimit 1: settle 1 回で halted:stuck が立つ（halt を作るのも解除するのも settle）。

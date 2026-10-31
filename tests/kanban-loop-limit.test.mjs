@@ -9,6 +9,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
 import { authFetch } from "./helpers/token.mjs";
+import { readBoardAt, seedBoard, useKanban } from "./helpers/board.mjs";
 
 // #83b: HTTP routes need the server token now; tf = fetch + the kb_auth cookie.
 const tf = (input, init) => authFetch(input, init);
@@ -36,6 +37,7 @@ const { createJiti } = require(
 );
 const jiti = createJiti(import.meta.url);
 const mod = await jiti.import(fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url)));
+useKanban(mod);
 
 const failures = [];
 let passed = 0;
@@ -59,10 +61,10 @@ const rowOf = async (sid) => {
 
 const MODES = `${HOME_DIR}/.pi/kanban/modes.json`;
 const readModesRaw = () => JSON.parse(readFileSync(MODES, "utf8"));
-const writeModesRaw = (obj) => writeFileSync(MODES, JSON.stringify(obj));
+const writeModesRaw = (obj) => writeFileSync(MODES, JSON.stringify(obj, null, 2));
 const boardPath = (sid) => `${HOME_DIR}/.pi/kanban/sessions/${sid}.json`;
 const writeBoardFile = (sid) =>
-	writeFileSync(boardPath(sid), JSON.stringify({ cards: [{ id: 1, text: "t", col: "doing" }], nextId: 2 }));
+	seedBoard(boardPath(sid), { cards: [{ id: 1, text: "t", col: "doing" }], nextId: 2 });
 
 function mkPi() {
 	const handlers = new Map();

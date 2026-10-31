@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
+import { readBoardAt, seedBoard, useKanban } from "./helpers/board.mjs";
 
 const HOME_DIR = "/tmp/kb-autotick-home";
 rmSync(HOME_DIR, { recursive: true, force: true });
@@ -34,6 +35,7 @@ const jiti = createJiti(import.meta.url);
 // KANBAN_TS は Phase 4 前のモジュール（関数が無い）で赤を確認するためだけの差し替え口。
 const target = process.env.KANBAN_TS ?? fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url));
 const mod = await jiti.import(target);
+useKanban(mod);
 const { shouldAutoTick, tickCardFor, AUTO_TICK_MS } = mod;
 
 const MIN = 60_000;
@@ -166,7 +168,7 @@ async function liveTick() {
 			modesPath,
 			JSON.stringify({ SESSION: { [SID]: { doingLoop, autoPick: false } }, GLOBAL: {} }),
 		);
-	const writeBoard = (cards) => writeFileSync(boardPath, JSON.stringify({ cards, nextId: 9 }));
+	const writeBoard = (cards) => seedBoard(boardPath, { cards, nextId: 9 });
 	const doing = [{ id: 1, text: "tick me", col: "doing" }];
 
 	// (A) doingLoop OFF + DOING あり -> 1 ターンも消費しない。

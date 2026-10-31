@@ -8,6 +8,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
 import { authFetch } from "./helpers/token.mjs";
+import { useKanban, seedBoard, readBoardAt } from "./helpers/board.mjs";
 
 // #83b: HTTP routes need the server token now; tf = fetch + the kb_auth cookie.
 const tf = (input, init) => authFetch(input, init);
@@ -35,6 +36,7 @@ const { createJiti } = require(
 const jiti = createJiti(import.meta.url);
 const SRC = fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url));
 const mod = await jiti.import(SRC);
+useKanban(mod);
 
 const failures = [];
 let passed = 0;
@@ -88,10 +90,10 @@ handlers.get("session_start")({}, {
 });
 
 // priority 用にカードを1枚用意（SESSION / GLOBAL 両方）
-writeJson(boardFile, { cards: [{ id: 1, text: "c", col: "todo" }], nextId: 9 });
-writeJson(globalFile, { cards: [{ id: 1, text: "g", col: "todo" }], nextId: 9 });
+seedBoard(boardFile, { cards: [{ id: 1, text: "c", col: "todo" }], nextId: 9 });
+seedBoard(globalFile, { cards: [{ id: 1, text: "g", col: "todo" }], nextId: 9 });
 // #55: 他セッションのボードも書き込み対象。priority はそのボードのカードを見る。
-writeJson(otherBoardFile, { cards: [{ id: 1, text: "o", col: "todo" }], nextId: 9 });
+seedBoard(otherBoardFile, { cards: [{ id: 1, text: "o", col: "todo" }], nextId: 9 });
 
 const status = async (path) => (await tf(`http://127.0.0.1:${PORT}${path}`)).status;
 
@@ -128,11 +130,11 @@ await check("他セッションの interval が modes.json に書かれる", () 
 await check("他セッションの stuck が modes.json に書かれる", () =>
 	assert.equal(readJson(modesFile).SESSION[OTHER].stuckLimit, 5));
 await check("他セッションの priority がそのボードのカードに書かれる", () =>
-	assert.equal(readJson(otherBoardFile).cards[0].priority, 5));
+	assert.equal(readBoardAt(otherBoardFile).cards[0].priority, 5));
 await check("priority は sid 指定のボードにだけ入る", () => {
-	assert.equal(readJson(otherBoardFile).cards[0].priority, 5);
-	assert.equal(readJson(otherBoardFile).cards[0].text, "o");
-	assert.equal(readJson(boardFile).cards[0].text, "c");
+	assert.equal(readBoardAt(otherBoardFile).cards[0].priority, 5);
+	assert.equal(readBoardAt(otherBoardFile).cards[0].text, "o");
+	assert.equal(readBoardAt(boardFile).cards[0].text, "c");
 });
 
 // --- scope=global の逃げ道: sid 省略でも 200（現状維持・スコープ外） ---------
