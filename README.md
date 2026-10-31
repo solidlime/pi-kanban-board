@@ -109,7 +109,7 @@ The first layer is a **Host allowlist** (#80-⑨), checked before the token: a r
 
 ## Nothing here is a service
 
-There is no daemon. The HTTP server lives inside the pi process, so board state is available exactly as long as pi is running. The generated HTML is rewritten on each render. Its source is `web/dashboard.html` - see below.
+There is no daemon. The HTTP server lives inside the pi process, so board state is available exactly as long as pi is running. The generated HTML is written once at startup. Its source is `web/dashboard.html` - see below.
 
 ## Working on the code
 
@@ -122,9 +122,9 @@ web/memory.js           column scroll / open-card memory, inlined into the page
 scripts/build-web.mjs   inlines the three into extensions/dashboard.generated.ts
 ```
 
-npm run build regenerates extensions/dashboard.generated.ts; pretest and prepack run it for you. The generated file is committed because the published package ships only extensions/ and pi loads extensions/kanban.ts straight off disk - it cannot build at install time. Edit web/, never the generated file.
+npm run build regenerates extensions/dashboard.generated.ts. prepack runs it; pretest only checks it (--check) and fails when the file is stale. The generated file is committed because the published package ships only extensions/ and pi loads extensions/kanban.ts straight off disk - it cannot build at install time. Edit web/, never the generated file.
 
-npm test runs the whole suite (72 cases) with no dependencies beyond Node itself.
+npm test runs the whole suite with no dependencies beyond Node itself.
 
 ## License
 

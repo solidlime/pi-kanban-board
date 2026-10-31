@@ -9,7 +9,7 @@
 // Backslashes go first, then backticks and $, otherwise an escaped backtick would
 // come out as a double backslash and break the literal.
 import { readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -42,7 +42,9 @@ export function buildWeb() {
 	);
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+// basename, not a path equality: a symlink, a junction or a differently cased
+// drive letter made this false, and --check then passed silently with no output.
+if (basename(process.argv[1] ?? "") === "build-web.mjs") {
 	const want = buildWeb();
 	if (process.argv.includes("--check")) {
 		if (normalise(readFileSync(GEN, "utf8")) !== want) {
