@@ -111,6 +111,21 @@ The first layer is a **Host allowlist** (#80-⑨), checked before the token: a r
 
 There is no daemon. The HTTP server lives inside the pi process, so board state is available exactly as long as pi is running. The generated HTML is rewritten on each render; edit the `DASHBOARD_HTML` constant in `extensions/kanban.ts`, not the generated file.
 
+## Working on the code
+
+The dashboard used to be a 1,500-line template literal inside the extension. It is now split:
+
+```
+web/dashboard.html      the page itself (markup, script, style)
+web/md.js               card-body markdown renderer, inlined into the page
+web/memory.js           column scroll / open-card memory, inlined into the page
+scripts/build-web.mjs   inlines the three into extensions/dashboard.generated.ts
+```
+
+npm run build regenerates extensions/dashboard.generated.ts; pretest and prepack run it for you. The generated file is committed because the published package ships only extensions/ and pi loads extensions/kanban.ts straight off disk - it cannot build at install time. Edit web/, never the generated file.
+
+npm test runs the whole suite (72 cases) with no dependencies beyond Node itself.
+
 ## License
 
 MIT

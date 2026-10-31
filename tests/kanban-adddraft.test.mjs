@@ -18,7 +18,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-const SRC = readFileSync(fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url)), "utf8");
+// The dashboard body moved to web/dashboard.html; kanban.ts only serves it.
+const SRC = readFileSync(fileURLToPath(new URL("../web/dashboard.html", import.meta.url)), "utf8");
 
 const grab = (re) => [...SRC.matchAll(re)].map((m) => m[0]);
 

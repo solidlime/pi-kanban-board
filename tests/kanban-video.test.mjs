@@ -197,7 +197,7 @@ const serveId = add.details.id;
 
 // --- 10: dashboard の描画分岐（静的検証。 #84 でテンプレートは 1 枚） ---------
 {
-	const src = readFileSync(SRC, "utf8");
+	const src = readFileSync(fileURLToPath(new URL("../web/dashboard.html", import.meta.url)), "utf8");
 	check("動画は <video> 要素で描画する（img では再生できない）", () =>
 		assert.match(src, /createElement\("video"\)/));
 	check("<video> に controls / preload=metadata が付き、autoplay は無い", () => {

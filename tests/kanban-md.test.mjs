@@ -1,6 +1,6 @@
 // カード本文の Markdown 記法 (md) の自己検証 (#011)。
 // フレームワーク無しで `node tests/kanban-md.test.mjs`。
-// KANBAN_MD_JS はブラウザ側と同じ関数ソースなので、それを評価して純関数として検査する。
+// md() は web/md.js にあり、ビルドで dashboard にインライン化される。同じソースを評価して検査する。
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
@@ -30,9 +30,11 @@ const { createJiti } = createRequire(import.meta.url)(
 );
 const jiti = createJiti(import.meta.url);
 const mod = await jiti.import(fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url)));
+// md() now lives in web/md.js; the build inlines it into the dashboard literal.
+const MD_JS = readFileSync(fileURLToPath(new URL("../web/md.js", import.meta.url)), "utf8");
 
 // ブラウザが受け取るのと同じソースを評価する (バッククォート無し / ${無し なので new Function で安全)。
-const { md } = new Function(`${mod.KANBAN_MD_JS}\nreturn { esc: esc, md: md };`)();
+const { md } = new Function(`${MD_JS}\nreturn { esc: esc, md: md };`)();
 
 const failures = [];
 let passed = 0;
@@ -83,14 +85,16 @@ check("生の HTML は常にエスケープ (< が残らない)", () => {
 });
 
 // --- 適用範囲 (dashboard だけが md を使う / esc(c.text) は消えている) -----------
-const SRC = readFileSync(fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url)), "utf8");
+const SRC = readFileSync(fileURLToPath(new URL("../web/dashboard.html", import.meta.url)), "utf8");
 check("カード本文は md(c.text) （#84: テンプレートは dashboard のみ）", () => {
 	assert.equal((SRC.match(/md\(c\.text\)/g) || []).length, 1);
 	assert.ok(!SRC.includes("esc(c.text)"));
 });
-check("md() の定義は KANBAN_MD_JS の 1 箇所だけ", () => {
-	assert.equal((SRC.match(/function md\(s\)/g) || []).length, 1);
-	assert.equal((SRC.match(/KANBAN_MD_JS/g) || []).length, 2); // 定義1 + 注入1
+check("md() の定義は web/md.js の 1 箇所だけ", () => {
+	assert.equal((MD_JS.match(/function md\(s\)/g) || []).length, 1, "md() の定義は web/md.js の 1 箇所");
+	assert.equal((SRC.match(/__KB_MD_JS__/g) || []).length, 1, "dashboard への注入は 1 箇所");
+	// 直書きの二枚目を許さない: プレースホルダを外した本文に md() は居ない
+	assert.equal((SRC.replace("__KB_MD_JS__", "").match(/function md\(s\)/g) || []).length, 0, "dashboard に md() を直書きしている");
 });
 
 if (failures.length) {

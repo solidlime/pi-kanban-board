@@ -72,7 +72,6 @@ for (let i = 0; i < 40; i++) {
 // --- 1. 実サーバ: GET / はダッシュボードの HTML ---------------------------------
 const res = await tf(`${BASE}/`);
 const html = await res.text();
-const { DASHBOARD_HTML } = mod.__test_exports ?? {};
 await check("GET / は 200", () => assert.equal(res.status, 200));
 await check("// 0. 前提: 応答はダッシュボード（別テンプレートを掴んでいない）", () => {
 	assert.ok(html.includes('var API = "/api/dashboard"'), "dashboard のポーリング JS が無い");

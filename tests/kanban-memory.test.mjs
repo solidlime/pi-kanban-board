@@ -9,7 +9,7 @@
 // HOME と KANBAN_PORT を差し替えるので本番の ~/.pi/kanban と 8789 には触れない。
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
 import vm from "node:vm";
@@ -89,7 +89,7 @@ const scriptsOf = (html) => [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].
 // (a) 純関数: 共有 JS をそのまま評価する（ブラウザと同じソース）
 // ---------------------------------------------------------------------------
 const mem = new Function(
-	`${mod.KANBAN_MEMORY_JS}
+	`${readFileSync(fileURLToPath(new URL("../web/memory.js", import.meta.url)), "utf8")}
 return { MAX_CARD_OPEN: MAX_CARD_OPEN, SCROLL_DEBOUNCE_MS: SCROLL_DEBOUNCE_MS,
   memParse: memParse, memClamp: memClamp, memKeepable: memKeepable,
   memCompactCards: memCompactCards, memPruneColumn: memPruneColumn };`,
