@@ -30,12 +30,36 @@ export type Card = {
 	blocked?: string;
 	firedFor?: string;
 	project?: string;
+	/** YYYY-MM-DD only: a deadline is a date, not an instant. */
+	due?: string;
+	/** Points, integer >= 0. */
+	estimate?: number;
+	/** Cards this one WAITS FOR (it stays blocked until they are done). Filled in from card_dep. */
+	blocks?: number[];
 };
 
 export type Board = { cards: Card[]; nextId: number };
 
 /** A board is a (scope, sid) pair. Global boards use sid = "". */
 export type BoardKey = { scope: "global" | "session"; sid: string };
+
+/** A project lives outside any board: `card.project` is its slug, so one project can span boards. */
+export type Project = {
+	slug: string;
+	name: string;
+	createdAt: number;
+	updatedAt: number;
+};
+
+/** One line of the decision log. `why` is what makes it worth keeping. */
+export type Decision = {
+	id: number;
+	/** "" means a decision that is not tied to a single project. */
+	slug: string;
+	at: number;
+	text: string;
+	why?: string;
+};
 
 export type KanbanDb = {
 	readBoard(key: BoardKey): Board | null;
@@ -49,7 +73,19 @@ export type KanbanDb = {
 	/** Drop a whole board. Tests use this to reproduce "no boards at all". */
 	deleteBoard(key: BoardKey): void;
 	/** Every session board, newest touch first - the replacement for readdir(SESSIONS_DIR). */
-	sessionKeys(): { sid: string; touchedAt: number }[];
+	sessionKeys(): { sid: string; touchedAt: number }[];
+	/** Every project, most recently touched first. */
+	listProjects(): Project[];
+	/** Read one project, or null. */
+	readProject(slug: string): Project | null;
+	/** Upsert by slug. Returns false when the project did not exist yet. */
+	writeProject(slug: string, name: string): boolean;
+	/** Drops the project and its decision log. Returns how many decisions went with it. */
+	deleteProject(slug: string): number;
+	/** Newest first. Omit the slug for the whole log. */
+	listDecisions(slug?: string): Decision[];
+	addDecision(slug: string, text: string, why?: string, at?: number): Decision;
+	deleteDecision(id: number): boolean;
 	close(): void;
 };
 
@@ -71,9 +107,30 @@ const SCHEMA = [
 	"  col TEXT NOT NULL,",
 	"  img TEXT, moved_at INTEGER, moved_by TEXT, priority INTEGER,",
 	"  next_fire_at TEXT, blocked TEXT, fired_for TEXT, project TEXT,",
+	"  due TEXT, estimate INTEGER,",
 	"  PRIMARY KEY (scope, sid, id)",
 	");",
-	"CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);",
+	// Dependencies live outside card: they are a relation, and rewriting one card's
+	// dependency list must not touch its row (or its rev).
+	"CREATE TABLE IF NOT EXISTS card_dep (",
+	"  scope TEXT NOT NULL, sid TEXT NOT NULL,",
+	"  card_id INTEGER NOT NULL, blocks_id INTEGER NOT NULL,",
+	"  PRIMARY KEY (scope, sid, card_id, blocks_id)",
+	");",
+	// New tables need no ALTER guard: SCHEMA runs on every open, so CREATE TABLE IF NOT
+	// EXISTS *is* the migration. That is why user_version stays at 1.
+	"CREATE TABLE IF NOT EXISTS project (",
+	"  slug TEXT PRIMARY KEY,",
+	"  name TEXT NOT NULL,",
+	"  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL",
+	");",
+	"CREATE TABLE IF NOT EXISTS decision (",
+	"  id INTEGER PRIMARY KEY AUTOINCREMENT,",
+	"  slug TEXT NOT NULL, at INTEGER NOT NULL,",
+	"  text TEXT NOT NULL, why TEXT",
+	");",
+	"CREATE INDEX IF NOT EXISTS decision_by_slug ON decision (slug, at DESC);",
+"CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);",
 ].join("\n");
 
 type Row = Record<string, unknown>;
@@ -107,7 +164,27 @@ function rowToCard(r: Row): Card {
 	if (firedFor !== undefined) card.firedFor = firedFor;
 	const project = optionalText(r.project);
 	if (project !== undefined) card.project = project;
+	const due = optionalText(r.due);
+	if (due !== undefined) card.due = due;
+	const estimate = optionalNumber(r.estimate);
+	if (estimate !== undefined) card.estimate = estimate;
 	return card;
+}
+
+function rowToProject(r: Row): Project {
+	return {
+		slug: String(r.slug),
+		name: String(r.name),
+		createdAt: Number(r.created_at),
+		updatedAt: Number(r.updated_at),
+	};
+}
+
+function rowToDecision(r: Row): Decision {
+	const d: Decision = { id: Number(r.id), slug: String(r.slug), at: Number(r.at), text: String(r.text) };
+	const why = optionalText(r.why);
+	if (why !== undefined) d.why = why;
+	return d;
 }
 
 /** Open (creating if needed) the board database. Callers own the single instance. */
@@ -136,9 +213,21 @@ export function openKanbanDb(file: string): KanbanDb {
 	db.exec("PRAGMA busy_timeout = 3000");
 	db.exec(SCHEMA);
 
+	// CREATE TABLE IF NOT EXISTS cannot add a column to a table that already exists, so the
+	// upgrade is a guarded ALTER. table_info decides (not user_version alone): the version
+	// is bumped only after every ALTER ran, so an interrupted upgrade retries instead of
+	// claiming a schema it does not have.
+	const version = Number((db.prepare("PRAGMA user_version").get() as Row).user_version ?? 0);
+	if (version < 1) {
+		const cols = new Set((db.prepare("PRAGMA table_info(card)").all() as Row[]).map((r) => String(r.name)));
+		if (!cols.has("due")) db.exec("ALTER TABLE card ADD COLUMN due TEXT");
+		if (!cols.has("estimate")) db.exec("ALTER TABLE card ADD COLUMN estimate INTEGER");
+		db.exec("PRAGMA user_version = 1");
+	}
+
 	const selectBoard = db.prepare("SELECT next_id FROM board WHERE scope = ? AND sid = ?");
 	const selectCards = db.prepare(
-		"SELECT id, text, col, img, moved_at, moved_by, priority, next_fire_at, blocked, fired_for, project FROM card WHERE scope = ? AND sid = ? ORDER BY ord",
+		"SELECT id, text, col, img, moved_at, moved_by, priority, next_fire_at, blocked, fired_for, project, due, estimate FROM card WHERE scope = ? AND sid = ? ORDER BY ord",
 	);
 	const selectRev = db.prepare("SELECT rev FROM board WHERE scope = ? AND sid = ?");
 	const insertBoard = db.prepare(
@@ -154,15 +243,64 @@ export function openKanbanDb(file: string): KanbanDb {
 		"DELETE FROM card WHERE scope = ? AND sid = ? AND id NOT IN (SELECT value FROM json_each(?))",
 	);
 	const insertCard = db.prepare(
-		"INSERT OR REPLACE INTO card (scope, sid, id, ord, text, col, img, moved_at, moved_by, priority, next_fire_at, blocked, fired_for, project) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		"INSERT OR REPLACE INTO card (scope, sid, id, ord, text, col, img, moved_at, moved_by, priority, next_fire_at, blocked, fired_for, project, due, estimate) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 	);
+	const selectDeps = db.prepare(
+		"SELECT card_id, blocks_id FROM card_dep WHERE scope = ? AND sid = ? ORDER BY card_id, blocks_id",
+	);
+	const deleteDeps = db.prepare("DELETE FROM card_dep WHERE scope = ? AND sid = ?");
+	const insertDep = db.prepare(
+		"INSERT OR IGNORE INTO card_dep (scope, sid, card_id, blocks_id) VALUES (?, ?, ?, ?)",
+	);
+	const selectProjects = db.prepare(
+		"SELECT slug, name, created_at, updated_at FROM project ORDER BY updated_at DESC, slug",
+	);
+	const selectProject = db.prepare("SELECT slug, name, created_at, updated_at FROM project WHERE slug = ?");
+	const countProject = db.prepare("SELECT 1 AS hit FROM project WHERE slug = ?");
+	const upsertProject = db.prepare(
+		"INSERT INTO project (slug, name, created_at, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(slug) DO UPDATE SET name = excluded.name, updated_at = excluded.updated_at",
+	);
+	const deleteProjectRow = db.prepare("DELETE FROM project WHERE slug = ?");
+	const selectDecisions = db.prepare("SELECT id, slug, at, text, why FROM decision ORDER BY at DESC, id DESC");
+	const selectDecisionsBySlug = db.prepare(
+		"SELECT id, slug, at, text, why FROM decision WHERE slug = ? ORDER BY at DESC, id DESC",
+	);
+	const insertDecision = db.prepare("INSERT INTO decision (slug, at, text, why) VALUES (?, ?, ?, ?)");
+	const deleteDecisionsBySlug = db.prepare("DELETE FROM decision WHERE slug = ?");
+	const deleteDecisionRow = db.prepare("DELETE FROM decision WHERE id = ?");
 	const sweep = db.prepare("DELETE FROM board WHERE scope = 'session' AND touched_at < ?");
+	const sweepDeps = db.prepare(
+		"DELETE FROM card_dep WHERE scope = 'session' AND sid IN (SELECT sid FROM board WHERE scope = 'session' AND touched_at < ?)",
+	);
+	// The whole dependency set of a board is rewritten on every write, exactly like the
+	// cards: a removed edge (or card) must not survive the next read.
+	const writeDeps = (scope: string, sid: string, cards: Card[]): void => {
+		deleteDeps.run(scope, sid);
+		for (const c of cards) {
+			for (const blocksId of c.blocks ?? []) insertDep.run(scope, sid, c.id, blocksId);
+		}
+	};
 
 	const readBoard = (key: BoardKey): Board | null => {
 		const head = selectBoard.get(key.scope, key.sid) as Row | undefined;
 		if (!head) return null;
 		const rows = selectCards.all(key.scope, key.sid) as Row[];
-		return { cards: rows.map(rowToCard), nextId: Number(head.next_id) };
+		const cards = rows.map(rowToCard);
+		const deps = selectDeps.all(key.scope, key.sid) as Row[];
+		if (deps.length > 0) {
+			const byCard = new Map<number, number[]>();
+			for (const d of deps) {
+				const id = Number(d.card_id);
+				const list = byCard.get(id);
+				if (list === undefined) byCard.set(id, [Number(d.blocks_id)]);
+				else list.push(Number(d.blocks_id));
+			}
+			for (const c of cards) {
+				const blocks = byCard.get(c.id);
+				if (blocks !== undefined) c.blocks = blocks;
+			}
+		}
+		return { cards, nextId: Number(head.next_id) };
 	};
 
 	return {
@@ -198,8 +336,11 @@ export function openKanbanDb(file: string): KanbanDb {
 						c.blocked ?? null,
 						c.firedFor ?? null,
 						c.project ?? null,
+						c.due ?? null,
+						c.estimate ?? null,
 					);
 				}
+				writeDeps(key.scope, key.sid, b.cards);
 				db.exec("COMMIT");
 			} catch (err) {
 				db.exec("ROLLBACK");
@@ -236,8 +377,11 @@ export function openKanbanDb(file: string): KanbanDb {
 						c.blocked ?? null,
 						c.firedFor ?? null,
 						c.project ?? null,
+						c.due ?? null,
+						c.estimate ?? null,
 					);
 				}
+				writeDeps(key.scope, key.sid, b.cards);
 				db.exec("COMMIT");
 			} catch (err) {
 				db.exec("ROLLBACK");
@@ -245,7 +389,49 @@ export function openKanbanDb(file: string): KanbanDb {
 			}
 			return true;
 		},
+		listProjects() {
+			return (selectProjects.all() as Row[]).map(rowToProject);
+		},
+		readProject(slug) {
+			const row = selectProject.get(slug) as Row | undefined;
+			return row === undefined ? null : rowToProject(row);
+		},
+		writeProject(slug, name) {
+			const now = Date.now();
+			const existed = countProject.get(slug) !== undefined;
+			// createdAt only matters when the row is new: a rename must not rewrite it.
+			upsertProject.run(slug, name, now, now);
+			return !existed;
+		},
+		deleteProject(slug) {
+			// One transaction: a project without its decision log is a hole, not a state.
+			db.exec("BEGIN IMMEDIATE");
+			try {
+				const info = deleteDecisionsBySlug.run(slug);
+				deleteProjectRow.run(slug);
+				db.exec("COMMIT");
+				return Number(info.changes ?? 0);
+			} catch (err) {
+				db.exec("ROLLBACK");
+				throw err;
+			}
+		},
+		listDecisions(slug) {
+			const rows = slug === undefined ? selectDecisions.all() : selectDecisionsBySlug.all(slug);
+			return (rows as Row[]).map(rowToDecision);
+		},
+		addDecision(slug, text, why, at) {
+			const when = at ?? Date.now();
+			const info = insertDecision.run(slug, when, text, why ?? null);
+			const d: Decision = { id: Number(info.lastInsertRowid), slug, at: when, text };
+			if (why !== undefined) d.why = why;
+			return d;
+		},
+		deleteDecision(id) {
+			return Number(deleteDecisionRow.run(id).changes ?? 0) > 0;
+		},
 		deleteBoard(key) {
+			deleteDeps.run(key.scope, key.sid);
 			deleteAllCards.run(key.scope, key.sid);
 			deleteBoardRow.run(key.scope, key.sid);
 		},
@@ -257,6 +443,8 @@ export function openKanbanDb(file: string): KanbanDb {
 				.all() as { sid: string; touchedAt: number }[];
 		},
 		sweepSessions(cutoff) {
+			// Dependencies first: a swept sid that comes back must not inherit its old edges.
+			sweepDeps.run(cutoff);
 			const info = sweep.run(cutoff);
 			return Number(info.changes ?? 0);
 		},

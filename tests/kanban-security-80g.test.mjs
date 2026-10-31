@@ -166,6 +166,8 @@ const WRITE_GET_ROUTES = [
 	"priority?id=1&n=2&scope=global",
 	"schedule?id=1&at=2030-01-01T00:00:00Z&scope=global",
 	"serve?id=deadbeef&action=remove",
+	"project?project=revex&name=x",
+	"decision?project=revex&text=x",
 	// 普段は POST 専用。GET では元々 400/404 だったが、書き込み面として 405 に揃える。
 	"upload?scope=global&col=todo&ext=png",
 	"host",
@@ -196,6 +198,11 @@ await check("405 に Allow ヘッダを付けない（判定は method ではな
 });
 
 // --- 対象外の経路 --------------------------------------------------------------
+await check("GET /api/projects + none は 405 にしない（読み取り専用の集計）", async () => {
+	const res = await send("/api/projects", { headers: { "Sec-Fetch-Site": "none" } });
+	assert.notEqual(res.status, 405, res.status + " " + res.body);
+});
+
 await check("GET /serve/ + none は 405 にしない（読み取り専用の配信）", async () => {
 	const res = await send("/serve/", { headers: { "Sec-Fetch-Site": "none" } });
 	assert.equal(res.status, 200, `${res.status} ${res.body.slice(0, 80)}`);

@@ -203,6 +203,21 @@ await check("/api/remove: 存在しない id は 404", async () => {
 	assert.equal(res.status, 404, `status=${res.status}`);
 });
 
+
+await check("/api/remove: 消したカードは他の blocks からも外れる", async () => {
+	const a = await tf(`${BASE}/api/add?scope=session&sid=${ACTIVE}&text=${q("土台")}&col=done`);
+	const aid = (await a.json()).cards.at(-1).id;
+	const b = await tf(`${BASE}/api/add?scope=session&sid=${ACTIVE}&text=${q("依存先")}&col=todo&blocks=${aid}`);
+	const bid = (await b.json()).cards.at(-1).id;
+	let dash = await (await tf(`${BASE}/api/dashboard`)).json();
+	const before = dash.sessions.find((s) => s.id === ACTIVE).cards.find((c) => c.id === bid);
+	assert.deepEqual(before.blocks, [aid], "blocks が張られていない");
+	await tf(`${BASE}/api/remove?scope=session&sid=${ACTIVE}&id=${aid}`);
+	dash = await (await tf(`${BASE}/api/dashboard`)).json();
+	const after = dash.sessions.find((s) => s.id === ACTIVE).cards.find((c) => c.id === bid);
+	assert.ok(!after.blocks || after.blocks.length === 0, `孤児 blocks が残った: ${JSON.stringify(after.blocks)}`);
+});
+
 // --- 4. vm: 実ハンドラを叩いて act() の引数まで見る --------------------------
 {
 	const created = [];

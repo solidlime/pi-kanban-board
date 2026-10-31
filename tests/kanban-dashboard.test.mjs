@@ -198,6 +198,20 @@ check("session.name は生のまま（サニタイズしない）", () => {
 
 // --- 3. serve 一覧 + 存在しないパス ------------------------------------------
 check("stats.serve = 登録数", () => assert.equal(data.stats.serve, 2));
+
+// --- #11: 設定タブの保存データ（db）/ ---
+check("db はファイル名・サイズ・件数を返す", () => {
+	assert.ok(data.db, "db が無い");
+	assert.equal(data.db.file, "boards.sqlite");
+	assert.equal(typeof data.db.bytes, "number");
+	assert.ok(data.db.bytes > 0, `bytes=${data.db.bytes}`);
+	assert.equal(data.db.cards, data.stats.todo + data.stats.doing + data.stats.done);
+	assert.ok(data.db.boards >= 1, `boards=${data.db.boards}`);
+	assert.equal(typeof data.db.projects, "number");
+	assert.equal(typeof data.db.decisions, "number");
+});
+check("db に絶対パスを載せない (#80-⑦)", () =>
+	assert.ok(!JSON.stringify(data.db).includes(HOME_DIR), "db に絶対パスが漏れている"));
 check("exists=true のエントリ", () => {
 	const e = data.serve.find((x) => x.id === LIVE_ID);
 	assert.ok(e, "live entry が無い");

@@ -67,7 +67,7 @@ import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext, SessionInfo } from "@earendil-works/pi-coding-agent";
 import { DASHBOARD_TEMPLATE } from "./dashboard.generated.ts";
 import { openKanbanDb } from "./db.ts";
-import type { BoardKey, KanbanDb } from "./db.ts";
+import type { BoardKey, Decision, KanbanDb } from "./db.ts";
 
 // ---------------------------------------------------------------------------
 // Types & state
@@ -87,6 +87,10 @@ type Col = "todo" | "doing" | "done";
 // project is optional too: a slug (lowercase [a-z0-9._-], max 24 chars) naming the
 // project a card belongs to. Absent = unassigned. Deliberately unrelated to the
 // loop: autoPick/injection never read it (see normalizeProject).
+// due/estimate/blocks (#phase1) are the board-metadata trio. due is a DATE
+// (YYYY-MM-DD, no time) so "today" means the same thing to every reader; estimate is
+// a non-negative point count; blocks lists the cards this one blocks. Absent means
+// "no deadline / no estimate / blocks nothing", so pre-phase1 cards read unchanged.
 type Card = {
 	id: number;
 	text: string;
@@ -99,6 +103,9 @@ type Card = {
 	blocked?: string;
 	firedFor?: string;
 	project?: string;
+	due?: string;
+	estimate?: number;
+	blocks?: number[];
 };
 type Board = { cards: Card[]; nextId: number };
 // Automatic loop modes, keyed by (scope, session). The legacy flat doingLoop/autoPick
@@ -211,6 +218,7 @@ const KANBAN_DIR = join(homedir(), ".pi", "kanban");
 const GLOBAL_JSON = join(KANBAN_DIR, "global.json");
 const MODES_JSON = join(KANBAN_DIR, "modes.json");
 const SESSIONS_DIR = join(KANBAN_DIR, "sessions");
+const DB_FILE = join(KANBAN_DIR, "boards.sqlite"); // #11: 設定タブが大きさを出す（db.ts は触らない）
 const LEGACY_JSON = join(KANBAN_DIR, "board.json");
 const DASHBOARD_HTML_PATH = join(KANBAN_DIR, "dashboard.html");
 const SERVER_LOG = join(KANBAN_DIR, "server.log");
@@ -390,7 +398,7 @@ export function deleteBoardPath(path: string): void {
 function kanbanDb(): KanbanDb {
 	if (db !== null) return db;
 	mkdirSync(KANBAN_DIR, { recursive: true });
-	db = openKanbanDb(join(KANBAN_DIR, "boards.sqlite"));
+	db = openKanbanDb(DB_FILE);
 	importBoards(db);
 	return db;
 }
@@ -614,6 +622,57 @@ export function normalizeProject(raw: unknown): string {
 		.toLowerCase()
 		.replace(/[^a-z0-9._-]/g, "")
 		.slice(0, PROJECT_MAX);
+}
+
+const DUE_RE = /^\d{4}-\d{2}-\d{2}$/;
+/**
+ * due is a date, not an instant: a time part would let two readers disagree on "today".
+ * null = the caller got a value it cannot store (400), undefined = nothing given.
+ */
+export function parseDue(raw: string | null): string | undefined | null {
+	if (raw === null || raw.trim() === "") return undefined;
+	const s = raw.trim();
+	if (!DUE_RE.test(s)) return null;
+	// DUE_RE only checks the shape: 2026-13-01 passes it. Comparing the round-trip
+	// catches month/day overflow without hand-rolling a calendar.
+	const d = new Date(`${s}T00:00:00Z`);
+	return Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== s ? null : s;
+}
+
+/** estimate is a point count: an integer >= 0. null = reject, undefined = nothing given. */
+export function parseEstimate(raw: string | null): number | undefined | null {
+	if (raw === null || raw.trim() === "") return undefined;
+	const n = Number(raw);
+	return Number.isInteger(n) && n >= 0 ? n : null;
+}
+
+/** blocks arrives as "1,2,3" (the API is GET + query). null = reject, [] = nothing given. */
+export function parseBlocks(raw: string | null): number[] | null {
+	if (raw === null || raw.trim() === "") return [];
+	const ids = raw.split(",").map((s) => Number(s.trim()));
+	if (ids.some((id) => !Number.isInteger(id) || id < 1)) return null;
+	return [...new Set(ids)];
+}
+
+/**
+ * card -> blocks の連鎖を自分に戻るまで辿る。自己参照（自分を blocks する）もここで落ちる。
+ * 新しいカードはまだ誰からも指されていないが、既存カードは未採番の id を blocks に
+ * 書ける（あとから作るカードを先に宣言できる）ので、書き込み前に必ず見る。
+ */
+export function wouldCycle(cards: Card[], cardId: number, blocks: number[]): boolean {
+	const edges = new Map<number, number[]>();
+	for (const c of cards) if (c.blocks !== undefined) edges.set(c.id, c.blocks);
+	const seen = new Set<number>();
+	const stack = [...blocks];
+	while (stack.length > 0) {
+		const id = stack.pop() as number;
+		if (id === cardId) return true;
+		if (seen.has(id)) continue;
+		seen.add(id);
+		const next = edges.get(id);
+		if (next !== undefined) stack.push(...next);
+	}
+	return false;
 }
 
 /**
@@ -1606,6 +1665,8 @@ function isWritePath(pathname: string, method: string): boolean {
 		case "/api/resume":
 		case "/api/priority":
 		case "/api/schedule":
+		case "/api/project":
+		case "/api/decision":
 			return true;
 		default:
 			return false;
@@ -3034,6 +3095,130 @@ function mediaFileCount(): number {
 	}
 }
 
+/** The card fields a project roll-up reads. Narrow on purpose: JSON shape, not the DB row. */
+type RollupCard = {
+	id: number;
+	text: string;
+	col: string;
+	project?: string;
+	due?: string;
+	estimate?: number;
+	blocked?: string;
+};
+
+export type ProjectSummary = {
+	slug: string;
+	name: string;
+	/** false while the slug exists only on cards: nobody has given it a name yet. */
+	declared: boolean;
+	counts: { todo: number; doing: number; done: number };
+	total: number;
+	done: number;
+	/** Estimate sums. A card without an estimate counts as 0 points. */
+	points: { total: number; done: number };
+	/** Percent of cards done, derived on every read. A stored percentage drifts. */
+	progress: number;
+	/** Cards not done whose due date has passed. */
+	overdue: number;
+	milestones: { id: number; text: string; due: string; col: string; scope: string; sid: string }[];
+	blockers: { id: number; text: string; blocked: string; scope: string; sid: string }[];
+	decisions: Decision[];
+};
+
+/**
+ * Cards in, one row per project out. Progress is never stored: the card is the only truth,
+ * and a cached percentage is wrong the moment someone drags a card.
+ *
+ * A slug that only cards mention is listed too (name falls back to the slug), otherwise
+ * work would disappear from the project tab just because nobody "created" the project.
+ */
+export function projectRollup(
+	declared: { slug: string; name: string }[],
+	decisions: Decision[],
+	cards: { scope: string; sid: string; card: RollupCard }[],
+	today: string,
+): ProjectSummary[] {
+	const named = new Map(declared.map((p) => [p.slug, p.name]));
+	const slugs = new Set(named.keys());
+	for (const { card } of cards) if (card.project) slugs.add(card.project);
+	const log = new Map<string, Decision[]>();
+	for (const d of decisions) {
+		// A decision can be written for a slug no card names yet: it must still show up.
+		if (d.slug !== "") slugs.add(d.slug);
+		const list = log.get(d.slug);
+		if (list === undefined) log.set(d.slug, [d]);
+		else list.push(d);
+	}
+	return [...slugs].sort().map((slug) => {
+		const mine = cards.filter((e) => e.card.project === slug);
+		const done = mine.filter((e) => e.card.col === "done");
+		const points = (list: { card: RollupCard }[]) => list.reduce((n, e) => n + (e.card.estimate ?? 0), 0);
+		const at = (e: { card: RollupCard; scope: string; sid: string }) => ({ scope: e.scope, sid: e.sid });
+		return {
+			slug,
+			name: named.get(slug) ?? slug,
+			declared: named.has(slug),
+			counts: {
+				todo: mine.filter((e) => e.card.col === "todo").length,
+				doing: mine.filter((e) => e.card.col === "doing").length,
+				done: done.length,
+			},
+			total: mine.length,
+			done: done.length,
+			points: { total: points(mine), done: points(done) },
+			progress: mine.length === 0 ? 0 : Math.round((done.length / mine.length) * 100),
+			overdue: mine.filter((e) => e.card.col !== "done" && e.card.due !== undefined && e.card.due < today).length,
+			milestones: mine
+				.filter((e) => e.card.due !== undefined)
+				.map((e) => ({ id: e.card.id, text: e.card.text, due: e.card.due as string, col: e.card.col, ...at(e) }))
+				.sort((a, b) => a.due.localeCompare(b.due) || a.id - b.id),
+			blockers: mine
+				.filter((e) => (e.card.blocked ?? "") !== "")
+				.map((e) => ({ id: e.card.id, text: e.card.text, blocked: e.card.blocked as string, ...at(e) })),
+			decisions: log.get(slug) ?? [],
+		};
+	});
+}
+
+/** GET /api/projects: the project tab's whole payload. */
+async function projectsPayload(): Promise<unknown> {
+	const { sessions } = await sessionRows();
+	const gb = readBoard(GLOBAL_JSON);
+	const cards = [
+		...gb.cards.map((card) => ({ scope: "global", sid: "", card })),
+		...sessions.flatMap((s) => s.cards.map((card) => ({ scope: "session", sid: s.id, card }))),
+	];
+	const db = kanbanDb();
+	return {
+		ok: true,
+		projects: projectRollup(db.listProjects(), db.listDecisions(), cards, new Date().toISOString().slice(0, 10)),
+		// Decisions with no project live nowhere else: the per-project lists cannot hold them.
+		decisions: db.listDecisions(""),
+	};
+}
+
+/**
+ * #11: 設定タブの「保存データ」。パスは固定名だけ（絶対パスは出さない #80-⑦）。
+ * 読めないときは null — ダッシュボードは何も描かない（旧サーバー互換と同じ見え方）。
+ * counts は呼び出し元が既に持っている数字（totals 合計）を使って二重に数えない。
+ */
+function dbInfo(cards: number): unknown {
+	try {
+		const st = statSync(DB_FILE);
+		const store = kanbanDb();
+		return {
+			file: basename(DB_FILE),
+			bytes: st.size,
+			boards: store.sessionKeys().length + 1, // +1 = GLOBAL 看板
+			cards,
+			projects: store.listProjects().length,
+			decisions: store.listDecisions().length,
+		};
+	} catch {
+		return null;
+	}
+}
+
 /** GET /api/dashboard: one request carrying everything the dashboard renders. */
 async function dashboardPayload(): Promise<unknown> {
 	const { sessions } = await sessionRows();
@@ -3085,6 +3270,8 @@ async function dashboardPayload(): Promise<unknown> {
 			serve: serve.length,
 			media: mediaFileCount(),
 		},
+		// #11: 設定タブの「保存データ」。絶対パスは出さない（#80-⑦）。
+		db: dbInfo(totals.todo + totals.doing + totals.done),
 		global: { counts: globalCounts, cards: gb.cards, modes: modesFor(f, activeSessionId ?? "", "global") },
 		sessions: sessions.map((s) => ({
 			id: s.id,
@@ -3301,6 +3488,9 @@ const CARD_FIELDS = [
 	"blocked",
 	"firedFor",
 	"project",
+	"due",
+	"estimate",
+	"blocks",
 ] as const;
 
 function projectBoard(b: Board, keys: string[]): Board {
@@ -3526,6 +3716,58 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
 		);
 		return;
 	}
+	if (url.pathname === "/api/projects") {
+		void projectsPayload().then(
+			(body) => sendEtagJson(req, res, JSON.stringify(body)),
+			() => sendJson(res, 500, { ok: false, error: "projects failed" }),
+		);
+		return;
+	}
+	if (url.pathname === "/api/project") {
+		const project = normalizeProject(q.get("project"));
+		if (project === "") {
+			sendJson(res, 400, { ok: false, error: "project must match [a-z0-9._-]" });
+			return;
+		}
+		// No name = the slug. Renaming is the only reason to call this: a card naming the
+		// slug is enough to make the project exist.
+		const name = (q.get("name") ?? "").trim() || project;
+		sendJson(res, 200, { ok: true, created: kanbanDb().writeProject(project, name) });
+		return;
+	}
+	if (url.pathname === "/api/decision") {
+		const db = kanbanDb();
+		const action = q.get("action");
+		// Same rule as /api/serve: an unknown action is a 400, not the default branch.
+		if (action !== null && action !== "delete") {
+			sendJson(res, 400, { ok: false, error: "action must be delete" });
+			return;
+		}
+		if (action === "delete") {
+			const id = Number(q.get("id"));
+			if (!Number.isInteger(id) || id <= 0) {
+				sendJson(res, 400, { ok: false, error: "id must be a positive integer" });
+				return;
+			}
+			sendJson(res, 200, { ok: true, deleted: db.deleteDecision(id) });
+			return;
+		}
+		const text = (q.get("text") ?? "").trim();
+		if (text === "") {
+			sendJson(res, 400, { ok: false, error: "text required" });
+			return;
+		}
+		const projectRaw = q.get("project") ?? "";
+		const project = normalizeProject(projectRaw);
+		// Same rule as /api/add: only an exact empty string means "no project at all".
+		if (project === "" && projectRaw !== "") {
+			sendJson(res, 400, { ok: false, error: "project must match [a-z0-9._-]" });
+			return;
+		}
+		const why = (q.get("why") ?? "").trim();
+		sendJson(res, 200, { ok: true, decision: db.addDecision(project, text, why === "" ? undefined : why) });
+		return;
+	}
 	if (url.pathname === "/api/serve") {
 		// Serve registry is not board-scoped: no sid. There is no per-entry process to
 		// stop, so "停止" is deregistration (the shared server keeps running and
@@ -3618,6 +3860,28 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
 				return;
 			}
 			if (project !== "") card.project = project;
+			const due = parseDue(q.get("due"));
+			if (due === null) {
+				sendJson(res, 400, { ok: false, error: "due must be YYYY-MM-DD" });
+				return;
+			}
+			const estimate = parseEstimate(q.get("estimate"));
+			if (estimate === null) {
+				sendJson(res, 400, { ok: false, error: "estimate must be an integer >= 0" });
+				return;
+			}
+			const blocks = parseBlocks(q.get("blocks"));
+			if (blocks === null) {
+				sendJson(res, 400, { ok: false, error: "blocks must be a comma-separated list of card ids" });
+				return;
+			}
+			if (blocks.length > 0 && wouldCycle(b.cards, card.id, blocks)) {
+				sendJson(res, 400, { ok: false, error: "blocks must not form a cycle" });
+				return;
+			}
+			if (due !== undefined) card.due = due;
+			if (estimate !== undefined) card.estimate = estimate;
+			if (blocks.length > 0) card.blocks = blocks;
 			b.cards.push(card);
 			writeBoard(path, b);
 			sendJson(res, 200, { ok: true, cards: b.cards });
@@ -3648,6 +3912,11 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
 				return;
 			}
 			removeMedia(card);
+			// A removed card must not stay in anyone's blocks: the card that would clear
+			// it is gone, so the dependent would wait forever for nothing.
+			for (const c of b.cards) {
+				if (c.blocks && c.blocks.includes(id)) c.blocks = c.blocks.filter((x) => x !== id);
+			}
 			b.cards = b.cards.filter((c) => c.id !== id);
 			writeBoard(path, b);
 			sendJson(res, 200, { ok: true, cards: b.cards });
