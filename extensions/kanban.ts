@@ -3253,8 +3253,9 @@ function totalCounts(
 async function dbMaintenance(pathname: string, res: ServerResponse): Promise<void> {
 	const { sessions } = await sessionRows();
 	const totals = totalCounts(readBoard(GLOBAL_JSON), sessions);
-	const info = dbInfo(totals.todo + totals.doing + totals.done) ?? {};
+	const countCards = totals.todo + totals.doing + totals.done;
 	if (pathname === "/api/db/diagnose") {
+		const info = dbInfo(countCards) ?? {};
 		const m = kanbanDb().maintenance();
 		const ok = m.integrity === "ok";
 		sendJson(res, ok ? 200 : 503, { ok, ...m, ...info });
@@ -3264,7 +3265,8 @@ async function dbMaintenance(pathname: string, res: ServerResponse): Promise<voi
 		const before = statSync(DB_FILE).size;
 		kanbanDb().vacuum();
 		const after = statSync(DB_FILE).size;
-		sendJson(res, 200, { ok: true, before, after, saved: before - after, ...info });
+		// info は VACUUM 後に取る: 先に取ると応答内の bytes と after が食い違う。
+		sendJson(res, 200, { ok: true, before, after, saved: before - after, ...(dbInfo(countCards) ?? {}) });
 	} catch (err) {
 		sendJson(res, 500, { ok: false, error: String((err && (err as Error).message) || err) });
 	}

@@ -101,6 +101,18 @@ await check("token なし POST /api/db/vacuum -> 401", async () => {
 	await r.arrayBuffer();
 });
 
+await check("cross-origin POST /api/db/vacuum -> 403", async () => {
+	// #13: isWritePath() に足した 2 パスが Origin ゲートの中を通ることを固定する。
+	const r = await tf(`${BASE}/api/db/vacuum`, { method: "POST", headers: { Origin: "http://evil.example" } });
+	assert.equal(r.status, 403);
+	await r.arrayBuffer();
+});
+await check("cross-origin POST /api/db/diagnose -> 403", async () => {
+	const r = await tf(`${BASE}/api/db/diagnose`, { method: "POST", headers: { Origin: "http://evil.example" } });
+	assert.equal(r.status, 403);
+	await r.arrayBuffer();
+});
+
 // --- 診断 --------------------------------------------------------------------
 await check("POST /api/db/diagnose -> 200 / integrity ok / pages > 0", async () => {
 	const r = await tf(`${BASE}/api/db/diagnose`, { method: "POST" });

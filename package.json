@@ -28,6 +28,7 @@
   "files": [
     "extensions/kanban.ts",
     "extensions/dashboard.generated.ts",
+    "extensions/db.ts",
     "README.md",
     "LICENSE"
   ],

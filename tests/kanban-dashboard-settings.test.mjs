@@ -103,7 +103,7 @@ const DASH = {
 	db: DB,
 };
 
-async function boot({ dash = DASH, selftest, hold = false, diagnose, vacuum, holdDb = null } = {}) {
+async function boot({ dash = DASH, selftest, hold = false, diagnose, vacuum, holdDb = null, dbReject = null } = {}) {
 	const byId = {};
 	const urls = [];
 	const held = [];
@@ -137,6 +137,8 @@ async function boot({ dash = DASH, selftest, hold = false, diagnose, vacuum, hol
 				return Promise.resolve(body());
 			}
 			if (url.includes("/api/db/")) {
+				// #13: 通信そのものが失敗する経路（throw 側の後始末を見るため）。
+				if (dbReject) return Promise.reject(new Error("boom"));
 				// #13: DB メンテは書き込み（VACUUM はファイルを触る）ので POST でなければならない。
 				assert.equal(init && init.method, "POST", "db メンテが POST で叩かれていない");
 				const action = url.includes("/api/db/vacuum") ? "vacuum" : "diagnose";
@@ -425,4 +427,20 @@ test("#13: 診断が 503（整合性 NG）でも本文を出す", async () => {
 	for (let i = 0; i < 6; i++) await flush();
 	assert.equal(dbCount("diagnose"), 1);
 	assert.ok(texts(byId["settings-db"]).includes("NG 整合性 unavailable"), texts(byId["settings-db"]).join(" / "));
+});
+
+// #13: 通信が失敗した時も dbBusy を解放する。解放しないとボタンが二度と押せなくなる。
+test("#13: DB メンテの通信が失敗してもボタンは復活する", async () => {
+	const { byId } = await boot({ dbReject: true });
+	dbButtons(byId)[1]._lis.click[0]();
+	for (let i = 0; i < 6; i++) await flush();
+	assert.deepEqual(
+		dbButtons(byId).slice(-2).map((b) => b.disabled),
+		[false, false],
+		"失敗したままボタンが無効化されている",
+	);
+	assert.ok(
+		dbResultNodes(byId).map((n) => n.textContent).join("").includes("NG 実行できません"),
+		"失敗理由が結果行に出ていない",
+	);
 });
