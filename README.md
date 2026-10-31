@@ -109,7 +109,7 @@ The first layer is a **Host allowlist** (#80-⑨), checked before the token: a r
 
 ## Nothing here is a service
 
-There is no daemon. The HTTP server lives inside the pi process, so board state is available exactly as long as pi is running. The generated HTML is rewritten on each render; edit the `DASHBOARD_HTML` constant in `extensions/kanban.ts`, not the generated file.
+There is no daemon. The HTTP server lives inside the pi process, so board state is available exactly as long as pi is running. The generated HTML is rewritten on each render. Its source is `web/dashboard.html` - see below.
 
 ## Working on the code
 
