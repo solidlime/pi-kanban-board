@@ -36,7 +36,7 @@
 - テストのスライス境界が `id="pane-serve"` を marker にしているので `id="pane-settings"` に付け替える（tabs / cards / collapse-search / projects）。
 - `isEditing()` の `#serve` は残る（入力欄は同じ id のまま設定ペイン内にある）。
 
-## #13 DB メンテ操作（VACUUM・件数・診断）（実施中）
+## #13 DB メンテ操作（VACUUM・件数・診断）（完了: 4ce8959, a207ff7）
 設定タブの「保存データ」に、今ある件数表示へ **診断** と **VACUUM** の 2 操作を足す。
 
 ### API（POST のみ。既存 /api/selftest と同じ流儀で、prefetch では叩けない）
