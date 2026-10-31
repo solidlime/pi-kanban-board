@@ -105,7 +105,7 @@ check("検索欄は SESSIONS ヘッダの直後、#sessions の手前", () => {
 	assert.ok(html.includes('id="q" class="q" type="search"'), "検索 input が無い");
 	assert.ok(html.includes('placeholder="検索（/ でフォーカス, Esc でクリア）"'));
 	assert.ok(html.includes('autocomplete="off"'));
-	// #12: 配信サーバーは設定ペインのセクションになったので、境界は pane-settings。
+	// #12: 配信サーバーは設定ペインのセクションになったので、境界は pane-projects。
 	const pane = html.slice(html.indexOf('id="h-sessions"'), html.indexOf('id="pane-projects"'));
 	assert.ok(pane.indexOf('id="q"') >= 0);
 	assert.ok(pane.indexOf('id="q"') < pane.indexOf('id="sessions"'));

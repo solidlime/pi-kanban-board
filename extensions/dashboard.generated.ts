@@ -1465,6 +1465,7 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
 
   function renderServe(list, nowMs, sid){
     var box = document.getElementById("serve");
+    if (!box) return; // ペイン組み替えで container が消えても render() を凍らせない
     box.innerHTML = "";
     if (!list.length) {
       empty(box, "\\u2192", "<b>serve なし</b> — エージェントが /serve でサーバーを立てると、URL がここに並ぶよ");
