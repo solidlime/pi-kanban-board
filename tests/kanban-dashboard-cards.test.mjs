@@ -296,19 +296,28 @@ await check("CSS は既存トークンのみ（新色を発明していない）
 		assert.ok(textOf(byId["sessions"], "停止中"), "blocked の表示が無い");
 	});
 
-	await check("vm: 全セッションの操作ボタンが enabled（#55: 書き込みロック無し）", () => {
+	await check("#11: セッションカードには ctl が無い（設定タブに集約）", () => {
 		const ctls = walk(byId["sessions"]).filter((n) => n.className.includes("ctl"));
-		assert.equal(ctls.length, 2, `ctl=${ctls.length}`);
-		const sw = walk(ctls[1]).find((n) => n.className.includes("sw"));
+		assert.equal(ctls.length, 0, `sessions に ctl が残っている: ${ctls.length}`);
+		// s1/s2 + GLOBAL = 設定ペインに 3 行
+		const rows = walk(byId["settings-loops"]).filter((n) => n.className.includes("ctl"));
+		assert.equal(rows.length, 3, `設定の ctl 行=${rows.length}`);
+	});
+
+	await check("vm: 設定タブの全ントルの操作ボタンが enabled（#55: 書き込みロック無し）", () => {
+		const ctls = walk(byId["settings-loops"]).filter((n) => n.className.includes("ctl"));
+		const sw = walk(ctls[2]).find((n) => n.className.includes("sw"));
 		assert.ok(sw, "s2 のトグルが無い");
 		assert.equal(sw.disabled, false, "s2 のトグルが無効のまま");
 		assert.ok(sw._lis.click && sw._lis.click.length, "s2 のトグルにハンドラが無い");
 	});
 
-	// 全ボタンを 1 回ずつ押して、飛んだ URL を集める
+	// 全ボタンを 1 回ずつ押して、飛んだ URL を集める。
+	// #11: ボードの ctl は global / settings にあり、selftest はボード書き込みではないので含めない。
 	const all = [
 		...buttonsOf("global"),
-		...buttonsOf("sessions"),
+		...buttonsOf("sessions"), // カードの操作（#11: ボードの ctl はもうここにない）
+		...buttonsOf("settings-loops"),
 		...buttonsOf("serve"),
 	];
 	for (const b of all) {
