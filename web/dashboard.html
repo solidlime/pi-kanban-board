@@ -262,7 +262,7 @@
         </section>
         <!-- global への書き込みは 400 になった（読み取り専用の集約ビュー） -->
         <section aria-labelledby="h-global">
-          <div class="hd" id="h-global">GLOBAL（全セッション共有・読み取り専用）</div>
+          <div class="hd" id="h-global">GLOBAL（全プロジェクト・読み取り専用）</div>
           <div id="global"></div>
         </section>
         <section aria-labelledby="h-sessions">
@@ -325,6 +325,7 @@
   // isEditing() では守れず、分境界の再描画で必ず畳まれる。sig には載せない（載せると
   // クリックのたびに描画が走ってフォーカスが飛ぶ）— 描画時にここから引くだけ。
   var cardOpen = {};     // ckey + "#" + id -> true while the card's body is expanded
+                         // (GLOBAL: ckey + "#" + sid + "\u0000" + id, see cardKey)
   // #75: その場追加の入力欄（.addin）は再描画で列ごと作り直される。開閉と打ちかけの文字を
   // 列（ckey）単位で持つ。sig には載せない（載せると打鍵のたびに描画が走ってフォーカスが飛ぶ）。
   // 捨てるのは明示的な操作（Escape / Enter 確定 / 空のまま blur）だけ。blur で無条件に
@@ -408,14 +409,19 @@
   function persist(){ persistCore(); }
   // #72: 展開状態の読み直し + 消えたカードの掃除。render() からも呼ぶので例外は握りつぶす。
   // 掃除は列単位（ckey 接頭辞）。掃除が起きたときだけ書き戻すので、保存も痩せる。
-  function loadOpen(ckey, list){
+  // #16: GLOBAL は複数ボードの合成で、カード id はボードごとに 1 から振られる。
+  // 展開状態のキーだけは由来 (sid) まで含める（他の面は id で一意なので今のキーのまま）。
+  function cardKey(ckey, c, scope){
+    return ckey + "#" + (scope === "global" ? ((c && c.sid) || "") + "\u0000" : "") + (c && c.id);
+  }
+  function loadOpen(ckey, list, scope){
     try {
       var all = JSON.parse(localStorage.getItem(LS_KEY) || "null");
       var v = all && all[LS_NS];
       if (v && v.open && typeof v.open === "object") Object.keys(v.open).forEach(function(k){ cardOpen[k] = v.open[k] === true; });
     } catch (e) {}
     var present = {}, pruned = false;
-    list.forEach(function(c){ present[ckey + "#" + c.id] = true; });
+    list.forEach(function(c){ present[cardKey(ckey, c, scope)] = true; });
     Object.keys(cardOpen).forEach(function(k){
       if (k.indexOf(ckey + "#") === 0 && !present[k]) { delete cardOpen[k]; pruned = true; }
     });
@@ -882,7 +888,7 @@
       // #62: GLOBAL に active sid を混ぜない（切り替わるたびに別キーになって勝手に開いていた）。
       var ckey = ctx.scope === "global" ? "global:" + key : ctx.scope + "." + ctx.sid + ":" + key;
       var box = el("div", "col" + (key === "doing" && list.length ? " doingcol" : "") + (collapsed[ckey] ? " collapsed" : ""));
-      loadOpen(ckey, list); // #72: 描画のたびに読み直し、消えたカードの分を掃除する
+      loadOpen(ckey, list, ctx.scope); // #72: 描画のたびに読み直し、消えたカードの分を掃除する
       box.setAttribute("data-col", key);
       var h = el("h3", null, pair[1]);
       h.appendChild(el("span", "c", String(list.length)));
@@ -987,6 +993,8 @@
           }
           card.appendChild(el("span", "id", "#" + c.id));
           if (c.project) card.appendChild(el("span", "proj", c.project));
+          // #16: GLOBAL 看板のカードは各 project ボードから来る。由来はツール側の [slug] と同じ語彙で出す。
+          if (c.sid) card.appendChild(el("span", "proj", "[" + c.sid + "]"));
           var t = el("span", "t");
           // #38-10/#38-11: DOING の経過を本文の前に出す（2 時間超は ⏳ も）。movedAt の
           // 無いカードは何も出さない（推測で「0分」を書かない）。
@@ -999,7 +1007,7 @@
           // #38-5: 60 字超は 3 行で切ってクリック展開（列内の高さを揃える）。
           if (String(c.text || "").length > 60) {
             t.classList.add("clampable");
-            var okey = ckey + "#" + c.id;
+            var okey = cardKey(ckey, c, ctx.scope);
             if (cardOpen[okey]) t.classList.add("open");
             t.addEventListener("click", function(){
               if (t.classList.toggle("open")) cardOpen[okey] = true; else delete cardOpen[okey];
@@ -1170,13 +1178,14 @@
     return left < 0 ? " bad" : left <= 3 ? " warn" : "";
   }
   // 依存の解決状態。blocks の id を同じ看板のカードから引く（引けない = 未完了扱い）。
+  // #16: id はボードごとに独立。GLOBAL は全 project の合成なので sid まで込みで引く。
   function depState(c, pool){
     var deps = c && Array.isArray(c.blocks) ? c.blocks : [];
     if (!deps.length) return "ok";
-    var byId = {};
-    for (var i = 0; i < pool.length; i++) if (pool[i]) byId[pool[i].id] = pool[i];
+    var sid = (c && c.sid) || "", byId = {};
+    for (var i = 0; i < pool.length; i++) if (pool[i]) byId[((pool[i].sid) || "") + "\u0000" + pool[i].id] = pool[i];
     for (var j = 0; j < deps.length; j++){
-      var d = byId[deps[j]];
+      var d = byId[sid + "\u0000" + deps[j]];
       if (!d || d.col !== "done") return "blocked";
     }
     return "ok";
@@ -1189,10 +1198,10 @@
     return true;
   }
   // 1-4: カードから数える指標（API の stats には無い）。看板ごとに依存を解いて足し上げる。
+  // #16: d.global は全 project ボードの合成なので、d.project を足すと同じカードを二重に数える。
   function cardStats(d){
     var boards = [];
     if (d && d.global) boards.push(d.global.cards || []);
-    if (d && d.project) boards.push(d.project.cards || []);
     ((d && d.sessions) || []).forEach(function(s){ boards.push((s && s.cards) || []); });
     var today = todayISO(), ok = 0, over = 0, blocked = 0, done = 0, total = 0;
     boards.forEach(function(list){
@@ -1399,7 +1408,7 @@
     var ctx = boardCtx("global", sid, false);
     if (!cards.length) {
       if (filtered) box.appendChild(el("div", "sess-empty", "該当なし"));
-      else empty(box, "\u25A1", "<b>GLOBAL 看板は空</b> — 全セッション共有のカードを置くとここに現れるよ");
+      else empty(box, "\u25A1", "<b>GLOBAL 看板は空</b> — プロジェクトのカードが1枚も無いよ");
       return;
     }
     box.appendChild(board(cards, nowMs, ctx));

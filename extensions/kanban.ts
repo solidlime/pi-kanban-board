@@ -1067,9 +1067,10 @@ function cardsIn(b: Board, col: Col): Card[] {
 	return b.cards.filter((c) => c.col === col);
 }
 
-function formatCard(c: Card): string {
+function formatCard(c: Card & { sid?: string }): string {
 	// #57: `c.img` is already the media/ filename, so show it as-is (no path, no basename).
-	return `#${c.id} ${c.project ? `📁${c.project} ` : ""}${c.text ?? ""}${c.img ? `🖼${c.img}` : ""}`;
+	// #16: aggregate rows carry the board they came from, and ids collide across boards.
+	return `#${c.id} ${c.sid ? `[${c.sid}] ` : ""}${c.project ? `📁${c.project} ` : ""}${c.text ?? ""}${c.img ? `🖼${c.img}` : ""}`;
 }
 
 /** Short "[⛔理由 ⏰ISO]" suffix so a tool result shows a gated card's state. */
@@ -1137,7 +1138,9 @@ function refresh(ctx: ExtensionContext, sessionId: string): void {
 	if (!ctx.hasUI) return;
 	lastFooter = { ctx, sid: sessionId };
 	const session = readBoard(boardPath("session", sessionId));
-	const global = readBoard(GLOBAL_JSON);
+	// #16: global is the aggregate view now, so the footer counts it — GLOBAL_JSON alone
+	// is empty after the scope migration and read "0 todo / 0 doing" forever.
+	const global = aggregateGlobal();
 	const f = readModesFile();
 	// The footer has exactly two lines and project is the default board: its halt tag and
 	// count ride the SESSION line, or a project halt stops the board with nothing on screen.
@@ -3443,6 +3446,24 @@ function projectSlugs(): string[] {
 	return [projectSlugOf(process.cwd())];
 }
 
+/**
+ * #16: global is a READ-ONLY VIEW over every project board — it holds no cards of its own.
+ * `sid` on each card is the project slug it came from, so the dashboard can label it.
+ * GLOBAL_JSON cards stay in the sum for pre-migration rows and for tests that seed it.
+ */
+function aggregateGlobal(): { cards: (Card & { sid: string })[]; nextId: number } {
+	return {
+		cards: [
+			...readBoard(GLOBAL_JSON).cards.map((card) => ({ ...card, sid: "" })),
+			// Fixed order: slug ascending, id ascending inside a board (listProjectBoards).
+			...kanbanDb()
+				.listProjectBoards()
+				.flatMap(({ slug, cards }) => cards.map((card) => ({ ...card, sid: slug }))),
+		],
+		nextId: 1,
+	};
+}
+
 /** GET /api/projects: the project tab's whole payload. */
 async function projectsPayload(): Promise<unknown> {
 	const { sessions } = await sessionRows();
@@ -3484,10 +3505,10 @@ function dbInfo(cards: number): DbInfo | null {
 		return {
 			file: basename(DB_FILE),
 			bytes: st.size,
-			// +1 = GLOBAL board. Project boards are named by cwd, so their number is this
-			// process's own slug (one cwd per process). The +1 is conceptual: after the scope
-			// migration no GLOBAL row exists, but global is always shown in the heading.
-			boards: store.sessionKeys().length + 1 + projectSlugs().length,
+			// +1 = GLOBAL board. Project boards are every board on the machine, not just this
+			// cwd's (projectSlugs() only ever counted our own). The +1 is conceptual: after the
+			// scope migration no GLOBAL row exists, but global is always shown in the heading.
+			boards: store.sessionKeys().length + 1 + store.projectKeys().length,
 			cards,
 			projects: store.listProjects().length,
 			decisions: store.listDecisions().length,
@@ -3520,7 +3541,8 @@ function totalCounts(
  */
 async function dbMaintenance(pathname: string, res: ServerResponse): Promise<void> {
 	const { sessions } = await sessionRows();
-	const totals = totalCounts(readBoard(GLOBAL_JSON), sessions);
+	const { cards: aggCards, nextId } = aggregateGlobal();
+	const totals = totalCounts({ cards: aggCards, nextId }, sessions);
 	const countCards = totals.todo + totals.doing + totals.done;
 	if (pathname === "/api/db/diagnose") {
 		const info = dbInfo(countCards) ?? {};
@@ -3543,20 +3565,22 @@ async function dbMaintenance(pathname: string, res: ServerResponse): Promise<voi
 /** GET /api/dashboard: one request carrying everything the dashboard renders. */
 async function dashboardPayload(): Promise<unknown> {
 	const { sessions } = await sessionRows();
-	const gb = readBoard(GLOBAL_JSON);
-	const globalCounts = countCols(gb);
+	// #16: global is the aggregate over every project board, so its counts ARE the board
+	// counts. Summing this process's project board on top of it (the old shape) counted
+	// the same card twice.
+	const agg = aggregateGlobal();
+	const aggBoard: Board = { cards: agg.cards, nextId: agg.nextId };
+	const globalCounts = countCols(aggBoard);
 	// The GLOBAL board's switches live under scope=global, keyed by the active session.
 	const f = readModesFile();
-	// stats.todo/doing/done = GLOBAL plus every session board.
-	const totals = totalCounts(gb, sessions);
-	// Phase 0: project is where cards live now, so its counts join the sum. A card on a
-	// different board is a different card - a shared text counts once per board.
+	// stats.todo/doing/done = every project board + GLOBAL's residual rows + every session
+	// board. Invariant: stats - sum(session counts) === global.counts.
+	const totals = totalCounts(aggBoard, sessions);
+	// Phase 0: project is where cards live now. Its counts are already inside `totals`
+	// (they are part of the aggregate), so they are reported, never added again.
 	const slug = projectSlugOf(process.cwd());
 	const pb = readBoard(boardPath("project", slug));
 	const projectCounts = countCols(pb);
-	totals.todo += projectCounts.todo;
-	totals.doing += projectCounts.doing;
-	totals.done += projectCounts.done;
 	// Dead registrations stay listed; `exists` is the flag that tells the UI.
 	// 期限切れも残す: dashboard が「期限切れ」と出し、そこから解除できるようにする。
 	const serve = readServeFile().map((e) => ({
@@ -3596,7 +3620,7 @@ async function dashboardPayload(): Promise<unknown> {
 		},
 		// #11: 設定タブの「保存データ」。絶対パスは出さない（#80-⑦）。
 		db: dbInfo(totals.todo + totals.doing + totals.done),
-		global: { counts: globalCounts, cards: gb.cards, modes: modesFor(f, activeSessionId ?? "", "global") },
+		global: { counts: globalCounts, cards: agg.cards, modes: modesFor(f, activeSessionId ?? "", "global") },
 		// Phase 0: the board of THIS process's cwd (one server = one cwd). global/session
 		// stay above for the un-migrated rows the tests and the UI still read.
 		project: { id: slug, counts: projectCounts, cards: pb.cards, modes: modesFor(f, slug, "project") },
@@ -3859,6 +3883,8 @@ const CARD_FIELDS = [
 	"due",
 	"estimate",
 	"blocks",
+	// #16: the aggregate stamps each card with the project board it came from.
+	"sid",
 ] as const;
 
 function projectBoard(b: Board, keys: string[]): Board {
@@ -4079,7 +4105,7 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 		// #38-14: absent fields = the unchanged payload; present = cards are projected.
 		const fieldsRaw = q.get("fields");
 		const keys = fieldsRaw === null ? null : fieldsRaw.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
-		const global = readBoard(GLOBAL_JSON);
+		const global = aggregateGlobal();
 		const session = sid === null ? { cards: [], nextId: 1 } : readBoard(boardPath("session", sid));
 		// Phase 0: the project board needs no sid - the browser's session names the cwd, and
 		// without one the active session (or this process) stands in for it.
@@ -5167,8 +5193,18 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 	/** Stat signature of every board layer plus modes.json; any disk change (ours or a sibling's) flips it. */
 	// Boards live in sqlite now, so there is no per-board inode to stat. rev is a
 	// per-board counter bumped inside the write transaction; modes.json is still a file.
-	const diskSnapshot = (sessionId: string): string =>
-		`${kanbanDb().revOf(boardKeyOf(boardPath("session", sessionId)))}\u0000${kanbanDb().revOf({ scope: "global", sid: "" })}\u0000${fileSig(MODES_JSON)}`;
+	const diskSnapshot = (sessionId: string): string => {
+		const store = kanbanDb();
+		// #16: the footer's GLOBAL line is aggregateGlobal(), so the snapshot has to cover the
+		// same set of boards. GLOBAL_JSON is always 0 after the migration, so watching it alone
+		// left a GUI (or sibling process) write to a project board invisible to poll().
+		// projectKeys() carries rev, so this is one query instead of a revOf() per board.
+		const projects = store
+			.projectKeys()
+			.map(({ slug, rev }) => `${slug}@${rev}`)
+			.join(",");
+		return `${store.revOf(boardKeyOf(boardPath("session", sessionId)))}\u0000${store.revOf({ scope: "global", sid: "" })}\u0000${projects}\u0000${fileSig(MODES_JSON)}`;
+	};
 
 	/** Stop the timer and release the owned ctx (session end, or a ctx that cannot answer). */
 	const stopPoll = (): void => {
@@ -5413,12 +5449,24 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 			let scope: Scope = "session";
 			refresh(ctx, sid);
 			const guiOption = "🖥 ダッシュボードの URL";
+			// #16: the drilldown may LOOK at the global aggregate, but global owns no board - every
+			// write here targets the selected scope's own board. Refuse the writing branches only.
+			const globalReadOnly = (): boolean => {
+				if (scope !== "global") return false;
+				ctx.ui.notify("GLOBAL は読み取り専用");
+				return true;
+			};
+			// #16: global is a read-only projection of every project board; GLOBAL_JSON is always empty.
+			const drillBoard = (): Board =>
+				scope === "global" ? { cards: aggregateGlobal().cards, nextId: 1 } : readBoard(boardPath(scope, sid));
 			// Every dialog of this drilldown runs under the guard, so auto-tick stays off
 			// while the user is reading a menu (A3). withMenuGuard clears it in `finally`.
 			return withMenuGuard(uiGuard, async () => {
 			for (;;) {
-				const current = readBoard(boardPath(scope, sid));
+				const current = drillBoard();
 				const colOptions = COLS.map((c) => `${LABELS[c].trim()} (${cardsIn(current, c).length})`);
+				// #16: global owns no cards - say so on the row instead of offering a dead click.
+				const colRows = scope === "global" ? colOptions.map((o) => `${o}（読取専用）`) : colOptions;
 				const switchOption = scope === "session" ? "🌐 グローバル看板へ" : "📋 セッション看板へ";
 				// One row in the BOARD menu; the two toggles live one level down so the
 				// column list below keeps its shape. sid is always this session, scope is
@@ -5435,7 +5483,7 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 					intervalOption,
 					stuckOption,
 					priorityOption,
-					...colOptions,
+					...colRows,
 					"終了",
 				]);
 				if (picked === undefined || picked === "終了") return;
@@ -5478,8 +5526,9 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 					continue;
 				}
 				if (picked === priorityOption) {
+					if (globalReadOnly()) continue;
 					// One row per TODO card, same one-line style as formatPriorityCard.
-					const todos = orderTodos(cardsIn(readBoard(boardPath(scope, sid)), "todo"));
+					const todos = orderTodos(cardsIn(drillBoard(), "todo"));
 					if (todos.length === 0) {
 						ctx.ui.notify(`[${scope}] TODO は空`);
 						continue;
@@ -5499,12 +5548,15 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 					if (raw !== undefined) runPriorityCommand(ctx, sid, scope, chosen.id, raw.trim() === "" ? 0 : Number(raw));
 					continue;
 				}
-				const col = COLS[colOptions.indexOf(picked)];
+				const col = COLS[colRows.indexOf(picked)];
 				if (col === undefined) return;
 
 				for (;;) {
+					// #16: one guard for the whole column - global has no card of its own to write, so
+					// both the add branch and the move/delete branches are already out of reach.
+					if (globalReadOnly()) break;
 					// Re-read every iteration so GUI edits show up mid-drilldown.
-					const b = readBoard(boardPath(scope, sid));
+					const b = drillBoard();
 					const inCol = cardsIn(b, col);
 					const choice = await ctx.ui.select(`${LABELS[col].trim()} (${inCol.length})`, [
 						...inCol.map(formatCard),
@@ -5560,7 +5612,7 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 		name: "kanban",
 		label: "Kanban board",
 		description:
-			"Manage a 3-column kanban board (todo/doing/done). action=list shows the board, add creates a card, move changes its column, remove deletes it, edit rewrites a card's text (column and ownership stay), check runs the board/serve/media/modes self-test and returns its JSON, resume clears a doing-loop halt (same reset as /kanban loop on: budget back to 10, doingLoop ON in all three scopes — session, global and this project) — the GUI's loop switch cannot clear it, because the halt lives in the extension process, not in modes.json. scope selects the board: 'project' (default, the board of this working directory's git root - every session in the same repo shares it), 'session' (this conversation's own board) or 'global' (a read-only aggregate of every session's cards; writes there are rejected). Card IDs are unique only within one board — global #7 and project #7 are different cards. url returns the token-bearing dashboard URL to open in a browser. The board is shared with the user's GUI and persisted under ~/.pi/kanban/. project is an optional slug (lowercase [a-z0-9._-], max 24 chars) naming the project a card belongs to; add and edit set it, an empty value clears it, an unnormalizable value is an error, and it never affects the loop or auto-pick.",
+			"Manage a 3-column kanban board (todo/doing/done). action=list shows the board, add creates a card, move changes its column, remove deletes it, edit rewrites a card's text (column and ownership stay), check runs the board/serve/media/modes self-test and returns its JSON, resume clears a doing-loop halt (same reset as /kanban loop on: budget back to 10, doingLoop ON in all three scopes — session, global and this project) — the GUI's loop switch cannot clear it, because the halt lives in the extension process, not in modes.json. scope selects the board: 'project' (default, the board of this working directory's git root - every session in the same repo shares it), 'session' (this conversation's own board) or 'global' (a read-only aggregate of every project's cards; writes there are rejected). Card IDs are unique only within one board — global #7 and project #7 are different cards, so an id seen in a global listing cannot be passed to move/remove/edit: those always act on the selected scope's own board (default: this project's). url returns the token-bearing dashboard URL to open in a browser. The board is shared with the user's GUI and persisted under ~/.pi/kanban/. project is an optional slug (lowercase [a-z0-9._-], max 24 chars) naming the project a card belongs to; add and edit set it, an empty value clears it, an unnormalizable value is an error, and it never affects the loop or auto-pick.",
 		parameters: Type.Object({
 			action: Type.Union([
 				Type.Literal("list"),
@@ -5602,7 +5654,9 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 			const sessionSid = sidOf(ctx);
 			const sid = scope === "project" ? projectSlugOf(cwdOfCtx(ctx)) : sessionSid;
 			const path = boardPath(scope, sid);
-			const b = readBoard(path);
+			// #16: global is a read-only aggregate everywhere else (HTTP, dashboard), so the tool
+			// must read the same set - GLOBAL_JSON alone is empty after the migration.
+			const b: Board = scope === "global" ? aggregateGlobal() : readBoard(path);
 			let persistError: string | null = null;
 			const done = (text: string) => ({
 				content: [{ type: "text" as const, text }],

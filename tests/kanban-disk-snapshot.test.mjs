@@ -110,8 +110,12 @@ check("実時間の tmp+rename 連続書き込みで署名の衝突が 0 件", (
 
 // --- 4: 契約（ソース） ---------------------------------------------------------
 check("diskSnapshot は readRaw ではなく stat 署名を使う", () => {
-	assert.match(SOURCE, /const diskSnapshot = \(sessionId: string\): string =>[\s\S]{0,400}?fileSig\(/);
-	assert.doesNotMatch(SOURCE, /const diskSnapshot = [\s\S]{0,300}?readRaw\(/, "diskSnapshot がまだ readRaw を呼ぶ");
+	// #4/#16: project の rev を列挙する分だけ関数が長くなった。窓のマジックナンバーは
+	// 捨てて、関数本体をスライスして検査する（見たいのは fileSig を通り readRaw を通らないの 2 点）。
+	const body = SOURCE.slice(SOURCE.indexOf("const diskSnapshot"), SOURCE.indexOf("const stopPoll"));
+	assert.ok(body.length > 0, "diskSnapshot が見つからない");
+	assert.match(body, /fileSig/);
+	assert.doesNotMatch(body, /readRaw/, "diskSnapshot がまだ readRaw を呼ぶ");
 });
 // 署名が ino を見る以上、ino の変わらない in-place 書き込みは対象外になる。
 // modes.json だけがそれだったので、tmp+rename に揃っていることを固定する。

@@ -78,6 +78,13 @@ export type KanbanDb = {
 	deleteBoard(key: BoardKey): void;
 	/** Every session board, newest touch first - the replacement for readdir(SESSIONS_DIR). */
 	sessionKeys(): { sid: string; touchedAt: number }[];
+	/** Every project board key with its rev, in slug order. */
+	projectKeys(): { slug: string; touchedAt: number; rev: number }[];
+	/**
+	 * Every project board's cards, keyed by slug: slug ascending, card id ascending inside a
+	 * board (the same order aggregateGlobal() builds). Two queries total, not one per board.
+	 */
+	listProjectBoards(): { slug: string; cards: Card[] }[];
 	/** Every project, most recently touched first. */
 	listProjects(): Project[];
 	/** Read one project, or null. */
@@ -243,6 +250,13 @@ export function openKanbanDb(file: string): KanbanDb {
 		"SELECT id, text, col, img, moved_at, moved_by, priority, next_fire_at, blocked, fired_for, project, due, estimate FROM card WHERE scope = ? AND sid = ? ORDER BY ord",
 	);
 	const selectRev = db.prepare("SELECT rev FROM board WHERE scope = ? AND sid = ?");
+	// #16: the global aggregate reads every project board on every tick; two statements for
+	// all of them instead of readBoard() per slug. SELECT * because rowToCard() is the only
+	// reader and it ignores the extra (scope, sid, ord) columns.
+	const selectProjectCards = db.prepare("SELECT * FROM card WHERE scope = 'project' ORDER BY sid, id");
+	const selectProjectDeps = db.prepare(
+		"SELECT sid, card_id, blocks_id FROM card_dep WHERE scope = 'project' ORDER BY sid, card_id, blocks_id",
+	);
 	const insertBoard = db.prepare(
 		"INSERT INTO board (scope, sid, next_id, rev, touched_at) VALUES (?, ?, ?, 1, ?)",
 	);
@@ -494,6 +508,45 @@ export function openKanbanDb(file: string): KanbanDb {
 					"SELECT sid, touched_at AS touchedAt FROM board WHERE scope = 'session' ORDER BY touched_at DESC",
 				)
 				.all() as { sid: string; touchedAt: number }[];
+		},
+		projectKeys() {
+			// slug order: callers sort it anyway (aggregateGlobal), and a no-change tick must
+			// enumerate the same order twice.
+			return db
+				.prepare(
+					"SELECT sid AS slug, touched_at AS touchedAt, rev FROM board WHERE scope = 'project' ORDER BY sid",
+				)
+				.all() as { slug: string; touchedAt: number; rev: number }[];
+		},
+		listProjectBoards() {
+			const boards = new Map<string, Card[]>();
+			for (const r of selectProjectCards.all() as Row[]) {
+				const slug = String(r.sid);
+				const cards = boards.get(slug);
+				if (cards === undefined) boards.set(slug, [rowToCard(r)]);
+				else cards.push(rowToCard(r));
+			}
+			// readBoard() hangs blocks off the card; keep the shape even out of the per-key path.
+			const bySlugCard = new Map<string, Map<number, number[]>>();
+			for (const d of selectProjectDeps.all() as Row[]) {
+				const slug = String(d.sid);
+				const byCard = bySlugCard.get(slug) ?? new Map<number, number[]>();
+				bySlugCard.set(slug, byCard);
+				const id = Number(d.card_id);
+				const list = byCard.get(id) ?? [];
+				list.push(Number(d.blocks_id));
+				byCard.set(id, list);
+			}
+			for (const [slug, cards] of boards) {
+				const byCard = bySlugCard.get(slug);
+				if (byCard === undefined) continue;
+				for (const c of cards) {
+					const blocks = byCard.get(c.id);
+					if (blocks !== undefined) c.blocks = blocks;
+				}
+			}
+			// Map insertion order is the SQL order (sid ascending), which is the contract above.
+			return [...boards].map(([slug, cards]) => ({ slug, cards }));
 		},
 		sweepSessions(cutoff) {
 			// Dependencies first: a swept sid that comes back must not inherit its old edges.

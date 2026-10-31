@@ -76,7 +76,7 @@ const DASH = {
 	serve: [],
 };
 
-async function boot() {
+async function boot(dash = DASH) {
 	const byId = {};
 	const timers = [];
 	let nextId = 1;
@@ -93,7 +93,7 @@ async function boot() {
 		URL,
 		localStorage: { getItem: () => null, setItem() {} },
 		matchMedia: () => ({ matches: false, addEventListener() {} }),
-		fetch: () => Promise.resolve(reply(DASH)),
+		fetch: () => Promise.resolve(reply(dash)),
 		setTimeout(fn, ms) {
 			const id = nextId++;
 			timers.push({ id, fn, ms });
@@ -154,4 +154,52 @@ test("ヘッダの期限超過件数は未完了だけを数える（赤い行�
 	assert.equal(stats.length, 1, "期限超過の stat が無い");
 	assert.equal(stats[0].getAttribute("aria-label"), "期限超過 " + bad.length,
 		"件数と赤いチップが食い違う（cardStats が done を数えている／数えていない）");
+});
+
+// --- #16: 集約と自ボードの二重計上 --------------------------------------------
+const tile = (d, label) =>
+	all(d.byId.stats, (e) => new RegExp("^" + label + " ").test(e.getAttribute("aria-label") || ""))[0];
+
+test("着手可能タイルは d.project を足さない（global は既に自ボードを含む）", async () => {
+	const one = { id: 1, text: "一枚", col: "todo", sid: "own" };
+	// global は全 project ボードの合成。自ボードのカードは既にそちらに入っているので、
+	// d.project.cards を足すと同じカードを二重に数える。
+	const d = await boot({
+		...DASH,
+		stats: { sessions: 0, active: 0, todo: 1, doing: 0, done: 0, serve: 0, media: 0 },
+		global: { counts: { todo: 1, doing: 0, done: 0 }, cards: [one] },
+		project: { id: "own", counts: { todo: 1, doing: 0, done: 0 }, cards: [{ ...one }] },
+	});
+	assert.equal(tile(d, "着手可能").getAttribute("aria-label"), "着手可能 1", "同じカードを 2 枚と数えている");
+});
+
+// --- #16: GLOBAL の由来はツール側の `[slug]` と同じ語彙で出す ----------------------
+// ダッシュボードは 📁slug、ツールは [slug] で、同じ「project」タグと見分けが付かなかった。
+test("GLOBAL のカードは由来ボードを [slug] で出す", async () => {
+	const one = { id: 1, text: "由来あり", col: "todo", sid: "alpha" };
+	const d = await boot({
+		...DASH,
+		global: { counts: { todo: 1, doing: 0, done: 0 }, cards: [one] },
+	});
+	const tags = all(d.byId.global, (e) => e.className === "proj" && e.textContent === "[alpha]");
+	assert.equal(tags.length, 1, `由来の表示が [alpha] でない: ${JSON.stringify(
+		all(d.byId.global, (e) => e.className === "proj").map((e) => e.textContent),
+	)}`);
+});
+
+// --- #16: GLOBAL の依存解決は sid まで込みで引く --------------------------------
+test("GLOBAL の blocks は同じ sid のカードで解く（別ボードの同じ id を引かない）", async () => {
+	// ボードごとに id は 1 から。b:1 は todo のまま、a:1 は done。
+	// id だけで引くと後勝ちで a:1 (done) を拾い、b:2 が着手可能に見えてしまう。
+	const cards = [
+		{ id: 1, text: "b1", col: "todo", sid: "b" },
+		{ id: 1, text: "a1", col: "done", sid: "a" },
+		{ id: 2, text: "b2", col: "todo", sid: "b", blocks: [1] },
+	];
+	const d = await boot({
+		...DASH,
+		stats: { sessions: 0, active: 0, todo: 2, doing: 0, done: 1, serve: 0, media: 0 },
+		global: { counts: { todo: 2, doing: 0, done: 1 }, cards },
+	});
+	assert.equal(tile(d, "ブロック中").getAttribute("aria-label"), "ブロック中 1", "別ボードの id=1 で依存を解いている");
 });

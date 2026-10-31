@@ -9,7 +9,7 @@ Long sessions lose the thread: the goal drifts, an earlier decision gets forgott
 - **A board the model maintains.** The `kanban` tool is the model's handle: add, move, remove, schedule, attach images, record why something is blocked.
 - **A live dashboard.** An HTTP dashboard at `http://<host>:8789/` covering every session on the machine, with per-board loop and pick toggles.
 - **An autonomous loop.** With the loop on, pi wakes itself when a card sits in DOING, continues the work, and moves the card when it is done. Optional auto-pick pulls the next TODO in when nothing is in flight.
-- **Two layers.** A per-session board and a GLOBAL board shared by every session, so work handed between sessions survives.
+- **Two layers.** A per-session board and a GLOBAL board. GLOBAL is a read-only view: it shows every project board's cards without holding any of its own.
 
 ## Install
 
@@ -85,7 +85,8 @@ The `serve` tool also takes an optional `title`, which the dashboard shows above
 
 ```
 ~/.pi/kanban/
-├── global.json          shared board
+├── global.json          global view (read-only; no cards of its own)
+├── projects/<slug>.json per-project board (where cards live)
 ├── sessions/<sid>.json  per-session board
 ├── modes.json           per-board loop/pick/interval settings
 ├── serve.json           published files
