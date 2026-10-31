@@ -81,6 +81,9 @@ type Col = "todo" | "doing" | "done";
 // behavior. nextFireAt is an ISO 8601 string with an offset (human-readable board
 // JSON). blocked is free text; "" means cleared. firedFor records the nextFireAt
 // value a wake already happened for, so re-arming = changing nextFireAt.
+// project is optional too: a slug (lowercase [a-z0-9._-], max 24 chars) naming the
+// project a card belongs to. Absent = unassigned. Deliberately unrelated to the
+// loop: autoPick/injection never read it (see normalizeProject).
 type Card = {
 	id: number;
 	text: string;
@@ -92,6 +95,7 @@ type Card = {
 	nextFireAt?: string;
 	blocked?: string;
 	firedFor?: string;
+	project?: string;
 };
 type Board = { cards: Card[]; nextId: number };
 // Automatic loop modes, keyed by (scope, session). The legacy flat doingLoop/autoPick
@@ -523,6 +527,17 @@ export function priorityOf(c: { priority?: number }): number {
 	return isValidPriority(v) ? v : 0;
 }
 
+export const PROJECT_MAX = 24;
+/** Write-boundary normalization: "" means "no project" (the field is deleted, like blocked). */
+export function normalizeProject(raw: unknown): string {
+	if (typeof raw !== "string") return "";
+	return raw
+		.trim()
+		.toLowerCase()
+		.replace(/[^a-z0-9._-]/g, "")
+		.slice(0, PROJECT_MAX);
+}
+
 /**
  * blocked = "do not touch": it is outside the time axis, so it wins over nextFireAt.
  * Absent or "" (cleared) means no restriction, i.e. pre-Phase-12 behavior.
@@ -707,7 +722,7 @@ function cardsIn(b: Board, col: Col): Card[] {
 
 function formatCard(c: Card): string {
 	// #57: `c.img` is already the media/ filename, so show it as-is (no path, no basename).
-	return `#${c.id} ${c.text ?? ""}${c.img ? `🖼${c.img}` : ""}`;
+	return `#${c.id} ${c.project ? `📁${c.project} ` : ""}${c.text ?? ""}${c.img ? `🖼${c.img}` : ""}`;
 }
 
 /** Short "[⛔理由 ⏰ISO]" suffix so a tool result shows a gated card's state. */
@@ -3097,6 +3112,8 @@ function handleUpload(req: IncomingMessage, res: ServerResponse, q: URLSearchPar
 			card = { id: b.nextId++, text: "", col: parseCol(q.get("col")) ?? "todo" };
 			stampMove(card, actorOf(q));
 			card.text = `#${card.id} (${MIME_BY_EXT[ext].startsWith("video/") ? "video" : "image"})`;
+			const project = normalizeProject(q.get("project"));
+			if (project !== "") card.project = project;
 			b.cards.push(card);
 		} else {
 			const found = b.cards.find((c) => c.id === Number(idParam));
@@ -3204,6 +3221,7 @@ const CARD_FIELDS = [
 	"nextFireAt",
 	"blocked",
 	"firedFor",
+	"project",
 ] as const;
 
 function projectBoard(b: Board, keys: string[]): Board {
@@ -3513,6 +3531,8 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
 			const col = parseCol(colParam) ?? "todo";
 			const card: Card = { id: b.nextId++, text, col };
 			stampMove(card, actorOf(q));
+			const project = normalizeProject(q.get("project"));
+			if (project !== "") card.project = project;
 			b.cards.push(card);
 			writeBoard(path, b);
 			sendJson(res, 200, { ok: true, cards: b.cards });
@@ -3667,8 +3687,8 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
 		case "/api/schedule": {
 			// Same GET+query write path (and sid rule) as every other card edit.
 			// Nothing to set = a caller typo; 400 instead of a silent no-op write.
-			if (q.get("at") === null && q.get("blocked") === null) {
-				sendJson(res, 400, { ok: false, error: "at or blocked is required" });
+			if (q.get("at") === null && q.get("blocked") === null && q.get("project") === null) {
+				sendJson(res, 400, { ok: false, error: "at, blocked or project is required" });
 				return;
 			}
 			const card = b.cards.find((c) => c.id === Number(idParam));
@@ -3694,6 +3714,12 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
 				const t = blocked.trim();
 				if (t.length === 0) delete card.blocked;
 				else card.blocked = t;
+			}
+			const projectParam = q.get("project");
+			if (projectParam !== null) {
+				const p = normalizeProject(projectParam);
+				if (p.length === 0) delete card.project;
+				else card.project = p;
 			}
 			writeBoard(path, b);
 			sendJson(res, 200, { ok: true, cards: b.cards });
@@ -6273,7 +6299,7 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 		name: "kanban",
 		label: "Kanban board",
 		description:
-			"Manage a 3-column kanban board (todo/doing/done). action=list shows the board, add creates a card, move changes its column, remove deletes it, edit rewrites a card's text (column and ownership stay), check runs the board/serve/media/modes self-test and returns its JSON, resume clears a doing-loop halt (same reset as /kanban loop on: budget back to 10, doingLoop ON in both scopes) — the GUI's loop switch cannot clear it, because the halt lives in the extension process, not in modes.json. scope selects the board: 'session' (default, this conversation's board) or 'global' (shared by every session). Card IDs are unique only within one board — global #7 and session #7 are different cards. url returns the token-bearing dashboard URL to open in a browser. The board is shared with the user's GUI and persisted under ~/.pi/kanban/.",
+			"Manage a 3-column kanban board (todo/doing/done). action=list shows the board, add creates a card, move changes its column, remove deletes it, edit rewrites a card's text (column and ownership stay), check runs the board/serve/media/modes self-test and returns its JSON, resume clears a doing-loop halt (same reset as /kanban loop on: budget back to 10, doingLoop ON in both scopes) — the GUI's loop switch cannot clear it, because the halt lives in the extension process, not in modes.json. scope selects the board: 'session' (default, this conversation's board) or 'global' (shared by every session). Card IDs are unique only within one board — global #7 and session #7 are different cards. url returns the token-bearing dashboard URL to open in a browser. The board is shared with the user's GUI and persisted under ~/.pi/kanban/. project is an optional slug (lowercase [a-z0-9._-], max 24 chars) naming the project a card belongs to; add and edit set it, an empty value clears it, and it never affects the loop or auto-pick.",
 		parameters: Type.Object({
 			action: Type.Union([
 				Type.Literal("list"),
@@ -6300,6 +6326,8 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 			// before saving. "" clears either field.
 			nextFireAt: Type.Optional(Type.String()),
 			blocked: Type.Optional(Type.String()),
+			// A slug, normalized on write (lowercase [a-z0-9._-], max 24 chars). "" clears it.
+			project: Type.Optional(Type.String()),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const scope: Scope = params.scope ?? "session";
@@ -6348,6 +6376,8 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 					stampMove(card, sid);
 					const gateError = applyGate(card);
 					if (gateError !== null) return fail(gateError);
+					const project = normalizeProject(params.project);
+					if (project !== "") card.project = project;
 					b.cards.push(card);
 					persistError = writeBoard(path, b);
 					message = `added ${formatCard(card)} to ${card.col} (${scope})${gateNote(card)}`;
@@ -6368,10 +6398,16 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 				case "edit": {
 					if (params.id === undefined) return fail("edit requires id");
 					const text = (params.text ?? "").trim();
-					if (text.length === 0) return fail("edit requires a non-empty text");
+					// project alone is a valid edit (relabeling a card without touching its text).
+					if (text.length === 0 && params.project === undefined) return fail("edit requires a non-empty text");
 					const card = b.cards.find((c) => c.id === params.id);
 					if (card === undefined) return fail(`no card with id ${params.id} in the ${scope} board`);
-					card.text = text;
+					if (text.length > 0) card.text = text;
+					if (params.project !== undefined) {
+						const project = normalizeProject(params.project);
+						if (project.length === 0) delete card.project;
+						else card.project = project;
+					}
 					persistError = writeBoard(path, b);
 					message = `edited #${card.id} (${scope})`;
 					break;
