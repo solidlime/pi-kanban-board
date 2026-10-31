@@ -1883,7 +1883,9 @@ function learnServeHostFromHeader(raw: string | undefined): void {
 	const host = name.includes(":") ? `[${name}]` : name; // ipv6 keeps its brackets
 	try {
 		mkdirSync(KANBAN_DIR, { recursive: true });
-		writeFileSync(SERVE_HOST_JSON, JSON.stringify({ host, at: new Date().toISOString() }));
+		const tmp = `${SERVE_HOST_JSON}.${process.pid}.tmp`;
+		writeFileSync(tmp, JSON.stringify({ host, at: new Date().toISOString() }));
+		renameSync(tmp, SERVE_HOST_JSON);
 	} catch {
 		// a read-only HOME must still serve
 	}
@@ -1926,7 +1928,9 @@ function handleHostReport(req: IncomingMessage, res: ServerResponse): void {
 		}
 		try {
 			mkdirSync(KANBAN_DIR, { recursive: true });
-			writeFileSync(SERVE_HOST_JSON, JSON.stringify({ host: value, at: new Date().toISOString() }));
+			const tmp = `${SERVE_HOST_JSON}.${process.pid}.tmp`;
+			writeFileSync(tmp, JSON.stringify({ host: value, at: new Date().toISOString() }));
+			renameSync(tmp, SERVE_HOST_JSON);
 		} catch (e) {
 			sendJson(res, 500, { ok: false, error: `write failed: ${(e as { code?: string }).code ?? "error"}` });
 			return;
@@ -2687,7 +2691,11 @@ function writeMedia(cardId: number, ext: string, bytes: Buffer): string | null {
 	const name = `${cardId}-${randHex8()}.${ext}`;
 	try {
 		mkdirSync(MEDIA_DIR, { recursive: true });
-		writeFileSync(join(MEDIA_DIR, name), bytes);
+		// tmp+rename: serveMedia must never hand out a half-written upload.
+		const path = join(MEDIA_DIR, name);
+		const tmp = `${path}.${process.pid}.tmp`;
+		writeFileSync(tmp, bytes);
+		renameSync(tmp, path);
 	} catch {
 		return null;
 	}
