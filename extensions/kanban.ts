@@ -4212,6 +4212,7 @@ const DASHBOARD_HTML = `<!doctype html>
   .col.doingcol{border-left:3px solid var(--accent);background:var(--accent-soft-2)}
   .card{background:var(--card);border-radius:6px;padding:6px 8px;margin-bottom:6px;font-size:12px;display:flex;gap:4px;align-items:baseline;flex-wrap:wrap}
   .card .id{color:var(--accent);flex:none}
+  .card .proj{flex:none;font-size:10px;color:var(--muted);border:1px solid var(--border-strong);border-radius:999px;padding:0 5px}
   .card .t{flex:1;min-width:0;overflow-wrap:anywhere;white-space:pre-wrap}
   /* #38-5: 60 字超は 3 行で切ってクリック展開 */
   .card .t.clampable:not(.open){display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;cursor:pointer}
@@ -4367,6 +4368,7 @@ const DASHBOARD_HTML = `<!doctype html>
         <section aria-labelledby="h-sessions">
           <div class="hd" id="h-sessions">SESSIONS</div>
           <input id="q" class="q" type="search" placeholder="検索（/ でフォーカス, Esc でクリア）" autocomplete="off">
+          <select id="proj" class="q" aria-label="プロジェクトで絞り込み"></select>
           <div id="sessions"></div>
         </section>
       </div>
@@ -4392,6 +4394,9 @@ const DASHBOARD_HTML = `<!doctype html>
   // #48: 検索語とセッションの開閉はクライアント側の状態。ポーリングの再描画と
   // DOM 作り直しを跨いで保持する（localStorage は使わない: 既存の流儀どおり）。
   var query = "";        // 小文字化済みの検索語
+  // プロジェクト絞り込み: "" = 全部 / "\\u0000" = 無所属 / それ以外は slug 完全一致。
+  // "\\u0000" は normalizeProject（[a-z0-9._-] のみ許可）を通らないので、本物の slug と同値化できない。
+  var projPick = "";
   var sessOpen = {};     // sid -> expanded（既定は全開）
   // #38-7/#38-11: どちらもクライアントだけの状態（サーバには保存しない）。
   // #62: 列のキーは "session.<sid>:col" / "global:col"（GLOBAL に active sid を混ぜない）。
@@ -4476,7 +4481,7 @@ ${KANBAN_MEMORY_JS}
     return !!(a.closest && a.closest("#stats, #sessions, #global, #serve"));
   }
   // sig は「今 DOM に描かれている状態」を記述する（query を落とすと検索語の変化を取り逃す）。
-  function uiSig(){ return JSON.stringify([sessOpen, gOpen, collapsed, query]); }
+  function uiSig(){ return JSON.stringify([sessOpen, gOpen, collapsed, query, projPick]); }
   function persist(){ persistCore(); }
   // #72: 展開状態の読み直し + 消えたカードの掃除。render() からも呼ぶので例外は握りつぶす。
   // 掃除は列単位（ckey 接頭辞）。掃除が起きたときだけ書き戻すので、保存も痩せる。
@@ -4694,6 +4699,8 @@ ${KANBAN_MD_JS}
     var params = { scope: ctx.scope, ext: ext, col: col };
     if (ctx.sid) params.sid = ctx.sid;
     if (id !== undefined) params.id = id;
+    // 絞り込み中の新規カードはそのプロジェクトに入れる（\\u0000 と "" は無所属）。
+    if (id === undefined && projPick !== "" && projPick !== "\\u0000") params.project = projPick;
     // 生ボディ (application/octet-stream)。api() に init を渡して同じ fetch 点を通す。
     file.arrayBuffer().then(function(buf){
       return api("/api/upload", params, { method: "POST", body: buf, headers: { "Content-Type": "application/octet-stream" } });
@@ -5033,6 +5040,7 @@ ${KANBAN_MD_JS}
             });
           }
           card.appendChild(el("span", "id", "#" + c.id));
+          if (c.project) card.appendChild(el("span", "proj", c.project));
           var t = el("span", "t");
           // #38-10/#38-11: DOING の経過を本文の前に出す（2 時間超は ⏳ も）。movedAt の
           // 無いカードは何も出さない（推測で「0分」を書かない）。
@@ -5131,7 +5139,10 @@ ${KANBAN_MD_JS}
         clearAdd();
         if (!v) { showAdd(false); return; }
         sending = true;
-        act("/api/add", { col: key, text: v }, ctx).then(function(){ sending = false; });
+        var p = { col: key, text: v };
+        // 絞り込み中の新規作成はそのプロジェクトに入れる（\\u0000 と "" は無所属）。
+        if (projPick !== "" && projPick !== "\\u0000") p.project = projPick;
+        act("/api/add", p, ctx).then(function(){ sending = false; });
         showAdd(false);
       });
       // 送信中（act の往復中）の blur では閉じない: reload 由来の blur で二重に閉じるのを防ぐ。
@@ -5172,6 +5183,39 @@ ${KANBAN_MD_JS}
 
   // #48: 検索中は「TODO ヒット/総数」で出す。畳んだり絞ったりして見えていない
   // カードで件数が水増しされないよう、表示中のカードだけで数える。
+  // プロジェクト絞り込みの述語。project を持たないカードは「無所属」だけに当たる。
+  function projOk(c){
+    if (projPick === "") return true;
+    var p = c && typeof c.project === "string" ? c.project : "";
+    return projPick === "\\u0000" ? p === "" : p === projPick;
+  }
+  // 選択肢は描画のたび lastData から作り直す。選択中の値は失わない
+  // （消えた slug を選んでいたら全部に戻す）。
+  function syncProjOptions(d){
+    var sel = document.getElementById("proj");
+    if (!sel) return;
+    var seen = {}, slugs = [];
+    function add(list){
+      for (var i = 0; i < (list || []).length; i++) {
+        var p = list[i] && list[i].project;
+        if (typeof p === "string" && p !== "" && p !== "\\u0000" && !seen[p]) { seen[p] = true; slugs.push(p); }
+      }
+    }
+    add(((d && d.global) || {}).cards);
+    ((d && d.sessions) || []).forEach(function(s){ add(s.cards); });
+    slugs.sort();
+    if (projPick !== "" && projPick !== "\\u0000" && !seen[projPick]) projPick = "";
+    var opts = [["", "全部"], ["\\u0000", "(無所属)"]];
+    slugs.forEach(function(p){ opts.push([p, p]); });
+    sel.innerHTML = "";
+    opts.forEach(function(o){
+      var op = el("option", null, o[1]);
+      op.value = o[0];
+      sel.appendChild(op);
+    });
+    sel.value = projPick;
+  }
+
   function countsText(counts, cards, search){
     var all = counts || {};
     function n(k){
@@ -5197,9 +5241,9 @@ ${KANBAN_MD_JS}
       var art = el("article", "sess" + (doing ? " doing" : ""));
       if (doing) art.setAttribute("aria-label", "DOING あり: " + s.name);
       // #48: 既定は全開。検索中は畳んでいても中身を見せる（ヒットを隠さない）。
-      var expanded = (sessOpen[s.id] === undefined ? true : sessOpen[s.id]) || search;
+      var expanded = (sessOpen[s.id] === undefined ? true : sessOpen[s.id]) || filtered;
       var cards = (s.cards || []).filter(function(c){
-        return !search || String(c.text || "").toLowerCase().indexOf(query) >= 0;
+        return projOk(c) && (!search || String(c.text || "").toLowerCase().indexOf(query) >= 0);
       });
       var hd = el("header", "sess-hd");
       hd.title = "クリックで折りたたみ";
@@ -5215,7 +5259,7 @@ ${KANBAN_MD_JS}
       hd.appendChild(t);
       hd.appendChild(el("span", "sess-cwd", s.cwd || ""));
       var meta = el("span", "sess-meta");
-      meta.textContent = countsText(s.counts, cards, search) + " ・ 更新 ";
+      meta.textContent = countsText(s.counts, cards, filtered) + " ・ 更新 ";
       // #74: 相対時刻は専用の span。毎分の書き換えは tick() が textContent だけで行う。
       var mm = el("span", null);
       agoLive(s.updatedAt, mm);
@@ -5254,7 +5298,7 @@ ${KANBAN_MD_JS}
       var ctx = boardCtx("session", s.id);
       // #48: 検索してヒット 0 件のセッションは「該当なし」だけ出す（ヘッダは残す）。
       // それ以外は今までどおり。操作系は絞り込み前の全カードを見る。
-      if (search && !cards.length) {
+      if (filtered && !cards.length) {
         art.appendChild(el("div", "sess-empty", "該当なし"));
       } else {
         art.appendChild(boardCtl(ctx, s.modes ? s.modes.session : null, s.cards || []));
@@ -5273,17 +5317,17 @@ ${KANBAN_MD_JS}
     // ヒットしていないカードが検索結果に混ざる（実ブラウザ検証で発見）。
     var search = query !== "";
     var cards = all.filter(function(x){
-      return !search || String(x.text || "").toLowerCase().indexOf(query) >= 0;
+      return projOk(x) && (!search || String(x.text || "").toLowerCase().indexOf(query) >= 0);
     });
     // #62: GLOBAL もセッション見出しと同じ操作感で畳める（既定は開。検索中は強制展開）。
-    var gexpanded = gOpen || search;
+    var gexpanded = gOpen || filtered;
     var head = el("div", "sess-hd");
     head.title = "クリックで折りたたみ";
     head.setAttribute("role", "button");
     head.setAttribute("tabindex", "0");
     head.setAttribute("aria-expanded", gexpanded ? "true" : "false");
     head.appendChild(el("span", "caret", gexpanded ? "\u25BE" : "\u25B8"));
-    head.appendChild(el("span", "sess-cwd", countsText(c, cards, search) + " ・ 計 " + cards.length + " 枚"));
+    head.appendChild(el("span", "sess-cwd", countsText(c, cards, filtered) + " ・ 計 " + cards.length + " 枚"));
     box.appendChild(head);
     // ヘッダ内の操作は畳まない（セッション見出しと同じ除外）。
     function toggleGlobal(e){
@@ -5306,7 +5350,7 @@ ${KANBAN_MD_JS}
     var ctx = boardCtx("global", sid, true);
     box.appendChild(boardCtl(ctx, g ? g.modes : null, all));
     if (!cards.length) {
-      if (search) box.appendChild(el("div", "sess-empty", "該当なし"));
+      if (filtered) box.appendChild(el("div", "sess-empty", "該当なし"));
       else empty(box, "\\u25A1", "<b>GLOBAL 看板は空</b> — 全セッション共有のカードを置くとここに現れるよ");
       return;
     }
@@ -5394,6 +5438,8 @@ ${KANBAN_MD_JS}
   function render(d, nowMs){
     if (isEditing()) return; // #65: 編集中は描画しない（sig を進める判断は呼び出し元）
     nowBase = nowMs;
+    // 絞り込みの選択肢を先に揃える（消えた slug を選んでいたらここで全部に戻る）。
+    syncProjOptions(d);
     // #74: 前回描いたスパンは DOM ごと捨てるので、台帳もここで捨てる（伸びない）。
     nowT = [];
     nowS = [];
@@ -5553,6 +5599,11 @@ ${KANBAN_MD_JS}
   var qEl = document.getElementById("q");
   if (qEl) qEl.addEventListener("input", function(){
     query = qEl.value.trim().toLowerCase();
+    redraw();
+  });
+  var projEl = document.getElementById("proj");
+  if (projEl) projEl.addEventListener("change", function(){
+    projPick = projEl.value || "";
     redraw();
   });
   reload();
