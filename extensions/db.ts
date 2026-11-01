@@ -32,6 +32,10 @@ export type Card = {
 	blocked?: string;
 	firedFor?: string;
 	project?: string;
+	/** #20: the conversation this card came from (A-Za-z0-9._:@-, max 128). */
+	sessionId?: string;
+	/** #20: 7-40 lowercase hex: the commit this card is about. */
+	commit?: string;
 	/** YYYY-MM-DD only: a deadline is a date, not an instant. */
 	due?: string;
 	/** Points, integer >= 0. */
@@ -134,6 +138,7 @@ const SCHEMA = [
 	"  img TEXT, moved_at INTEGER, moved_by TEXT, priority INTEGER,",
 	"  next_fire_at TEXT, blocked TEXT, fired_for TEXT, project TEXT,",
 	"  due TEXT, estimate INTEGER,",
+	"  session_id TEXT, commit_sha TEXT,",
 	"  PRIMARY KEY (scope, sid, id)",
 	");",
 	// Dependencies live outside card: they are a relation, and rewriting one card's
@@ -190,6 +195,10 @@ function rowToCard(r: Row): Card {
 	if (firedFor !== undefined) card.firedFor = firedFor;
 	const project = optionalText(r.project);
 	if (project !== undefined) card.project = project;
+	const sessionId = optionalText(r.session_id);
+	if (sessionId !== undefined) card.sessionId = sessionId;
+	const commit = optionalText(r.commit_sha);
+	if (commit !== undefined) card.commit = commit;
 	const due = optionalText(r.due);
 	if (due !== undefined) card.due = due;
 	const estimate = optionalNumber(r.estimate);
@@ -247,12 +256,14 @@ export function openKanbanDb(file: string): KanbanDb {
 	const cols = new Set((db.prepare("PRAGMA table_info(card)").all() as Row[]).map((r) => String(r.name)));
 	if (!cols.has("due")) db.exec("ALTER TABLE card ADD COLUMN due TEXT");
 	if (!cols.has("estimate")) db.exec("ALTER TABLE card ADD COLUMN estimate INTEGER");
+	if (!cols.has("session_id")) db.exec("ALTER TABLE card ADD COLUMN session_id TEXT");
+	if (!cols.has("commit_sha")) db.exec("ALTER TABLE card ADD COLUMN commit_sha TEXT");
 	// shortcut: ALTER は列名で判定する。型変更が必要になったらテーブル再作成に切り替える。
 	db.exec("PRAGMA user_version = 2");
 
 	const selectBoard = db.prepare("SELECT next_id FROM board WHERE scope = ? AND sid = ?");
 	const selectCards = db.prepare(
-		"SELECT id, text, col, img, moved_at, moved_by, priority, next_fire_at, blocked, fired_for, project, due, estimate FROM card WHERE scope = ? AND sid = ? ORDER BY ord",
+		"SELECT id, text, col, img, moved_at, moved_by, priority, next_fire_at, blocked, fired_for, project, due, estimate, session_id, commit_sha FROM card WHERE scope = ? AND sid = ? ORDER BY ord",
 	);
 	const selectRev = db.prepare("SELECT rev FROM board WHERE scope = ? AND sid = ?");
 	// #16: the global aggregate reads every project board on every tick; two statements for
@@ -275,7 +286,7 @@ export function openKanbanDb(file: string): KanbanDb {
 		"DELETE FROM card WHERE scope = ? AND sid = ? AND id NOT IN (SELECT value FROM json_each(?))",
 	);
 	const insertCard = db.prepare(
-		"INSERT OR REPLACE INTO card (scope, sid, id, ord, text, col, img, moved_at, moved_by, priority, next_fire_at, blocked, fired_for, project, due, estimate) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		"INSERT OR REPLACE INTO card (scope, sid, id, ord, text, col, img, moved_at, moved_by, priority, next_fire_at, blocked, fired_for, project, due, estimate, session_id, commit_sha) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 	);
 	const selectDeps = db.prepare(
 		"SELECT card_id, blocks_id FROM card_dep WHERE scope = ? AND sid = ? ORDER BY card_id, blocks_id",
@@ -377,6 +388,8 @@ export function openKanbanDb(file: string): KanbanDb {
 						c.project ?? null,
 						c.due ?? null,
 						c.estimate ?? null,
+						c.sessionId ?? null,
+						c.commit ?? null,
 					);
 				}
 				writeDeps(key.scope, key.sid, b.cards);
@@ -418,6 +431,8 @@ export function openKanbanDb(file: string): KanbanDb {
 						c.project ?? null,
 						c.due ?? null,
 						c.estimate ?? null,
+						c.sessionId ?? null,
+						c.commit ?? null,
 					);
 				}
 				writeDeps(key.scope, key.sid, b.cards);

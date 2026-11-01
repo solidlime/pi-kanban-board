@@ -75,6 +75,8 @@
   .card{background:var(--card);border-radius:6px;padding:6px 8px;margin-bottom:6px;font-size:12px;display:flex;gap:4px;align-items:baseline;flex-wrap:wrap}
   .card .id{color:var(--accent);flex:none}
   .card .proj{flex:none;font-size:10px;color:var(--muted);border:1px solid var(--border-strong);border-radius:999px;padding:0 5px}
+  /* #20: 会話リンクは ID の小片。pi-web の origin は分からないのでリンクにはしない。 */
+  .card .sess,.card .commit{flex:none;font-size:10px;color:var(--muted);border:1px solid var(--border-strong);border-radius:999px;padding:0 5px;font-variant-numeric:tabular-nums}
   .card .t{flex:1;min-width:0;overflow-wrap:anywhere;white-space:pre-wrap}
   /* #38-5: 60 字超は 3 行で切ってクリック展開 */
   .card .t.clampable:not(.open){display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;cursor:pointer}
@@ -1013,6 +1015,19 @@
           }
           card.appendChild(el("span", "id", "#" + c.id));
           if (c.project) card.appendChild(el("span", "proj", c.project));
+          // #20: 会話タグ。短縮は表示だけ、全文は title に残す（リンクは張らない）。
+          if (c.sessionId) {
+            var sid = String(c.sessionId);
+            var ss = el("span", "sess", sid.length > 8 ? sid.slice(0, 8) + "\u2026" : sid);
+            ss.title = sid;
+            card.appendChild(ss);
+          }
+          if (c.commit) {
+            var sha = String(c.commit);
+            var cc = el("span", "commit", sha.slice(0, 7));
+            cc.title = sha;
+            card.appendChild(cc);
+          }
           // #16: GLOBAL 看板のカードは各 project ボードから来る。由来はツール側の [slug] と同じ語彙で出す。
           if (c.sid) card.appendChild(el("span", "proj", "[" + c.sid + "]"));
           var t = el("span", "t");

@@ -97,6 +97,44 @@ test("a board written before due/estimate existed migrates and keeps its cards",
 	db.close();
 });
 
+test("a board written before session_id/commit_sha existed migrates and keeps its links", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "kbdb-link-"));
+	const file = join(dir, "old.sqlite");
+	// #20: the shape right before this column pair - due/estimate already there.
+	const { createRequire } = await import("node:module");
+	const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite");
+	const old = new DatabaseSync(file);
+	old.exec(
+		"CREATE TABLE board (scope TEXT NOT NULL, sid TEXT NOT NULL, next_id INTEGER NOT NULL, rev INTEGER NOT NULL DEFAULT 0, touched_at INTEGER NOT NULL, PRIMARY KEY (scope, sid))",
+	);
+	old.exec(
+		"CREATE TABLE card (scope TEXT NOT NULL, sid TEXT NOT NULL, id INTEGER NOT NULL, ord INTEGER NOT NULL, text TEXT NOT NULL, col TEXT NOT NULL, img TEXT, moved_at INTEGER, moved_by TEXT, priority INTEGER, next_fire_at TEXT, blocked TEXT, fired_for TEXT, project TEXT, due TEXT, estimate INTEGER, PRIMARY KEY (scope, sid, id))",
+	);
+	old.exec("INSERT INTO board (scope, sid, next_id, rev, touched_at) VALUES ('project','s1',2,1,0)");
+	old.exec("INSERT INTO card (scope, sid, id, ord, text, col) VALUES ('project','s1',1,0,'old','todo')");
+	old.close();
+
+	const db = await openKanbanDb(file);
+	const key = { scope: "project", sid: "s1" };
+	assert.deepEqual(db.readBoard(key).cards, [{ id: 1, text: "old", col: "todo" }]);
+	// The point of the migration: the new columns are writable AND selected back.
+	db.writeBoard(key, { cards: [{ id: 1, text: "old", col: "todo", sessionId: "s-1", commit: "abcdef1" }], nextId: 2 });
+	const back = db.readBoard(key).cards[0];
+	assert.equal(back.sessionId, "s-1");
+	assert.equal(back.commit, "abcdef1");
+	db.close();
+});
+
+test("importBoard keeps sessionId/commit (its own insertCard.run)", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "kbdb-imp-"));
+	const db = await openKanbanDb(join(dir, "board.sqlite"));
+	const key = { scope: "project", sid: "imp" };
+	const card = { id: 1, text: "imported", col: "todo", sessionId: "s-9", commit: "deadbee" };
+	assert.equal(db.importBoard(key, { cards: [card], nextId: 2 }), true);
+	assert.deepEqual(db.readBoard(key).cards, [card]);
+	db.close();
+});
+
 test("a v0 database missing due/estimate is repaired on open, not on a version bump", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "kbdb-v0-"));
 	const file = join(dir, "v0.sqlite");

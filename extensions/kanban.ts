@@ -108,6 +108,10 @@ type Card = {
 	blocked?: string;
 	firedFor?: string;
 	project?: string;
+	/** #20: the conversation this card came from. Shown as an ID, never as a link. */
+	sessionId?: string;
+	/** #20: 7-40 lowercase hex naming the commit this card is about. */
+	commit?: string;
 	due?: string;
 	estimate?: number;
 	blocks?: number[];
@@ -693,6 +697,29 @@ export function normalizeProject(raw: unknown): string {
 		.slice(0, PROJECT_MAX);
 }
 
+export const SESSION_MAX = 128;
+/**
+ * #20: a session id rides in URLs, so every character that could act as a delimiter is
+ * dropped. "" means "no session" (the field is deleted).
+ */
+export function normalizeSessionId(raw: unknown): string {
+	if (typeof raw !== "string") return "";
+	return raw
+		.trim()
+		.replace(/[^A-Za-z0-9._:@-]/g, "")
+		.slice(0, SESSION_MAX);
+}
+
+/**
+ * #20: "" means "no commit". Anything else that is not 7-40 hex is a typo, and the caller
+ * turns that into a 400 instead of dropping it (same strictness as parseDue).
+ */
+export function normalizeCommit(raw: unknown): string {
+	if (typeof raw !== "string") return "";
+	const s = raw.trim().toLowerCase();
+	return /^[0-9a-f]{7,40}$/.test(s) ? s : "";
+}
+
 const DUE_RE = /^\d{4}-\d{2}-\d{2}$/;
 /**
  * due is a date, not an instant: a time part would let two readers disagree on "today".
@@ -890,7 +917,7 @@ function cardsIn(b: Board, col: Col): Card[] {
 function formatCard(c: Card & { sid?: string }): string {
 	// #57: `c.img` is already the media/ filename, so show it as-is (no path, no basename).
 	// #16: aggregate rows carry the board they came from, and ids collide across boards.
-	return `#${c.id} ${c.sid ? `[${c.sid}] ` : ""}${c.project ? `📁${c.project} ` : ""}${c.text ?? ""}${c.img ? `🖼${c.img}` : ""}`;
+	return `#${c.id} ${c.sid ? `[${c.sid}] ` : ""}${c.project ? `📁${c.project} ` : ""}${c.commit ? `${c.commit.slice(0, 7)} ` : ""}${c.text ?? ""}${c.img ? `🖼${c.img}` : ""}`;
 }
 
 /** Short "[⛔理由 ⏰ISO]" suffix so a tool result shows a gated card's state. */
@@ -3572,6 +3599,9 @@ const CARD_FIELDS = [
 	"due",
 	"estimate",
 	"blocks",
+	// #20: the conversation/commit tags. Missing here = `?fields=` callers never see them.
+	"sessionId",
+	"commit",
 	// #16: the aggregate stamps each card with the project board it came from.
 	"sid",
 ] as const;
@@ -3957,6 +3987,21 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 				return;
 			}
 			if (project !== "") card.project = project;
+			const sessionRaw = q.get("session");
+			const sessionId = normalizeSessionId(sessionRaw);
+			// Same rule as project: only an exact empty string means "no session".
+			if (sessionId === "" && (sessionRaw ?? "") !== "") {
+				sendJson(res, 400, { ok: false, error: "session must match [A-Za-z0-9._:@-]" });
+				return;
+			}
+			const commitRaw = q.get("commit");
+			const commit = normalizeCommit(commitRaw);
+			// Same rule as project: only an exact empty string means "no commit". normalizeCommit
+			// trims, so commit=%20%20 is a typo and commit=%20abc1234%20 is a value.
+			if (commit === "" && (commitRaw ?? "") !== "") {
+				sendJson(res, 400, { ok: false, error: "commit must be 7-40 hex characters" });
+				return;
+			}
 			const due = parseDue(q.get("due"));
 			if (due === null) {
 				sendJson(res, 400, { ok: false, error: "due must be YYYY-MM-DD" });
@@ -3978,6 +4023,8 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 			}
 			if (due !== undefined) card.due = due;
 			if (estimate !== undefined) card.estimate = estimate;
+			if (sessionId !== "") card.sessionId = sessionId;
+			if (commit !== "") card.commit = commit;
 			if (blocks.length > 0) card.blocks = blocks;
 			b.cards.push(card);
 			writeBoard(path, b);
@@ -4139,8 +4186,8 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 		case "/api/schedule": {
 			// Same GET+query write path (and sid rule) as every other card edit.
 			// Nothing to set = a caller typo; 400 instead of a silent no-op write.
-			if (q.get("at") === null && q.get("blocked") === null && q.get("project") === null) {
-				sendJson(res, 400, { ok: false, error: "at, blocked or project is required" });
+			if (q.get("at") === null && q.get("blocked") === null && q.get("project") === null && q.get("session") === null && q.get("commit") === null) {
+				sendJson(res, 400, { ok: false, error: "at, blocked, project, session or commit is required" });
 				return;
 			}
 			const card = b.cards.find((c) => c.id === Number(idParam));
@@ -4164,6 +4211,18 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 				sendJson(res, 400, { ok: false, error: "project must match [a-z0-9._-]" });
 				return;
 			}
+			const sessionParam = q.get("session");
+			const sess = sessionParam === null ? null : normalizeSessionId(sessionParam);
+			if (sess !== null && sess.length === 0 && sessionParam !== "") {
+				sendJson(res, 400, { ok: false, error: "session must match [A-Za-z0-9._:@-]" });
+				return;
+			}
+			const commitParam = q.get("commit");
+			const sha = commitParam === null ? null : normalizeCommit(commitParam);
+			if (sha !== null && sha.length === 0 && commitParam !== "") {
+				sendJson(res, 400, { ok: false, error: "commit must be 7-40 hex characters" });
+				return;
+			}
 			if (at !== null) {
 				if (atIso === null) {
 					delete card.nextFireAt;
@@ -4178,6 +4237,14 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 			if (p !== null) {
 				if (p.length === 0) delete card.project;
 				else card.project = p;
+			}
+			if (sess !== null) {
+				if (sess.length === 0) delete card.sessionId;
+				else card.sessionId = sess;
+			}
+			if (sha !== null) {
+				if (sha.length === 0) delete card.commit;
+				else card.commit = sha;
 			}
 			writeBoard(path, b);
 			sendJson(res, 200, { ok: true, cards: b.cards });
@@ -5298,7 +5365,7 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 		name: "kanban",
 		label: "Kanban board",
 		description:
-			"Manage a 3-column kanban board (todo/doing/done). action=list shows the board, add creates a card, move changes its column, remove deletes it, edit rewrites a card's text (column and ownership stay), check runs the board/serve/media/modes self-test and returns its JSON, resume clears a doing-loop halt (same reset as /kanban loop on: budget back to 10, doingLoop ON in all three scopes — session, global and this project) — the GUI's loop switch cannot clear it, because the halt lives in the extension process, not in modes.json. scope selects the board: 'project' (default, the board of this working directory's git root - every session in the same repo shares it), 'session' (this conversation's own board) or 'global' (a read-only aggregate of every project's cards; writes there are rejected). Card IDs are unique only within one board — global #7 and project #7 are different cards, so an id seen in a global listing cannot be passed to move/remove/edit: those always act on the selected scope's own board (default: this project's). url returns the token-bearing dashboard URL to open in a browser. The board is shared with the user's GUI and persisted under ~/.pi/kanban/. project is an optional slug (lowercase [a-z0-9._-], max 24 chars) naming the project a card belongs to; add and edit set it, an empty value clears it, an unnormalizable value is an error, and it never affects the loop or auto-pick.",
+			"Manage a 3-column kanban board (todo/doing/done). action=list shows the board, add creates a card, move changes its column, remove deletes it, edit rewrites a card's text (column and ownership stay), check runs the board/serve/media/modes self-test and returns its JSON, resume clears a doing-loop halt (same reset as /kanban loop on: budget back to 10, doingLoop ON in all three scopes — session, global and this project) — the GUI's loop switch cannot clear it, because the halt lives in the extension process, not in modes.json. scope selects the board: 'project' (default, the board of this working directory's git root - every session in the same repo shares it), 'session' (this conversation's own board) or 'global' (a read-only aggregate of every project's cards; writes there are rejected). Card IDs are unique only within one board — global #7 and project #7 are different cards, so an id seen in a global listing cannot be passed to move/remove/edit: those always act on the selected scope's own board (default: this project's). url returns the token-bearing dashboard URL to open in a browser. The board is shared with the user's GUI and persisted under ~/.pi/kanban/. project is an optional slug (lowercase [a-z0-9._-], max 24 chars) naming the project a card belongs to; add and edit set it, an empty value clears it, an unnormalizable value is an error, and it never affects the loop or auto-pick. session and commit are optional conversation tags: add and edit set them, an empty value clears them, and commit must be 7-40 hex characters (it is stored lowercase).",
 		parameters: Type.Object({
 			action: Type.Union([
 				Type.Literal("list"),
@@ -5329,6 +5396,9 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 			blocked: Type.Optional(Type.String()),
 			// A slug, normalized on write (lowercase [a-z0-9._-], max 24 chars). "" clears it.
 			project: Type.Optional(Type.String()),
+			// #20: conversation tags. "" clears either one; commit must be 7-40 hex.
+			session: Type.Optional(Type.String()),
+			commit: Type.Optional(Type.String()),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			// Phase 0: the HTTP gate cannot see an in-process write, so the tool waits for the
@@ -5389,11 +5459,17 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 					// Validate before touching nextId: a failed add must not consume and report an unsaved id.
 					const project = normalizeProject(params.project);
 					if (project === "" && (params.project ?? "") !== "") return fail("project must match [a-z0-9._-]");
+					const sessionId = normalizeSessionId(params.session);
+					if (sessionId === "" && (params.session ?? "") !== "") return fail("session must match [A-Za-z0-9._:@-]");
+					const commit = normalizeCommit(params.commit);
+					if (commit === "" && (params.commit ?? "") !== "") return fail("commit must be 7-40 hex characters");
 					const card: Card = { id: b.nextId++, text, col };
 					stampMove(card, sessionSid);
 					const gateError = applyGate(card);
 					if (gateError !== null) return fail(gateError);
 					if (project !== "") card.project = project;
+					if (sessionId !== "") card.sessionId = sessionId;
+					if (commit !== "") card.commit = commit;
 					b.cards.push(card);
 					persistError = writeBoard(path, b);
 					message = `added ${formatCard(card)} to ${card.col} (${scope})${gateNote(card)}`;
@@ -5416,17 +5492,30 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 				case "edit": {
 					if (params.id === undefined) return fail("edit requires id");
 					const text = (params.text ?? "").trim();
-					// project alone is a valid edit (relabeling a card without touching its text).
-					if (text.length === 0 && params.project === undefined) return fail("edit requires a non-empty text");
+					// project/session/commit alone is a valid edit (relabeling a card without touching its text).
+					if (text.length === 0 && params.project === undefined && params.session === undefined && params.commit === undefined)
+						return fail("edit requires text, project, session or commit");
 					const proj = params.project === undefined ? undefined : normalizeProject(params.project);
 					// Validate before mutating: a failed edit must not report text that was never saved.
 					if (proj === "" && params.project !== undefined && params.project !== "") return fail("project must match [a-z0-9._-]");
+					const sess = params.session === undefined ? undefined : normalizeSessionId(params.session);
+					if (sess === "" && params.session !== undefined && params.session !== "") return fail("session must match [A-Za-z0-9._:@-]");
+					const sha = params.commit === undefined ? undefined : normalizeCommit(params.commit);
+					if (sha === "" && params.commit !== undefined && params.commit !== "") return fail("commit must be 7-40 hex characters");
 					const card = b.cards.find((c) => c.id === params.id);
 					if (card === undefined) return fail(`no card with id ${params.id} in the ${scope} board`);
 					if (text.length > 0) card.text = text;
 					if (proj !== undefined) {
 						if (proj === "") delete card.project;
 						else card.project = proj;
+					}
+					if (sess !== undefined) {
+						if (sess === "") delete card.sessionId;
+						else card.sessionId = sess;
+					}
+					if (sha !== undefined) {
+						if (sha === "") delete card.commit;
+						else card.commit = sha;
 					}
 					persistError = writeBoard(path, b);
 					message = `edited #${card.id} (${scope})`;
