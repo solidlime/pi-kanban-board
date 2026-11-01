@@ -65,6 +65,8 @@
   .stat.warn .n{color:var(--warn)}
   .stat.bad .n{color:var(--bad)}
   /* boards */
+  /* #38-13: 列の高さは揃える（グリッド既定の stretch のまま）。空の列を内容の高さに
+     縮めるとドラッグのドロップ先が細くなり、盤面も階段状に崩れる。揃っているのが普通。 */
   .cols{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
   .col{background:var(--panel);border-radius:8px;padding:8px;min-height:52px}
   .col h3{margin:0 0 6px;font-size:11px;letter-spacing:.08em;color:var(--muted);font-weight:600}
@@ -125,10 +127,11 @@
   .card .ops button.del{color:var(--danger-soft-fg);border-color:var(--danger-border)}
   .card .ops button.del:hover{color:var(--danger-fg);border-color:var(--danger-border)}
   /* #36 任意時刻の発火指定（datetime-local 直入力） */
-  .card .ops input[type=datetime-local]{font:inherit;font-size:10px;background:var(--panel);color:var(--text);border:1px solid var(--border-strong);border-radius:4px;padding:1px 3px}
+  /* #38-13: 押せるのに 19px だった。指の大きさは好みでなく下限なので、行の高さだけ上げる */
+  .card .ops input[type=datetime-local]{font:inherit;font-size:10px;background:var(--panel);color:var(--text);border:1px solid var(--border-strong);border-radius:4px;padding:1px 3px;min-height:24px}
   /* #31 board switches: doingLoop / autoPick / interval / DOING stop */
   .ctl{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:2px 0 8px;font-size:11px;color:var(--muted)}
-  button.sw{font:inherit;font-size:10px;letter-spacing:.05em;border-radius:999px;padding:1px 8px;border:1px solid var(--border-strong);background:transparent;color:var(--muted);cursor:pointer}
+  button.sw{font:inherit;font-size:10px;letter-spacing:.05em;border-radius:999px;padding:1px 8px;border:1px solid var(--border-strong);background:transparent;color:var(--muted);cursor:pointer;min-height:24px}
   button.sw.on{border-color:var(--ok);color:var(--ok)}
   button.sw[disabled]{opacity:.45;cursor:default}
   .ctl input[type=number]{width:56px;font:inherit;font-size:11px;background:var(--panel);color:var(--text);border:1px solid var(--border-strong);border-radius:4px;padding:1px 4px}
@@ -335,7 +338,7 @@
   // DOM 作り直しを跨いで保持する（localStorage は使わない: 既存の流儀どおり）。
   var query = "";        // 小文字化済みの検索語
   // プロジェクト絞り込み: "" = 全部 / "\u0000" = 無所属 / それ以外は slug 完全一致。
-  // "\u0000" は normalizeProject（[a-z0-9._-] のみ許可）を通らないので、本物の slug と同値化できない。
+  // "\u0000" は normalizeProject（[A-Za-z0-9._-] のみ許可）を通らないので、本物の slug と同値化できない。
   var projPick = "";
   // 1-4: カードの絞り込み（"" = 全部 / "ok" 着手可能 / "overdue" 期限超過 / "blocked" ブロック中）。
   // 再描画のたびに DOM を作り直すので、選択状態はここに持つ（query / projPick と同じ流儀）。
@@ -1249,7 +1252,10 @@
   // プロジェクト絞り込みの述語。project を持たないカードは「無所属」だけに当たる。
   function projOk(c){
     if (projPick === "") return true;
-    var p = c && typeof c.project === "string" ? c.project : "";
+    // #34: ボードの slug は sid に入る。project だけ見ると選択肢に出したボードで全カードが
+    // 「該当なし」になる（card.project はカード単位の所属で通常 null）。
+    var p = c && typeof c.project === "string" && c.project !== "" ? c.project
+          : (c && typeof c.sid === "string" ? c.sid : "");
     return projPick === "\u0000" ? p === "" : p === projPick;
   }
   // 1-3/1-4: 期限と依存はクライアントで計算する（API を増やさない）。due は "YYYY-MM-DD"
@@ -1319,7 +1325,9 @@
     var seen = {}, slugs = [];
     function add(list){
       for (var i = 0; i < (list || []).length; i++) {
-        var p = list[i] && list[i].project;
+        // #34: ボード名は sid に入る（card.project はカード単位の所属で基本 null）。
+        // sid を見ないと選択肢が「全部/(無所属)」だけになり、?p= に渡す slug を選べない。
+        var p = list[i] && (list[i].project || list[i].sid);
         if (typeof p === "string" && p !== "" && p !== "\u0000" && !seen[p]) { seen[p] = true; slugs.push(p); }
       }
     }
@@ -1372,7 +1380,8 @@
     if (!box) return;
     box.innerHTML = "";
     var slug = document.getElementById("project-slug");
-    if (slug) slug.textContent = (p && p.id) || "—";
+    // #35: 選んだ slug を優先する（cwd 解決の結果ではなく、見ているボードの名前を出す）。
+    if (slug) slug.textContent = (projPick !== "" && projPick !== "\u0000" ? projPick : (p && p.id)) || "—";
     var ctx = boardCtx("project", "", true);
     // cwd で解決されるので sid は送らない。ここに slug を載せると act() が sid=<slug> を送る。
     // #18: 見出しの停滞件数は絞り込み後の cards を数えるので、DOM を組む前に確定させる。
@@ -2111,8 +2120,18 @@
     sig = sigOf(d) + uiSig();
     tick(nowMs); // 描いた瞬間に揃える。次の ticker はちょうど +60 秒
   }
+  // #35: cwd を解決できないと /api/dashboard の project は process.cwd() のボード（pi-web）になる。
+  // プロジェクトを選んでいる間は ?p=<slug> の看板で上書きし、未選択なら従来どおり dashboard の
+  // project をそのまま使う（取れなかった時も同じく従来の表示に落とす）。
+  function boardOf(d){
+    if (projPick === "" || projPick === "\u0000") return Promise.resolve(d);
+    return api("/api/kanban", { p: projPick }).then(function(k){
+      if (k && k.ok && k.project) d.project = k.project;
+      return d;
+    }, function(){ return d; });
+  }
   function reload(){
-    api(API).then(function(d){
+    api(API).then(boardOf).then(function(d){
       if (!d || typeof d !== "object") throw new Error("bad payload");
       lastData = d;
       setConn(true);
@@ -2151,7 +2170,8 @@
   var projEl = document.getElementById("proj");
   if (projEl) projEl.addEventListener("change", function(){
     projPick = projEl.value || "";
-    redraw();
+    redraw(); // クライアント側の絞り込みは即座に効かせる
+    reload(); // 選んだ slug の看板を取り直す（lastData のボードはポーリング待ちにしない）
   });
   // #22: ラベル絞り込み。projPick と同じ配線（値は固定 4 種＋"" なので検証は要らない）。
   var labEl = document.getElementById("lab");

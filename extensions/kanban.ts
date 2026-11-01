@@ -89,7 +89,7 @@ type Col = "todo" | "doing" | "done";
 // behavior. nextFireAt is an ISO 8601 string with an offset (human-readable board
 // JSON). blocked is free text; "" means cleared. firedFor records the nextFireAt
 // value a wake already happened for, so re-arming = changing nextFireAt.
-// project is optional too: a slug (lowercase [a-z0-9._-], max 24 chars) naming the
+// project is optional too: a slug ([A-Za-z0-9._-], case kept, max 24 chars) naming the
 // project a card belongs to. Absent = unassigned. Deliberately unrelated to the
 // loop: autoPick/injection never read it (see normalizeProject).
 // due/estimate/blocks (#phase1) are the board-metadata trio. due is a DATE
@@ -472,6 +472,14 @@ export function readBoardOrNull(path: string): Board | null {
 export function readBoard(path: string): Board {
 	return readBoardOrNull(path) ?? { cards: [], nextId: 1 };
 }
+/**
+ * #36: the spelling a project board is STORED under, or the given slug when it has no board
+ * yet. Every sid match is COLLATE NOCASE, so a caller's spelling (?p=, a sid's cwd) is a
+ * different string from the board's - answer with the board's so paths and projectId agree.
+ */
+function storedProjectKey(slug: string): string {
+	return kanbanDb().boardSid({ scope: "project", sid: slug }) ?? slug;
+}
 /** Drop a board entirely. Only tests use this; the server never deletes one. */
 export function deleteBoardPath(path: string): void {
 	kanbanDb().deleteBoard(boardKeyOf(path));
@@ -695,13 +703,17 @@ export function priorityOf(c: { priority?: number }): number {
 }
 
 export const PROJECT_MAX = 24;
-/** Write-boundary normalization: "" means "no project" (the field is deleted, like blocked). */
+/**
+ * Write-boundary normalization: "" means "no project" (the field is deleted, like blocked).
+ * #34: the case is kept - the slug is inherited from a directory name, and lowercasing it
+ * renamed `Pi-Kanban-Board` to `pi-kanban-board`, a board that did not exist. Matching is
+ * what ignores case (SQL `COLLATE NOCASE`), not the stored spelling.
+ */
 export function normalizeProject(raw: unknown): string {
 	if (typeof raw !== "string") return "";
 	return raw
 		.trim()
-		.toLowerCase()
-		.replace(/[^a-z0-9._-]/g, "")
+		.replace(/[^A-Za-z0-9._-]/g, "")
 		.slice(0, PROJECT_MAX);
 }
 
@@ -1134,7 +1146,9 @@ export function weeklySummary(boards: { slug: string; cards: Card[] }[], week: s
  * replaces drifted, and a project halt landed on a key nobody ever drew.
  */
 function boardKeyFor(ctx: ExtensionContext, sid: string, scope: Scope): string {
-	return scope === "project" ? projectSlugOf(cwdOfCtx(ctx)) : sid;
+	// #34: modes.json keyed by a JS object is case-sensitive while the DB is NOCASE, so every
+	// reader has to agree on the stored spelling - the GUI writes it, so the loop must read it.
+	return scope === "project" ? storedProjectKey(projectSlugOf(cwdOfCtx(ctx))) : sid;
 }
 
 /**
@@ -3528,7 +3542,7 @@ async function dashboardPayload(): Promise<unknown> {
 	// activeSessionId is null (server outlives shutdown), when the cache does not hold the sid
 	// (not scanned yet, or its header cwd is empty - session-manager.js:541), or when a rescan
 	// failed and byId is empty.
-	const slug = projectSlugOf(cwdOfSidSync(null));
+	const slug = storedProjectKey(projectSlugOf(cwdOfSidSync(null)));
 	const pb = readBoard(boardPath("project", slug));
 	const projectCounts = countCols(pb);
 	// Dead registrations stay listed; `exists` is the flag that tells the UI.
@@ -3627,7 +3641,8 @@ function writeBoardPath(q: URLSearchParams): WriteTarget {
 	if (scope === "global") return { ok: false, error: "global board is read-only" };
 	const key = projectKeyOfWrite(q.get("sid"));
 	if (key === null) return { ok: false, error: "unknown sid" };
-	return { ok: true, path: boardPath("project", key) };
+	// #36: the board's own spelling, so a write and the reader above name the same board.
+	return { ok: true, path: boardPath("project", storedProjectKey(key)) };
 }
 
 /** #17: parseScope reads scope=session as project, so a write gate has to see the raw value. */
@@ -3648,7 +3663,7 @@ function settingsSidOf(q: URLSearchParams, res: ServerResponse): string | null {
 	// project keys its settings by board (the slug); the sid only says whose cwd to use.
 	if (scope === "project") {
 		const key = projectKeyOfWrite(q.get("sid"));
-		if (key !== null) return key;
+		if (key !== null) return storedProjectKey(key);
 		// Same 400 as a board write: an unknown sid must not land on OUR cwd's board.
 		sendJson(res, 400, { ok: false, error: "unknown sid" });
 		return null;
@@ -3712,7 +3727,7 @@ function handleUpload(req: IncomingMessage, res: ServerResponse, q: URLSearchPar
 			const project = normalizeProject(projectRaw);
 			// Only an exact empty string clears (a fresh upload card only); anything else unnormalizable is a typo.
 			if (project === "" && (projectRaw ?? "") !== "") {
-				sendJson(res, 400, { ok: false, error: "project must match [a-z0-9._-]" });
+				sendJson(res, 400, { ok: false, error: "project must match [A-Za-z0-9._-]" });
 				return;
 			}
 			if (project !== "") card.project = project;
@@ -4057,15 +4072,26 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 		const global = aggregateGlobal();
 		// Phase 0: the project board needs no sid - the browser's session names the cwd, and
 		// without one the active session (or this process) stands in for it.
-		const projectSid = projectSlugOf(cwdOfSidSync(sid));
-		const project = readBoard(boardPath("project", projectSid));
+		// #35: ?p=<slug> names the board outright. Without it, cwd resolution can fall back to
+		// process.cwd() (the pi-web install dir) and answer for a board nobody asked for. A
+		// present-but-invalid p is a 400, never a silent fallback to that cwd.
+		const pRaw = q.get("p");
+		const pSent = pRaw !== null && pRaw !== "";
+		const projectSid = pSent ? normalizeProject(pRaw) : projectSlugOf(cwdOfSidSync(sid));
+		if (pSent && projectSid === "") {
+			sendJson(res, 400, { ok: false, error: "p must match [A-Za-z0-9._-]" });
+			return;
+		}
+		// #36: `?p=` is the caller's spelling, not the board's; read the stored one and report it.
+		const storedSid = storedProjectKey(projectSid);
+		const project = readBoard(boardPath("project", storedSid));
 		sendJson(res, 200, {
 			ok: true,
-			projectId: projectSid,
+			projectId: storedSid,
 			global: keys === null ? global : projectBoard(global, keys),
 			project: keys === null ? project : projectBoard(project, keys),
 			// #26: global is an aggregate view with no switches, so the panel has one row.
-			modes: { project: modesFor(f, projectSid, "project") },
+			modes: { project: modesFor(f, storedSid, "project") },
 		});
 		return;
 	}
@@ -4097,7 +4123,7 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 	if (url.pathname === "/api/project") {
 		const project = normalizeProject(q.get("project"));
 		if (project === "") {
-			sendJson(res, 400, { ok: false, error: "project must match [a-z0-9._-]" });
+			sendJson(res, 400, { ok: false, error: "project must match [A-Za-z0-9._-]" });
 			return;
 		}
 		// No name = the slug. Renaming is the only reason to call this: a card naming the
@@ -4132,7 +4158,7 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 		const project = normalizeProject(projectRaw);
 		// Same rule as /api/add: only an exact empty string means "no project at all".
 		if (project === "" && projectRaw !== "") {
-			sendJson(res, 400, { ok: false, error: "project must match [a-z0-9._-]" });
+			sendJson(res, 400, { ok: false, error: "project must match [A-Za-z0-9._-]" });
 			return;
 		}
 		const why = (q.get("why") ?? "").trim();
@@ -4186,18 +4212,21 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 			return;
 		}
 		const { scope, sid } = plan;
+		// #34: modes.json keys are case-sensitive while the DB is NOCASE, so the write has to
+		// use the same stored spelling the poll and the dashboard read (boardKeyFor).
+		const bkey = storedProjectKey(sid);
 		const n = plan.n;
 		if (!isValidMaxLoops(n)) {
 			sendJson(res, 400, { ok: false, error: `n must be an integer 0..${MAX_LOOPS_CAP} (0 = unlimited)` });
 			return;
 		}
 		const f = readModesFile();
-		setMaxLoops(f, sid, scope, n);
+		setMaxLoops(f, bkey, scope, n);
 		writeModesFile(f);
 		sendJson(res, 200, {
 			ok: true,
 			// #26: the panel draws one row now - global owns no switches.
-			modes: { project: modesFor(f, sid, "project") },
+			modes: { project: modesFor(f, bkey, "project") },
 		});
 		return;
 	}
@@ -4236,7 +4265,7 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 			const project = normalizeProject(projectRaw);
 			// Only an exact empty string clears; anything else unnormalizable is a typo.
 			if (project === "" && (projectRaw ?? "") !== "") {
-				sendJson(res, 400, { ok: false, error: "project must match [a-z0-9._-]" });
+				sendJson(res, 400, { ok: false, error: "project must match [A-Za-z0-9._-]" });
 				return;
 			}
 			if (project !== "") card.project = project;
@@ -4455,7 +4484,7 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 			const p = projectParam === null ? null : normalizeProject(projectParam);
 			// Only an exact empty string clears; anything else unnormalizable (incl. spaces) is a typo.
 			if (p !== null && p.length === 0 && projectParam !== "") {
-				sendJson(res, 400, { ok: false, error: "project must match [a-z0-9._-]" });
+				sendJson(res, 400, { ok: false, error: "project must match [A-Za-z0-9._-]" });
 				return;
 			}
 			const sessionParam = q.get("session");
@@ -4971,7 +5000,8 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 		const before = resetLoopForResume();
 		const f = readModesFile();
 		// #26: only the project board can drive, so only its switch is turned back on.
-		setMode(f, projectSlugOf(cwdOfCtx(ctx)), "project", "doingLoop", true);
+		// #34: the same stored spelling the GUI writes, or the resume turns on a key no poll reads.
+		setMode(f, boardKeyFor(ctx, sid, "project"), "project", "doingLoop", true);
 		writeModesFile(f);
 		// #89: a resume turns the loop back ON, so the timer must exist. No-op when it already
 		// does (the /api/resume path runs inside poll) and when this process has no ownCtx yet;
@@ -5311,7 +5341,7 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 			const boards: { scope: Scope; key: string }[] = [
 				// cwdOfCtx, not process.cwd(): refresh/settle use the ctx cwd, and a key mismatch here
 				// would poll a board nobody draws or settles.
-				{ scope: "project", key: projectSlugOf(cwdOfCtx(ownCtx)) },
+				{ scope: "project", key: boardKeyFor(ownCtx, sid, "project") },
 			];
 			for (const { scope, key } of boards) {
 				// Read the switch first: with doingLoop off this costs one
@@ -5663,7 +5693,7 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 		name: "kanban",
 		label: "Kanban board",
 		description:
-			"Manage a 3-column kanban board (todo/doing/done). action=list shows the board, add creates a card, move changes its column, remove deletes it, edit rewrites a card's text (column and ownership stay), check runs the board/serve/media/modes self-test and returns its JSON, resume clears a doing-loop halt (same reset as /kanban loop on: budget back to 10, doingLoop ON in all three scopes — session, global and this project) — the GUI's loop switch cannot clear it, because the halt lives in the extension process, not in modes.json. scope selects the board: 'project' (default, the board of this working directory's git root - every session in the same repo shares it), 'session' (this conversation's own board) or 'global' (a read-only aggregate of every project's cards; writes there are rejected). Card IDs are unique only within one board — global #7 and project #7 are different cards, so an id seen in a global listing cannot be passed to move/remove/edit: those always act on the selected scope's own board (default: this project's). url returns the token-bearing dashboard URL to open in a browser. img copies a local image into media/ and attaches it to the card named by id (pass its path in `image`; ~/ works). The board is shared with the user's GUI and persisted under ~/.pi/kanban/. project is an optional slug (lowercase [a-z0-9._-], max 24 chars) naming the project a card belongs to; add and edit set it, an empty value clears it, an unnormalizable value is an error, and it never affects the loop or auto-pick. session and commit are optional conversation tags: add and edit set them, an empty value clears them, and commit must be 7-40 hex characters (it is stored lowercase).",
+			"Manage a 3-column kanban board (todo/doing/done). action=list shows the board, add creates a card, move changes its column, remove deletes it, edit rewrites a card's text (column and ownership stay), check runs the board/serve/media/modes self-test and returns its JSON, resume clears a doing-loop halt (same reset as /kanban loop on: budget back to 10, doingLoop ON in all three scopes — session, global and this project) — the GUI's loop switch cannot clear it, because the halt lives in the extension process, not in modes.json. scope selects the board: 'project' (default, the board of this working directory's git root - every session in the same repo shares it), 'session' (this conversation's own board) or 'global' (a read-only aggregate of every project's cards; writes there are rejected). Card IDs are unique only within one board — global #7 and project #7 are different cards, so an id seen in a global listing cannot be passed to move/remove/edit: those always act on the selected scope's own board (default: this project's). url returns the token-bearing dashboard URL to open in a browser. img copies a local image into media/ and attaches it to the card named by id (pass its path in `image`; ~/ works). The board is shared with the user's GUI and persisted under ~/.pi/kanban/. project is an optional slug ([A-Za-z0-9._-], case kept, max 24 chars) naming the project a card belongs to; add and edit set it, an empty value clears it, an unnormalizable value is an error, and it never affects the loop or auto-pick. session and commit are optional conversation tags: add and edit set them, an empty value clears them, and commit must be 7-40 hex characters (it is stored lowercase).",
 		parameters: Type.Object({
 			action: Type.Union([
 				Type.Literal("list"),
@@ -5695,7 +5725,7 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 			// before saving. "" clears either field.
 			nextFireAt: Type.Optional(Type.String()),
 			blocked: Type.Optional(Type.String()),
-			// A slug, normalized on write (lowercase [a-z0-9._-], max 24 chars). "" clears it.
+			// A slug, normalized on write ([A-Za-z0-9._-], case kept, max 24 chars). "" clears it.
 			project: Type.Optional(Type.String()),
 			// #20: conversation tags. "" clears either one; commit must be 7-40 hex.
 			session: Type.Optional(Type.String()),
@@ -5763,7 +5793,7 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 					const col = params.col ?? "todo";
 					// Validate before touching nextId: a failed add must not consume and report an unsaved id.
 					const project = normalizeProject(params.project);
-					if (project === "" && (params.project ?? "") !== "") return fail("project must match [a-z0-9._-]");
+					if (project === "" && (params.project ?? "") !== "") return fail("project must match [A-Za-z0-9._-]");
 					const sessionId = normalizeSessionId(params.session);
 					if (sessionId === "" && (params.session ?? "") !== "") return fail("session must match [A-Za-z0-9._:@-]");
 					const commit = normalizeCommit(params.commit);
@@ -5805,7 +5835,7 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 						return fail("edit requires text, project, session, commit or labels");
 					const proj = params.project === undefined ? undefined : normalizeProject(params.project);
 					// Validate before mutating: a failed edit must not report text that was never saved.
-					if (proj === "" && params.project !== undefined && params.project !== "") return fail("project must match [a-z0-9._-]");
+					if (proj === "" && params.project !== undefined && params.project !== "") return fail("project must match [A-Za-z0-9._-]");
 					const sess = params.session === undefined ? undefined : normalizeSessionId(params.session);
 					if (sess === "" && params.session !== undefined && params.session !== "") return fail("session must match [A-Za-z0-9._:@-]");
 					const sha = params.commit === undefined ? undefined : normalizeCommit(params.commit);

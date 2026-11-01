@@ -93,6 +93,16 @@ await check("#38-7 CSS: 畳んだ列の中身を落とすルール", () => {
 await check("#38-10 CSS: 経過用の .since は既存トークンだけを使う", () => {
 	assert.match(html, /\.card \.since\{[^}]*color:var\(--muted\)/, ".since が無い");
 });
+// #38-13: 指で押す部品は 24px 以上（WCAG 2.2 2.5.8）。実測でフィルタの .sw が 19px、
+// カードの時刻入力が 21px だった。押せるのに小さい、はデザインの好みでなく不具合。
+await check("#38-13 CSS: スイッチと時刻入力のタップ領域が 24px 以上", () => {
+	assert.match(html, /button\.sw\{[^}]*min-height:24px/, ".sw のタップ領域が 24px 未満");
+	assert.match(
+		html,
+		/\.card \.ops input\[type=datetime-local\]\{[^}]*min-height:24px/,
+		"時刻入力のタップ領域が 24px 未満",
+	);
+});
 
 // --- 2. ブラウザ側 JS を vm で走らせて実際に叩く -----------------------------
 // makeEl / document / sandbox は kanban-dashboard-collapse-search.test.mjs の型を流用。

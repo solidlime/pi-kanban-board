@@ -167,9 +167,9 @@ await check("/api/project: 名前を省くと slug が名前になる", async ()
 
 await check("/api/project: 空 slug は 400、不正文字は /api/add と同じ規則で落とす", async () => {
 	assert.equal((await get("/api/project?project=")).status, 400);
-	// カードと同じ規則で、不正文字は落として slug にする（/api/add と一つのルール）。
+	// カードと同じ規則で、不正文字は落として slug にする（/api/add と一つのルール）。大小は保つ。
 	assert.equal((await get(`/api/project?project=${q("My Proj!")}`)).status, 200);
-	assert.equal(projectOf((await get("/api/projects")).body, "myproj").name, "myproj");
+	assert.equal(projectOf((await get("/api/projects")).body, "MyProj").name, "MyProj");
 });
 
 await check("/api/decision: 決定を足すとプロジェクトに載る", async () => {

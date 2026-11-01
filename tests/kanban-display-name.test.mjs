@@ -147,6 +147,17 @@ check("nudge / 注入テキストに生のセッション名が入らない", ()
 	}
 });
 
+// 7. #37: footer のボード名はディレクトリの表記をそのまま出す（大小を潰さない）。
+//    非 git のパスなら projectSlugOf は basename をそのまま使うので、git が無くても回る。
+check("PROJECT 行はディレクトリの大小を保つ（#37）", () => {
+	handlers.get("session_start")({}, {
+		...ctx,
+		sessionManager: { ...ctx.sessionManager, getCwd: () => `${HOME_DIR}/Kb-Mixed-Case` },
+	});
+	const line = widgetCalls[widgetCalls.length - 1][1];
+	assert.match(line, /^PROJECT: Kb-Mixed-Case: /, line);
+});
+
 console.log(`${passed} passed, ${failures.length} failed`);
 for (const failure of failures) console.log(`  FAIL ${failure}`);
 setTimeout(() => process.exit(failures.length === 0 ? 0 : 1), 100);

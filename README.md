@@ -55,7 +55,7 @@ pi -e npm:pi-kanban-board
 
 The model calls this directly. Actions include `list`, `add`, `move`, `remove`, `schedule`, `blocked`, `priority`, and `check` (a self-diagnosis of the board, serve registry, media directory, and mode files).
 
-`add` and `edit` take an optional `project` slug (lowercase `[a-z0-9._-]`, cut to 24 chars) that tags a card. An empty value clears it; anything else unnormalizable is rejected. To relabel a card, use `edit` with `project`, or `/api/schedule?project=`. `/api/upload` only reads `project` when it creates a card; uploading to an existing `id` leaves that card's label alone. A card project is only a label — the auto-pick loop never reads it.
+`add` and `edit` take an optional `project` slug (`[A-Za-z0-9._-]`, case kept, cut to 24 chars) that tags a card. Slugs match case-insensitively (`Repos/App` and `repos/app` are one project), so the spelling you first wrote is the one on the board. An empty value clears it; anything else unnormalizable is rejected. To relabel a card, use `edit` with `project`, or `/api/schedule?project=`. `/api/upload` only reads `project` when it creates a card; uploading to an existing `id` leaves that card's label alone. A card project is only a label — the auto-pick loop never reads it.
 
 `/api/add` also takes the board-metadata trio: `due=YYYY-MM-DD` (a date, never a time), `estimate=<integer >= 0>` (points), and `blocks=<id,id,...>` (cards this one blocks). Invalid values are a 400, never silently dropped. Dependencies are stored in their own `card_dep` table and rewritten with the board on every write; a self-reference or a cycle (`a blocks b blocks a`) is a 400.
 

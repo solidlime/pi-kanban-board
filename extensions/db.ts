@@ -82,6 +82,8 @@ export type KanbanDb = {
 	writeBoard(key: BoardKey, b: Board): void;
 	/** Monotonic per-board counter: the diskSnapshot signal now that there is no inode. */
 	revOf(key: BoardKey): number;
+	/** #36: the spelling this board is stored under; every sid match is COLLATE NOCASE, so the caller's spelling is not the board's. */
+	boardSid(key: BoardKey): string | null;
 	/** Insert a board only if it has never been written. Returns false when it existed. */
 	importBoard(key: BoardKey, b: Board): boolean;
 	/** Drop a whole board. Tests use this to reproduce "no boards at all". */
@@ -293,11 +295,15 @@ export function openKanbanDb(file: string): KanbanDb {
 	// shortcut: ALTER は列名で判定する。型変更が必要になったらテーブル再作成に切り替える。
 	db.exec("PRAGMA user_version = 2");
 
-	const selectBoard = db.prepare("SELECT next_id FROM board WHERE scope = ? AND sid = ?");
+	// #34: a slug comes from a directory name, and Windows does not tell `C:\Code\Repo` from
+	// `c:\code\repo`, so every sid lookup matches case-insensitively. What is STORED keeps
+	// the spelling it was written with (writeBoard reads the first one back for the rest of
+	// the transaction), or the same directory would grow a second board.
+	const selectBoard = db.prepare("SELECT next_id, sid FROM board WHERE scope = ? AND sid = ? COLLATE NOCASE");
 	const selectCards = db.prepare(
-		"SELECT id, text, col, img, moved_at, moved_by, priority, next_fire_at, blocked, fired_for, project, due, estimate, session_id, commit_sha, labels FROM card WHERE scope = ? AND sid = ? ORDER BY ord",
+		"SELECT id, text, col, img, moved_at, moved_by, priority, next_fire_at, blocked, fired_for, project, due, estimate, session_id, commit_sha, labels FROM card WHERE scope = ? AND sid = ? COLLATE NOCASE ORDER BY ord",
 	);
-	const selectRev = db.prepare("SELECT rev FROM board WHERE scope = ? AND sid = ?");
+	const selectRev = db.prepare("SELECT rev FROM board WHERE scope = ? AND sid = ? COLLATE NOCASE");
 	// #16: the global aggregate reads every project board on every tick; two statements for
 	// all of them instead of readBoard() per slug. SELECT * because rowToCard() is the only
 	// reader and it ignores the extra (scope, sid, ord) columns.
@@ -308,22 +314,22 @@ export function openKanbanDb(file: string): KanbanDb {
 	const insertBoard = db.prepare(
 		"INSERT INTO board (scope, sid, next_id, rev, touched_at) VALUES (?, ?, ?, 1, ?)",
 	);
-	const countBoard = db.prepare("SELECT 1 AS hit FROM board WHERE scope = ? AND sid = ?");
+	const countBoard = db.prepare("SELECT 1 AS hit FROM board WHERE scope = ? AND sid = ? COLLATE NOCASE");
 	const upsertBoard = db.prepare(
-		"UPDATE board SET next_id = ?, rev = rev + 1, touched_at = ? WHERE scope = ? AND sid = ?",
+		"UPDATE board SET next_id = ?, rev = rev + 1, touched_at = ? WHERE scope = ? AND sid = ? COLLATE NOCASE",
 	);
-	const deleteBoardRow = db.prepare("DELETE FROM board WHERE scope = ? AND sid = ?");
-	const deleteAllCards = db.prepare("DELETE FROM card WHERE scope = ? AND sid = ?");
+	const deleteBoardRow = db.prepare("DELETE FROM board WHERE scope = ? AND sid = ? COLLATE NOCASE");
+	const deleteAllCards = db.prepare("DELETE FROM card WHERE scope = ? AND sid = ? COLLATE NOCASE");
 	const deleteStaleCards = db.prepare(
-		"DELETE FROM card WHERE scope = ? AND sid = ? AND id NOT IN (SELECT value FROM json_each(?))",
+		"DELETE FROM card WHERE scope = ? AND sid = ? COLLATE NOCASE AND id NOT IN (SELECT value FROM json_each(?))",
 	);
 	const insertCard = db.prepare(
 		"INSERT OR REPLACE INTO card (scope, sid, id, ord, text, col, img, moved_at, moved_by, priority, next_fire_at, blocked, fired_for, project, due, estimate, session_id, commit_sha, labels) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 	);
 	const selectDeps = db.prepare(
-		"SELECT card_id, blocks_id FROM card_dep WHERE scope = ? AND sid = ? ORDER BY card_id, blocks_id",
+		"SELECT card_id, blocks_id FROM card_dep WHERE scope = ? AND sid = ? COLLATE NOCASE ORDER BY card_id, blocks_id",
 	);
-	const deleteDeps = db.prepare("DELETE FROM card_dep WHERE scope = ? AND sid = ?");
+	const deleteDeps = db.prepare("DELETE FROM card_dep WHERE scope = ? AND sid = ? COLLATE NOCASE");
 	const insertDep = db.prepare(
 		"INSERT OR IGNORE INTO card_dep (scope, sid, card_id, blocks_id) VALUES (?, ?, ?, ?)",
 	);
@@ -392,20 +398,24 @@ export function openKanbanDb(file: string): KanbanDb {
 		// removed card cannot come back on the next read.
 		writeBoard(key, b) {
 			const now = Date.now();
+			// #34: a board that already exists keeps the spelling it was created with, so a
+			// write under another case cannot split its cards into a twin board.
+			const head = selectBoard.get(key.scope, key.sid) as Row | undefined;
+			const sid = head === undefined ? key.sid : String(head.sid);
 			db.exec("BEGIN IMMEDIATE");
 			try {
-				if (countBoard.get(key.scope, key.sid)) {
-					upsertBoard.run(b.nextId, now, key.scope, key.sid);
+				if (head === undefined) {
+					insertBoard.run(key.scope, sid, b.nextId, now);
 				} else {
-					insertBoard.run(key.scope, key.sid, b.nextId, now);
+					upsertBoard.run(b.nextId, now, key.scope, sid);
 				}
 				const ids = JSON.stringify(b.cards.map((c) => c.id));
-				deleteStaleCards.run(key.scope, key.sid, ids);
+				deleteStaleCards.run(key.scope, sid, ids);
 				for (let i = 0; i < b.cards.length; i++) {
 					const c = b.cards[i];
 					insertCard.run(
 						key.scope,
-						key.sid,
+						sid,
 						c.id,
 						i,
 						c.text ?? "",
@@ -425,7 +435,7 @@ export function openKanbanDb(file: string): KanbanDb {
 						labelColumn(c),
 					);
 				}
-				writeDeps(key.scope, key.sid, b.cards);
+				writeDeps(key.scope, sid, b.cards);
 				db.exec("COMMIT");
 			} catch (err) {
 				db.exec("ROLLBACK");
@@ -435,6 +445,11 @@ export function openKanbanDb(file: string): KanbanDb {
 		revOf(key) {
 			const row = selectRev.get(key.scope, key.sid) as Row | undefined;
 			return row ? Number(row.rev) : 0;
+		},
+		// #36: same prepared read as readBoard's first step, so this costs one indexed lookup.
+		boardSid(key) {
+			const r = selectBoard.get(key.scope, key.sid) as Row | undefined;
+			return r === undefined ? null : String(r.sid);
 		},
 		// INSERT only: an existing board wins. That keeps the import idempotent, so a JSON
 		// file left on disk can never overwrite a newer sqlite state.

@@ -1,7 +1,7 @@
 // Phase 0: カードの「プロジェクト次元」(Card.project = slug)。
 // フレームワーク無しで `node tests/kanban-project.test.mjs`。
 // HOME と KANBAN_PORT を差し替えるので本番の ~/.pi/kanban と 8789 には触れない。
-// 契約: project は書き込み境界で normalizeProject を通す（小文字・[a-z0-9._-] 以外除去・24 文字）。
+// 契約: project は書き込み境界で normalizeProject を通す（大小は保つ・[A-Za-z0-9._-] 以外除去・24 文字）。
 // 空 = 無所属 = キーごと削除。ループ（autoPick / 注入）には一切影響しない。
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -86,11 +86,11 @@ const boardOf = () => readBoardAt(PROJ_BOARD);
 const cardNamed = (text) => boardOf().cards.find((c) => c.text === text);
 
 // --- 1. 純関数 -----------------------------------------------------------------
-await check("normalizeProject: trim / 小文字化 / 不正文字除去 / 24 文字切捨て / 非文字列は \"\"", () => {
+await check("normalizeProject: trim / 大小保持 / 不正文字除去 / 24 文字切捨て / 非文字列は \"\"", () => {
 	assert.equal(mod.PROJECT_MAX, 24);
-	assert.equal(mod.normalizeProject("  Foo  "), "foo");
-	assert.equal(mod.normalizeProject("My Project!!/../x"), "myproject..x");
-	assert.equal(mod.normalizeProject("Mixed_Case.9-x"), "mixed_case.9-x");
+	assert.equal(mod.normalizeProject("  Foo  "), "Foo");
+	assert.equal(mod.normalizeProject("My Project!!/../x"), "MyProject..x");
+	assert.equal(mod.normalizeProject("Mixed_Case.9-x"), "Mixed_Case.9-x");
 	assert.equal(mod.normalizeProject("a".repeat(30)), "a".repeat(24));
 	assert.equal(mod.normalizeProject("日本語"), "");
 	for (const v of [undefined, null, 42, {}, [], true]) {
@@ -100,10 +100,10 @@ await check("normalizeProject: trim / 小文字化 / 不正文字除去 / 24 文
 
 // --- 2. 書き込み経路（HTTP） -----------------------------------------------------
 
-await check("/api/add?project=Foo → ボードに project: \"foo\"", async () => {
+await check("/api/add?project=Foo → ボードに project: \"Foo\"（大小を保つ）", async () => {
 	const r = await tf(`${BASE}/api/add?scope=project&text=with+project&project=Foo`);
 	assert.equal(r.status, 200);
-	assert.equal(cardNamed("with project").project, "foo");
+	assert.equal(cardNamed("with project").project, "Foo");
 });
 
 await check("/api/add（project なし）→ project キーが存在しない（後方互換）", async () => {
@@ -209,7 +209,7 @@ await check("tool add/edit (project scope): project を正規化して付け、t
 	const gb = readBoardAt(PROJ_BOARD);
 	const card = gb.cards.find((c) => c.text === "tool alpha");
 	assert.ok(card, "tool add でカードが作られていない");
-	assert.equal(card.project, "gamma", "tool add が project を正規化していない");
+	assert.equal(card.project, "Gamma", "tool add が project を正規化していない");
 	const edit = await tool.execute("c2", { action: "edit", scope: "project", id: card.id, project: "delta" }, null, null, ctx);
 	assert.ok(!JSON.stringify(edit).includes("error"), JSON.stringify(edit).slice(0, 300));
 	const after = readBoardAt(PROJ_BOARD).cards.find((c) => c.id === card.id);
@@ -443,6 +443,17 @@ await check("ダッシュボード: #proj セレクト / .proj バッジ / projP
 	await check("vm: 消えた slug を選んでいたら全部に戻る", () => {
 		pick("gamma"); // payload に無い slug
 		assert.equal(byId["proj"].value, "", "存在しない slug が選択されたまま");
+	});
+
+	// #35: cwd 解決に頼らず、選んだ slug の看板を /api/kanban?p= で取り直す。
+	await check("vm: slug を選ぶと /api/kanban?p=<slug> で看板を取り直す", async () => {
+		urls.length = 0;
+		pick("alpha");
+		for (let i = 0; i < 4; i++) await flush();
+		assert.ok(
+			urls.some((u) => u.includes("/api/kanban?p=alpha")),
+			`?p= の取得が無い: ${JSON.stringify(urls)}`,
+		);
 	});
 }
 
