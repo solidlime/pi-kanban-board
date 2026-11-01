@@ -190,6 +190,16 @@ check("project.counts は自分のボードのみ（隣のボードは混ざら�
 	assert.deepEqual(data.project.counts, { todo: 1, doing: 1, done: 0 });
 	assert.equal(data.project.cards.length, 2);
 });
+check("project.next は TODO の 1 枚（Card）か null", () => {
+	const n = data.project.next;
+	if (n !== null) {
+		assert.equal(typeof n, "object", "next が Card でも null でもない");
+		assert.equal(typeof n.id, "number", "next.id が数値でない");
+		assert.equal(n.col, "todo", "next が TODO でない");
+		assert.ok(data.project.cards.some((c) => c.id === n.id), "next が project.cards に無い");
+	}
+	assert.equal(n && n.text, "p-todo", "next が先頭の TODO でない");
+});
 check("global のカードは sid でボードを名乗る（自ボード + 隣のボード）", () => {
 	const slugs = new Set(data.global.cards.map((c) => c.sid));
 	assert.ok(slugs.has(""), "GLOBAL 残行の sid が空でない");

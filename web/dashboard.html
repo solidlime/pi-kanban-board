@@ -29,6 +29,15 @@
   h1{margin:0 0 12px;font-size:16px;letter-spacing:.08em;color:var(--accent);display:flex;align-items:center;gap:10px;flex-wrap:wrap}
   h2{margin:0 0 8px;font-size:11px;letter-spacing:.08em;color:var(--muted);font-weight:600}
   .hd{font-size:11px;letter-spacing:.08em;color:var(--accent);margin:18px 0 8px}
+  /* #19: 次にやる 1 枚。着手ボタンは付けない（既存のドラッグ / Enter で足りる） */
+  .next{background:var(--panel);border-left:3px solid var(--accent);padding:10px 12px;border-radius:8px;margin-bottom:8px}
+  .next-lbl{font-size:11px;letter-spacing:.08em;color:var(--accent)}
+  .next-id{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
+  .next-t{font-size:13px;color:var(--text);overflow-wrap:anywhere}
+  .next-meta{display:flex;align-items:center;gap:6px;margin-top:6px;font-size:10px;color:var(--muted);font-variant-numeric:tabular-nums}
+  .next-meta .warn{color:var(--warn)}
+  .next-meta .bad{color:var(--bad)}
+  .next-meta .prio{color:var(--accent);border:1px solid var(--border-strong);border-radius:999px;padding:0 5px}
   /* theme toggle: fixed set of two inline SVGs, icon shows the theme it switches TO */
   #theme{flex:none;margin-left:auto;width:26px;height:26px;display:inline-flex;align-items:center;justify-content:center;background:transparent;border:1px solid var(--border-strong);border-radius:999px;color:var(--muted);cursor:pointer;padding:0}
   #theme:hover{border-color:var(--accent);color:var(--accent)}
@@ -241,6 +250,8 @@
     </nav>
     <div class="panes">
       <div class="pane" id="pane-board" role="tabpanel" aria-labelledby="tab-board">
+        <!-- #19: 次にやる 1 枚（project ボードだけ）。空でもセクションは消さない（レイアウトが跳ねる） -->
+        <section id="nextsec"></section>
         <!-- #36: エージェントタブ廃止。STATS はボードの上に置く。全 0 では畳む -->
         <section id="statsec" aria-labelledby="h-stats">
           <h2 id="h-stats">STATS</h2>
@@ -720,19 +731,25 @@
   var PRIO_MAX = 99, PRIO_MIN = -99; // same range the server enforces
   var dragging = null;               // {scope, sid, id} of the card being dragged
 
+  // 期限チップ。カード（.card .sched.warn/.bad）と「次にやる」（.next）で同じ 1 個を使う ——
+  // .next は .card の外なので、色だけ別系統にすると期限状態が色だけの場所ができる。
+  function dueChip(c){
+    var due = dueOf(c);
+    if (!due) return null;
+    var left = daysLeft(due);
+    // 完了済みに「期限切れ」は嘘なので、事実（期限と超過日数）だけ残す
+    var chip = el("span", "sched" + dueCls(due, c.col),
+      (left < 0 && c.col !== "done" ? "期限切れ " : "期限 ") + due.slice(5, 10).replace("-", "/"));
+    chip.title = left < 0 ? (-left) + " 日超過" : left === 0 ? "今日が期限" : "期限まで " + left + " 日";
+    return chip;
+  }
+
   // #30: schedule + priority live on the card itself.
   function cardOps(c, ctx){
     var ops = el("div", "ops");
     // 1-3: 期限 / 依存 / 見積の小片。値が無ければ何も出さない（API がまだ返さなくても壊れない）。
-    var due = dueOf(c);
-    if (due) {
-      var left = daysLeft(due);
-      // 完了済みに「期限切れ」は嘘なので、事実（期限と超過日数）だけ残す
-      var chip = el("span", "sched" + dueCls(due, c.col),
-        (left < 0 && c.col !== "done" ? "期限切れ " : "期限 ") + due.slice(5, 10).replace("-", "/"));
-      chip.title = left < 0 ? (-left) + " 日超過" : left === 0 ? "今日が期限" : "期限まで " + left + " 日";
-      ops.appendChild(chip);
-    }
+    var chip = dueChip(c);
+    if (chip) ops.appendChild(chip);
     var deps = Array.isArray(c.blocks) ? c.blocks : [];
     // #18: 停滞チップ。DOING が 1 日以上動いていなければ日数を出す（期限チップの直後）。
     // 色は期限チップと同じ規格: 1〜6 日 = warn / 7 日以上 = bad。
@@ -1115,6 +1132,41 @@
       wrap.appendChild(box);
     });
     return wrap;
+  }
+
+  // #19: 「次にやる」は project ボードの 1 枚だけ。GLOBAL は読み取り専用の集約ビューなので
+  // 「次を決める」場所にしない。候補はサーバの nextTodo と同じ 1 枚をそのまま出す（表示だけ）。
+  // 本文は textContent で入れる: ここは 1 行の要約で、md() で展開する場所ではない。
+  function renderNext(d){
+    var sec = document.getElementById("nextsec");
+    if (!sec) return;
+    sec.innerHTML = "";
+    var n = d && d.project ? d.project.next : null;
+    if (!n || typeof n !== "object") {
+      // next が null でも「TODO が空」とは限らない: nextTodo は blocked / 予約中を落とす。
+      // 直下に TODO が並んで見えているのに「空」と言うと嘘になる。
+      var cs = (d && d.project && d.project.cards) || [];
+      var todo = cs.filter(function(c){ return c && c.col === "todo"; }).length;
+      sec.appendChild(el("div", "next",
+        todo ? "TODO はあるが、今はどれも着手できない（ブロック / 予約中）" : "TODO が空"));
+      return;
+    }
+    var box = el("div", "next");
+    var head = el("div");
+    head.appendChild(el("span", "next-lbl", "次にやる"));
+    head.appendChild(el("span", "next-id", "#" + String(n.id)));
+    box.appendChild(head);
+    var t = String(n.text || "");
+    // サロゲートペア（絵文字）の途中で切ると末尾が U+FFFD になる。文字単位で数える。
+    var ch = Array.from(t);
+    box.appendChild(el("div", "next-t", ch.length > 60 ? ch.slice(0, 60).join("") + "\u2026" : t));
+    var meta = el("div", "next-meta");
+    var p = prioOf(n);
+    if (p) meta.appendChild(el("span", "prio", "P" + p));
+    var chip = dueChip(n);
+    if (chip) meta.appendChild(chip);
+    if (meta.children.length) box.appendChild(meta);
+    sec.appendChild(box);
   }
 
   function renderStats(st){
@@ -1738,6 +1790,7 @@
     // #74: 前回描いたスパンは DOM ごと捨てるので、台帳もここで捨てる（伸びない）。
     nowT = [];
     nowS = [];
+    renderNext(d); // #19
     renderStats(d.stats);
     renderProject(d.project, nowMs);
     renderGlobal(d.global, nowMs);

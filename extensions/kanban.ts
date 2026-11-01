@@ -3314,6 +3314,12 @@ async function dashboardPayload(): Promise<unknown> {
 			id: slug,
 			counts: projectCounts,
 			cards: pb.cards,
+			// #19: 次にやる 1 枚。nextTodo の規則（priority 降順 → id 昇順、blocked/予約済みを除く）を
+			// そのまま使い、無ければ null（undefined は JSON から消えて UI が「空」と区別できない）。
+			// 第 2/3 引数（scope/sid）は呼び出し規約: nextTodo の中では絞り込みに使わない。
+			// この値は request 時点のスナップショット。sigOf は now を除外しているので、時刻だけで
+			// 変わる候補（予約が発火しなかった等）は次の payload 変化まで古いまま。
+			next: nextTodo(pb.cards, "project", sidActor) ?? null,
 			modes: modesFor(f, slug, "project"),
 			loops: loopCountOf(sidActor, "project"),
 			halted: haltedBySid.get(sidActor)?.scope === "project",
