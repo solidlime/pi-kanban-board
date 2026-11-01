@@ -301,6 +301,10 @@ await check("#38-10 CSS: 経過用の .since は既存トークンだけを使�
 		assert.match(tHtml("doing", 2), /180分前から/, "3時間前が出ていない");
 		assert.match(tHtml("doing", 3), /150分前から/, "2.5時間前が出ていない");
 		assert.match(tHtml("doing", 4), /10分前から/, "10分前が出ていない");
+		// #18: 見えている経過は 分 → 時間 → 日 の 3 段階（180分前から は ⏳ の title 側だけ）。
+		assert.match(tHtml("doing", 2), /<span class="since">3時間前から<\/span>/, "3時間前の可視表示が時間でない");
+		assert.match(tHtml("doing", 3), /<span class="since">2時間前から<\/span>/, "2.5時間前の可視表示が時間でない");
+		assert.match(tHtml("doing", 4), /<span class="since">10分前から<\/span>/, "10分前の可視表示が分でない");
 	});
 	await check("#38-10 TODO のカードには経過を出さない", () => {
 		const h = tHtml("todo", 1);

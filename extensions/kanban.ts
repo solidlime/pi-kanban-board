@@ -146,6 +146,8 @@ type LoopState = {
 };
 
 const COLS: Col[] = ["todo", "doing", "done"];
+// #18: the TUI move menu labels, index-aligned with COLS so the mapping cannot drift.
+const MOVE_LABELS = COLS.map((c) => `${c.toUpperCase()} へ移動`);
 // 7-char labels so the card bodies line up.
 const LABELS: Record<Col, string> = { todo: "TODO   ", doing: "DOING  ", done: "DONE   " };
 const WIDGET_KEY = "kanban";
@@ -153,6 +155,7 @@ const MAX_SHOWN = 4; // a column over this many cards shows 3 + "…ほかN件"
 const INJECT_DONE = 3; // injected DONE keeps only the newest N (long sessions would grow otherwise)
 const KANBAN_CUSTOM_TYPE = "kanban-board"; // customType of the per-turn trailing message
 const STALE_MS = 3 * 60 * 60 * 1000; // DOING for this long without a move -> ⚠Nh in the footer
+const STALE_DAY_MS = 86_400_000; // #18: a day without a move reads as ⚠Nd
 const LOOP_CUSTOM_TYPE = "kanban-loop"; // customType of the session entry holding LoopState
 const LOOP_PROMPT_TYPE = "kanban-loop-continue"; // customType of the continuation prompt entry
 const DEFAULT_MAX_LOOPS = 10; // continuations before doingLoop turns itself off
@@ -853,6 +856,20 @@ function stampMove(card: Card, sid: string): void {
 	card.movedBy = sid;
 }
 
+/**
+ * Move a card to a column. A move to the column it already sits in is a no-op:
+ * stamping it would reset the staleness clock (#18), and the warning would never
+ * fire again on a card nobody actually advanced. Every column change goes through
+ * here so the rule cannot be forgotten at one call site.
+ * Returns whether the column actually changed.
+ */
+function moveCardTo(card: Card, col: Col, sid: string): boolean {
+	if (card.col === col) return false;
+	card.col = col;
+	stampMove(card, sid);
+	return true;
+}
+
 /** Once per process: the pre-2-layer board becomes the global layer. */
 function migrateLegacyBoard(): void {
 	try {
@@ -930,16 +947,33 @@ function countCols(b: Board): { todo: number; doing: number; done: number } {
 }
 
 /**
- * " ⚠Nh" for the oldest DOING card past STALE_MS, else "". Cards with no movedAt
- * are skipped: an unstamped card's age is unknown, and guessing one would be a lie.
+ * "⚠Nd" / "⚠Nh" for a stale age, else null. One ladder for the footer and the
+ * injection text: days from STALE_DAY_MS, hours from STALE_MS.
  */
-function staleTag(b: Board, now = Date.now()): string {
+export function staleSince(ageMs: number): string | null {
+	if (ageMs >= STALE_DAY_MS) return `⚠${Math.floor(ageMs / STALE_DAY_MS)}d`;
+	if (ageMs >= STALE_MS) return `⚠${Math.floor(ageMs / 3_600_000)}h`;
+	return null;
+}
+
+/**
+ * Age of the oldest stamped DOING card, -Infinity when nothing is stamped.
+ * Cards with no movedAt are skipped: an unstamped card's age is unknown, and
+ * guessing one would be a lie. -Infinity fails every comparison in staleSince,
+ * so the divisions there are never fed it.
+ */
+export function oldestDoingAge(b: Board, now: number): number {
 	let oldest = Number.POSITIVE_INFINITY;
 	for (const c of cardsIn(b, "doing")) {
 		if (typeof c.movedAt === "number" && c.movedAt < oldest) oldest = c.movedAt;
 	}
-	const ageMs = now - oldest;
-	return ageMs >= STALE_MS ? ` ⚠${Math.floor(ageMs / 3_600_000)}h` : "";
+	return now - oldest;
+}
+
+/** " ⚠Nd"/" ⚠Nh" for the oldest DOING card past STALE_MS, else "". */
+export function staleTag(b: Board, now = Date.now()): string {
+	const since = staleSince(oldestDoingAge(b, now));
+	return since === null ? "" : ` ${since}`;
 }
 
 /**
@@ -1071,9 +1105,15 @@ export function renderInjectionText(b: Board): string | null {
 	if (b.cards.length === 0) return null;
 	// #38-10: a DOING row carries how long it has been there, from the existing
 	// movedAt stamp (no new state). An unstamped card says nothing rather than "0分".
+	// #18: from STALE_DAY_MS the span reads in days, and past STALE_MS it carries
+	// the same "⚠Nh"/"⚠Nd" tag the footer shows.
 	const doingAge = (c: Card): string => {
-		const mins = typeof c.movedAt === "number" ? Math.floor((Date.now() - c.movedAt) / 60_000) : null;
-		return mins === null ? "" : `(${mins}分前から)`;
+		if (typeof c.movedAt !== "number") return "";
+		// Clamped: a movedAt in the future (clock skew) must not read as negative minutes.
+		const age = Math.max(0, Date.now() - c.movedAt);
+		const since = staleSince(age);
+		// Past STALE_MS the tag carries the span itself (⚠5h / ⚠2d), so no second copy of it.
+		return since === null ? `(${Math.floor(age / 60_000)}分前から)` : `(${since})`;
 	};
 	const line = (col: Col): string => {
 		const list = cardsIn(b, col).map((c) => `${formatCard(c)}${col === "doing" ? doingAge(c) : ""}`);
@@ -1439,10 +1479,9 @@ export function pickFirstTodo(sessionId: string, scope: Scope, actor: string = s
 	const b = readBoard(path); // CAS: re-read, do not trust the snapshot we chose from
 	const live = b.cards.find((c) => c.id === target.id);
 	if (live === undefined || live.col !== "todo" || isSilent(live)) return null; // lost the race
-	live.col = "doing";
 	// The claim is the SESSION, not the board key: a project board's key is a slug, and
 	// the poll's ownership filter compares movedBy against the session.
-	stampMove(live, actor);
+	moveCardTo(live, "doing", actor);
 	writeBoard(path, b);
 	// Read back: if a sibling wrote between our verify and our rename, its movedBy is what
 	// survived and this session must not go on working as if it owned the card.
@@ -3950,8 +3989,8 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 				sendJson(res, 404, { ok: false, error: `no card with id ${idParam}` });
 				return;
 			}
-			card.col = col;
-			stampMove(card, actorOf(q));
+			// #18: same-column moves are a no-op (moveCardTo). The save stays unconditional.
+			moveCardTo(card, col, actorOf(q));
 			writeBoard(path, b);
 			sendJson(res, 200, { ok: true, cards: b.cards });
 			return;
@@ -5225,10 +5264,10 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 					const card = inCol.find((c) => formatCard(c) === choice);
 					if (card === undefined) continue;
 
+					// #18: drop the card's current column from the menu. Moving a card to where it
+					// already is used to stamp movedAt and silently reset the staleness clock.
 					const op = await ctx.ui.select(`#${card.id} ${card.text}`, [
-						"TODO へ移動",
-						"DOING へ移動",
-						"DONE へ移動",
+						...MOVE_LABELS.filter((_, i) => COLS[i] !== col),
 						"削除",
 						"← 列選択に戻る",
 					]);
@@ -5238,8 +5277,7 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 						removeMedia(card); // the `kanban` tool already drops the image; keep the paths symmetric
 						b.cards = b.cards.filter((c) => c.id !== card.id);
 					} else {
-						card.col = COLS[["TODO へ移動", "DOING へ移動", "DONE へ移動"].indexOf(op)];
-						stampMove(card, sid);
+						moveCardTo(card, COLS[MOVE_LABELS.indexOf(op)], sid);
 					}
 					writeBoard(boardPath(scope, projKey), b);
 					refresh(ctx, sid);
@@ -5359,12 +5397,14 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 					const card = params.id === undefined ? undefined : b.cards.find((c) => c.id === params.id);
 					if (card === undefined) return fail(`no card with id ${params.id} in the ${scope} board`);
 					if (params.col === undefined) return fail("move requires col");
-					card.col = params.col;
-					stampMove(card, sessionSid);
+					const changed = moveCardTo(card, params.col, sessionSid);
 					const gateError = applyGate(card);
 					if (gateError !== null) return fail(gateError);
 					persistError = writeBoard(path, b);
-					message = `moved #${card.id} to ${card.col} (${scope})${gateNote(card)}`;
+					// #18: do not report "moved" for a no-op. The board already had it there.
+					message = changed
+						? `moved #${card.id} to ${card.col} (${scope})${gateNote(card)}`
+						: `#${card.id} is already in ${card.col} (${scope})${gateNote(card)}`;
 					break;
 				}
 				case "edit": {

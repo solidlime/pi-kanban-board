@@ -497,6 +497,10 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
     if (typeof v.g === "boolean") gOpen = v.g;
   })();
   var STALE_GUI_MS = 2 * 60 * 60 * 1000; // DOING over this long gets a ⏳
+  // #18: 日数の段階はサーバから配らない。カード単位の判定はクライアント計算の流儀で、
+  // サーバに焼き込むと sigOf が now を外している前提が壊れて毎分全カード再描画になる。
+  var STALE_DAY_MS = 86400000;
+  var STALE_WEEK_MS = 7 * STALE_DAY_MS;
   // #74: 相対時刻スパンの台帳。render() が書き、tick() が読む。
   // nowT: ago() で描いたテキスト / nowS: 「N分前から」と ⏳
   var nowBase = Date.now();
@@ -811,6 +815,14 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
       ops.appendChild(chip);
     }
     var deps = Array.isArray(c.blocks) ? c.blocks : [];
+    // #18: 停滞チップ。DOING が 1 日以上動いていなければ日数を出す（期限チップの直後）。
+    // 色は期限チップと同じ規格: 1〜6 日 = warn / 7 日以上 = bad。
+    var stale = staleDays(c);
+    if (stale) {
+      var sc = el("span", "sched " + (nowBase - c.movedAt >= STALE_WEEK_MS ? "bad" : "warn"), "停滞 " + stale + "日");
+      sc.title = stale + " 日動いていない";
+      ops.appendChild(sc);
+    }
     if (deps.length) ops.appendChild(el("span", "sched", "\\u2295 依存 " + deps.length));
     if (typeof c.estimate === "number" && isFinite(c.estimate)) ops.appendChild(el("span", "sched", c.estimate + "pt"));
     // 表示は MM/DD HH:MM に削るので、年を含む完全な日時はホバーで補う
@@ -1338,9 +1350,17 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
     if (slug) slug.textContent = (p && p.id) || "—";
     var ctx = boardCtx("project", "", true);
     // cwd で解決されるので sid は送らない。ここに slug を載せると act() が sid=<slug> を送る。
+    // #18: 見出しの停滞件数は絞り込み後の cards を数えるので、DOM を組む前に確定させる。
+    var all = (p && p.cards) || [];
+    // 絞り込みは GLOBAL と同じ規則（上部の絞り込みバーは両方の看板に効く）。
+    var search = query !== "";
+    var filtered = search || projPick !== "" || cardFilter !== "";
+    var cards = all.filter(function(x){
+      return projOk(x) && cardFilterOk(x, all) && (!search || String(x.text || "").toLowerCase().indexOf(query) >= 0);
+    });
     if (p) {
       var head = el("div", "sess-hd");
-      head.appendChild(el("span", "sess-cwd", loopRestLine(maxLoopsOf(p.modes), loopCountOf("project"))));
+      head.appendChild(el("span", "sess-cwd", loopRestLine(maxLoopsOf(p.modes), loopCountOf("project")) + staleText(cards)));
       box.appendChild(head);
       var hb = haltBox(p, ctx);
       if (hb) box.appendChild(hb);
@@ -1348,13 +1368,6 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
       empty(box, "\\u25A1", "<b>プロジェクト看板なし</b> — サーバが古いと出ないよ");
     }
     if (!p) return;
-    var all = p.cards || [];
-    // 絞り込みは GLOBAL と同じ規則（上部の絞り込みバーは両方の看板に効く）。
-    var search = query !== "";
-    var filtered = search || projPick !== "" || cardFilter !== "";
-    var cards = all.filter(function(x){
-      return projOk(x) && cardFilterOk(x, all) && (!search || String(x.text || "").toLowerCase().indexOf(query) >= 0);
-    });
     if (!cards.length && filtered) { box.appendChild(el("div", "sess-empty", "該当なし")); return; }
     // 空でも board() を描く（project は既定のボードなので、空のときこそ + が要る）。
     box.appendChild(board(cards, nowMs, ctx));
@@ -1382,7 +1395,7 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
     head.setAttribute("tabindex", "0");
     head.setAttribute("aria-expanded", gexpanded ? "true" : "false");
     head.appendChild(el("span", "caret", gexpanded ? "▾" : "▸"));
-    head.appendChild(el("span", "sess-cwd", countsText(c, cards, filtered) + " ・ 計 " + cards.length + " 枚 ・ " + loopRestLine(maxLoopsOf(g && g.modes), loopCountOf("global"))));
+    head.appendChild(el("span", "sess-cwd", countsText(c, cards, filtered) + " ・ 計 " + cards.length + " 枚" + staleText(cards) + " ・ " + loopRestLine(maxLoopsOf(g && g.modes), loopCountOf("global"))));
     box.appendChild(head);
     // GLOBAL の halt は読み取り専用なので 再開 は出さない（haltBox が ctx.active で無効化する）。
     var hb = haltBox(g, ctx);
@@ -1884,16 +1897,37 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
   // tick() はここで作った .since の文字だけを書き換え、⏳ の出し入れはしない
   // （データが次に変わった時に判定される。分粒度なので許容 — #74 の副作用）。
   function sinceLead(movedAt){
-    var mins = Math.max(0, Math.floor((nowBase - movedAt) / 60000));
-    var lead = nowBase - movedAt > STALE_GUI_MS
+    var age = nowBase - movedAt;
+    var mins = Math.max(0, Math.floor(age / 60000));
+    var lead = age > STALE_GUI_MS
       ? '<span class="stale" title="' + mins + '分前から DOING">⏳</span>'
       : "";
-    return lead + '<span class="since">' + mins + '分前から</span>';
+    return lead + '<span class="since">' + sinceText(age) + '</span>';
+  }
+  // #18: 経過の 3 段階（分 → 時間 → 日）。sinceLead と tick の両方がここを通る。
+  function sinceText(ageMs){
+    var ms = Math.max(0, ageMs);
+    if (ms >= STALE_DAY_MS) return Math.floor(ms / STALE_DAY_MS) + "日前から";
+    if (ms >= 3600000) return Math.floor(ms / 3600000) + "時間前から";
+    return Math.floor(ms / 60000) + "分前から";
+  }
+  // #18: DOING が 1 日以上動いていない日数（0 = 停滞ではない）。TODO/DONE は対象外で、
+  // movedAt の無いカードは推測しない（サーバの staleTag と同じ規則）。
+  function staleDays(c){
+    if (!c || c.col !== "doing" || typeof c.movedAt !== "number") return 0;
+    var d = Math.floor((nowBase - c.movedAt) / STALE_DAY_MS);
+    return d >= 1 ? d : 0;
+  }
+  // #18: 見出し（div.sess-hd）の ・ 停滞 N。絞り込み後の cards を数えるので、
+  // 表示中のチップと数字が食い違わない。0 件なら何も出さない。
+  function staleText(cards){
+    var n = 0;
+    for (var i = 0; i < cards.length; i++) if (staleDays(cards[i]) > 0) n++;
+    return n ? " ・ 停滞 " + n : "";
   }
   function sinceLive(movedAt, box){
     var si = box.querySelector ? box.querySelector(".since") : null;
-    nowS.push({ el: si || box, at: movedAt, base: nowBase, text: si ? si.textContent : "",
-      mins: Math.max(0, Math.floor((nowBase - movedAt) / 60000)) });
+    nowS.push({ el: si || box, at: movedAt, base: nowBase, text: si ? si.textContent : "" });
   }
   function tick(at){
     var now = at != null ? at : Date.now();
@@ -1907,8 +1941,7 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
     for (var j = 0; j < nowS.length; j++) {
       var r = nowS[j];
       if (now - r.base < 60000) continue;
-      var mins = Math.max(r.mins, Math.floor((now - r.at) / 60000));
-      setLive(r, mins + "分前から");
+      setLive(r, sinceText(now - r.at));
     }
   }
   // #48: 開閉・検索語を変えたら即描画。sig も更新するので、次のポーリングが
