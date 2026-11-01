@@ -9,7 +9,7 @@ import { mkdirSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
 import { authFetch } from "./helpers/token.mjs";
-import { useKanban } from "./helpers/board.mjs";
+import { seedBoard, useKanban } from "./helpers/board.mjs";
 
 const tf = (input, init) => authFetch(input, init);
 
@@ -224,20 +224,12 @@ await check("/api/decision: 消せる。不正な id は 400", async () => {
 	assert.equal((await get("/api/decision?action=delete")).status, 400, "id 無しは 400");
 });
 
-// /api/projects の集計は projectRollup が担う。#17 で session ボードは無くなり、供給元は
-// project ボード 1 種（global はそれを読み取り専用に集約しただけなので数えない）。
-const ROLLED = async () => {
-	const project = (await get("/api/kanban?scope=project")).body.project.cards;
-	const cards = project.map((card) => ({ scope: "project", sid: "pi-kanban-board", card }));
-	return mod.projectRollup([], [], cards, "2026-06-01");
-};
-
 await check("/api/projects: project ボードのカードも集計する", async () => {
 	const r = await tf(`${BASE}/api/add?scope=project&text=${q("全体の作業")}&project=kb-core`);
 	assert.equal(r.status, 200);
 	const board = (await get("/api/kanban?scope=project")).body.project.cards;
 	assert.ok(board.some((c) => c.text === "全体の作業"), "project ボードに載っていない");
-	const p = projectOf({ projects: await ROLLED() }, "kb-core");
+	const p = projectOf((await get("/api/projects")).body, "kb-core");
 	assert.equal(p.total, 2);
 	assert.equal(p.counts.todo, 2);
 });
@@ -248,9 +240,25 @@ await check("/api/projects: 完了させると進捗が動く", async () => {
 	const r = await tf(`${BASE}/api/move?scope=project&id=${moved.id}&col=done`);
 	assert.equal(r.status, 200);
 	assert.equal((await get("/api/projects")).status, 200);
-	const p = projectOf({ projects: await ROLLED() }, "kb-core");
+	const p = projectOf((await get("/api/projects")).body, "kb-core");
 	assert.equal(p.done, 1);
 	assert.equal(p.progress, 50);
+});
+
+// #25: 供給が自 cwd の 1 枚だけだと、他リポのボードのカードが黙って欠ける（件数だけ 0 に見える）。
+await check("/api/projects: 他リポのボードのカードも数える（自 cwd だけ数えない）", async () => {
+	seedBoard(HOME_DIR + "/.pi/kanban/projects/other-repo.json", {
+		cards: [{ id: 1, text: "他リポの作業", col: "done", project: "other-proj", estimate: 2 }],
+		nextId: 2,
+	});
+	const body = (await get("/api/projects")).body;
+	const p = projectOf(body, "other-proj");
+	assert.ok(p, "他リポのボードのプロジェクトが一覧に出ない");
+	assert.equal(p.total, 1);
+	assert.equal(p.done, 1);
+	assert.equal(p.points.done, 2, "見積もりが他ボードから来ていない");
+	// 差し替えで自 cwd のボードを消し飛ばしていないこと
+	assert.equal(projectOf(body, "kb-core").total, 2);
 });
 
 // --- 3. 集計 -----------------------------------------------------------------

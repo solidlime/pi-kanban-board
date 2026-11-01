@@ -3345,15 +3345,6 @@ export function projectRollup(
 }
 
 /**
- * The project board this process looks at: this process's project board (one cwd per
- * process). #17: project boards are one-per-repo, not one-per-session, so a sibling
- * session in the same repo shares this board - only a different repo stays out of scope.
- */
-function projectSlugs(): string[] {
-	return [projectSlugOf(process.cwd())];
-}
-
-/**
  * #16: global is a READ-ONLY VIEW over every project board — it holds no cards of its own.
  * `sid` on each card is the project slug it came from, so the dashboard can label it.
  * GLOBAL_JSON cards stay in the sum for pre-migration rows and for tests that seed it.
@@ -3407,10 +3398,11 @@ async function projectsPayload(): Promise<unknown> {
 	const gb = readBoard(GLOBAL_JSON);
 	const cards = [
 		...gb.cards.map((card) => ({ scope: "global", sid: "", card })),
-		// #17: project boards are the only boards left; global stays for un-migrated rows.
-		...projectSlugs().flatMap((slug) =>
-			readBoard(boardPath("project", slug)).cards.map((card) => ({ scope: "project", sid: slug, card })),
-		),
+		// #17/#25: 供給は aggregateGlobal() / weekly と同じ、この機械の全プロジェクトボード。
+		// 自 cwd の 1 枚だけだと他リポのカードが黙って欠ける（件数だけ 0 に見える）。
+		...kanbanDb()
+			.listProjectBoards()
+			.flatMap(({ slug, cards }) => cards.map((card) => ({ scope: "project", sid: slug, card }))),
 	];
 	const db = kanbanDb();
 	return {
@@ -3441,9 +3433,8 @@ function dbInfo(cards: number): DbInfo | null {
 		return {
 			file: basename(DB_FILE),
 			bytes: st.size,
-			// +1 = GLOBAL board. Project boards are every board on the machine, not just this
-			// cwd's (projectSlugs() only ever counted our own). The +1 is conceptual: no GLOBAL
-			// row exists, but global is always shown in the heading.
+			// +1 = GLOBAL board. Project boards are every board on the machine. The +1 is
+			// conceptual: no GLOBAL row exists, but global is always shown in the heading.
 			boards: 1 + store.projectKeys().length,
 			cards,
 			projects: store.listProjects().length,
