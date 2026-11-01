@@ -2,14 +2,14 @@
 
 A kanban board for [pi](https://github.com/earendil-works/pi) that the agent keeps in sync with its own work.
 
-Long sessions lose the thread: the goal drifts, an earlier decision gets forgotten, and the model starts re-litigating things it already settled. A board fixes that by putting the plan somewhere both the human and the model read from — the agent updates it as work moves, and the board is injected back into the conversation every turn.
+Long sessions lose the thread: the goal drifts, an earlier decision gets forgotten, and the model starts re-litigating things it already settled. A board fixes that by putting the plan somewhere both the human and the model read from — the agent updates it as work moves, and the board is injected back into the conversation every turn. A board belongs to a **project** (the cwd's git root), so every session opened in that repo sees the same one.
 
 ## What you get
 
 - **A board the model maintains.** The `kanban` tool is the model's handle: add, move, remove, schedule, attach images, record why something is blocked.
-- **A live dashboard.** An HTTP dashboard at `http://<host>:8789/` covering every session on the machine, with per-board loop and pick toggles.
+- **A live dashboard.** An HTTP dashboard at `http://<host>:8789/` covering this project's board plus a GLOBAL row that aggregates every project board at once, with per-board loop and pick toggles.
 - **An autonomous loop.** With the loop on, pi wakes itself when a card sits in DOING, continues the work, and moves the card when it is done. Optional auto-pick pulls the next TODO in when nothing is in flight.
-- **Two layers.** A per-session board and a GLOBAL board. GLOBAL is a read-only view: it shows every project board's cards without holding any of its own.
+- **Two layers.** A per-project board (where cards live) and GLOBAL, a read-only aggregate over every project board: it shows them without holding any cards of its own.
 
 ## Install
 
@@ -41,7 +41,7 @@ pi -e npm:pi-kanban-board
 
 ```
 /kanban                    show the board
-/kanban add <text>         add a card to this session's TODO
+/kanban add <text>         add a card to this project's TODO
 /kanban done <id>          move a card to DONE
 /kanban loop on|off        toggle the autonomous loop for this board
 /kanban pick on|off        toggle auto-pick for this board
@@ -59,7 +59,7 @@ The model calls this directly. Actions include `list`, `add`, `move`, `remove`, 
 
 `/api/add` also takes the board-metadata trio: `due=YYYY-MM-DD` (a date, never a time), `estimate=<integer >= 0>` (points), and `blocks=<id,id,...>` (cards this one blocks). Invalid values are a 400, never silently dropped. Dependencies are stored in their own `card_dep` table and rewritten with the board on every write; a self-reference or a cycle (`a blocks b blocks a`) is a 400.
 
-`project` and `decision` are global tables keyed by slug (a project spans boards; `card.project` is that slug). A decision keeps `why`, because a decision log without the reason is just a diary. Deleting a project takes its decisions with it in one transaction. Milestones and phases are not tables: a milestone is a card with a `due`, and a phase is a label that #7 decides how to attach.
+`project` and `decision` are global tables keyed by slug (a card's `project` is that slug). A decision keeps `why`, because a decision log without the reason is just a diary. Deleting a project takes its decisions with it in one transaction. Milestones and phases are not tables: a milestone is a card with a `due`, and a phase is a label that #7 decides how to attach.
 
 `/api/projects` returns every project at once — declared, or merely named by a card nobody has declared — with progress **derived from the cards on every read**: done/total, points from `estimate`, an overdue count, milestones (its dated cards), blockers (its `blocked` cards) and its decision log. No percentage is stored, so moving a card is enough to move the number. `/api/project?project=<slug>&name=<name>` declares a project or renames one (no `name` means the slug); `/api/decision?project=<slug>&text=<what>&why=<why>` appends to the log and `/api/decision?action=delete&id=<n>` drops an entry — `id` only, a `project` sent with it is ignored. A decision with no project is returned in the payload's top-level `decisions` — the board-wide log that no per-project list can hold. `/api/projects` is a read; `/api/project` and `/api/decision` are writes.
 
@@ -67,7 +67,7 @@ The model calls this directly. Actions include `list`, `add`, `move`, `remove`, 
 
 The extension starts an HTTP server on port 8789 the first time a session begins. Open `http://<host>:8789/` for the dashboard — it is the only view.
 
-The dashboard shows sessions, agents, and served files in tabs, with per-board loop and pick toggles, live counters, and inline card editing (double-click the body; `Shift+Enter` inserts a newline). The project selector beside the search box filters every board by project (including `(unassigned)`), and a card created while a project is selected inherits it. The session totals in the header follow the filter, so "TODO 1/3" while a project is selected means one card of that project out of the three cards in that session.
+The dashboard has three tabs: ボード, プロジェクト and 設定. The board tab is two rows, not a list of sessions — the board of this project (the server's cwd), and GLOBAL below it, which aggregates every project board and is read-only. Each row carries its own `loops` (the count this session has used on that board) and `halted` flag, which is what 「残り N / 上限」 and the 再開 button read, so a stopped loop is visible on the row it belongs to. Inline card editing (double-click the body; `Shift+Enter` inserts a newline) is on the project board only: GLOBAL is read-only, so every write control on that row is disabled and the server answers a global write with 400. The project selector beside the search box filters the cards by `card.project` (including `(unassigned)`), and a card created while a project is selected inherits it. The totals in the header follow the filter, so "TODO 1/3" while a project is selected means one card of that project out of the three on the board.
 
 ### Serve
 
@@ -87,7 +87,6 @@ The `serve` tool also takes an optional `title`, which the dashboard shows above
 ~/.pi/kanban/
 ├── global.json          global view (read-only; no cards of its own)
 ├── projects/<slug>.json per-project board (where cards live)
-├── sessions/<sid>.json  per-session board
 ├── modes.json           per-board loop/pick/interval settings
 ├── serve.json           published files
 ├── media/               images attached to cards
@@ -96,7 +95,9 @@ The `serve` tool also takes an optional `title`, which the dashboard shows above
 └── dashboard.html       generated dashboard
 ```
 
-State is plain JSON on disk. Nothing leaves the machine.
+The boards themselves live in one SQLite file, `boards.sqlite`; the rest is plain JSON on disk. Nothing leaves the machine.
+
+Since #17 there is no per-session board: a pi session ID is only an *actor* (it is what `movedBy` and the move log record), never a board key. On startup the extension runs the scope reset once, which deletes every non-project board row and keeps the project ones — `boards.sqlite.pre-scope-reset` holds the copy taken first, so the old rows can be recovered from it. Project boards survive the reset untouched.
 
 ## Debugging the loop
 

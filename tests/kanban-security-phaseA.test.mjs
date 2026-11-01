@@ -253,15 +253,21 @@ const NOTE = JSON.stringify({ take: 1 });
 	mkdirSync(`${HOME_DIR}/.pi/kanban/sessions`, { recursive: true });
 	seedBoard(`${HOME_DIR}/.pi/kanban/sessions/${other}.json`, { cards: [{ id: 1, text: "secret-other", col: "todo" }], nextId: 2 });
 	const bare = await send("GET", "/api/kanban");
-	const leak = await send("GET", `/api/kanban?sid=${other}`);
+	const named = await send("GET", `/api/kanban?sid=${other}`);
 	await checkAsync("sid 無しの /api/kanban は他セッションのボードを返さない", async () => {
 		assert.equal(bare.status, 200, `status=${bare.status}`);
 		const j = JSON.parse(bare.body);
-		assert.equal(j.sessionId, null);
-		assert.doesNotMatch(bare.body, /secret-other/);
-		// 明示した sid なら当然読める（GET は読み取りなので許可）。
-		assert.equal(leak.status, 200);
-		assert.match(leak.body, /secret-other/);
+		// #17: 形状は project/global だけ。sessionId も session ボードも無い。
+		assert.equal(typeof j.projectId, "string", bare.body);
+		assert.equal("sessionId" in j, false, bare.body);
+		assert.equal("session" in j, false, bare.body);
+		// #16/#17: global は全 project ボードの集約ビューなので、旧 layout のファイルが
+		// 起動時 migration で project ボードになった分は global に載る（仕様）。漏れてはいけない
+		// のは「project セクションに他人の看板が混ざること」なので、そちらで見る。
+		assert.equal(JSON.parse(bare.body).project.cards.length, 0, bare.body);
+		assert.equal(named.status, 200, `status=${named.status}`);
+		assert.equal(JSON.parse(named.body).project.cards.length, 0, named.body);
+		assert.equal(JSON.parse(named.body).projectId, j.projectId, "sid で他人の project に飛べる");
 	});
 }
 {
@@ -386,12 +392,12 @@ for (const path of ["/api/upload?scope=session&sid=s1&col=todo&ext=png", "/api/s
 	// but the agent's `kanban` tool never speaks HTTP (it builds a Card and calls
 	// writeBoard in-process), and `probeServer` now presents the token. With no such
 	// caller left, a header-less request is exactly the attack: LAN-reachable curl.
-	const res = await send("GET", `/api/add?text=agent_ok&col=todo&scope=session&sid=s1`, { noToken: true });
+	const res = await send("GET", `/api/add?text=agent_ok&col=todo&scope=project`, { noToken: true });
 	await checkAsync("ヘッダ無し・トークン無しの書き込みは 401", async () => {
 		assert.equal(res.status, 401, `status=${res.status} body=${res.body}`);
 		assert.equal(JSON.parse(res.body).error, "unauthorized");
 	});
-	const ok = await send("GET", `/api/add?text=agent_ok&col=todo&scope=session&sid=s1`, {
+	const ok = await send("GET", `/api/add?text=agent_ok&col=todo&scope=project`, {
 		headers: { Cookie: tokenHeader() },
 	});
 	await checkAsync("トークン付きのヘッダ無し Origin 書き込みは 200（多層防御の内側は従来通り）", async () => {

@@ -54,17 +54,23 @@ async function get(path) {
 	const r = await tf(`${BASE}${path}`);
 	return { status: r.status, body: await r.json() };
 }
-const rowOf = async (sid) => {
+// #17: the dashboard has one project row and one global row. `sid` is only the actor
+// whose halt / count maps the rows are rendered from.
+const rowOf = async (_sid) => {
 	const { body } = await get("/api/dashboard");
-	return body.sessions.find((s) => s.id === sid);
+	return body.project;
 };
 
 const MODES = `${HOME_DIR}/.pi/kanban/modes.json`;
 const readModesRaw = () => JSON.parse(readFileSync(MODES, "utf8"));
 const writeModesRaw = (obj) => writeFileSync(MODES, JSON.stringify(obj, null, 2));
-const boardPath = (sid) => `${HOME_DIR}/.pi/kanban/sessions/${sid}.json`;
+// #17: session boards are gone. Everything below works on this cwd's PROJECT board;
+// the sid stays the ACTOR (movedBy, halt maps and global switches are keyed by it).
+const PROJ_KEY = mod.projectSlugOf(process.cwd());
+const PROJ_FILE = `${HOME_DIR}/.pi/kanban/projects/${PROJ_KEY}.json`;
+const boardPath = (_sid) => PROJ_FILE;
 const writeBoardFile = (sid) =>
-	seedBoard(boardPath(sid), { cards: [{ id: 1, text: "t", col: "doing" }], nextId: 2 });
+	seedBoard(PROJ_FILE, { cards: [{ id: 1, text: "t", col: "doing", movedBy: sid }], nextId: 2 });
 
 function mkPi() {
 	const handlers = new Map();
@@ -131,10 +137,11 @@ check("isValidMaxLoops: 範囲外・非整数・NaN は拒否", () => {
 
 // --- 3. 既存 modes.json（maxLoops 無し）でも壊れない --------------------------
 const SID = "sid-limit";
-// project is the default board now, so the cap halts (and the resume lifts) its bucket too.
-const PROJ_KEY = mod.projectSlugOf(process.cwd());
 writeBoardFile(SID);
-writeModesRaw({ SESSION: { [SID]: { doingLoop: true, autoPick: false } }, GLOBAL: {} });
+writeModesRaw({
+	PROJECT: { [PROJ_KEY]: { doingLoop: true, autoPick: false } },
+	GLOBAL: { [SID]: { doingLoop: true, autoPick: false } },
+});
 
 const first = mkPi();
 mod.default(first.pi);
@@ -145,20 +152,21 @@ first.handlers.get("session_start")({ type: "session_start" }, ctx);
 	const row = await rowOf(SID);
 	check("maxLoops 未設定のセッションは dashboard 上で既定 10 として扱われる（後方互換）", () => {
 		assert.ok(row, `${SID} が dashboard に無い`);
-		assert.equal(row.modes.session.maxLoops, undefined, JSON.stringify(row.modes.session));
+		assert.equal(row.modes.maxLoops, undefined, JSON.stringify(row.modes));
 	});
 }
 
 // --- 4. HTTP: /api/maxloops で保存し、読み戻せる -----------------------------
 {
-	const ok = await get(`/api/maxloops?scope=session&sid=${SID}&n=6`);
+	const ok = await get("/api/maxloops?scope=project&n=6");
 	check("/api/maxloops は 200 で保存する", () => {
 		assert.equal(ok.status, 200, JSON.stringify(ok.body));
-		assert.equal(ok.body.modes.session.maxLoops, 6, JSON.stringify(ok.body.modes.session));
+		assert.equal(ok.body.modes.project.maxLoops, 6, JSON.stringify(ok.body.modes.project));
 	});
-	check("保存値が modes.json の SESSION に載る", () => assert.equal(readModesRaw().SESSION[SID].maxLoops, 6));
+	check("保存値が modes.json の PROJECT[slug] に載る", () =>
+		assert.equal(readModesRaw().PROJECT[PROJ_KEY].maxLoops, 6));
 	check("既存フィールドを壊さない", () => {
-		const e = readModesRaw().SESSION[SID];
+		const e = readModesRaw().PROJECT[PROJ_KEY];
 		assert.equal(e.doingLoop, true, JSON.stringify(e));
 	});
 
@@ -169,25 +177,29 @@ first.handlers.get("session_start")({ type: "session_start" }, ctx);
 		assert.equal(glob.body.modes.global.maxLoops, 7);
 	});
 
-	const bad = await get(`/api/maxloops?scope=session&sid=${SID}&n=1001`);
+	const bad = await get("/api/maxloops?scope=project&n=1001");
 	check("範囲外（1001）は 400 で拒否する", () => assert.equal(bad.status, 400, JSON.stringify(bad.body)));
-	check("拒否時は保存値を変えない", () => assert.equal(readModesRaw().SESSION[SID].maxLoops, 6));
+	check("拒否時は保存値を変えない", () => assert.equal(readModesRaw().PROJECT[PROJ_KEY].maxLoops, 6));
 	{
-		const neg = await get(`/api/maxloops?scope=session&sid=${SID}&n=-1`);
+		const neg = await get("/api/maxloops?scope=project&n=-1");
 		check("負値は 400 で拒否する", () => assert.equal(neg.status, 400, JSON.stringify(neg.body)));
-		const frac = await get(`/api/maxloops?scope=session&sid=${SID}&n=1.5`);
+		const frac = await get("/api/maxloops?scope=project&n=1.5");
 		check("小数は 400 で拒否する", () => assert.equal(frac.status, 400, JSON.stringify(frac.body)));
+		// #17: session ボードは無い。scope=session は sid の有無に関係なく 400。
 		const none = await get("/api/maxloops?scope=session&n=5");
-		check("session スコープで sid 無しは 400", () => assert.equal(none.status, 400, JSON.stringify(none.body)));
-		const unl = await get(`/api/maxloops?scope=session&sid=${SID}&n=0`);
+		check("scope=session は 400（session は廃止）", () => {
+			assert.equal(none.status, 400, JSON.stringify(none.body));
+			assert.equal(none.body.error, "scope must be global or project", JSON.stringify(none.body));
+		});
+		const unl = await get("/api/maxloops?scope=project&n=0");
 		check("無制限（0）は 200 で保存される", () => {
 			assert.equal(unl.status, 200, JSON.stringify(unl.body));
-			assert.equal(readModesRaw().SESSION[SID].maxLoops, 0);
-			assert.equal(unl.body.modes.session.maxLoops, 0);
+			assert.equal(readModesRaw().PROJECT[PROJ_KEY].maxLoops, 0);
+			assert.equal(unl.body.modes.project.maxLoops, 0);
 		});
 	}
 	// 後続の停止テストのために上限を戻す。
-	await get(`/api/maxloops?scope=session&sid=${SID}&n=2`);
+	await get("/api/maxloops?scope=project&n=2");
 }
 
 // --- 4b. scope=project の sid ゲートは書き込み経路と同じ判定 ---------------------
@@ -200,7 +212,12 @@ first.handlers.get("session_start")({ type: "session_start" }, ctx);
 	});
 	check("拒否時は PROJECT バケツを書き換えない", () => {
 		const m = readModesRaw();
-		assert.equal(m.PROJECT && m.PROJECT[PROJ_KEY] && m.PROJECT[PROJ_KEY].doingLoop, undefined, JSON.stringify(m.PROJECT));
+		assert.deepEqual(
+			m.PROJECT[PROJ_KEY],
+			{ doingLoop: true, autoPick: false, maxLoops: 2 },
+			JSON.stringify(m.PROJECT),
+		);
+		assert.equal(m.PROJECT["sid-nobody"], undefined, JSON.stringify(m.PROJECT));
 	});
 }
 
@@ -211,7 +228,9 @@ const SID_LIMIT = "sid-halt";
 writeBoardFile(SID_LIMIT);
 {
 	const m = readModesRaw();
-	m.SESSION[SID_LIMIT] = { doingLoop: true, autoPick: false, maxLoops: 2 };
+	// #17: the cap lives in PROJECT[slug]; the global switch stays keyed by the actor.
+	m.PROJECT = { [PROJ_KEY]: { doingLoop: true, autoPick: false, maxLoops: 2 } };
+	m.GLOBAL = { [SID_LIMIT]: { doingLoop: true, autoPick: false } };
 	writeModesRaw(m);
 }
 const lim = mkPi();
@@ -223,15 +242,15 @@ const origWrite = process.stderr.write.bind(process.stderr);
 lim.handlers.get("agent_before_settle")({ context: { contextMessages: undefined } }, ctxLim);
 {
 	const row = await rowOf(SID_LIMIT);
-	check("上限（2回）に達したセッションは halted:limit になる", () => {
+	check("上限（2回）に達した project ボードは halted になる", () => {
 		assert.ok(row, `${SID_LIMIT} が dashboard に無い`);
-		assert.ok(row.halted, "halted が無い");
-		assert.equal(row.halted.halted, "limit", JSON.stringify(row.halted));
+		// 上限は PROJECT[slug] から読む。既定 10 なら 2 回では止まらない。
+		assert.equal(row.halted, true, JSON.stringify(row));
 	});
-	check("dashboard の halted 行は現在の上限値（cap）を運ぶ", () => assert.equal(row.halted.cap, 2, JSON.stringify(row.halted)));
+	check("project 行は使った回数（2）を出す", () => assert.equal(row.loops, 2, JSON.stringify(row)));
 	check("上限停止は doingLoop を両スコープで OFF にする", () => {
 		const m = readModesRaw();
-		assert.equal(m.SESSION[SID_LIMIT].doingLoop, false, JSON.stringify(m.SESSION[SID_LIMIT]));
+		assert.equal(m.PROJECT[PROJ_KEY].doingLoop, false, JSON.stringify(m.PROJECT[PROJ_KEY]));
 		assert.equal(m.GLOBAL[SID_LIMIT].doingLoop, false, JSON.stringify(m.GLOBAL[SID_LIMIT]));
 	});
 }
@@ -241,7 +260,7 @@ const SID_FREE = "sid-unlimited";
 writeBoardFile(SID_FREE);
 {
 	const m = readModesRaw();
-	m.SESSION[SID_FREE] = { doingLoop: true, autoPick: false, maxLoops: 0 };
+	m.PROJECT = { [PROJ_KEY]: { doingLoop: true, autoPick: false, maxLoops: 0 } };
 	writeModesRaw(m);
 }
 const free = mkPi();
@@ -251,9 +270,9 @@ free.handlers.get("session_start")({ type: "session_start" }, ctxFree);
 free.handlers.get("agent_before_settle")({ context: { contextMessages: undefined } }, ctxFree);
 {
 	const row = await rowOf(SID_FREE);
-	check("maxLoops:0 のセッションは count 999 でも halted:limit にならない", () => {
-		if (!row) return; // 一覧に無いこと自体、停止していない証拠
-		assert.notEqual(row.halted && row.halted.halted, "limit", JSON.stringify(row.halted));
+	check("maxLoops:0 の project ボードは count 999 でも停止しない", () => {
+		assert.equal(row.halted, false, JSON.stringify(row));
+		assert.equal(row.loops, 1000, JSON.stringify(row));
 	});
 }
 
@@ -262,9 +281,9 @@ const SID_RESUME = "sid-resume";
 writeBoardFile(SID_RESUME);
 {
 	const m = readModesRaw();
-	m.SESSION[SID_RESUME] = { doingLoop: false, autoPick: false, maxLoops: 1 };
-	m.GLOBAL[SID_RESUME] = { doingLoop: false, autoPick: false };
-	m.PROJECT = { ...(m.PROJECT ?? {}), [PROJ_KEY]: { doingLoop: false, autoPick: false } };
+	// The tool's resume text reads the cap from the GLOBAL bucket (keyed by the actor).
+	m.GLOBAL = { [SID_RESUME]: { doingLoop: false, autoPick: false, maxLoops: 1 } };
+	m.PROJECT = { [PROJ_KEY]: { doingLoop: false, autoPick: false } };
 	writeModesRaw(m);
 }
 const rp = mkPi();
@@ -274,34 +293,49 @@ rp.handlers.get("session_start")({ type: "session_start" }, ctxRp);
 
 {
 	const row = await rowOf(SID_RESUME);
-	check("復元直後の dashboard 行は halted:limit と cap 1", () => {
+	check("復元直後の dashboard 行は halted（limit）", () => {
 		assert.ok(row, `${SID_RESUME} が dashboard に無い`);
-		assert.equal(row.halted && row.halted.halted, "limit", JSON.stringify(row.halted));
-		assert.equal(row.halted && row.halted.cap, 1, JSON.stringify(row.halted));
+		assert.equal(row.halted, true, JSON.stringify(row));
 	});
 }
 
-const rq = await get(`/api/resume?scope=session&sid=${SID_RESUME}`);
-check("/api/resume は 202 で受け付ける", () => assert.equal(rq.status, 202, JSON.stringify(rq.body)));
+{
+	// #67 の非破壊固定: scope=global はスイッチをセッション単位で持つので、キーは sid のまま。
+	const g = await get(`/api/resume?scope=global&sid=${SID_RESUME}`);
+	check("/api/resume?scope=global&sid= も 202 で受け付ける", () =>
+		assert.equal(g.status, 202, JSON.stringify(g.body)));
+	check("scope=global の要求は sid をキーに積まれる", () =>
+		assert.equal(tRp.resumeRequests.get(SID_RESUME), 1, `keys=${[...tRp.resumeRequests.keys()]}`));
+	tRp.resumeRequests.delete(SID_RESUME); // 先に消費させない（本題は下の project 経路）
+}
+// #17 回帰: ダッシュボードの project 行の「再開」は scope=project だけを送る（act() は
+// ctx.sid がある時しか sid を付けない）。settingsSidOf はそれを slug に解決するので、
+// sid に付け替えないと poll が永久に読めず、202 を返すのに何も起きない。
+const rq = await get(`/api/resume?scope=project`);
+check("/api/resume?scope=project (sid 無し) は 202 で受け付ける", () =>
+	assert.equal(rq.status, 202, JSON.stringify(rq.body)));
 {
 	const bad = await get("/api/resume?scope=session");
 	check("/api/resume は sid 無しの session スコープを 400 で拒否", () =>
 		assert.equal(bad.status, 400, JSON.stringify(bad.body)));
 }
-check("再開要求が poll の受け渡しに載っている", () => assert.equal(tRp.resumeRequests.get(SID_RESUME), 1));
+check("再開要求が poll の受け渡しに載っている（ボードキーではなく sid）", () => {
+	assert.equal(tRp.resumeRequests.get(SID_RESUME), 1, `keys=${[...tRp.resumeRequests.keys()]}`);
+	assert.equal(tRp.resumeRequests.has(PROJ_KEY), false, "slug をキーに積んでいる: poll が読めない");
+});
 
 // poll が要求を消費して実際に再開する（halt はプロセスのメモリなのでここで初めて動く）。
 tRp.poll();
 check("poll が再開要求を消費する", () => assert.equal(tRp.resumeRequests.has(SID_RESUME), false));
 {
 	const row = await rowOf(SID_RESUME);
-	check("再開後の dashboard 行は halted:null", () => assert.equal(row.halted, null, JSON.stringify(row.halted)));
+	check("再開後の dashboard 行は halted:false", () => assert.equal(row.halted, false, JSON.stringify(row)));
 }
 // 上限 halt は三スコープすべてを OFF にするので、再開も三つとも戻さないと
 // project（既定ボード）のループが二度と回らない。
-check("再開は三スコープの doingLoop を ON に戻す", () => {
+check("再開は global と project の doingLoop を ON に戻す（#17: session 行は無い）", () => {
 	const m = readModesRaw();
-	assert.equal(m.SESSION[SID_RESUME].doingLoop, true);
+	assert.equal(m.SESSION, undefined, `SESSION バケツが残っている: ${JSON.stringify(m.SESSION)}`);
 	assert.equal(m.GLOBAL[SID_RESUME].doingLoop, true);
 	assert.ok(m.PROJECT && m.PROJECT[PROJ_KEY], `PROJECT[${PROJ_KEY}] が無い: ${JSON.stringify(m.PROJECT)}`);
 	assert.equal(m.PROJECT[PROJ_KEY].doingLoop, true, JSON.stringify(m.PROJECT[PROJ_KEY]));
@@ -312,7 +346,7 @@ check("再開は JSONL に count:0 / halted:null を書く", () => {
 	assert.equal(last.data.count, 0);
 	assert.equal(last.data.halted, null);
 });
-check("再開は上限値そのものを書き換えない", () => assert.equal(readModesRaw().SESSION[SID_RESUME].maxLoops, 1));
+check("再開は上限値そのものを書き換えない", () => assert.equal(readModesRaw().GLOBAL[SID_RESUME].maxLoops, 1));
 
 // 既存の kanban ツール resume も従来どおり動く（非破壊の固定）。
 const kanbanRp = rp.tools.get("kanban");
@@ -320,22 +354,21 @@ const res = await kanbanRp.execute("c1", { action: "resume" }, undefined, undefi
 check("kanban ツールの resume は従来どおり成功する", () => assert.ok(!res.isError, res.content[0].text));
 check("kanban ツールの resume は可変の上限を反映した残量を返す", () =>
 	assert.match(res.content[0].text, /残り 1\/1/, res.content[0].text));
-check("kanban ツールの resume は三スコープを ON にしたと報告する", () =>
+check("kanban ツールの resume は ON にしたスコープを報告する", () =>
 	assert.match(res.content[0].text, /session\+global\+project/, res.content[0].text));
 
 // --- 6b. project scope の loop entry は再起動をまたいで残る -------------------
 // 復元で scope が落ちると settle は session ボードを見て、project の halted:stuck を
 // 自分で解除してしまう（暴走防止の停止が勝手に解ける）。
 const SID_PROJ = "sid-project-loop";
-// paintLoop must read the cap from PROJECT[slug], not from PROJECT[<session id>] (default 10).
+// paintLoop must read the cap from PROJECT[slug], never from a bucket keyed by the sid.
 {
 	const m = readModesRaw();
-	m.PROJECT[PROJ_KEY] = { ...m.PROJECT[PROJ_KEY], maxLoops: 4 };
+	m.PROJECT = { [PROJ_KEY]: { doingLoop: true, autoPick: false, maxLoops: 4 } };
 	writeModesRaw(m);
 }
-writeBoardFile(SID_PROJ); // session ボードには id 5 は無い（取り違えると halt が消える）
-seedBoard(`${HOME_DIR}/.pi/kanban/projects/${PROJ_KEY}.json`, {
-	cards: [{ id: 5, text: "halted card", col: "doing" }],
+seedBoard(PROJ_FILE, {
+	cards: [{ id: 5, text: "halted card", col: "doing", movedBy: SID_PROJ }],
 	nextId: 6,
 });
 const pl = mkPi();
@@ -352,9 +385,7 @@ pl.handlers.get("session_start")({ type: "session_start" }, ctxPl);
 	const row = await rowOf(SID_PROJ);
 	check("project scope の loop entry は復元され halted:stuck を保つ", () => {
 		assert.ok(row, `${SID_PROJ} が dashboard に無い`);
-		assert.equal(row.halted && row.halted.halted, "stuck", JSON.stringify(row.halted));
-		// project の cap は slug のバケツから読む（セッション id のバケツは既定 10 になる）。
-		assert.equal(row.halted && row.halted.cap, 4, JSON.stringify(row.halted));
+		assert.equal(row.halted, true, JSON.stringify(row));
 	});
 }
 pl.handlers.get("agent_before_settle")({ context: { contextMessages: undefined } }, ctxPl);
@@ -362,7 +393,7 @@ pl.handlers.get("agent_before_settle")({ context: { contextMessages: undefined }
 	const row = await rowOf(SID_PROJ);
 	check("project で止まった loop は次の settle で勝手に解除されない", () => {
 		assert.ok(row, `${SID_PROJ} が dashboard に無い`);
-		assert.equal(row.halted && row.halted.halted, "stuck", JSON.stringify(row.halted));
+		assert.equal(row.halted, true, JSON.stringify(row));
 	});
 }
 
@@ -371,15 +402,13 @@ pl.handlers.get("agent_before_settle")({ context: { contextMessages: undefined }
 // 既定ボードが理由も件数も出さずに黙って止まっていた。
 const SID_FOOT = "sid-project-footer";
 const GLOBAL_FILE = `${HOME_DIR}/.pi/kanban/global.json`;
-const projectFile = `${HOME_DIR}/.pi/kanban/projects/${PROJ_KEY}.json`;
+const projectFile = PROJ_FILE;
 seedBoard(GLOBAL_FILE, { cards: [], nextId: 1 });
-seedBoard(boardPath(SID_FOOT), { cards: [], nextId: 1 }); // 空: session は駆動元にならない
 seedBoard(projectFile, { cards: [{ id: 1, text: "proj doing", col: "doing", movedBy: SID_FOOT }], nextId: 2 });
 {
 	const m = readModesRaw();
-	m.SESSION[SID_FOOT] = { doingLoop: true, autoPick: false, maxLoops: 5 };
-	// project の上限は slug のバケツから読む（session id のバケツは既定 10）。
-	m.PROJECT = { ...(m.PROJECT ?? {}), [PROJ_KEY]: { doingLoop: true, autoPick: false, maxLoops: 2 } };
+	// project の上限は slug のバケツから読む（既定 10 なら 2 回で止まらない）。
+	m.PROJECT = { [PROJ_KEY]: { doingLoop: true, autoPick: false, maxLoops: 2 } };
 	writeModesRaw(m);
 }
 const foot = mkPi();
@@ -399,10 +428,10 @@ foot.handlers.get("session_start")({ type: "session_start" }, ctxFoot);
 await foot.handlers.get("agent_before_settle")({ context: { contextMessages: undefined } }, ctxFoot);
 {
 	const lines = widgets.at(-1) ?? [];
-	check("project で上限停止したら footer の SESSION 行に HALTED:limit が出る", () => {
+	check("project で上限停止したら footer の PROJECT 行に HALTED:limit が出る", () => {
 		assert.equal(lines.length, 2, JSON.stringify(lines));
 		assert.match(lines[1], /HALTED:limit/, JSON.stringify(lines));
-		assert.ok(/^SESSION:/.test(lines[1]), JSON.stringify(lines));
+		assert.ok(/^PROJECT:/.test(lines[1]), JSON.stringify(lines));
 		assert.ok(!/HALTED/.test(lines[0]), `GLOBAL 行に出ている: ${lines[0]}`);
 	});
 }
@@ -416,12 +445,10 @@ await foot.handlers.get("agent_before_settle")({ context: { contextMessages: und
 
 // 同じことが停止していない場合（件数だけ）にも成り立つこと。
 const SID_FOOT2 = "sid-project-count";
-seedBoard(boardPath(SID_FOOT2), { cards: [], nextId: 1 });
 seedBoard(projectFile, { cards: [{ id: 1, text: "proj doing", col: "doing", movedBy: SID_FOOT2 }], nextId: 2 });
 {
 	const m = readModesRaw();
-	m.SESSION[SID_FOOT2] = { doingLoop: true, autoPick: false };
-	m.PROJECT = { ...(m.PROJECT ?? {}), [PROJ_KEY]: { doingLoop: true, autoPick: false, maxLoops: 9 } };
+	m.PROJECT = { [PROJ_KEY]: { doingLoop: true, autoPick: false, maxLoops: 9 } };
 	writeModesRaw(m);
 }
 const foot2 = mkPi();
@@ -442,7 +469,7 @@ foot2.handlers.get("session_start")({ type: "session_start" }, ctxFoot2);
 	const res = await foot2.handlers.get("agent_before_settle")({ context: { contextMessages: undefined } }, ctxFoot2);
 	check("project が駆動している settle は continuation を返す", () => assert.equal(res && res.continue, true, JSON.stringify(res)));
 	const lines = widgets2.at(-1) ?? [];
-	check("project の件数は footer の SESSION 行に「残り/上限」で出る", () => {
+	check("project の件数は footer の PROJECT 行に「残り/上限」で出る", () => {
 		assert.equal(lines.length, 2, JSON.stringify(lines));
 		// 上限 9、使った 4 -> 残り 5/9（session 自身は ON だが件数は project のもの）。
 		assert.match(lines[1], / 5\/9/, JSON.stringify(lines));
@@ -460,17 +487,14 @@ foot2.handlers.get("session_start")({ type: "session_start" }, ctxFoot2);
 // gate = 移行が終わるまで待つ / settle = continuation を落とす（sync のまま）/ poll =
 // wake は送るが firedFor を書かない（tick を落とすと interval ごと失うから）。
 const SID_GATE = "sid-migration-gate";
-const gateFile = boardPath(SID_GATE);
-// project にこのセッション所有の DOING が残っていると、poll がそちらで発火して
-// gateFile の firedFor は undefined のまま——ガードを消しても緑になる。空にする。
-seedBoard(projectFile, { cards: [], nextId: 1 });
+const gateFile = PROJ_FILE;
 // nextFireAt を持たせないと markFired が 1 行目で return し、`if (!folding)` を外しても
 // firedFor は書かれない（反例不能なテストになる）。過去の due を置いて実際に火を付けさせる。
 const dueIso = new Date(Date.now() - 60_000).toISOString();
-seedBoard(gateFile, { cards: [{ id: 1, text: "g", col: "doing", nextFireAt: dueIso }], nextId: 2 });
+seedBoard(gateFile, { cards: [{ id: 1, text: "g", col: "doing", movedBy: SID_GATE, nextFireAt: dueIso }], nextId: 2 });
 {
 	const m = readModesRaw();
-	m.SESSION[SID_GATE] = { doingLoop: true, autoPick: false };
+	m.PROJECT = { [PROJ_KEY]: { doingLoop: true, autoPick: false } };
 	writeModesRaw(m);
 }
 const gate = mkPi();
@@ -490,7 +514,7 @@ check("対照: wake も 1 回出る", () => assert.equal(gate.sent.length, 1, JS
 // 対照で付いた firedFor と lastTickAt を戻す（resetLoop が lastTickAt = 0 にし、
 // seedBoard が盤面を due の初期状態に戻す）。これで次の poll はまた判定に進む。
 tGate.resumeNow(SID_GATE);
-seedBoard(gateFile, { cards: [{ id: 1, text: "g", col: "doing", nextFireAt: dueIso }], nextId: 2 });
+seedBoard(gateFile, { cards: [{ id: 1, text: "g", col: "doing", movedBy: SID_GATE, nextFireAt: dueIso }], nextId: 2 });
 
 let releaseGate = () => {};
 tGate.setMigrationPending(new Promise((resolve) => { releaseGate = resolve; }));
@@ -550,11 +574,11 @@ releaseGate();
 
 // --- 7. /kanban maxloops コマンド -------------------------------------------
 check("parseKanbanArgs: maxloops は status", () =>
-	assert.deepEqual(mod.parseKanbanArgs(["maxloops"]), { kind: "maxLoopsStatus", scope: "session" }));
+	assert.deepEqual(mod.parseKanbanArgs(["maxloops"]), { kind: "maxLoopsStatus", scope: "project" }));
 check("parseKanbanArgs: maxloops global 20", () =>
 	assert.deepEqual(mod.parseKanbanArgs(["maxloops", "global", "20"]), { kind: "maxLoops", scope: "global", n: 20 }));
 check("parseKanbanArgs: maxloops 0（無制限）", () =>
-	assert.deepEqual(mod.parseKanbanArgs(["maxloops", "0"]), { kind: "maxLoops", scope: "session", n: 0 }));
+	assert.deepEqual(mod.parseKanbanArgs(["maxloops", "0"]), { kind: "maxLoops", scope: "project", n: 0 }));
 check("parseKanbanArgs: maxloops 範囲外は reject", () =>
 	assert.equal(mod.parseKanbanArgs(["maxloops", "1001"]).kind, "reject"));
 
@@ -574,9 +598,11 @@ check("DASHBOARD_HTML に「再開」ボタンの生成がある", () => {
 	assert.ok(/再開/.test(DASH), "「再開」の文言が無い");
 	assert.ok(/act\("\/api\/resume"/.test(DASH), "resume への送信が無い");
 });
-check("DASHBOARD_HTML の停止理由は可変の上限値を出す（リテラル埋め込みではない）", () => {
+check("DASHBOARD_HTML の停止表示は halted の bool で駆動される（#17: 理由の文字列は消えた）", () => {
 	assert.ok(!/\$\{MAX_LOOPS\}/.test(DASH), "${MAX_LOOPS} が残っている");
-	assert.ok(/haltText\(s\.halted, maxLoopsOf/.test(DASH), "haltText に上限値を渡していない");
+	assert.ok(/function haltBox\(/.test(DASH), "haltBox が無い");
+	assert.ok(/b\.halted !== true/.test(DASH), "haltBox が halted の bool を見ていない");
+	assert.ok(/上限/.test(DASH), "上限の導線が無い");
 });
 check("DASHBOARD_HTML の <script> はすべて構文として通る", () => {
 	const scripts = [...DASH.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);

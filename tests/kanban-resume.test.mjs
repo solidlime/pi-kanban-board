@@ -56,18 +56,21 @@ function check(name, fn) {
 }
 
 const MODES = `${HOME_DIR}/.pi/kanban/modes.json`;
-const board = (sid) => `${HOME_DIR}/.pi/kanban/sessions/${sid}.json`;
+// #17: session ボードは無い。project 板 1 枚（キーは cwd の slug）で全部を見る。
+const SLUG = mod.projectSlugOf(process.cwd());
+const board = () => `${HOME_DIR}/.pi/kanban/projects/${SLUG}.json`;
 // ボードは sqlite が正。生の JSON を書いても db は既に開いているので読まれない
 // （起動時 migration が先に db を開く）ので、サーバと同じ writer で seed する。
 const writeBoardFile = (sid) =>
-	seedBoard(board(sid), { cards: [{ id: 1, text: "t", col: "doing" }], nextId: 2 });
+	seedBoard(board(), { cards: [{ id: 1, text: "t", col: "doing", movedBy: sid }], nextId: 2 });
 // doingLoop は ON のまま。halted 中の実測状態（modes.json だけ見ると動きそう）を再現する。
 const writeModes = (...sids) =>
 	writeFileSync(
 		MODES,
 		JSON.stringify({
-			SESSION: Object.fromEntries(sids.map((s) => [s, { doingLoop: true, autoPick: false }])),
-			GLOBAL: {},
+			// project は slug、GLOBAL は actor の sid をキーにする（modesBucket と同じ）。
+			PROJECT: Object.fromEntries([SLUG].map((k) => [k, { doingLoop: true, autoPick: false }])),
+			GLOBAL: Object.fromEntries(sids.map((s) => [s, { doingLoop: true, autoPick: false }])),
 		}),
 	);
 const readModes = () => JSON.parse(readFileSync(MODES, "utf8"));
@@ -122,13 +125,15 @@ process.stderr.write = (chunk) => {
 	if (s.startsWith("kanban: poll ")) traces.push(s);
 	return true;
 };
+// 1 tick は板ごとに 1 行（global → project）。同じ sid で 2 行出るので、最後（project）を取る。
 const verdictOf = (sid) => {
+	let out = null;
 	for (const line of traces) {
 		if (!line.includes(`sid=${sid} `)) continue;
 		const m = /=> (\S+)/.exec(line);
-		if (m !== null) return m[1];
+		if (m !== null) out = m[1];
 	}
-	return null;
+	return out;
 };
 
 // --- 1. 純関数: halted:limit は doingLoop が ON でも発火しない ----------------
@@ -170,14 +175,14 @@ check("halted 復元直後の poll は skip:halted:limit", () =>
 check("halted 中は 1 件も送らない", () => assert.equal(sent.length, 0, `sent=${sent.length}`));
 
 // --- 3. GUI 経路: dashboard に halted が載っている（理由を出すための前提） ----
+// #17: dashboard の行は project と global の 2 つ。停止は project 行の bool。
 const dashboardHalted = async () => {
 	const j = await (await tf(`${BASE}/api/dashboard`)).json();
-	const row = j.sessions.find((s) => s.id === SID);
-	return row === undefined ? "NO-SUCH-SESSION" : row.halted;
+	return j.project.halted;
 };
 {
 	const h = await dashboardHalted();
-	check("/api/dashboard の halted は limit と理由を運ぶ", () => assert.equal(h?.halted, "limit", JSON.stringify(h)));
+	check("/api/dashboard の project 行は halted: true を運ぶ", () => assert.equal(h, true, JSON.stringify(h)));
 }
 
 // --- 4. resume ---------------------------------------------------------------
@@ -197,7 +202,7 @@ check("resume は loop を JSONL に書き戻す（count:0 / halted:null）", ()
 });
 check("resume は両スコープの doingLoop を ON に戻す", () => {
 	const f = readModes();
-	assert.equal(f.SESSION[SID].doingLoop, true);
+	assert.equal(f.PROJECT[SLUG].doingLoop, true);
 	assert.equal(f.GLOBAL[SID].doingLoop, true);
 });
 
@@ -210,15 +215,16 @@ check("resume 後は 1 件送る", () => assert.equal(sent.length, 1, `sent=${se
 // GUI 側の halted 表示も消える（paintLoop が stopped の記録を落とす）。
 {
 	const h = await dashboardHalted();
-	check("resume 後の dashboard halted は null", () => assert.equal(h, null, JSON.stringify(h)));
+	check("resume 後の dashboard halted は false", () => assert.equal(h, false, JSON.stringify(h)));
 }
 
 // --- 5. GUI: halted の理由と復帰手段が出ている（両テンプレート） ------------------
 const DASH = await (await tf(`${BASE}/`)).text();
 // #84: 右パネルのテンプレートは廃止。ダッシュボード 1 枚だけを固定する。
-check("DASHBOARD_HTML は両方の停止理由を持つ", () => {
-	assert.ok(DASH.includes("ループ上限（"), "limit の文言が無い");
-	assert.ok(DASH.includes("回スタックして停止"), "stuck の文言が無い");
+// #17: 停止の理由（limit / stuck）は session 行と一緒に消えた。bool だけが残る。
+check("DASHBOARD_HTML はボードが止まっていることを示す", () => {
+	assert.ok(DASH.includes("ループ停止中"), "停止の文言が無い");
+	assert.ok(DASH.includes("上限に達したか"), "理由の候補が書かれていない");
 });
 check("DASHBOARD_HTML は復帰手段（resume / loop on）を案内する", () => {
 	assert.ok(DASH.includes("resume"), "resume の案内が無い");
@@ -231,8 +237,8 @@ check("DASHBOARD_HTML の <script> はすべて構文として通る", () => {
 	assert.ok(scripts.length > 0, "script が無い");
 	for (const src of scripts) new Function(src);
 });
-check("DASHBOARD_HTML は session 行の halted を描画に使う", () =>
-	assert.ok(/haltText\(s\.halted[,)]/.test(DASH), "s.halted を haltText に渡していない"));
+check("DASHBOARD_HTML はボード行の halted を描画に使う", () =>
+	assert.ok(/b\.halted !== true/.test(DASH), "halted の bool を見ていない"));
 
 handlers.get("session_shutdown")({ type: "session_shutdown", reason: "quit" });
 delete process.env.KANBAN_DEBUG;

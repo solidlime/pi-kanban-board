@@ -134,13 +134,13 @@ await check("#38-10 movedAt 無しの DOING は何も足さない (「0分」を
 
 // --- 14. /api/kanban?fields= の射影 (既存呼び出しは無指定で不変) --------------
 await check("#38-14 fields 射影は指定キーだけ返し、無指定は従来どおり", async () => {
-	seedBoard(boardFile, { cards: [{ id: 7, text: "t", col: "todo", img: "x.png", priority: 3 }], nextId: 8 });
-	const proj = await (await tf(`${BASE}/api/kanban?sid=${SID}&fields=id,col,text`)).json();
-	const c = proj.session.cards[0];
+	seedBoard(projectFile, { cards: [{ id: 7, text: "t", col: "todo", img: "x.png", priority: 3 }], nextId: 8 });
+	const proj = await (await tf(`${BASE}/api/kanban?scope=project&fields=id,col,text`)).json();
+	const c = proj.project.cards[0];
 	assert.deepEqual(Object.keys(c).sort(), ["col", "id", "text"], `余計なキー: ${JSON.stringify(Object.keys(c))}`);
 	assert.equal(c.id, 7);
-	const full = await (await tf(`${BASE}/api/kanban?sid=${SID}`)).json();
-	assert.ok("img" in full.session.cards[0] && "priority" in full.session.cards[0], "無指定で射影された");
+	const full = await (await tf(`${BASE}/api/kanban?scope=project`)).json();
+	assert.ok("img" in full.project.cards[0] && "priority" in full.project.cards[0], "無指定で射影された");
 });
 
 // --- 1/2. selftest (API とツール check が同じ JSON を返す) --------------------

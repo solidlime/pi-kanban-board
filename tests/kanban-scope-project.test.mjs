@@ -2,6 +2,7 @@
 // フレームワーク無しで `node tests/kanban-scope-project.test.mjs`。
 // 対象: projectSlugOf / boardPath("project") ↔ boardKeyOf の対称性 / writeBoardPath の 2 ゲート /
 // tool の既定 project と actor（movedBy）が session のままであること。
+// #17: scope は project / global の 2 つだけ。session はボードではなく actor に残る。
 // HOME と KANBAN_PORT を差し替えるので、本番の ~/.pi/kanban と 8789 には触れない。
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
@@ -43,7 +44,6 @@ useKanban(mod);
 const HOME = `${HOME_DIR}/.pi/kanban`;
 const API_BASE = `http://127.0.0.1:${process.env.KANBAN_PORT}`;
 const tf = (input, init) => authFetch(input, init);
-const sessionBoard = (sid) => readBoardAt(`${HOME}/sessions/${sid}.json`);
 const projectBoard = (slug) => readBoardAt(`${HOME}/projects/${slug}.json`);
 const projectExists = (slug) => boardExists(`${HOME}/projects/${slug}.json`);
 
@@ -134,22 +134,16 @@ await check("tool add の既定は project ボード", async () => {
 	assert.equal(boardExists(`${HOME}/sessions/${SID}.json`), false);
 });
 
-await check("tool add scope=session は session ボードだけ", async () => {
-	const r = await runIn(SID, { action: "add", text: "own card", scope: "session" });
-	assert.equal(r.isError, undefined, r.content[0].text);
-	assert.equal(r.details.scope, "session");
-	assert.deepEqual(
-		sessionBoard(SID).cards.map((c) => c.text),
-		["own card"],
-	);
-	assert.deepEqual(
-		projectBoard(SLUG).cards.map((c) => c.text),
-		["proj card"],
-	);
+await check("tool add scope=global は isError（読み取り専用）でボードを書かない", async () => {
+	const before = projectBoard(SLUG).cards.map((c) => c.text);
+	const r = await runIn(SID, { action: "add", text: "nope", scope: "global" });
+	assert.equal(r.isError, true, "global への add が通ってしまった");
+	assert.match(r.content[0].text, /global board is read-only/);
+	assert.deepEqual(projectBoard(SLUG).cards.map((c) => c.text), before);
 });
 
 // --- 3. /api/kanban: project 面が増え、既存キーは残る ----------------------------
-await check("/api/kanban は project 面を返す（global/session も残る）", async () => {
+await check("/api/kanban は project 面と global 面を返す（session は無い）", async () => {
 	const res = await tf(`${API_BASE}/api/kanban?scope=project`);
 	assert.equal(res.status, 200);
 	const body = await res.json();
@@ -158,8 +152,19 @@ await check("/api/kanban は project 面を返す（global/session も残る）"
 		body.project.cards.map((c) => c.text),
 		["proj card"],
 	);
-	assert.ok(body.global && body.session, "global/session キーが消えている");
-	assert.deepEqual(Object.keys(body.modes).sort(), ["global", "project", "session"]);
+	assert.ok(body.global, "global キーが消えている");
+	assert.equal("session" in body, false, "session キーが残っている");
+	assert.equal("sessionId" in body, false, "sessionId が残っている");
+	assert.deepEqual(Object.keys(body.modes).sort(), ["global", "project"]);
+});
+
+await check("/api/kanban?scope=session は 400（廃止された scope）", async () => {
+	const res = await tf(`${API_BASE}/api/kanban?scope=session`);
+	assert.equal(res.status, 400);
+	assert.deepEqual(await res.json(), {
+		ok: false,
+		error: "scope=session is gone; boards are project-scoped",
+	});
 });
 
 // --- 4. writeBoardPath: project は sid 不要 / global は読み取り専用 / session は sid 必須 ---
@@ -179,10 +184,10 @@ await check("/api/add?scope=global は 400（global は読み取り専用）", a
 	assert.equal((await res.json()).error, "global board is read-only");
 });
 
-await check("/api/add?scope=session は sid 無しで 400", async () => {
+await check("/api/add?scope=session は 400（廃止された scope）", async () => {
 	const res = await tf(`${API_BASE}/api/add?scope=session&text=nope`);
 	assert.equal(res.status, 400);
-	assert.equal((await res.json()).error, "scope=session requires sid");
+	assert.equal((await res.json()).error, "scope=session is gone; boards are project-scoped");
 });
 
 await check("/api/upload?scope=global も 400（アップロードのゲート）", async () => {

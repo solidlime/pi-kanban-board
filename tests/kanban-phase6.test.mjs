@@ -15,7 +15,7 @@ const tf = (input, init) => authFetch(input, init);
 
 const HOME_DIR = "/tmp/kb-phase6-home";
 rmSync(HOME_DIR, { recursive: true, force: true });
-mkdirSync(`${HOME_DIR}/.pi/kanban/sessions`, { recursive: true });
+mkdirSync(`${HOME_DIR}/.pi/kanban/projects`, { recursive: true });
 process.env.HOME = HOME_DIR;
 // Windows: os.homedir() prefers USERPROFILE over HOME, so keep them in step or the
 // server writes its token to the real profile and this test reads a missing file.
@@ -77,11 +77,11 @@ check("stuckLimitOf({}) -> 3（キー無し）", () => assert.equal(stuckLimitOf
 
 // --- 3: parseKanbanArgs の stuck 分岐 -------------------------------------------
 check("［stuck 5］ -> {stuck, session, 5}", () =>
-	eq(parseKanbanArgs(["stuck", "5"]), { kind: "stuck", scope: "session", count: 5 }));
+	eq(parseKanbanArgs(["stuck", "5"]), { kind: "stuck", scope: "project", count: 5 }));
 check("［stuck global 7］ -> {stuck, global, 7}", () =>
 	eq(parseKanbanArgs(["stuck", "global", "7"]), { kind: "stuck", scope: "global", count: 7 }));
 check("［stuck］ -> stuckStatus session", () =>
-	eq(parseKanbanArgs(["stuck"]), { kind: "stuckStatus", scope: "session" }));
+	eq(parseKanbanArgs(["stuck"]), { kind: "stuckStatus", scope: "project" }));
 check("［stuck global］ -> stuckStatus global", () =>
 	eq(parseKanbanArgs(["stuck", "global"]), { kind: "stuckStatus", scope: "global" }));
 for (const bad of ["0", "21", "abc", "2.5", "-1"]) {
@@ -100,7 +100,7 @@ check("境界の 1 と 20 は通る", () => {
 // --- 3b: 既存（非 stuck）ケースが壊れていないこと --------------------------------
 check("［買い物］ -> add", () => eq(parseKanbanArgs(["買い物"]), { kind: "add", text: "買い物" }));
 check("［interval 3］ -> interval", () =>
-	eq(parseKanbanArgs(["interval", "3"]), { kind: "interval", scope: "session", minutes: 3 }));
+	eq(parseKanbanArgs(["interval", "3"]), { kind: "interval", scope: "project", minutes: 3 }));
 check("［loop on］ -> mode", () =>
 	eq(parseKanbanArgs(["loop", "on"]), { kind: "mode", key: "doingLoop", value: true }));
 check("［］ -> menu", () => eq(parseKanbanArgs([]), { kind: "menu" }));
@@ -109,9 +109,12 @@ check("［］ -> menu", () => eq(parseKanbanArgs([]), { kind: "menu" }));
 // stuckLimitOf の既定は 3、nextStuckState が「同じカードが n 回連続で DOING のまま」を
 // 数え、stuckCount >= limit で stuck。0 回（settle 前）は state を作らない = halt しない。
 const CARD = 42;
+const SCOPE = "project";
+// #17: nextStuckState is pure — it reads prev.scope but does not return it. The real caller
+// (extensions/kanban.ts:  loop.scope = scope) re-stamps it after every settle, so mirror that.
 function settle(n, limit) {
-	let s = { scope: null, stuckId: null, stuckCount: 0 };
-	for (let i = 0; i < n; i++) s = nextStuckState(s, CARD, "session", limit);
+	let s = { scope: SCOPE, stuckId: null, stuckCount: 0 };
+	for (let i = 0; i < n; i++) s = { scope: SCOPE, ...nextStuckState(s, CARD, SCOPE, limit) };
 	// n === 0 は「まだ settle していない」= halted は null のまま。
 	return { stuckCount: n === 0 ? 0 : s.stuckCount, stuck: n === 0 ? false : s.stuck };
 }
@@ -140,12 +143,12 @@ check("別カードへ進むと連続数は 1 に戻る（進捗でリセット�
 	let s = settle(3, 3);
 	assert.equal(s.stuck, true);
 	// 次に別カードが driving になった settle: 連続数は 1 から数え直す。
-	s = nextStuckState({ scope: "session", stuckId: CARD, stuckCount: 3 }, 43, "session", 3);
+	s = nextStuckState({ scope: SCOPE, stuckId: CARD, stuckCount: 3 }, 43, SCOPE, 3);
 	assert.equal(s.stuckCount, 1);
 	assert.equal(s.stuck, false);
 });
 check("scope が変われば同じ id でも数え直す", () => {
-	const s = nextStuckState({ scope: "session", stuckId: CARD, stuckCount: 2 }, CARD, "global", 3);
+	const s = nextStuckState({ scope: SCOPE, stuckId: CARD, stuckCount: 2 }, CARD, "global", 3);
 	assert.equal(s.stuckCount, 1);
 	assert.equal(s.stuck, false);
 });
@@ -196,22 +199,24 @@ const readJson = (p) => JSON.parse(readFileSync(p, "utf8"));
 }
 
 const api = (q) => tf(`http://127.0.0.1:${PORT}/api/stuck?${q}`);
+// #17: the project switch lives in PROJECT[<cwd slug>].
+const SLUG = mod.projectSlugOf(process.cwd());
 {
-	const res = await api(`sid=${SID}&scope=session&n=5`);
+	const res = await api(`scope=project&n=5`);
 	const body = await res.json();
-	check("GET /api/stuck?n=5 -> 200 かつ modes.json に 5", () => {
+	check("GET /api/stuck?scope=project&n=5 -> 200 かつ modes.json に 5", () => {
 		assert.equal(res.status, 200);
 		assert.equal(body.ok, true);
-		assert.equal(readJson(modesFile).SESSION[SID].stuckLimit, 5);
+		assert.equal(readJson(modesFile).PROJECT[SLUG].stuckLimit, 5);
 	});
 }
 for (const bad of ["0", "21", "abc"]) {
-	const res = await api(`scope=session&n=${bad}`);
+	const res = await api(`scope=project&n=${bad}`);
 	const body = await res.json();
 	check(`GET /api/stuck?n=${bad} -> 400 かつ現状維持（5）`, () => {
 		assert.equal(res.status, 400);
 		assert.equal(body.ok, false);
-		assert.equal(readJson(modesFile).SESSION[SID].stuckLimit, 5);
+		assert.equal(readJson(modesFile).PROJECT[SLUG].stuckLimit, 5);
 	});
 }
 {
@@ -223,20 +228,31 @@ for (const bad of ["0", "21", "abc"]) {
 	});
 }
 {
-	const otherRes = await api(`sid=other-session&scope=session&n=3`);
+	// #17: the per-session switch that is left is GLOBAL[sid]. No write lock: any sid works.
+	const otherRes = await api(`sid=other-session&scope=global&n=3`);
 	const otherBody = await otherRes.json();
 	const intervalRes = await tf(
-		`http://127.0.0.1:${PORT}/api/interval?scope=session&sid=other-session&min=3`,
+		`http://127.0.0.1:${PORT}/api/interval?scope=global&sid=other-session&min=3`,
 	);
 	const intervalBody = await intervalRes.json();
-	check("GET /api/stuck 他セッション -> 200 かつ他セッションの settle 数が書かれる", () => {
+	check("GET /api/stuck 他セッションの GLOBAL 行 -> 200 かつ書かれる", () => {
 		// #55: セッション単位の書き込みロックは無い。
 		assert.equal(otherRes.status, 200);
 		assert.equal(otherBody.ok, true);
-		assert.equal(readJson(modesFile).SESSION["other-session"].stuckLimit, 3);
+		assert.equal(readJson(modesFile).GLOBAL["other-session"].stuckLimit, 3);
 		// 同じゲートを持っていた interval も同じく書ける
 		assert.equal(intervalRes.status, 200);
 		assert.equal(intervalBody.ok, true);
+	});
+}
+{
+	// session ボードは無い。scope=session は sid が付いていても 400。
+	const res = await api(`sid=${SID}&scope=session&n=4`);
+	const body = await res.json();
+	check("GET /api/stuck?scope=session -> 400（session は廃止）", () => {
+		assert.equal(res.status, 400, JSON.stringify(body));
+		assert.equal(body.ok, false);
+		assert.equal(readJson(modesFile).SESSION, undefined, "SESSION バケツが書かれた");
 	});
 }
 

@@ -275,27 +275,36 @@ await check("#71 maxLoopsRequest: scope=global + sid 明示はそのまま使う
 	assert.equal(p.sid, SID);
 });
 
-await check("#71 maxLoopsRequest: scope=session は sid 必須", () => {
-	assert.equal(req({ scope: "session", sid: SID, n: "3" }).kind, "ok");
-	const bad = req({ scope: "session", sid: null, n: "3" });
+// #17: session ボードは無い。scope=session は 400 で断る（黙って project に落とさない）。
+await check("#71 maxLoopsRequest: scope=session は 400 で断る", () => {
+	const bad = req({ scope: "session", sid: SID, n: "3" });
 	assert.equal(bad.kind, "error");
-	assert.equal(bad.error, "scope=session requires sid");
-	assert.equal(req({ scope: "session", sid: "", n: "3" }).error, "scope=session requires sid");
+	assert.equal(bad.error, "scope must be global or project");
+	assert.equal(req({ scope: "session", sid: null, n: "3" }).error, "scope must be global or project");
+	assert.equal(req({ scope: "session", sid: "", n: "3" }).error, "scope must be global or project");
 });
 
 await check("#71 maxLoopsRequest: 不正な scope は専用の文言で拒否", () => {
 	for (const scope of ["foo", "SESSION", "Global", "globals", " "]) {
 		const p = req({ scope, sid: SID, n: "3" });
 		assert.equal(p.kind, "error", `scope=${JSON.stringify(scope)}`);
-		assert.equal(p.error, "scope must be global, session or project", `scope=${JSON.stringify(scope)}`);
+		assert.equal(p.error, "scope must be global or project", `scope=${JSON.stringify(scope)}`);
 	}
 });
 
-await check("#71 maxLoopsRequest: scope 省略は session 扱い（parseScope と同じ読み方）", () => {
-	const p = req({ sid: SID, n: "5" });
-	assert.equal(p.kind, "ok");
-	assert.equal(p.scope, "session");
-	assert.equal(req({ n: "5" }).error, "scope=session requires sid");
+await check("#71 maxLoopsRequest: scope 省略 / 空は project 扱い（cwd の slug）", () => {
+	for (const scope of [undefined, null, ""]) {
+		const p = req({ scope, sid: null, n: "5" });
+		assert.equal(p.kind, "ok", JSON.stringify(p));
+		assert.equal(p.scope, "project");
+		assert.equal(p.sid, mod.projectSlugOf(process.cwd()), "project キーが slug でない");
+	}
+	// sid は project では不要（cwd が看板を決める）。
+	const p = req({ n: "5" });
+	assert.equal(p.kind, "ok", JSON.stringify(p));
+	assert.equal(p.scope, "project");
+	// 未知の sid を明示すると project でも断る（別 cwd の看板を推測しない）。
+	assert.equal(req({ scope: "", sid: SID, n: "5" }).error, "unknown sid");
 });
 
 // ---------------------------------------------------------------------------
@@ -305,10 +314,10 @@ await check("#71 maxLoopsRequest: scope 省略は session 扱い（parseScope �
 	const real = "maxloops-real-session";
 	const cases = [
 		["?scope=global&n=7", 200, "global は sid 無しで通る"],
-		["?scope=session&n=5", 400, "session は sid 必須（文言も session 用）"],
-		[`?scope=session&sid=${real}&n=6`, 200, "session + sid は保存できる"],
+		["?scope=session&n=5", 400, "session は廃止（400 で断る）"],
+		[`?scope=session&sid=${real}&n=6`, 400, "sid を付けても session は廃止"],
 		["?scope=foo&n=5", 400, "不正な scope は 400"],
-		["?scope=&n=5", 400, "空 scope は session 扱い = sid 必須"],
+		["?scope=&n=5", 200, "空 scope は project 扱い（cwd の slug）"],
 	];
 	for (const [qs, want, why] of cases) {
 		await check(`#71 GET /api/maxloops${qs} → ${want}（${why}）`, async () => {
@@ -321,16 +330,17 @@ await check("#71 maxLoopsRequest: scope 省略は session 扱い（parseScope �
 		const raw = readModesRaw();
 		assert.equal(raw.GLOBAL[ACTIVE]?.maxLoops, 7, JSON.stringify(raw.GLOBAL));
 	});
-	await check("#71 不正 scope の文言はセッション用ではない", async () => {
+	await check("#71 不正 scope の文言は project/global 用", async () => {
 		const r = await get("/api/maxloops?scope=foo&n=5");
-		assert.equal(r.body.error, "scope must be global, session or project", JSON.stringify(r.body));
+		assert.equal(r.body.error, "scope must be global or project", JSON.stringify(r.body));
 	});
-	await check("#71 session + sid の文言は従来どおり", async () => {
+	await check("#71 scope=session は 400 で断る（session ボードは無い）", async () => {
 		const r = await get("/api/maxloops?scope=session&n=5");
-		assert.equal(r.body.error, "scope=session requires sid", JSON.stringify(r.body));
+		assert.equal(r.status, 400, JSON.stringify(r.body));
+		assert.equal(r.body.error, "scope must be global or project", JSON.stringify(r.body));
 	});
 	await check("#71 範囲外の n は従来どおり 400", async () => {
-		const r = await get(`/api/maxloops?scope=session&sid=${real}&n=1001`);
+		const r = await get(`/api/maxloops?scope=&n=1001`);
 		assert.equal(r.status, 400, JSON.stringify(r.body));
 	});
 }

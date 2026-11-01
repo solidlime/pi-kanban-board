@@ -60,45 +60,30 @@ const texts = (n) => all(n, (e) => typeof e.textContent === "string" && e.textCo
 
 const DB = { file: "boards.sqlite", bytes: 123456, boards: 3, cards: 6, projects: 2, decisions: 4 };
 
-// GLOBAL + 2 セッション。s1 は上限で停止中（#58 の文言が設定行にも出る）。
+// #17: 設定ペインの行は GLOBAL とこのプロジェクトの 2 つだけ。
+// project は停止中（halted: true）で 3 回使っている。
 const DASH = {
 	host: "t",
 	now: new Date().toISOString(),
-	stats: { sessions: 2, active: 1, todo: 2, doing: 3, done: 1, serve: 0, media: 0 },
+	stats: { todo: 2, doing: 3, done: 1, serve: 0, media: 0 },
 	global: {
 		counts: { todo: 1, doing: 1, done: 0 },
 		modes: { doingLoop: true, autoPick: false, intervalMin: 7, maxLoops: 10 },
 		cards: [{ id: 21, text: "g", col: "doing" }],
+		loops: 0,
+		halted: false,
 	},
-	sessions: [
-		{
-			id: "s1",
-			name: "kotomi",
-			cwd: "/tmp",
-			isActive: true,
-			updatedAt: "2026-01-01T00:00:00.000Z",
-			modes: { session: { doingLoop: false, autoPick: true, intervalMin: 10, maxLoops: 3 }, global: {} },
-			counts: { todo: 1, doing: 1, done: 0 },
-			cards: [
-				{ id: 1, text: "a", col: "todo" },
-				{ id: 4, text: "d", col: "doing" },
-			],
-			halted: { halted: "limit" },
-			loops: 3,
-		},
-		{
-			id: "s2",
-			name: "other",
-			cwd: "/tmp",
-			isActive: false,
-			updatedAt: "2026-01-01T00:00:00.000Z",
-			modes: { session: { doingLoop: true, autoPick: true, intervalMin: 5 }, global: {} },
-			counts: { todo: 0, doing: 1, done: 0 },
-			cards: [{ id: 3, text: "c", col: "doing" }],
-			halted: null,
-			loops: 0,
-		},
-	],
+	project: {
+		id: "alpha",
+		modes: { doingLoop: false, autoPick: true, intervalMin: 10, maxLoops: 3 },
+		counts: { todo: 1, doing: 1, done: 0 },
+		cards: [
+			{ id: 1, text: "a", col: "todo" },
+			{ id: 4, text: "d", col: "doing" },
+		],
+		loops: 3,
+		halted: true,
+	},
 	serve: [],
 	db: DB,
 };
@@ -174,30 +159,29 @@ const writeButtons = (root) =>
 	all(root, (n) => n._lis.click && n._lis.click.length && (n.className.includes("mini") || n.className.includes("sw")));
 
 // --- 行の並び ---------------------------------------------------------------
-test("#11: 設定ペインに GLOBAL 先頭で全ボードの行が並ぶ", async () => {
+test("#11: 設定ペインに GLOBAL 先頭で GLOBAL とこのプロジェクトの 2 行が並ぶ", async () => {
 	const { byId } = await boot();
-	assert.deepEqual(rowLabels(byId), ["GLOBAL（全セッション共有）", "kotomi", "other"]);
+	assert.deepEqual(rowLabels(byId), ["GLOBAL（全プロジェクト共有）", "このプロジェクト（alpha）"]);
 	// 各ボードに ctl（ループ/ピック/間隔/上限/DOING 全停止）が 1 つずつ
 	const ctls = all(byId["settings-loops"], (e) => e.className === "ctl");
-	assert.equal(ctls.length, 3);
+	assert.equal(ctls.length, 2);
 });
 
-test("#11: セッションカードと GLOBAL ボードからは ctl が消えている", async () => {
+test("#11: ボード本体（global / project）からは ctl が消えている", async () => {
 	const { byId } = await boot();
-	assert.equal(all(byId["sessions"], (e) => e.className === "ctl").length, 0, "セッションカードに ctl が残っている");
+	assert.equal(all(byId["project"], (e) => e.className === "ctl").length, 0, "project ボードに ctl が残っている");
 	assert.equal(all(byId["global"], (e) => e.className === "ctl").length, 0, "GLOBAL に ctl が残っている");
 });
 
 // --- 書き込み先のボード ------------------------------------------------------
-test("#11: 設定行の書き込みはそのボードの scope= / sid= を載せる", async () => {
+test("#11: 設定行の書き込みはそのボードの scope= を載せる（#17: sid は送らない）", async () => {
 	const { byId, urls } = await boot();
 	const want = [
 		null, // GLOBAL 行は読み取り専用（boardCtx の active=false）。書き込みが出ないのが正しい
-		["kotomi", "scope=session", "sid=s1"],
-		["other", "scope=session", "sid=s2"],
+		"scope=project",
 	];
 	const list = rows(byId);
-	assert.equal(list.length, 3);
+	assert.equal(list.length, 2);
 	for (let i = 0; i < list.length; i++) {
 		const start = urls.length;
 		for (const b of writeButtons(list[i])) {
@@ -210,23 +194,25 @@ test("#11: 設定行の書き込みはそのボードの scope= / sid= を載せ
 			continue;
 		}
 		assert.ok(wrote.length >= 5, `行 ${i} の書き込みが少なすぎる: ${wrote.length}`);
-		const [, scope, sid] = want[i];
+		const scope = want[i];
 		for (const u of wrote) {
 			assert.ok(u.includes(scope), `scope が違う: ${u}`);
-			assert.ok(u.includes(sid), `sid が違う: ${u}`);
-			assert.ok(u.includes("&"), u);
+			assert.ok(!u.includes("sid="), `project なのに sid を送っている: ${u}`);
 		}
 	}
 });
 
 test("#11: 停止中の行には理由を添える（スイッチだけ見て効くと思わせない）", async () => {
 	const { byId } = await boot();
-	const [global, s1, s2] = rows(byId);
+	const [global, project] = rows(byId);
 	assert.equal(all(global, (e) => e.className === "halt").length, 0, "GLOBAL に halt がある");
-	assert.equal(all(s2, (e) => e.className === "halt").length, 0, "停止していない s2 に halt がある");
-	const halt = all(s1, (e) => e.className === "halt");
-	assert.equal(halt.length, 1, "s1 の halt が無い");
-	assert.match(halt[0].textContent, /ループ上限（3回）/, `上限の回数が違う: ${halt[0].textContent}`);
+	const halt = all(project, (e) => e.className === "halt");
+	assert.equal(halt.length, 1, "停止中の project 行に halt が無い");
+	// #17: 停止の理由（文字列）は session 行と一緒に消えた。bool だけを見て「止まっている」
+	// ことと解除先を示す。
+	const spoken = texts(halt[0]).join(" ");
+	assert.match(spoken, /ループ停止中/, `文言が違う: ${spoken}`);
+	assert.match(spoken, /再開/, `解除の導線が無い: ${spoken}`);
 });
 
 // --- 保存データ --------------------------------------------------------------

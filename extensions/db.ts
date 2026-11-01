@@ -7,7 +7,9 @@
 // sharing ~/.pi/kanban (a resident HTTP server and an in-process extension) could already
 // lose cards. A transaction removes that class of bug; nothing here is about speed.
 //
-// This module only does rows. It does not know about scopes, sessions or paths.
+// This module only does rows. It does not know about paths, and its only opinion about
+// scopes is dropNonProject(), the one-shot #17 reset that keeps project rows and deletes
+// the rest: which board a request may touch is decided by the caller, never here.
 
 import { createRequire } from "node:module";
 
@@ -45,7 +47,7 @@ export type Board = { cards: Card[]; nextId: number };
  * "project" boards key on a cwd slug (kanban.ts owns what a slug is); this module only
  * stores the string.
  */
-export type BoardKey = { scope: "global" | "session" | "project"; sid: string };
+export type BoardKey = { scope: "global" | "project"; sid: string };
 
 /** A project lives outside any board: `card.project` is its slug, so one project can span boards. */
 export type Project = {
@@ -72,12 +74,16 @@ export type KanbanDb = {
 	revOf(key: BoardKey): number;
 	/** Insert a board only if it has never been written. Returns false when it existed. */
 	importBoard(key: BoardKey, b: Board): boolean;
-	/** Drop session boards untouched for longer than cutoff (ms). Returns rows deleted. */
-	sweepSessions(cutoff: number): number;
 	/** Drop a whole board. Tests use this to reproduce "no boards at all". */
 	deleteBoard(key: BoardKey): void;
-	/** Every session board, newest touch first - the replacement for readdir(SESSIONS_DIR). */
-	sessionKeys(): { sid: string; touchedAt: number }[];
+	/**
+	 * #17: one-shot reset - drop every board whose scope is not project, with its cards and
+	 * deps. The session model's rows are unenumerable from outside (no sessionKeys any more),
+	 * so the reset cannot be composed out of deleteBoard() alone. Returns boards removed.
+	 * No `keep` argument on purpose: the only surviving scope is project, and a caller that
+	 * could pass anything else is one typo away from deleting every project board.
+	 */
+	dropNonProject(): number;
 	/** Every project board key with its rev, in slug order. */
 	projectKeys(): { slug: string; touchedAt: number; rev: number }[];
 	/**
@@ -138,7 +144,7 @@ const SCHEMA = [
 	"  PRIMARY KEY (scope, sid, card_id, blocks_id)",
 	");",
 	// New tables need no ALTER guard: SCHEMA runs on every open, so CREATE TABLE IF NOT
-	// EXISTS *is* the migration. That is why user_version stays at 1.
+	// EXISTS *is* the migration. user_version stays a marker (see below), not a gate.
 	"CREATE TABLE IF NOT EXISTS project (",
 	"  slug TEXT PRIMARY KEY,",
 	"  name TEXT NOT NULL,",
@@ -234,16 +240,15 @@ export function openKanbanDb(file: string): KanbanDb {
 	db.exec(SCHEMA);
 
 	// CREATE TABLE IF NOT EXISTS cannot add a column to a table that already exists, so the
-	// upgrade is a guarded ALTER. table_info decides (not user_version alone): the version
-	// is bumped only after every ALTER ran, so an interrupted upgrade retries instead of
-	// claiming a schema it does not have.
-	const version = Number((db.prepare("PRAGMA user_version").get() as Row).user_version ?? 0);
-	if (version < 1) {
-		const cols = new Set((db.prepare("PRAGMA table_info(card)").all() as Row[]).map((r) => String(r.name)));
-		if (!cols.has("due")) db.exec("ALTER TABLE card ADD COLUMN due TEXT");
-		if (!cols.has("estimate")) db.exec("ALTER TABLE card ADD COLUMN estimate INTEGER");
-		db.exec("PRAGMA user_version = 1");
-	}
+	// upgrade is an ALTER driven by table_info. #17: user_version is a marker, not a
+	// precondition - the live DB was found at v0 with missing columns, so a version gate
+	// had silently skipped the repair. The version is written last so an interrupted
+	// upgrade still retries.
+	const cols = new Set((db.prepare("PRAGMA table_info(card)").all() as Row[]).map((r) => String(r.name)));
+	if (!cols.has("due")) db.exec("ALTER TABLE card ADD COLUMN due TEXT");
+	if (!cols.has("estimate")) db.exec("ALTER TABLE card ADD COLUMN estimate INTEGER");
+	// shortcut: ALTER は列名で判定する。型変更が必要になったらテーブル再作成に切り替える。
+	db.exec("PRAGMA user_version = 2");
 
 	const selectBoard = db.prepare("SELECT next_id FROM board WHERE scope = ? AND sid = ?");
 	const selectCards = db.prepare(
@@ -298,10 +303,6 @@ export function openKanbanDb(file: string): KanbanDb {
 	const selectMeta = db.prepare("SELECT v FROM meta WHERE k = ?");
 	const upsertMeta = db.prepare(
 		"INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v",
-	);
-	const sweep = db.prepare("DELETE FROM board WHERE scope = 'session' AND touched_at < ?");
-	const sweepDeps = db.prepare(
-		"DELETE FROM card_dep WHERE scope = 'session' AND sid IN (SELECT sid FROM board WHERE scope = 'session' AND touched_at < ?)",
 	);
 	// The whole dependency set of a board is rewritten on every write, exactly like the
 	// cards: a removed edge (or card) must not survive the next read.
@@ -502,12 +503,13 @@ export function openKanbanDb(file: string): KanbanDb {
 			deleteAllCards.run(key.scope, key.sid);
 			deleteBoardRow.run(key.scope, key.sid);
 		},
-		sessionKeys() {
-			return db
-				.prepare(
-					"SELECT sid, touched_at AS touchedAt FROM board WHERE scope = 'session' ORDER BY touched_at DESC",
-				)
-				.all() as { sid: string; touchedAt: number }[];
+		dropNonProject() {
+			// One statement per table, no enumeration: a half-deleted board cannot survive.
+			// Not one transaction either: the caller sets its marker only after this returns, so
+			// a throw half way leaves the marker unset and the next start retries the reset.
+			db.prepare("DELETE FROM card_dep WHERE scope != 'project'").run();
+			db.prepare("DELETE FROM card WHERE scope != 'project'").run();
+			return Number(db.prepare("DELETE FROM board WHERE scope != 'project'").run().changes ?? 0);
 		},
 		projectKeys() {
 			// slug order: callers sort it anyway (aggregateGlobal), and a no-change tick must
@@ -547,12 +549,6 @@ export function openKanbanDb(file: string): KanbanDb {
 			}
 			// Map insertion order is the SQL order (sid ascending), which is the contract above.
 			return [...boards].map(([slug, cards]) => ({ slug, cards }));
-		},
-		sweepSessions(cutoff) {
-			// Dependencies first: a swept sid that comes back must not inherit its old edges.
-			sweepDeps.run(cutoff);
-			const info = sweep.run(cutoff);
-			return Number(info.changes ?? 0);
 		},
 		close() {
 			db.close();

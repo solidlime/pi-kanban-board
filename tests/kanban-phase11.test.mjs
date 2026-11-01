@@ -55,19 +55,22 @@ const eq = (a, b) => assert.deepEqual(a, b);
 
 const MODES = `${HOME_DIR}/.pi/kanban/modes.json`;
 const GLOBAL = `${HOME_DIR}/.pi/kanban/global.json`;
-const boardFile = (sid) => `${HOME_DIR}/.pi/kanban/sessions/${sid}.json`;
-const writeBoardFile = (sid, cards) =>
-	seedBoard(boardFile(sid), { cards, nextId: 90 });
+// #17: session ボードは無い。project は cwd の slug 1 枚（引数 sid は互換のため残す）。
+const SLUG = mod.projectSlugOf(process.cwd());
+const boardFile = () => `${HOME_DIR}/.pi/kanban/projects/${SLUG}.json`;
+const writeBoardFile = (_sid, cards) => seedBoard(boardFile(), { cards, nextId: 90 });
 const writeGlobalFile = (cards) => seedBoard(GLOBAL, { cards, nextId: 90 });
-const readCards = (sid) => readBoardAt(boardFile(sid)).cards;
+const readCards = (_sid) => readBoardAt(boardFile()).cards;
 const readGlobal = () => readBoardAt(GLOBAL).cards;
 const readModes = () => JSON.parse(readFileSync(MODES, "utf8"));
 
 // 全セッション分を毎回書き戻す: poll は 1.5s ごとに modes.json を読み直す。
-const modesState = { SESSION: {}, GLOBAL: {} };
+const modesState = { PROJECT: {}, GLOBAL: {} };
 const writeModes = () => writeFileSync(MODES, JSON.stringify(modesState, null, 2));
+// #17: project のスイッチは slug、global は sid で引く（modesBucket と同じ読み方）。
 const setModes = (sid, scope, doingLoop, autoPick) => {
-	modesState[scope][sid] = { doingLoop, autoPick };
+	if (scope === "project" || scope === "SESSION") modesState.PROJECT[SLUG] = { doingLoop, autoPick };
+	else modesState.GLOBAL[sid] = { doingLoop, autoPick };
 	writeModes();
 };
 
@@ -154,7 +157,7 @@ try {
 	// --- (A) 6: GLOBAL の wake カード = pickFirstTodo の結果（#87: 他者スタンプも拾う） ---
 	const A = "phase11-a";
 	const sessA = startSession(A);
-	setModes(A, "SESSION", true, true);
+	setModes(A, "project", true, true);
 	setModes(A, "GLOBAL", true, true);
 	writeBoardFile(A, []); // SESSION は空 -> GLOBAL を見る
 	writeGlobalFile([
@@ -178,7 +181,7 @@ try {
 	// --- (B) 7: #87 settle は GLOBAL の他者スタンプ TODO も拾って DOING にする ---
 	const B = "phase11-b";
 	const sessB = startSession(B);
-	setModes(B, "SESSION", true, true);
+	setModes(B, "project", true, true);
 	setModes(B, "GLOBAL", true, true);
 	writeBoardFile(B, []); // SESSION に拾う TODO なし
 	writeGlobalFile([{ id: 5, text: "theirs", col: "todo", movedBy: OTHER, priority: 9 }]);
@@ -202,20 +205,20 @@ try {
 	assert.equal(readGlobal().find((c) => c.id === 7).col, "doing", "movedBy===sid は拾える");
 	passed += 1;
 
-	// --- (E) SESSION の既存挙動は不変: 他者所有 TODO もこの看板では拾う -----------
+	// --- (E) project も TODO の所有フィルタを持たない（#17: 看板は project/global の 2 枚） --
 	const E = "phase11-e";
 	const sessE = startSession(E);
-	setModes(E, "SESSION", true, true);
-	writeBoardFile(E, [{ id: 3, text: "theirs-in-session", col: "todo", movedBy: OTHER, priority: 9 }]);
+	setModes(E, "project", true, true);
+	writeBoardFile(E, [{ id: 3, text: "theirs-in-project", col: "todo", movedBy: OTHER, priority: 9 }]);
 	writeGlobalFile([]);
 	const resE = settle(sessE);
-	assert.equal(readCards(E).find((c) => c.id === 3).col, "doing", "SESSION 看板は movedBy に関係なく拾う");
+	assert.equal(readCards(E).find((c) => c.id === 3).col, "doing", "project 看板は movedBy に関係なく拾う");
 	assert.ok(resE && resE.continue === true, "SESSION TODO 経由の settle は続行する");
 	passed += 1;
 
 	// --- (F) 純関数の poll と同じ式の一致（TODO に所有フィルタは無い） -------------
-	const pollPick = (cards, sid, scope) =>
-		tickCardFor(cards, scope, sid) ?? nextTodo(cards, scope, sid);
+	// #17: tickCardFor(cards, sid) — 所有権は movedBy === sid だけ。scope は nextTodo 側だけ。
+	const pollPick = (cards, sid, scope) => tickCardFor(cards, sid) ?? nextTodo(cards, scope, sid);
 	check("6 純関数: poll の wake 選定 = nextTodo（GLOBAL 他者スタンプあり）", () => {
 		const cards = [
 			{ id: 1, text: "mine", col: "todo" },

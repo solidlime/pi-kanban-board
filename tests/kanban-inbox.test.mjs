@@ -301,7 +301,7 @@ const board = (cards) => ({ cards, nextId: 99 });
 		assert.match(line, /INBOX  5 unread \(site: .* \+2 more\)/, line);
 	});
 	check("A6 既存 KANBAN ブロックの行は不変", () => {
-		assert.match(line, /^=== KANBAN \(this session\) ===$/m);
+		assert.match(line, /^=== KANBAN \(this project\) ===$/m);
 		assert.match(line, /^TODO\s+#1 x$/m);
 		assert.match(line, /GUI: open http:\/\/[^\s/]+:\d+\/ in a browser\./);
 		// #83b: トークン無しで URL を開いても案内画面だけ。導線の行が生きていることのみ固定する。
@@ -336,7 +336,18 @@ check("B 空ボードは null のまま（既存挙動）", () => assert.equal(m
 	await checkAsync("contract GET /api/kanban は ok:true + boards", async () => {
 		assert.equal(api.status, 200);
 		assert.equal(j.ok, true);
-		assert.ok(Array.isArray(j.session.cards) && Array.isArray(j.global.cards));
+		// #17: session ボードは無い。project / global の 2 枚 + スイッチ。
+		assert.equal(typeof j.projectId, "string");
+		assert.ok(Array.isArray(j.project.cards) && Array.isArray(j.global.cards));
+		assert.deepEqual(Object.keys(j.modes).sort(), ["global", "project"]);
+	});
+	// #17: 旧 ?scope=session は黙って project に落とさず 400 で断る。
+	await checkAsync("contract GET /api/kanban?scope=session は 400", async () => {
+		const r = await tf(base + "/api/kanban?scope=session");
+		assert.equal(r.status, 400);
+		const b = await r.json();
+		assert.equal(b.ok, false);
+		assert.equal(b.error, "scope=session is gone; boards are project-scoped");
 	});
 	const postApi = await raw("POST", "/api/kanban", "x");
 	check("contract POST /api/kanban は 405 (POST は upload のみ)", () =>

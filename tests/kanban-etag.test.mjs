@@ -3,7 +3,7 @@
 // HOME と KANBAN_PORT を差し替えるので本番の ~/.pi/kanban と 8789 には触れない。
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
 import { authFetch } from "./helpers/token.mjs";
@@ -62,19 +62,15 @@ const pi = {
 mod.default(pi);
 const get = (p, headers) => tf(`${BASE}${p}`, { headers });
 
+// #17: ボードは project 1 枚 + global の集約だけ。session ボードは無い。
 const ACTIVE = "etag1111";
-writeFileSync(
-	`${KB}/global.json`,
-	JSON.stringify({ cards: [{ id: 1, text: "g1", col: "todo" }], nextId: 2 }),
-);
-writeFileSync(
-	`${KB}/sessions/${ACTIVE}.json`,
-	JSON.stringify({ cards: [{ id: 1, text: "s1", col: "todo" }], nextId: 2 }),
-);
+const PROJECT_PATH = `${KB}/projects/pi-kanban-board.json`;
+seedBoard(`${KB}/global.json`, { cards: [{ id: 1, text: "g1", col: "todo" }], nextId: 2 });
+seedBoard(PROJECT_PATH, { cards: [{ id: 1, text: "p1", col: "todo" }], nextId: 2 });
 
 const handler = mod.default?.handlers;
 void handler;
-// session_start で activeSessionId を固定する（#40）代わりに、/api/add は sid 明示で叩く。
+// session_start は呼ばない（activeSessionId 無し = このプロセスの cwd の project ボード）。
 for (let i = 0; i < 40; i++) {
 	try {
 		if ((await get("/api/kanban")).ok) break;
@@ -132,7 +128,7 @@ check("200 でも Vary: Origin が消えない", () => {
 }
 
 // --- 3. 書き込みで ETag が変わる ----------------------------------------------
-const added = await get(`/api/add?scope=session&sid=${ACTIVE}&text=${encodeURIComponent("追加")}&col=todo`);
+const added = await get(`/api/add?scope=project&text=${encodeURIComponent("追加")}&col=todo`);
 check("/api/add は 200", () => assert.equal(added.status, 200, `status=${added.status}`));
 
 const third = await get("/api/dashboard", { "If-None-Match": firstEtag });
@@ -162,73 +158,50 @@ console.log(
 		`content-length(304)=${notModified.headers.get("content-length") ?? "(none)"}`,
 );
 
-// --- 4b. #85b: sessions[].updatedAt を分単位に丸める --------------------------
-// 生の mtime は走っているセッションで毎ポーリング進むので、本文が同じでも ETag が
-// 毎回変わり 304 が返らない。クライアントは秒以下を描画に使わない（#74）。
-
-// 分の変わり目をまたぐとテストが落ちるので、フィクスチャの mtime を分の頭に置く。
+// --- 4b. #17: セッション行は消えた。同じ内容の書き直しでは ETag が動かない ---
 const MIN_MS = 60000;
-const baseMin = Math.floor(Date.now() / MIN_MS) * MIN_MS;
-const SESS_PATH = `${KB}/sessions/${ACTIVE}.json`;
+const baseMin = MIN_MS;
 // The board is a sqlite row: touching it means writing it again, not utimes().
-const setMtime = () => seedBoard(SESS_PATH, readBoardAt(SESS_PATH));
+const rewriteSame = () => seedBoard(PROJECT_PATH, readBoardAt(PROJECT_PATH));
 
-setMtime();
 const sameMin1 = await get("/api/dashboard");
 const sameMin1Body = await sameMin1.text();
 const sameMin1Etag = sameMin1.headers.get("etag");
 
-// 同じ分のうちに mtime だけ進める（走っているセッションと同じ状況）。
-setMtime();
+rewriteSame();
 const sameMin2 = await get("/api/dashboard", { "If-None-Match": sameMin1Etag });
 const sameMin2Body = await sameMin2.text();
 
-await check("同じ分のうちの mtime 変化は 304 (秒以下の updatedAt が ETag を動かさない)", () => {
-	assert.equal(sameMin2.status, 304, `status=${sameMin2.status} (updatedAt が秒まで漏れている)`);
+await check("同じ内容の書き直しは 304（行の中身が ETag に出ない）", () => {
+	assert.equal(sameMin2.status, 304, `status=${sameMin2.status} (中身の無い値が ETag を動かしている)`);
 	assert.equal(sameMin2Body.length, 0, `body=${sameMin2Body.length}B`);
 	assert.equal(sameMin2.headers.get("etag"), sameMin1Etag, "ETag が変わった");
 });
 
-let sameMinPayload = null;
-check("本文の updatedAt は分の頭に丸まる（形は ISO のまま）", () => {
-	sameMinPayload = JSON.parse(sameMin1Body);
-	const row = sameMinPayload.sessions.find((s) => s.id === ACTIVE);
-	assert.ok(row, "セッション行が無い");
-	assert.ok(row.updatedAt, `updatedAt=${row.updatedAt}`);
+// payload の形: sessions はもう無く、project / global が loops と halted を持つ。
+await check("payload に sessions は無く、project / global が loops と halted を持つ", () => {
+	const j = JSON.parse(sameMin1Body);
+	assert.equal("sessions" in j, false, "sessions が残っている");
+	assert.equal("sessionId" in j, false, "sessionId が残っている");
+	for (const key of ["project", "global"]) {
+		assert.ok(j[key], `${key} が無い`);
+		assert.equal(typeof j[key].loops, "number", `${key}.loops=${String(j[key].loops)}`);
+		assert.equal(typeof j[key].halted, "boolean", `${key}.halted=${String(j[key].halted)}`);
+		assert.equal("active" in j[key], false, `${key}.active が残っている`);
+	}
+	assert.equal("active" in j.stats, false, "stats.active が残っている");
 });
 
 // 内容が変われば ETag も変わる（丸めすぎで本当の更新を潰していないことの確認）。
-// 分の頭を待つ代わりに、同じ分のままカードを1枚足す。setMtime() では中身が同じなので
-// payload が動かず、このテストは何も検証しなくなる。
-seedBoard(SESS_PATH, { cards: [{ id: 50, text: "changed", col: "todo" }], nextId: 51 });
+seedBoard(PROJECT_PATH, { cards: [{ id: 50, text: "changed", col: "todo" }], nextId: 51 });
 const nextMin = await get("/api/dashboard", { "If-None-Match": sameMin1Etag });
 const nextMinBody = await nextMin.text();
 
 await check("内容が変わると ETag が変わり 200 + 本文あり", () => {
-	assert.equal(nextMin.status, 200, `status=${nextMin.status} (丸めすぎで更新を取り逃がしている)`);
+	assert.equal(nextMin.status, 200, `status=${nextMin.status} (更新を取り逃がしている)`);
 	assert.ok(nextMinBody.length > 0, "本文が空");
 	assert.notEqual(nextMin.headers.get("etag"), sameMin1Etag, "ETag が変わっていない");
-	const row = JSON.parse(nextMinBody).sessions.find((s) => s.id === ACTIVE);
-	assert.ok(row.updatedAt, `updatedAt=${row.updatedAt}`);
-});
-
-// 壊れた mtime でも 500 にしない（undefined / NaN / 負値 / 未来値）。
-// NaN は utimesSync で作れないので、mtime の検証は直接叩けない。代わりに
-// セッションファイルを消して statSync 失敗 (= modified 0) の経路を通す。
-const brokenPath = `${KB}/sessions/etagbrok.json`;
-seedBoard(brokenPath, { cards: [], nextId: 1 });
-const broken1 = await get("/api/dashboard");
-const broken1Etag = broken1.headers.get("etag");
-assert.equal(broken1.status, 200, `status=${broken1.status}`);
-removeBoard(brokenPath); // 走査中に消えたセッション相当 -> modified 0
-const broken2 = await get("/api/dashboard", { "If-None-Match": broken1Etag });
-const broken2Body = await broken2.text();
-
-await check("mtime が取れないセッション行があっても 500 にならない", () => {
-	assert.equal(broken2.status, 200, `status=${broken2.status} (500 か 304 になっている)`);
-	assert.ok(broken2Body.length > 0);
-	const rows = JSON.parse(broken2Body).sessions;
-	for (const r of rows) assert.ok(!Number.isNaN(Date.parse(r.updatedAt)), `updatedAt=${r.updatedAt}`);
+	assert.equal(JSON.parse(nextMinBody).project.cards.length, 1);
 });
 
 // helper 直叩き: undefined / NaN / 負値 / 未来値でも例外を投げない。

@@ -1,8 +1,7 @@
 // kanban ツール `edit` の自己検証。フレームワーク無しで `node tests/kanban-edit.test.mjs`。
 // 対象: action "edit"（本文の差し替え）。規則は /api/rename と同一 —
 // text.trim() で空ならエラー（ボードを書かない）/ stampMove を呼ばない（movedAt・movedBy 据え置き）/
-// 対象が無ければエラー（黙って作らない）/ scope は明示する（既定は project ボードなので、
-// session ボードを見る検証は scope:"session" を渡す）。
+// 対象が無ければエラー（黙って作らない）/ scope は明示する（既定は project ボード）。
 // HOME と KANBAN_PORT を差し替えるので、本番の ~/.pi/kanban と 8789 には触れない。
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
@@ -44,8 +43,10 @@ const SESSION_DIR = `${HOME}/sessions`;
 const API_BASE = `http://127.0.0.1:${process.env.KANBAN_PORT}`;
 const tf = (input, init) => authFetch(input, init);
 
-const board = (sid) => readBoardAt(`${SESSION_DIR}/${sid}.json`);
-const writeSession = (sid, b) => seedBoard(`${SESSION_DIR}/${sid}.json`, b);
+// #17: session ボードは無い。ツールの既定スコープ（= この cwd の project ボード）1 枚を検証する。
+const PROJ = `${HOME}/projects/${mod.projectSlugOf(process.cwd())}.json`;
+const board = () => readBoardAt(PROJ);
+const writeSession = (_sid, b) => seedBoard(PROJ, b);
 
 const ctxFor = (sid) => ({
 	hasUI: false,
@@ -107,19 +108,19 @@ const stampCard = (id, text, extra = {}) => ({
 await check("edit: 本文が差し替わる（id + text + scope）", async () => {
 	const SID = "edit-basic";
 	seed(SID, [stampCard(1, "before")]);
-	const r = await run(SID, { action: "edit", id: 1, text: "after", scope: "session" });
+	const r = await run(SID, { action: "edit", id: 1, text: "after", scope: "project" });
 	assert.ok(!r.isError, r.content[0].text);
-	const c = board(SID).cards.find((x) => x.id === 1);
+	const c = board().cards.find((x) => x.id === 1);
 	assert.equal(c.text, "after");
-	assert.equal(r.details.scope, "session");
+	assert.equal(r.details.scope, "project");
 });
 
 await check("edit: movedAt / movedBy は据え置き（stampMove を呼ばない）", async () => {
 	const SID = "edit-stamp";
 	seed(SID, [stampCard(1, "before")]);
-	const r = await run(SID, { action: "edit", id: 1, text: "after", scope: "session" });
+	const r = await run(SID, { action: "edit", id: 1, text: "after", scope: "project" });
 	assert.ok(!r.isError, r.content[0].text);
-	const c = board(SID).cards.find((x) => x.id === 1);
+	const c = board().cards.find((x) => x.id === 1);
 	assert.equal(c.movedAt, STAMP_AT, "movedAt が動いた");
 	assert.equal(c.movedBy, "owner-session", "movedBy が移った");
 });
@@ -127,60 +128,59 @@ await check("edit: movedAt / movedBy は据え置き（stampMove を呼ばない
 await check("edit: 前後の空白は落とす（/api/rename と同じ trim）", async () => {
 	const SID = "edit-trim";
 	seed(SID, [stampCard(1, "before")]);
-	const r = await run(SID, { action: "edit", id: 1, text: "  padded body\n\n", scope: "session" });
+	const r = await run(SID, { action: "edit", id: 1, text: "  padded body\n\n", scope: "project" });
 	assert.ok(!r.isError, r.content[0].text);
-	assert.equal(board(SID).cards.find((x) => x.id === 1).text, "padded body");
+	assert.equal(board().cards.find((x) => x.id === 1).text, "padded body");
 });
 
 await check('edit: 空文字 / 空白のみはエラーでボードが変わらない', async () => {
 	const SID = "edit-empty";
 	seed(SID, [stampCard(1, "keep")]);
 	for (const text of ["", "   ", "\n\t "]) {
-		const r = await run(SID, { action: "edit", id: 1, text, scope: "session" });
+		const r = await run(SID, { action: "edit", id: 1, text, scope: "project" });
 		assert.ok(r.isError, `空 text ${JSON.stringify(text)} が通った`);
 	}
-	const r2 = await run(SID, { action: "edit", id: 1, scope: "session" });
+	const r2 = await run(SID, { action: "edit", id: 1, scope: "project" });
 	assert.ok(r2.isError, "text 省略が通った");
-	assert.equal(board(SID).cards.find((x) => x.id === 1).text, "keep");
-	assert.equal(board(SID).cards.find((x) => x.id === 1).movedAt, STAMP_AT);
+	assert.equal(board().cards.find((x) => x.id === 1).text, "keep");
+	assert.equal(board().cards.find((x) => x.id === 1).movedAt, STAMP_AT);
 });
 
 await check("edit: 存在しない id はエラーでボードが変わらない（カードも作らない）", async () => {
 	const SID = "edit-missing";
 	seed(SID, [stampCard(1, "keep")]);
-	const r = await run(SID, { action: "edit", id: 99, text: "ghost", scope: "session" });
+	const r = await run(SID, { action: "edit", id: 99, text: "ghost", scope: "project" });
 	assert.ok(r.isError, "存在しない id が通った");
 	assert.match(r.content[0].text, /no card with id 99/);
-	const b = board(SID);
+	const b = board();
 	assert.equal(b.cards.length, 1);
 	assert.equal(b.nextId, 9, "nextId を進めた");
 	assert.equal(b.cards[0].text, "keep");
-	const r2 = await run(SID, { action: "edit", text: "no-id", scope: "session" });
+	const r2 = await run(SID, { action: "edit", text: "no-id", scope: "project" });
 	assert.ok(r2.isError, "id 省略が通った");
-	assert.equal(board(SID).cards.length, 1);
+	assert.equal(board().cards.length, 1);
 });
 
-await check("edit: scope=project は project ボードのカードを書き換える（session は無傷）", async () => {
+await check("edit: global は読み取り専用で fail し、global のカードは変わらない", async () => {
 	const SID = "edit-project";
-	// project ボードの鍵は cwd（このリポジトリ）の git ルート名。ツールと同じ解決を使う。
-	const PROJECT_BOARD = `${HOME}/projects/${mod.projectSlugOf(process.cwd())}.json`;
-	seedBoard(PROJECT_BOARD, { cards: [{ id: 7, text: "p-before", col: "todo" }], nextId: 8 });
-	seed(SID, [stampCard(7, "s-before")]);
+	// 別リポジトリの project ボードに置いたカードは GLOBAL 集約に載る。
+	seedBoard(`${HOME}/projects/other-repo.json`, { cards: [{ id: 9, text: "g-before", col: "todo" }], nextId: 10 });
+	seed(SID, [stampCard(7, "p-before")]);
 	const r = await run(SID, { action: "edit", id: 7, text: "p-after", scope: "project" });
 	assert.ok(!r.isError, r.content[0].text);
-	assert.equal(readBoardAt(PROJECT_BOARD).cards.find((x) => x.id === 7).text, "p-after");
-	assert.equal(board(SID).cards.find((x) => x.id === 7).text, "s-before", "session 側が書き換わった");
-	// session への書き込みは project の #7 を触らない（同じ id の別カード）。
-	const r2 = await run(SID, { action: "edit", id: 7, text: "s-after", scope: "session" });
-	assert.ok(!r2.isError, r2.content[0].text);
-	assert.equal(board(SID).cards.find((x) => x.id === 7).text, "s-after");
-	assert.equal(readBoardAt(PROJECT_BOARD).cards.find((x) => x.id === 7).text, "p-after");
+	assert.equal(board().cards.find((x) => x.id === 7).text, "p-after");
+	// GLOBAL は書き込みを拒む（HTTP は 400、ツールは isError）。
+	const g = await run(SID, { action: "edit", id: 9, text: "g-after", scope: "global" });
+	assert.equal(g.isError, true, "global edit が通った");
+	assert.ok(JSON.stringify(g).includes("read-only"), JSON.stringify(g).slice(0, 200));
+	assert.equal(readBoardAt(`${HOME}/projects/other-repo.json`).cards.find((x) => x.id === 9).text, "g-before");
+	assert.equal(readBoardAt(`${HOME}/global.json`).cards.length, 0, "global.json に書かれた");
 });
 
 await check("edit: details.cards は書き換え後のボードを返す", async () => {
 	const SID = "edit-details";
 	seed(SID, [stampCard(1, "before")]);
-	const r = await run(SID, { action: "edit", id: 1, text: "after", scope: "session" });
+	const r = await run(SID, { action: "edit", id: 1, text: "after", scope: "project" });
 	assert.equal(r.details.cards.find((x) => x.id === 1).text, "after");
 });
 
@@ -190,11 +190,11 @@ await check("edit: サーバ経由の /api/kanban に反映される（refresh �
 	const SID = "edit-gui";
 	seed(SID, [stampCard(1, "before")]);
 	handlers.get("session_start")({}, ctxFor(SID));
-	const r = await run(SID, { action: "edit", id: 1, text: "gui-after", scope: "session" });
+	const r = await run(SID, { action: "edit", id: 1, text: "gui-after", scope: "project" });
 	assert.ok(!r.isError, r.content[0].text);
 	let body = null;
 	for (let i = 0; i < 100; i++) {
-		const res = await tf(`${API_BASE}/api/kanban?scope=session&sid=${SID}`);
+		const res = await tf(`${API_BASE}/api/kanban?scope=project`);
 		if (res.status === 200) {
 			body = await res.json();
 			break;
@@ -202,7 +202,7 @@ await check("edit: サーバ経由の /api/kanban に反映される（refresh �
 		await new Promise((r2) => setTimeout(r2, 50));
 	}
 	assert.ok(body, "/api/kanban が 200 を返さない（サーバ未起動）");
-	const card = body.session.cards.find((x) => x.id === 1);
+	const card = body.project.cards.find((x) => x.id === 1);
 	assert.equal(card.text, "gui-after");
 	assert.equal(card.movedAt, STAMP_AT, "/api/kanban 側で movedAt が動いた");
 });

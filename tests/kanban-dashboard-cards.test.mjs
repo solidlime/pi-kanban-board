@@ -82,7 +82,7 @@ await check("#30 発火予定を表示し、相対ボタンで /api/schedule を
 	assert.ok(html.includes("d.toISOString()"), "ISO 変換が無い");
 });
 
-await check("#30 D&D は 1 つの board() にあり、GLOBAL と SESSION の両方に効く", () => {
+await check("#30 D&D は 1 つの board() にあり、PROJECT と GLOBAL の両方に効く", () => {
 	assert.ok(html.includes('card.setAttribute("draggable", "true")'), "draggable が無い");
 	assert.ok(html.includes('addEventListener("dragstart"'), "dragstart が無い");
 	assert.ok(html.includes('addEventListener("dragover"'), "dragover が無い");
@@ -90,10 +90,9 @@ await check("#30 D&D は 1 つの board() にあり、GLOBAL と SESSION の両�
 	assert.ok(html.includes('act("/api/move", { id: d.id, col: key }, ctx)'), "move の呼び出しが無い");
 	// 別ボードへのドロップを弾く（scope+sid 一致必須）
 	assert.ok(html.includes("d.scope !== ctx.scope || d.sid !== ctx.sid"), "ボード間ドロップのガードが無い");
-	// 同じ board() が GLOBAL と各セッションの両方から呼ばれる
-	assert.ok(html.includes("box.appendChild(board(cards, nowMs, ctx))"), "GLOBAL に board() が無い");
-	// #48: セッション側は検索で絞った cards を渡す（名前だけ変わり、同じ board() を通る）
-	assert.ok(html.includes("art.appendChild(board(cards, nowMs, ctx))"), "セッション看板に board() が無い");
+	// 同じ board() が PROJECT と GLOBAL の両方から呼ばれる（#17: session 板は無い）
+	const calls = [...html.matchAll(/\w+\.appendChild\(board\(cards, nowMs, ctx\)\)/g)];
+	assert.equal(calls.length, 2, `board() の呼び出しが ${calls.length} 箇所`);
 });
 
 await check("#30 優先度は表示・変更でき、大きいほど先（降順）が維持される", () => {
@@ -120,12 +119,14 @@ await check("#31 ループ/ピックは /api/modes、間隔は /api/interval を
 	assert.ok(html.includes("return (typeof v === \"number\" && isFinite(v) && v > 0) ? v : 5"), "間隔の既定値が無い");
 });
 
-await check("#31 GLOBAL は scope=global、セッションは scope=session + sid", () => {
+await check("#31 project は書き込み可で sid を送らず、GLOBAL は読み取り専用", () => {
+	// #17: ボードは project / global の 2 つ。session 板は存在しない。
+	assert.ok(html.includes('boardCtx("project", "", true)'), "project の書き込み ctx が無い");
 	// global は読み取り専用の集約ビュー: 書き込み可フラグは false（サーバも 400）。
-	assert.ok(html.includes('boardCtx("global", sid, false)'), "GLOBAL の ctx が無い（読み取り専用でない）");
-	// #55: session ボードも active を落とさない（boardCtx の既定で true）。
-	assert.ok(html.includes('boardCtx("session", s.id)'), "SESSION の ctx が無い");
-	assert.ok(!html.includes('boardCtx("session", s.id, s.isActive)'), "isActive をまだ渡している");
+	assert.ok(html.includes('boardCtx("global", "", false)'), "GLOBAL の ctx が無い（読み取り専用でない）");
+	assert.ok(!html.includes('boardCtx("session"'), "session ボードの ctx がまだ残っている");
+	assert.ok(!html.includes("s.isActive"), "isActive をまだ渡している");
+	// project は cwd で解決するので sid を載せない（sid を付けるとサーバが unknown sid で断る）
 	assert.ok(html.includes('if (ctx.sid) params.sid = ctx.sid;'), "sid の付与経路が無い");
 	assert.ok(html.includes('params = { scope: ctx.scope }'), "scope の付与経路が無い");
 });
@@ -201,43 +202,38 @@ await check("CSS は既存トークンのみ（新色を発明していない）
 	const document = {
 		getElementById: (id) => byId[id] || (byId[id] = makeEl()),
 		createElement: () => makeEl(),
+		// haltBox は理由の文を createTextNode で置く（fake DOM にも要る）
+		createTextNode: (t) => ({ textContent: String(t), children: [], _lis: {}, className: "" }),
 		documentElement: makeEl(),
 	};
 	const payload = {
 		host: "test-host",
 		now: "2026-01-01T00:00:00.000Z",
-		stats: { sessions: 2, active: 1, todo: 2, doing: 2, done: 0, serve: 1, media: 0 },
+		stats: { todo: 2, doing: 3, done: 0, serve: 1, media: 0 },
+		// #17: ボードは project と global の 2 つ。global は全 project の合成（読み取り専用）。
 		global: {
-			counts: { todo: 1, doing: 0, done: 0 },
+			counts: { todo: 1, doing: 3, done: 0 },
+			loops: 0,
+			halted: false,
 			modes: { doingLoop: true, autoPick: false, intervalMin: 7 },
-			cards: [{ id: 11, text: "g", col: "todo", priority: 3, nextFireAt: "2026-01-01T00:05:00.000Z" }],
+			cards: [
+				{ id: 11, text: "g", col: "todo", priority: 3, nextFireAt: "2026-01-01T00:05:00.000Z" },
+				{ id: 12, text: "gb", col: "doing", blocked: "既に停止" },
+				{ id: 13, text: "gc", col: "doing" },
+				{ id: 14, text: "gd", col: "doing" },
+			],
 		},
-		sessions: [
-			{
-				id: "s1",
-				name: "kotomi",
-				cwd: "/tmp",
-				isActive: true,
-				updatedAt: "2026-01-01T00:00:00.000Z",
-				modes: { session: { doingLoop: false, autoPick: true, intervalMin: 10 }, global: {} },
-				counts: { todo: 1, doing: 2, done: 0 },
-				cards: [
-					{ id: 1, text: "a", col: "todo", priority: 5 },
-					{ id: 2, text: "b", col: "doing", blocked: "既に停止" },
-					{ id: 4, text: "d", col: "doing" },
-				],
-			},
-			{
-				id: "s2",
-				name: "other",
-				cwd: "/tmp",
-				isActive: false,
-				updatedAt: "2026-01-01T00:00:00.000Z",
-				modes: { session: { doingLoop: true, autoPick: true }, global: {} },
-				counts: { todo: 0, doing: 1, done: 0 },
-				cards: [{ id: 3, text: "c", col: "doing" }],
-			},
-		],
+		project: {
+			id: "alpha",
+			modes: { doingLoop: false, autoPick: true, intervalMin: 10 },
+			loops: 2,
+			halted: true,
+			counts: { todo: 1, doing: 1, done: 0 },
+			cards: [
+				{ id: 1, text: "a", col: "todo", priority: 5 },
+				{ id: 4, text: "d", col: "doing" },
+			],
+		},
 		serve: [
 			{
 				id: "abcdef0123456789",
@@ -282,42 +278,47 @@ await check("CSS は既存トークンのみ（新色を発明していない）
 				(n.className.includes("mini") || n.className.includes("sw")),
 		);
 	const textOf = (root, txt) => walk(root).some((n) => n.textContent === txt);
-	const doingCards = () =>
-		walk(byId["sessions"]).filter((n) => n.getAttribute && n.getAttribute("data-col") === "doing");
+	const doingCards = (id) =>
+		walk(byId[id]).filter((n) => n.getAttribute && n.getAttribute("data-col") === "doing");
 
 	await check("vm: カードに発火予定と優先度が出る（無いカードは —）", () => {
 		assert.ok(textOf(byId["global"], "P3"), "GLOBAL に P3 が無い");
-		assert.ok(textOf(byId["sessions"], "P5"), "s1 に P5 が無い");
+		assert.ok(textOf(byId["project"], "P5"), "project に P5 が無い");
 		// 短い書式 (MM/DD HH:MM) 固定幅列に入るようにした。TZ 非依存の形で見る。
 		assert.ok(
 			walk(byId["global"]).some((n) => n.textContent && /^発火 \d{2}\/\d{2} \d{2}:\d{2}$/.test(n.textContent)),
 			"発火時刻（短書式）が無い",
 		);
-		assert.ok(textOf(byId["sessions"], "発火 —"), "未設定が — になっていない");
-		assert.ok(textOf(byId["sessions"], "停止中"), "blocked の表示が無い");
+		assert.ok(textOf(byId["project"], "発火 —"), "未設定が — になっていない");
+		assert.ok(textOf(byId["global"], "停止中"), "blocked の表示が無い");
 	});
 
-	await check("#11: セッションカードには ctl が無い（設定タブに集約）", () => {
-		const ctls = walk(byId["sessions"]).filter((n) => n.className.includes("ctl"));
-		assert.equal(ctls.length, 0, `sessions に ctl が残っている: ${ctls.length}`);
-		// s1/s2 + GLOBAL = 設定ペインに 3 行
+	await check("#11: ボードに ctl が無く、設定タブに GLOBAL と project の 2 行だけ出る", () => {
+		const ctls = walk(byId["project"]).filter((n) => n.className.includes("ctl"));
+		assert.equal(ctls.length, 0, `project ボードに ctl が残っている: ${ctls.length}`);
+		assert.equal(walk(byId["global"]).filter((n) => n.className.includes("ctl")).length, 0, "GLOBAL ボードに ctl が残っている");
+		// #17: session 行は廃止。GLOBAL + このプロジェクト の 2 行。
 		const rows = walk(byId["settings-loops"]).filter((n) => n.className.includes("ctl"));
-		assert.equal(rows.length, 3, `設定の ctl 行=${rows.length}`);
+		assert.equal(rows.length, 2, `設定の ctl 行=${rows.length}`);
 	});
 
-	await check("vm: 設定タブの全ントルの操作ボタンが enabled（#55: 書き込みロック無し）", () => {
+	await check("vm: 設定タブの project 行の操作ボタンは enabled、GLOBAL 行は無効", () => {
 		const ctls = walk(byId["settings-loops"]).filter((n) => n.className.includes("ctl"));
-		const sw = walk(ctls[2]).find((n) => n.className.includes("sw"));
-		assert.ok(sw, "s2 のトグルが無い");
-		assert.equal(sw.disabled, false, "s2 のトグルが無効のまま");
-		assert.ok(sw._lis.click && sw._lis.click.length, "s2 のトグルにハンドラが無い");
+		// 0 行目が GLOBAL（読み取り専用）、1 行目がこのプロジェクト。
+		const g = walk(ctls[0]).filter((n) => n.className.includes("sw"));
+		assert.equal(g.length, 2, `GLOBAL 行のトグル=${g.length}`);
+		for (const b of g) assert.equal(b.disabled, true, "GLOBAL のトグルが有効になっている");
+		const sw = walk(ctls[1]).find((n) => n.className.includes("sw"));
+		assert.ok(sw, "project のトグルが無い");
+		assert.equal(sw.disabled, false, "project のトグルが無効のまま");
+		assert.ok(sw._lis.click && sw._lis.click.length, "project のトグルにハンドラが無い");
 	});
 
 	// 全ボタンを 1 回ずつ押して、飛んだ URL を集める。
 	// #11: ボードの ctl は global / settings にあり、selftest はボード書き込みではないので含めない。
 	const all = [
 		...buttonsOf("global"),
-		...buttonsOf("sessions"), // カードの操作（#11: ボードの ctl はもうここにない）
+		...buttonsOf("project"), // カードの操作（#11: ボードの ctl はもうここにない）
 		...buttonsOf("settings-loops"),
 		...buttonsOf("serve"),
 	];
@@ -328,48 +329,50 @@ await check("CSS は既存トークンのみ（新色を発明していない）
 	const writes = urls.filter((u) => !u.startsWith("/api/dashboard"));
 	if (process.env.KB_DEBUG) console.log(writes.join("\n"));
 
-	await check("vm: 書き込み fetch はすべて scope= と sid= を載せる", () => {
+	await check("vm: 書き込み fetch はすべて scope= を載せ、session スコープを使わない", () => {
 		assert.ok(writes.length >= 10, `書き込みが少なすぎる: ${writes.length}`);
 		for (const u of writes) {
 			assert.ok(u.includes("scope="), `scope が無い: ${u}`);
-			assert.ok(/[?&]sid=[^&]+/.test(u), `sid が無い: ${u}`);
+			assert.ok(!u.includes("scope=session"), `#17: session スコープがまだ飛んでいる: ${u}`);
+			// #17: project は cwd で解決するので sid を載せない（載せると unknown sid で 400）。
+			assert.ok(!/[?&]sid=/.test(u), `sid を載せている: ${u}`);
 		}
-		assert.ok(writes.some((u) => u.includes("sid=s2")), "s2 のボードに書き込む経路が無い");
-		// #55: s2 の書き込みは s2 自身の sid を使う（driver の sid を使い回さない）。
-		for (const u of writes.filter((x) => x.includes("sid=s2"))) assert.ok(u.includes("scope=session"), u);
+		// ボード書き込みは project、serve の停止だけが global。
+		for (const u of writes.filter((x) => !x.includes("/api/serve"))) assert.ok(u.includes("scope=project"), u);
+		for (const u of writes.filter((x) => x.includes("/api/serve"))) assert.ok(u.includes("scope=global"), u);
 	});
 
 	await check("vm: 各操作が正しい既存 API を叩く", () => {
 		const has = (...frags) => writes.some((u) => frags.every((f) => u.includes(f)));
-		assert.ok(has("/api/schedule?", "&id=1&", "at=%2B5m", "scope=session", "sid=s1"), "schedule +5m が無い");
+		assert.ok(has("/api/schedule?", "&id=1&", "at=%2B5m", "scope=project"), "schedule +5m が無い");
 		assert.ok(has("/api/schedule?", "&id=1&", "at=%2B1h"), "schedule +1h が無い");
-		assert.ok(has("/api/schedule?", "&id=1&", "at="), "明日9時（ISO）が無い");
-		assert.ok(has("/api/modes?", "key=doingLoop", "value=on", "scope=session", "sid=s1"), "modes トグルが無い");
-		assert.ok(has("/api/interval?", "min=10", "scope=session", "sid=s1"), "interval が無い");
-		assert.ok(has("/api/priority?", "&id=1&", "n=6", "scope=session", "sid=s1"), "priority ▲ が無い");
-		assert.ok(has("/api/priority?", "&id=1&", "n=4", "scope=session", "sid=s1"), "priority ▼ が無い");
-		assert.ok(has("/api/schedule?", "&id=4&", "blocked=%E4%B8%80%E6%99%82%E5%81%9C%E6%AD%A2", "scope=session", "sid=s1"), "DOING 全停止が無い");
+		assert.ok(has("/api/schedule?", "&id=1&", "at=2026-"), "明日9時（ISO）が無い");
+		assert.ok(has("/api/modes?", "key=doingLoop", "value=on", "scope=project"), "modes トグルが無い");
+		assert.ok(has("/api/interval?", "min=10", "scope=project"), "interval が無い");
+		assert.ok(has("/api/maxloops?", "n=10", "scope=project"), "ループ上限が無い");
+		assert.ok(has("/api/priority?", "&id=1&", "n=6", "scope=project"), "priority ▲ が無い");
+		assert.ok(has("/api/priority?", "&id=1&", "n=4", "scope=project"), "priority ▼ が無い");
+		assert.ok(has("/api/schedule?", "&id=4&", "blocked=%E4%B8%80%E6%99%82%E5%81%9C%E6%AD%A2", "scope=project"), "DOING 全停止が無い");
+		// #67: halted なボードには 再開 が出る（/api/resume は要求なので 202）。
+		assert.ok(has("/api/resume?", "scope=project"), "停止解除（再開）が無い");
 		// global は読み取り専用の集約ビュー。GLOBAL ボードのスイッチを押しても書き込みは飛ばない。
 		assert.ok(
-			!writes.some((u) => u.includes("/api/modes?") && u.includes("scope=global")),
+			!writes.some((u) => u !== "" && u.includes("/api/modes?") && u.includes("scope=global")),
 			"GLOBAL ボードの読み取り専用スイッチが書き込んだ",
 		);
-		assert.ok(has("/api/serve", "action=remove", "id=abcdef0123456789", "scope=global", "sid=s1"), "serve 停止が無い");
+		assert.ok(has("/api/serve", "action=remove", "id=abcdef0123456789", "scope=global"), "serve 停止が無い");
 		// #66-security: 元は del=1 (実ファイル削除) も飛ばしていた。削除経路は撤去済み。
 		assert.ok(!writes.some((u) => u.includes("del=1")), "del=1 を飛ばす操作が残っている");
 	});
 
-	await check("vm: 既に blocked の DOING は全停止の対象から外れる", () => {
-		// #55: s2 の操作ボタンも押しているので、s1 と s2 の 1 枚ずつが対象。
+	await check("vm: 既に blocked の DOING は全停止の対象から外れ、GLOBAL は書き込まない", () => {
+		// project の DOING は id=4 の 1 枚だけ（GLOBAL の 2 枚は読み取り専用なので対象外）。
 		const stopUrls = writes.filter((u) => u.includes("blocked="));
-		assert.equal(stopUrls.length, 2, `停止対象は 2 枚のはず: ${stopUrls.join(", ")}`);
-		const s1 = stopUrls.filter((u) => u.includes("sid=s1"));
-		const s2 = stopUrls.filter((u) => u.includes("sid=s2"));
-		assert.equal(s1.length, 1, `s1 の停止は 1 枚のはず: ${s1.join(", ")}`);
-		assert.equal(s2.length, 1, `s2 の停止は 1 枚のはず: ${s2.join(", ")}`);
-		assert.ok(s1[0].includes("id=4"), "s1 で停止したのが別のカード");
-		assert.ok(s2[0].includes("id=3"), "s2 で停止したのが別のカード");
-		assert.ok(doingCards().length > 0, "doing 列が描画されていない（D&D 先が無い）");
+		assert.equal(stopUrls.length, 1, `停止対象は 1 枚のはず: ${stopUrls.join(", ")}`);
+		assert.ok(stopUrls[0].includes("id=4"), "停止したのが別のカード");
+		assert.ok(stopUrls[0].includes("scope=project"), stopUrls[0]);
+		assert.ok(doingCards("project").length > 0, "project の doing 列が描画されていない（D&D 先が無い）");
+		assert.ok(doingCards("global").length > 0, "GLOBAL の doing 列が描画されていない");
 	});
 }
 

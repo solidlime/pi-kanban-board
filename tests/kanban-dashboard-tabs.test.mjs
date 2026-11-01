@@ -75,15 +75,18 @@ const html = await (await tf(`${BASE}/`)).text();
 const HOST = hostname();
 
 // --- 1. 文字列レベル: 3 タブ + 3 ペイン（#36: エージェントタブ廃止 / #11: 設定タブ / #12: 配信サーバーは設定へ） ----
-check("#12: タブは3つ（セッション/プロジェクト/設定）でエージェント・配信サーバーのタブは無い", () => {
+check("#12/#17: タブは3つ（ボード/プロジェクト/設定）でエージェント・配信サーバー・セッションのタブは無い", () => {
 	for (const [id, label] of [
-		["tab-sessions", "セッション"],
+		["tab-board", "ボード"],
 		["tab-projects", "プロジェクト"],
 		["tab-settings", "設定"],
 	]) {
 		assert.ok(html.includes(`id="${id}"`), `${id} が無い`);
 		assert.ok(new RegExp(`id="${id}"[^>]*>${label}<`).test(html), `${label} ラベルが無い`);
 	}
+	// #17: session タブは DOM ごと消えた。
+	assert.ok(!html.includes("tab-sessions"), "tab-sessions が残っている");
+	assert.ok(!html.includes("pane-sessions"), "pane-sessions が残っている");
 	assert.ok(!html.includes("tab-agents"), "tab-agents が残っている");
 	assert.ok(!html.includes("pane-agents"), "pane-agents が残っている");
 	assert.ok(!html.includes('id="tab-serve"'), "tab-serve が残っている");
@@ -92,9 +95,9 @@ check("#12: タブは3つ（セッション/プロジェクト/設定）でエ�
 	// タブの並びを id の列挙で固定する（数だけでなく順も見る）。
 	assert.deepEqual(
 		[...html.matchAll(/<button class="tab[^"]*" id="tab-([a-z]+)"/g)].map((m) => m[1]),
-		["sessions", "projects", "settings"],
+		["board", "projects", "settings"],
 	);
-	assert.ok(html.includes('var TABS = ["sessions", "projects", "settings"]'), "TABS が 3 つでない");
+	assert.ok(html.includes('var TABS = ["board", "projects", "settings"]'), "TABS が 3 つでない");
 	assert.ok(html.includes('role="tablist"'));
 });
 
@@ -107,11 +110,11 @@ check("タイトルは KANBAN - <マシン名>（title と h1 両方）", () => 
 
 check("タブは button で、ペインを hidden で切り替える（遷移しない）", () => {
 	assert.equal((html.match(/<button class="tab/g) || []).length, 3);
-	for (const id of ["pane-sessions", "pane-projects", "pane-settings"]) {
+	for (const id of ["pane-board", "pane-projects", "pane-settings"]) {
 		assert.ok(html.includes(`id="${id}"`), `${id} が無い`);
 	}
-	// 初期表示はセッションだけ。他は hidden。
-	assert.doesNotMatch(html, /id="pane-sessions"[^>]*hidden/);
+	// 初期表示はボードだけ。他は hidden。
+	assert.doesNotMatch(html, /id="pane-board"[^>]*hidden/);
 	assert.match(html, /id="pane-projects"[^>]*hidden/);
 	assert.match(html, /id="pane-settings"[^>]*hidden/);
 	assert.ok(html.includes(".pane[hidden]{display:none}"));
@@ -141,17 +144,18 @@ check("#12: 配信サーバーの入れ物 #serve は設定ペインの中だけ
 	assert.ok(!html.includes("pane-serve"), "pane-serve が残っている");
 });
 
-check("GLOBAL 看板はセッションタブの先頭にある", () => {
-	const pane = html.slice(html.indexOf('id="pane-sessions"'), html.indexOf('id="pane-projects"'));
-	assert.ok(pane.includes('id="global"'), "pane-sessions に global が無い");
-	assert.ok(pane.includes('id="sessions"'), "pane-sessions に sessions が無い");
-	assert.ok(pane.indexOf('id="global"') < pane.indexOf('id="sessions"'), "GLOBAL が先頭でない");
+check("プロジェクト看板が先、GLOBAL はその下（session 行は無い）", () => {
+	const pane = html.slice(html.indexOf('id="pane-board"'), html.indexOf('id="pane-projects"'));
+	assert.ok(pane.includes('id="project"'), "pane-board に project が無い");
+	assert.ok(pane.includes('id="global"'), "pane-board に global が無い");
+	assert.ok(pane.indexOf('id="project"') < pane.indexOf('id="global"'), "project が GLOBAL より上に無い");
+	assert.ok(!pane.includes('id="sessions"'), "pane-board に session 行が残っている");
 });
 
-check("#36: STATS はセッションペインの上部（GLOBAL より上）に移動している", () => {
-	const pane = html.slice(html.indexOf('id="pane-sessions"'), html.indexOf('id="pane-projects"'));
-	assert.ok(pane.includes('id="statsec"'), "pane-sessions に statsec が無い");
-	assert.ok(pane.indexOf('id="statsec"') < pane.indexOf('id="global"'), "STATS が GLOBAL より上に無い");
+check("#36: STATS はボードペインの上部（project/GLOBAL より上）に移動している", () => {
+	const pane = html.slice(html.indexOf('id="pane-board"'), html.indexOf('id="pane-projects"'));
+	assert.ok(pane.includes('id="statsec"'), "pane-board に statsec が無い");
+	assert.ok(pane.indexOf('id="statsec"') < pane.indexOf('id="project"'), "STATS が project より上に無い");
 	assert.ok(pane.includes('id="stats"'), "stats 領域が無い");
 });
 
@@ -159,7 +163,7 @@ check("既存要素は消えていない（stats/serve/conn/banner/theme）", ()
 	for (const id of [
 		'id="stats"',
 		'id="serve"',
-		'id="sessions"',
+		'id="project"',
 		'id="global"',
 		'id="conn"',
 		'id="banner"',
@@ -170,7 +174,7 @@ check("既存要素は消えていない（stats/serve/conn/banner/theme）", ()
 });
 
 check("activeTab を保持し、render() が復元する", () => {
-	assert.ok(html.includes('var activeTab = "sessions"'));
+	assert.ok(html.includes('var activeTab = "board"'));
 	assert.match(html, /function selectTab\(name\)/);
 	assert.match(html, /selectTab\(activeTab\);\s*\/\/ a poll re-render/);
 });
@@ -245,20 +249,23 @@ check("tf( は 1 箇所のみ（+ #11 の自己診断と #13 の DB メンテだ
 	const payload = (todo) => ({
 		host: "test-host",
 		now: "2026-01-01T00:00:00.000Z",
-		stats: { sessions: 1, active: 1, todo, doing: 0, done: 0, serve: 0, media: 0 },
-		global: { counts: { todo, doing: 0, done: 0 }, cards: [] },
-		sessions: [
-			{
-				id: "s1",
-				name: "kotomi",
-				cwd: "/tmp",
-				isActive: true,
-				updatedAt: "2026-01-01T00:00:00.000Z",
-				modes: { session: {}, global: {} },
-				counts: { todo, doing: 0, done: 0 },
-				cards: [],
-			},
-		],
+		stats: { todo, doing: 0, done: 0, serve: 0, media: 0 },
+		global: {
+			counts: { todo, doing: 0, done: 0 },
+			cards: [],
+			modes: {},
+			loops: 0,
+			halted: false,
+		},
+		// #17: session 行は無い。ボードペインに project と global が並ぶ。
+		project: {
+			id: "alpha",
+			counts: { todo, doing: 0, done: 0 },
+			cards: [],
+			modes: {},
+			loops: 0,
+			halted: false,
+		},
 		// #12: 配信サーバーの一覧は設定ペインの #serve に描かれる（タブではなくなった）。
 		serve: [
 			{
@@ -305,12 +312,12 @@ check("tf( は 1 箇所のみ（+ #11 の自己診断と #13 の DB メンテだ
 	// 初回 reload() の fetch を解決させる
 	for (let i = 0; i < 4; i++) await flush();
 
-	check("初期表示はセッションタブ（projects/settings は hidden）", () => {
-		assert.equal(byId["pane-sessions"].hidden, false);
+	check("初期表示はボードタブ（projects/settings は hidden）", () => {
+		assert.equal(byId["pane-board"].hidden, false);
 		assert.equal(byId["pane-projects"].hidden, true);
 		assert.equal(byId["pane-settings"].hidden, true);
-		assert.equal(byId["tab-sessions"].className, "tab active");
-		assert.equal(byId["tab-sessions"].getAttribute("aria-selected"), "true");
+		assert.equal(byId["tab-board"].className, "tab active");
+		assert.equal(byId["tab-board"].getAttribute("aria-selected"), "true");
 		// #12: 配信サーバーのタブ・ペインは DOM からも消えている。
 		assert.ok(!byId["tab-serve"], "tab-serve がまだある");
 		assert.ok(!byId["pane-serve"], "pane-serve がまだある");
@@ -327,8 +334,9 @@ check("tf( は 1 箇所のみ（+ #11 の自己診断と #13 の DB メンテだ
 		assert.equal(byId["statsec"].hidden, true);
 	});
 
-	check("セッション（kotomi）は sessions タブ内に描画される", () => {
-		assert.ok(hasText(byId["sessions"], "kotomi"), "kotomi セッションが描画されていない");
+	check("project 行はボードペインの #project に描画される（slug が出る）", () => {
+		assert.equal(byId["project-slug"].textContent, "alpha");
+		assert.ok(hasText(byId["project"], "TODO"), "project 看板が描かれていない");
 	});
 
 	// #8: projects は真ん中。中身は別エンドポイントだが、開閉は他のタブと同じ hidden だけ。
@@ -336,19 +344,19 @@ check("tf( は 1 箇所のみ（+ #11 の自己診断と #13 の DB メンテだ
 		assert.ok(byId["tab-projects"]._lis.click && byId["tab-projects"]._lis.click.length);
 		byId["tab-projects"]._lis.click[0]();
 		assert.equal(byId["pane-projects"].hidden, false);
-		assert.equal(byId["pane-sessions"].hidden, true);
+		assert.equal(byId["pane-board"].hidden, true);
 		assert.equal(byId["tab-projects"].className, "tab active");
-		assert.equal(byId["tab-sessions"].className, "tab");
+		assert.equal(byId["tab-board"].className, "tab");
 	});
 
 	check("#11: クリックで設定タブに切り替わる（serve もここに同居する）", () => {
 		assert.ok(byId["tab-settings"]._lis.click && byId["tab-settings"]._lis.click.length);
 		byId["tab-settings"]._lis.click[0]();
 		assert.equal(byId["pane-settings"].hidden, false);
-		assert.equal(byId["pane-sessions"].hidden, true);
+		assert.equal(byId["pane-board"].hidden, true);
 		assert.equal(byId["pane-projects"].hidden, true);
 		assert.equal(byId["tab-settings"].className, "tab active");
-		assert.equal(byId["tab-sessions"].className, "tab");
+		assert.equal(byId["tab-board"].className, "tab");
 	});
 
 	// 再描画の検証だけは await が要るので check() の外で実行する。
@@ -360,7 +368,7 @@ check("tf( は 1 箇所のみ（+ #11 の自己診断と #13 の DB メンテだ
 	check("5秒ポーリングの再描画後も選択タブ（設定）が維持される", () => {
 		assert.equal(pollMs, 5000);
 		assert.equal(byId["pane-settings"].hidden, false);
-		assert.equal(byId["pane-sessions"].hidden, true);
+		assert.equal(byId["pane-board"].hidden, true);
 		assert.equal(byId["tab-settings"].className, "tab active");
 	});
 	check("#36: todo>0 になったら STATS ブロックが開く", () => {
@@ -376,14 +384,15 @@ check("tf( は 1 箇所のみ（+ #11 の自己診断と #13 の DB メンテだ
 	check("writeBoardHtml の dashboard.html にタブと既存領域が同居する", () => {
 		assert.ok(existsSync(out), `${out} が無い`);
 		const disk = readFileSync(out, "utf8");
-		for (const id of ["tab-sessions", "tab-projects", "tab-settings", "pane-sessions", "pane-projects", "pane-settings"]) {
+		for (const id of ["tab-board", "tab-projects", "tab-settings", "pane-board", "pane-projects", "pane-settings"]) {
 			assert.ok(disk.includes(`id="${id}"`), `${id} が実ファイルに無い`);
 		}
 		// #12: 配信サーバーのタブ・ペインは実ファイルにも残っていない。
 		assert.ok(!disk.includes("tab-serve"), "実ファイルに tab-serve が残っている");
 		assert.ok(!disk.includes("pane-serve"), "実ファイルに pane-serve が残っている");
 		assert.ok(disk.includes(`KANBAN - ${HOST}`), "実ファイルのタイトルにホスト名が無い");
-		assert.ok(disk.includes('id="sessions"'), "SESSIONS 領域が無い");
+		assert.ok(disk.includes('id="project"'), "PROJECT 領域が無い");
+		assert.ok(!disk.includes('id="sessions"'), "SESSIONS 領域が残っている");
 		assert.ok(disk.includes('id="serve"'), "SERVE 領域が無い");
 		assert.ok(disk.includes('id="stats"'), "STATS 領域が無い");
 	});

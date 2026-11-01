@@ -75,45 +75,42 @@ const html = await res.text();
 check("GET / は 200", () => assert.equal(res.status, 200));
 
 // --- 2. 文字列レベル ---------------------------------------------------------
-check("折りたたみの状態変数とマーカーがある", () => {
-	assert.ok(html.includes("var sessOpen = {}"), "sessOpen が無い");
+check("折りたたみの状態変数とマーカーがある（#17: 開閉するのは GLOBAL 行だけ）", () => {
+	assert.ok(html.includes("var gOpen = true"), "gOpen が無い");
 	assert.ok(html.includes('"caret"'), "caret が無い");
-	assert.ok(html.includes('"\\u25BE"'), "開マーカー（\\u25BE）が無い");
-	assert.ok(html.includes('"\\u25B8"'), "閉マーカー（\\u25B8）が無い");
+	assert.ok(html.includes('"\u25BE"'), "開マーカー（▾）が無い");
+	assert.ok(html.includes('"\u25B8"'), "閉マーカー（▸）が無い");
 	assert.ok(
 		html.includes('.sess-hd[role="button"]{cursor:pointer'),
 		"ヘッダがクリック可能に見えない",
 	);
-	assert.ok(html.includes('hd.title = "クリックで折りたたみ"'), "title が無い");
-	assert.match(html, /hd\.addEventListener\("click"/);
+	assert.ok(html.includes('head.title = "クリックで折りたたみ"'), "title が無い");
+	assert.match(html, /head\.addEventListener\("click", toggleGlobal\)/);
 	assert.match(html, /closest\("\.ops"\)/, "ヘッダ内操作の除外が無い");
 });
 
-check("既定は全開（undefined なら true）", () => {
-	assert.ok(
-		html.includes("sessOpen[s.id] === undefined ? true : sessOpen[s.id]"),
-		"既定全開の判定が無い",
-	);
+check("既定は全開（gOpen の既定 true）", () => {
+	assert.ok(html.includes("var gOpen = true"), "既定全開の判定が無い");
 });
 
 check("検索中は強制展開（query !== \"\"）", () => {
 	assert.match(html, /var search = query !== ""/);
-	assert.match(html, /var expanded = \(sessOpen\[s\.id\] === undefined \? true : sessOpen\[s\.id\]\) \|\| filtered;/);
+	assert.match(html, /var gexpanded = gOpen \|\| filtered;/);
 });
 
-check("検索欄は SESSIONS ヘッダの直後、#sessions の手前", () => {
+check("検索欄は絞り込みバーの中、#project の手前", () => {
 	assert.ok(html.includes('id="q" class="q" type="search"'), "検索 input が無い");
 	assert.ok(html.includes('placeholder="検索（/ でフォーカス, Esc でクリア）"'));
 	assert.ok(html.includes('autocomplete="off"'));
-	// #12: 配信サーバーは設定ペインのセクションになったので、境界は pane-projects。
-	const pane = html.slice(html.indexOf('id="h-sessions"'), html.indexOf('id="pane-projects"'));
-	assert.ok(pane.indexOf('id="q"') >= 0);
-	assert.ok(pane.indexOf('id="q"') < pane.indexOf('id="sessions"'));
+	// #17: session 行が消えたので検索欄は絞り込みバー（#filters）へ移った。
+	const pane = html.slice(html.indexOf('id="filters"'), html.indexOf('id="h-project"'));
+	assert.ok(pane.indexOf('id="q"') >= 0, "検索欄が絞り込みバーの外にある");
+	assert.ok(html.indexOf('id="q"') < html.indexOf('id="project"'));
 	assert.ok(html.includes(".q{width:100%;max-width:320px"), "CSS が無い");
 });
 
 check("カードのフィルタとキーボード操作がある", () => {
-	assert.match(html, /String\(c\.text \|\| ""\)\.toLowerCase\(\)\.indexOf\(query\)/);
+	assert.match(html, /String\(x\.text \|\| ""\)\.toLowerCase\(\)\.indexOf\(query\)/);
 	assert.match(html, /e\.key === "\/"/);
 	assert.match(html, /e\.key === "Escape" && document\.activeElement === qe/);
 	assert.match(html, /qEl\.addEventListener\("input"/);
@@ -180,10 +177,10 @@ check("ヘッダは hover で背景が付き、テキスト選択されない（
 });
 
 check("ヘッダは a11y 的にもボタン（aria-expanded / role / tabindex）", () => {
-	assert.match(html, /hd\.setAttribute\("role", "button"\)/);
-	assert.match(html, /hd\.setAttribute\("tabindex", "0"\)/);
-	assert.match(html, /hd\.setAttribute\("aria-expanded", expanded \? "true" : "false"\)/);
-	assert.match(html, /hd\.addEventListener\("keydown"/);
+	assert.match(html, /head\.setAttribute\("role", "button"\)/);
+	assert.match(html, /head\.setAttribute\("tabindex", "0"\)/);
+	assert.match(html, /head\.setAttribute\("aria-expanded", gexpanded \? "true" : "false"\)/);
+	assert.match(html, /head\.addEventListener\("keydown"/);
 	assert.match(html, /k !== "Enter" && k !== " "/);
 });
 
@@ -270,31 +267,27 @@ check("ヘッダは a11y 的にもボタン（aria-expanded / role / tabindex）
 		return out;
 	};
 	const byClass = (cls) => (n) => String(n.className).split(/\s+/).includes(cls);
-	const cards = () => findAll(byId["sessions"], byClass("card")).length;
-	const bodies = () => findAll(byId["sessions"], byClass("cols")).length;
-	const carets = () => findAll(byId["sessions"], byClass("caret")).map((n) => n.textContent);
-	const heads = () => findAll(byId["sessions"], byClass("sess-hd"));
-	const meta = () => findAll(byId["sessions"], byClass("sess-meta"))[0];
-	const payload = (sess) => ({
+	// #17: session 行は無くなった。既定で開いているのは project ボード。
+	const cards = () => findAll(byId["project"], byClass("card")).length;
+	const bodies = () => findAll(byId["project"], byClass("cols")).length;
+	const empties = () => findAll(byId["project"], byClass("sess-empty"));
+	const payload = {
 		host: "test-host",
 		now: "2026-01-01T00:00:00.000Z",
-		stats: { sessions: sess.length, active: 1, todo: 2, doing: 0, done: 0, serve: 0, media: 0 },
+		stats: { todo: 2, doing: 0, done: 0, serve: 0, media: 0 },
 		global: { counts: { todo: 0, doing: 0, done: 0 }, cards: [] },
-		sessions: sess,
+		project: {
+			id: "alpha",
+			modes: {},
+			loops: 0,
+			halted: false,
+			counts: { todo: 2, doing: 0, done: 0 },
+			cards: [
+				{ id: 1, col: "todo", text: "alpha task" },
+				{ id: 2, col: "todo", text: "beta task" },
+			],
+		},
 		serve: [],
-	});
-	const session = {
-		id: "s1",
-		name: "kotomi",
-		cwd: "/tmp",
-		isActive: true,
-		updatedAt: "2026-01-01T00:00:00.000Z",
-		modes: { session: {}, global: {} },
-		counts: { todo: 2, doing: 0, done: 0 },
-		cards: [
-			{ id: 1, col: "todo", text: "alpha task" },
-			{ id: 2, col: "todo", text: "beta task" },
-		],
 	};
 	const timers = [];
 	let nextId = 1;
@@ -304,7 +297,7 @@ check("ヘッダは a11y 的にもボタン（aria-expanded / role / tabindex）
 		URL,
 		localStorage: { getItem: () => null, setItem() {} },
 		matchMedia: () => ({ matches: false, addEventListener() {} }),
-		fetch: () => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(payload([session])) }),
+		fetch: () => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(payload) }),
 		setTimeout(fn, ms) {
 			const id = nextId++;
 			timers.push({ id, fn, ms });
@@ -320,81 +313,50 @@ check("ヘッダは a11y 的にもボタン（aria-expanded / role / tabindex）
 	vm.runInContext(apiScript, sandbox);
 	for (let i = 0; i < 4; i++) await flush();
 
-	check("既定は全開: セッション本体（3列）が出ている", () => {
+	check("既定は全開: project 本体（3列）が出ている", () => {
 		assert.equal(bodies(), 1, "本体が描画されていない");
 		assert.equal(cards(), 2);
-		assert.deepEqual(carets(), ["\u25BE"]);
-	});
-	check("検索していないときの件数は従来どおり（TODO 2）", () => {
-		assert.ok(meta().textContent.includes("TODO 2 /"), meta().textContent);
-		assert.ok(!meta().textContent.includes("TODO 2/2"), meta().textContent);
+		assert.equal(empties().length, 0, "該当なしが出ている");
 	});
 
-	// ヘッダをクリック → 畳む
-	const hd = heads()[0];
-	check("ヘッダはクリックリスナを持つ", () => assert.ok(hd._lis.click && hd._lis.click.length));
-	hd._lis.click[0]({ target: null });
-	check("畳むと body を append しない（DOM を作らない）", () => {
-		assert.equal(bodies(), 0, "body が残っている");
-		assert.equal(cards(), 0);
-		assert.deepEqual(carets(), ["\u25B8"], "caret が閉じていない");
-	});
-
-	// ヘッダ内の操作は畳まない
-	const before = bodies();
-	heads()[0]._lis.click[0]({ target: { closest: (sel) => (sel === "button" ? {} : null) } });
-	check("ヘッダ内のボタンクリックでは畳まない", () => assert.equal(bodies(), before));
-
-	// 畳んだまま 5 秒ポーリングが来ても畳んだまま（sig がずれない）
+	// ポーリングしても消えない（sig がずれていない）
 	const polled = timers.shift();
 	if (polled) polled.fn();
 	for (let i = 0; i < 4; i++) await flush();
-	check("ポーリング後も畳んだ状態が維持される", () => {
-		assert.equal(bodies(), 0, "ポーリングで開き直された");
-		assert.deepEqual(carets(), ["\u25B8"]);
+	check("ポーリング後も project ボードが描かれたまま", () => {
+		assert.equal(bodies(), 1);
+		assert.equal(cards(), 2);
 	});
 
-	// 検索: 畳んでいても強制展開し、ヒットだけ出す
 	const qEl = byId["q"];
 	check("検索欄に input リスナがある", () => assert.ok(qEl._lis.input && qEl._lis.input.length));
 	qEl.value = "ALP";
 	qEl._lis.input[0]();
-	check("検索中は畳み状態でも本体を出す（強制展開）", () => {
+	check("検索で project のカードが絞られる", () => {
 		assert.equal(bodies(), 1);
 		assert.equal(cards(), 1, "絞り込めていない");
-	});
-	check("検索中は TODO ヒット/総数（#009 の乖離を潰す）", () => {
-		assert.ok(meta().textContent.includes("TODO 1/2"), meta().textContent);
 	});
 
 	qEl.value = "zzz";
 	qEl._lis.input[0]();
-	check("ヒット0件でもセッションは残し、該当なしを出す", () => {
-		assert.equal(heads().length, 1, "セッションごと消えている");
-		assert.equal(findAll(byId["sessions"], byClass("sess-empty")).length, 1, "該当なしが無い");
-		assert.equal(
-			findAll(byId["sessions"], byClass("sess-empty"))[0].textContent,
-			"該当なし",
-		);
-		assert.equal(bodies(), 0, "該当なしのときは列を出さない");
+	check("ヒット0件でもボードは残し、該当なしを出す", () => {
+		assert.equal(empties().length, 1, "該当なしが無い");
+		assert.equal(empties()[0].textContent, "該当なし");
 		assert.equal(cards(), 0);
-		assert.ok(meta().textContent.includes("TODO 0/2"), meta().textContent);
 	});
 
 	// Esc でクリア
 	const esc = document._lis.keydown[0];
 	document.activeElement = qEl;
 	esc({ key: "Escape", target: qEl, preventDefault() {} });
-	check("Esc は検索語をクリアする（畳みはユーザの操作なので維持）", () => {
+	check("Esc は検索語をクリアする", () => {
 		assert.equal(qEl.value, "");
-		assert.equal(bodies(), 0, "畳みが勝手に開いた");
 		assert.equal(qEl.focused, false, "blur していない");
 	});
-	heads()[0]._lis.click[0]({ target: null });
-	check("クリア後に開けば全件戻る", () => {
+	check("クリア後は全件戻る", () => {
 		assert.equal(bodies(), 1);
 		assert.equal(cards(), 2);
-		assert.ok(meta().textContent.includes("TODO 2 /"), meta().textContent);
+		assert.equal(empties().length, 0);
 	});
 
 	// "/" で検索欄へフォーカス（入力中は横取りしない）
@@ -494,20 +456,16 @@ check("ヘッダは a11y 的にもボタン（aria-expanded / role / tabindex）
 	const payload = {
 		host: "test-host",
 		now: "2026-01-01T00:00:00.000Z",
-		stats: { sessions: 1, active: 1, todo: 1, doing: 0, done: 0, serve: 0, media: 0 },
-		global: { counts: { todo: 1, doing: 1, done: 1 }, cards: globalCards },
-		sessions: [
-			{
-				id: "s1",
-				name: "kotomi",
-				cwd: "/tmp",
-				isActive: true,
-				updatedAt: "2026-01-01T00:00:00.000Z",
-				modes: { session: {}, global: {} },
-				counts: { todo: 1, doing: 0, done: 0 },
-				cards: [{ id: 9, col: "todo", text: "りんごを買う" }],
-			},
-		],
+		stats: { todo: 1, doing: 0, done: 0, serve: 0, media: 0 },
+		global: { counts: { todo: 1, doing: 1, done: 1 }, cards: globalCards, modes: {}, loops: 0, halted: false },
+		project: {
+			id: "alpha",
+			modes: {},
+			loops: 0,
+			halted: false,
+			counts: { todo: 1, doing: 0, done: 0 },
+			cards: [{ id: 9, col: "todo", text: "りんごを買う" }],
+		},
 		serve: [],
 	};
 	const timers = [];
@@ -534,7 +492,9 @@ check("ヘッダは a11y 的にもボタン（aria-expanded / role / tabindex）
 	vm.runInContext(apiScript, sandbox);
 	for (let i = 0; i < 4; i++) await flush();
 
-	const ghd = () => findAll(byId["sessions"], byClass("sess-hd"))[0];
+	// #17: role=button で開閉するヘッダは GLOBAL 行にだけある。
+	const ghd = () => findAll(byId["global"], byClass("sess-hd"))[0];
+	const projCards = () => findAll(byId["project"], byClass("card")).length;
 
 	check("vm: セッションヘッダは role=button / tabindex=0 / aria-expanded=true", () => {
 		const h = ghd();
@@ -554,13 +514,13 @@ check("ヘッダは a11y 的にもボタン（aria-expanded / role / tabindex）
 	check("vm: Enter で畳める（aria-expanded=false）", () => {
 		key("Enter");
 		assert.equal(ghd().getAttribute("aria-expanded"), "false");
-		assert.equal(findAll(byId["sessions"], byClass("cols")).length, 0, "畳めていない");
+		assert.equal(findAll(byId["global"], byClass("cols")).length, 0, "畳めていない");
 	});
 	// Space で開く
 	check("vm: Space で開ける（aria-expanded=true）", () => {
 		key(" ");
 		assert.equal(ghd().getAttribute("aria-expanded"), "true");
-		assert.equal(findAll(byId["sessions"], byClass("cols")).length, 1, "開けていない");
+		assert.equal(findAll(byId["global"], byClass("cols")).length, 1, "開けていない");
 	});
 	// 矢印キーでは畳まない（誤爆防止）
 	check("vm: Enter/Space 以外では畳まない", () => {
@@ -589,8 +549,8 @@ check("ヘッダは a11y 的にもボタン（aria-expanded / role / tabindex）
 	check("vm: 検索中の GLOBAL 件数は n/m", () => {
 		assert.ok(gheadText().includes("TODO 0/1 / DOING 0/1 / DONE 0/1"), gheadText());
 	});
-	check("vm: セッション側は 1 件ヒット", () => {
-		assert.equal(findAll(byId["sessions"], byClass("card")).length, 1);
+	check("vm: project 側は 1 件ヒット", () => {
+		assert.equal(projCards(), 1);
 	});
 
 	// ヒットする GLOBAL カードなら 1 枚出る

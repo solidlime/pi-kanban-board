@@ -21,7 +21,7 @@ const tf = (input, init) => authFetch(input, init);
 
 const HOME_DIR = "/tmp/kb-accordion-persist-home";
 rmSync(HOME_DIR, { recursive: true, force: true });
-mkdirSync(`${HOME_DIR}/.pi/kanban/sessions`, { recursive: true });
+mkdirSync(`${HOME_DIR}/.pi/kanban/projects`, { recursive: true });
 mkdirSync(`${HOME_DIR}/.pi/kanban/media`, { recursive: true });
 process.env.HOME = HOME_DIR;
 // Windows: os.homedir() prefers USERPROFILE over HOME, so keep them in step or the
@@ -206,34 +206,11 @@ const makeStorage = (seed) => {
 	};
 };
 
-const sessionPayload = () => [
-	{
-		id: "s1",
-		name: "kotomi",
-		cwd: "/tmp",
-		isActive: true,
-		mine: true,
-		updatedAt: "2026-01-01T00:00:00.000Z",
-		modified: 0,
-		modes: { session: {}, global: {} },
-		counts: { todo: 2, doing: 0, done: 0 },
-		cards: [
-			{ id: 1, col: "todo", text: "alpha task" },
-			{ id: 2, col: "todo", text: "beta task" },
-		],
-	},
-	{
-		id: "s2",
-		name: "other",
-		cwd: "/tmp",
-		isActive: false,
-		mine: false,
-		updatedAt: "2026-01-01T00:00:00.000Z",
-		modified: 0,
-		modes: { session: {}, global: {} },
-		counts: { todo: 1, doing: 0, done: 0 },
-		cards: [{ id: 3, col: "todo", text: "gamma task" }],
-	},
+// #17: session 行は無い。ボードは project（自 cwd）と global の 2 枚。
+const projectCards = () => [
+	{ id: 1, col: "todo", text: "alpha task" },
+	{ id: 2, col: "todo", text: "beta task" },
+	{ id: 3, col: "doing", text: "gamma task" },
 ];
 const globalCards = () => [
 	{ id: 10, col: "todo", text: "GLOBAL: 配色" },
@@ -270,9 +247,9 @@ const runDashboard = async (storage) => {
 	const payload = {
 		host: "test-host",
 		now: "2026-01-01T00:00:00.000Z",
-		stats: { sessions: 2, active: 1, todo: 3, doing: 0, done: 0, serve: 0, media: 0 },
-		global: { counts: { todo: 1, doing: 1, done: 1 }, cards: globalCards() },
-		sessions: sessionPayload(),
+		stats: { todo: 4, doing: 1, done: 1, serve: 0, media: 0 },
+		global: { counts: { todo: 1, doing: 1, done: 1 }, cards: globalCards(), modes: {}, loops: 0, halted: false },
+		project: { id: "alpha", counts: { todo: 2, doing: 1, done: 0 }, cards: projectCards(), modes: {}, loops: 0, halted: false },
 		serve: [],
 	};
 	const timers = [];
@@ -323,27 +300,30 @@ await check("#62 GLOBAL の ckey は active sid を含まない", () => {
 });
 
 // ===========================================================================
-// (a) ダッシュボード: 畳む -> 保存 -> 立て直しても畳まれたまま
+// (a) project ボードの列折りたたみ: 畳む -> 保存 -> 立て直しても畳まれたまま
+//     #17: session 行ごとの開閉（sess.*）は廃止。畳めるのは GLOBAL の見出しと列だけ。
 // ===========================================================================
 {
 	const storage = makeStorage();
 	const d1 = await runDashboard(storage);
-	const heads = () => walk(d1.byId["sessions"]).filter(byClass("sess-hd"));
-	const bodies = () => walk(d1.byId["sessions"]).filter(byClass("cols")).length;
+	const projCols = (d) => walk(d.byId["project"]).filter(byClass("col"));
 
-	await check("#62(a) 前提: 既定は全開（s1 / s2 とも本体が出ている）", () => {
-		assert.equal(heads().length, 2, "セッション見出しが 2 つない");
-		assert.equal(bodies(), 2, "既定で畳まれている");
+	await check("#62(a) 前提: project の列は 3 つとも開いている", () => {
+		assert.equal(projCols(d1).length, 3, "project の列が 3 つない");
+		assert.equal(projCols(d1).filter((c) => c.classList.contains("collapsed")).length, 0, "既定で畳まれている");
 	});
 
-	await check("#62(a) クリックで畳むと kb-collapse に sess.s1=false が書かれる", () => {
-		const h = heads()[0];
-		assert.ok(h._lis.click && h._lis.click.length, "click リスナが無い");
+	await check("#62(a) クリックで畳むと kb-collapse に project.:todo が書かれる（sid は混ざらない）", () => {
+		const todo = projCols(d1)[0];
+		const h = todo.children[0];
+		assert.ok(h._lis.click && h._lis.click.length, "列見出しに click リスナが無い");
 		h._lis.click[0]({ target: null });
-		assert.equal(bodies(), 1, "畳めていない");
+		assert.ok(todo.classList.contains("collapsed"), "畳めていない");
 		const saved = storage.read("kb-collapse");
 		assert.ok(saved && saved.dash, "dash の名前空間が保存されていない");
-		assert.equal(saved.dash.sess.s1, false, "s1 が false で保存されていない");
+		assert.equal(saved.dash.cols["project.:todo"], true, `project.:todo が保存されていない: ${JSON.stringify(saved.dash.cols)}`);
+		// #17: session 行の開閉状態（sess）はもう書かない。
+		assert.equal(saved.dash.sess, undefined, "廃止した sess が書かれている");
 		assert.equal(saved.dash.g, true, "GLOBAL の既定（開）が壊れている");
 	});
 
@@ -351,25 +331,20 @@ await check("#62 GLOBAL の ckey は active sid を含まない", () => {
 		const broken = makeStorage();
 		broken.throwOnEverything();
 		const d = await runDashboard(broken);
-		const h = walk(d.byId["sessions"]).filter(byClass("sess-hd"))[0];
-		assert.ok(h && h._lis.click, "壊れた storage で描画/リスナが死んでいる");
-		h._lis.click[0]({ target: null }); // persist() が throw しても握りつぶされる
-		assert.equal(walk(d.byId["sessions"]).filter(byClass("cols")).length, 1, "畳めていない");
+		const todo = walk(d.byId["project"]).filter(byClass("col"))[0];
+		assert.ok(todo && todo.children[0]._lis.click, "壊れた storage で描画/リスナが死んでいる");
+		todo.children[0]._lis.click[0]({ target: null }); // persist() が throw しても握りつぶされる
+		assert.ok(todo.classList.contains("collapsed"), "畳めていない");
 	});
 
 	// vm を立て直す = 再訪 / F5。同じ localStorage を渡すと畳まれたまま。
 	const d2 = await runDashboard(storage);
-	await check("#62(a) 立て直しても畳まれたまま（s1 は閉、s2 は開）", () => {
-		const h2 = walk(d2.byId["sessions"]).filter(byClass("sess-hd"));
-		assert.equal(h2.length, 2);
-		assert.equal(h2[0].getAttribute("aria-expanded"), "false", "s1 が復元されていない");
-		assert.equal(h2[1].getAttribute("aria-expanded"), "true", "s2 の既定が壊れている");
-		assert.equal(walk(d2.byId["sessions"]).filter(byClass("cols")).length, 1, "本体の数が違う");
-		// caret も閉じている
-		const carets = walk(d2.byId["sessions"])
-			.filter(byClass("caret"))
-			.map((n) => n.textContent);
-		assert.deepEqual(carets, ["\u25B8", "\u25BE"], `caret が復元されていない: ${JSON.stringify(carets)}`);
+	await check("#62(a) 立て直しても project の todo 列は畳まれたまま（他は開）", () => {
+		const cols = projCols(d2);
+		assert.equal(cols.length, 3);
+		assert.ok(cols[0].classList.contains("collapsed"), "todo 列が復元されていない");
+		assert.ok(!cols[1].classList.contains("collapsed"), "doing 列まで畳まれている");
+		assert.ok(!cols[2].classList.contains("collapsed"), "done 列まで畳まれている");
 	});
 }
 
@@ -484,8 +459,8 @@ await check("#62 GLOBAL の ckey は active sid を含まない", () => {
 		const broken = makeStorage();
 		broken.throwOnEverything();
 		const d = await runDashboard(broken);
-		assert.equal(walk(d.byId["sessions"]).filter(byClass("sess-hd")).length, 2, "セッションが描画されていない");
-		assert.equal(walk(d.byId["sessions"]).filter(byClass("cols")).length, 2, "既定（全開）が壊れている");
+		assert.equal(walk(d.byId["project"]).filter(byClass("sess-hd")).length, 1, "project 行が描画されていない");
+		assert.equal(walk(d.byId["project"]).filter(byClass("cols")).length, 1, "既定（開）が壊れている");
 		assert.equal(walk(d.byId["global"]).filter(byClass("cols")).length, 1, "GLOBAL が描画されていない");
 		// 畳む操作も落ちない（persist の throw は握りつぶされる）
 		const gh = walk(d.byId["global"]).filter(byClass("sess-hd"))[0];
@@ -496,7 +471,7 @@ await check("#62 GLOBAL の ckey は active sid を含まない", () => {
 	await check("#62(f) 破損した保存値（JSON.parse 失敗）でも前提の既定に戻るだけ", async () => {
 		const broken = makeStorage({ "kb-collapse": "{not json" });
 		const d = await runDashboard(broken);
-		assert.equal(walk(d.byId["sessions"]).filter(byClass("cols")).length, 2, "既定が壊れている");
+		assert.equal(walk(d.byId["project"]).filter(byClass("cols")).length, 1, "既定が壊れている");
 		assert.equal(walk(d.byId["global"]).filter(byClass("cols")).length, 1, "GLOBAL の既定が壊れている");
 	});
 
@@ -556,38 +531,29 @@ await check("#62 GLOBAL の ckey は active sid を含まない", () => {
 		});
 	}
 
-	// ---- (c) セッション見出し ----
+	// ---- (c) project と GLOBAL の同名列は別キーで畳める（#17 / #62） ----
 	{
 		const storage = makeStorage();
 		const d = await runDashboard(storage);
-		const s1 = () => headsOf(d, "sessions")[0];
 
-		await check("#62(c) 前提: s1 を素で畳む（保存値 sess.s1=false）", () => {
-			s1()._lis.click[0]({ target: null });
-			assert.equal(storage.read("kb-collapse").dash.sess.s1, false, "s1 を畳めていない");
-			assert.equal(bodiesOf(d, "sessions"), 1, "畳んだのに s1 の中身が残っている");
+		await check("#62(c) project の todo 列を畳んでも GLOBAL の todo 列は開いたまま", () => {
+			const pTodo = walk(d.byId["project"]).filter(byClass("col"))[0];
+			pTodo.children[0]._lis.click[0]({ target: null });
+			const keys = Object.keys(storage.read("kb-collapse").dash.cols);
+			assert.deepEqual(keys, ["project.:todo"], `キーが想定と違う: ${JSON.stringify(keys)}`);
+			assert.ok(!walk(d.byId["global"]).filter(byClass("col"))[0].classList.contains("collapsed"), "GLOBAL の todo まで畳まれた");
 		});
 
-		await check("#62(c) 前提: 検索中は s1 も強制展開される", () => {
-			type(d, "task"); // s1 / s2 ともヒット
-			assert.equal(s1().getAttribute("aria-expanded"), "true", "検索中に s1 が畳まれている");
-			assert.equal(bodiesOf(d, "sessions"), 2, "検索中に s1 の中身が出ていない");
-		});
-
-		await check("#62(c) セッション: 検索中のクリックで保存値 sess[s1] が false->true になる", () => {
-			s1()._lis.click[0]({ target: null });
-			assert.equal(storage.read("kb-collapse").dash.sess.s1, true, "検索中のクリックで保存値が反転しない");
-			assert.equal(s1().getAttribute("aria-expanded"), "true", "検索中の表示が変わってしまった");
-			assert.equal(bodiesOf(d, "sessions"), 2, "検索中に中身が消えてしまった");
-		});
-
-		await check("#62(c) セッション: 検索を消すと s1 が開き、再クリックで畳まれる", () => {
-			type(d, "");
-			assert.equal(s1().getAttribute("aria-expanded"), "true", "検索解除後に s1 が開いていない");
-			assert.equal(bodiesOf(d, "sessions"), 2, "検索解除後の本体数がおかしい");
-			s1()._lis.click[0]({ target: null });
-			assert.equal(storage.read("kb-collapse").dash.sess.s1, false, "再クリックで畳めていない");
-			assert.equal(bodiesOf(d, "sessions"), 1, "再クリックで s1 の中身が消えていない");
+		await check("#62(c) 立て直しても project の畳みだけが残る", async () => {
+			const d2 = await runDashboard(storage);
+			assert.ok(
+				!walk(d2.byId["global"]).filter(byClass("col"))[0].classList.contains("collapsed"),
+				"GLOBAL の todo が畳まれている",
+			);
+			assert.ok(
+				walk(d2.byId["project"]).filter(byClass("col"))[0].classList.contains("collapsed"),
+				"project の todo が開いている",
+			);
 		});
 	}
 }

@@ -52,18 +52,21 @@ async function check(name, fn) {
 
 const MODES = `${HOME_DIR}/.pi/kanban/modes.json`;
 const GLOBAL = `${HOME_DIR}/.pi/kanban/global.json`;
-const boardFile = (sid) => `${HOME_DIR}/.pi/kanban/sessions/${sid}.json`;
-const writeBoardFile = (sid, cards) =>
-	seedBoard(boardFile(sid), { cards, nextId: 90 });
+// #17: session ボードは無い。ボードは cwd の project 1 枚と global だけ。
+const SLUG = mod.projectSlugOf(process.cwd());
+const boardFile = () => `${HOME_DIR}/.pi/kanban/projects/${SLUG}.json`;
+const writeBoardFile = (_sid, cards) => seedBoard(boardFile(), { cards, nextId: 90 });
 const writeGlobalFile = (cards) => seedBoard(GLOBAL, { cards, nextId: 90 });
-const readCards = (sid) => readBoardAt(boardFile(sid)).cards;
+const readCards = (_sid) => readBoardAt(boardFile()).cards;
 const readGlobal = () => readBoardAt(GLOBAL).cards;
 
-// 全セッション分を毎回書き戻す: poll は modes.json を読み直す。
-const modesState = { SESSION: {}, GLOBAL: {} };
+// 全ボード分を毎回書き戻す: poll は modes.json を読み直す。
+// project のキーは slug、global のキーは actor（session）のまま。
+const modesState = { PROJECT: {}, GLOBAL: {} };
 const writeModes = () => writeFileSync(MODES, JSON.stringify(modesState, null, 2));
 const setModes = (sid, scope, doingLoop, autoPick) => {
-	modesState[scope][sid] = { doingLoop, autoPick };
+	if (scope === "global") modesState.GLOBAL[sid] = { doingLoop, autoPick };
+	else modesState.PROJECT[SLUG] = { doingLoop, autoPick };
 	writeModes();
 };
 
@@ -100,10 +103,11 @@ const col = (cards, id) => cards.find((c) => c.id === id)?.col;
 // 1: DOING に自分のカードがある -> TODO を拾わない（WIP=1）
 {
 	const sess = startSession(S);
-	setModes(S, "SESSION", true, true);
+	setModes(S, "project", true, true);
 	writeBoardFile(S, [
 		{ id: 1, text: "todo", col: "todo" },
-		{ id: 2, text: "doing", col: "doing" },
+// #17: 所有は movedBy === sid だけ。自分の DOING は movedBy を付けないと「他者のカード」になり、WIP=1 が効かない。
+		{ id: 2, text: "doing", col: "doing", movedBy: S },
 	]);
 	writeGlobalFile([]);
 	settle(sess);
@@ -126,8 +130,8 @@ const col = (cards, id) => cards.find((c) => c.id === id)?.col;
 // 3: 他セッションの DOING はブロックしない（GLOBAL は movedBy で所有判定）
 {
 	const sess = startSession(S);
-	setModes(S, "SESSION", true, true);
-	setModes(S, "GLOBAL", true, true);
+	setModes(S, "project", true, true);
+	setModes(S, "global", true, true);
 	writeBoardFile(S, []);
 	writeGlobalFile([
 		{ id: 5, text: "theirs", col: "doing", movedBy: OTHER },

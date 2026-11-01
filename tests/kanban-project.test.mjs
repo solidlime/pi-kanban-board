@@ -82,8 +82,8 @@ const SID = "proj-session";
 const KANBAN = `${HOME_DIR}/.pi/kanban`;
 // ツールの書き込み先: 既定 scope=project はこのプロセスの cwd の slug。
 const PROJ_BOARD = `${KANBAN}/projects/${mod.projectSlugOf(process.cwd())}.json`;
-const boardOf = (sid = SID) => readBoardAt(`${KANBAN}/sessions/${sid}.json`);
-const cardNamed = (text, sid = SID) => boardOf(sid).cards.find((c) => c.text === text);
+const boardOf = () => readBoardAt(PROJ_BOARD);
+const cardNamed = (text) => boardOf().cards.find((c) => c.text === text);
 
 // --- 1. 純関数 -----------------------------------------------------------------
 await check("normalizeProject: trim / 小文字化 / 不正文字除去 / 24 文字切捨て / 非文字列は \"\"", () => {
@@ -101,13 +101,13 @@ await check("normalizeProject: trim / 小文字化 / 不正文字除去 / 24 文
 // --- 2. 書き込み経路（HTTP） -----------------------------------------------------
 
 await check("/api/add?project=Foo → ボードに project: \"foo\"", async () => {
-	const r = await tf(`${BASE}/api/add?scope=session&sid=${SID}&text=with+project&project=Foo`);
+	const r = await tf(`${BASE}/api/add?scope=project&text=with+project&project=Foo`);
 	assert.equal(r.status, 200);
 	assert.equal(cardNamed("with project").project, "foo");
 });
 
 await check("/api/add（project なし）→ project キーが存在しない（後方互換）", async () => {
-	const r = await tf(`${BASE}/api/add?scope=session&sid=${SID}&text=no+project`);
+	const r = await tf(`${BASE}/api/add?scope=project&text=no+project`);
 	assert.equal(r.status, 200);
 	const c = cardNamed("no project");
 	assert.ok(!("project" in c), "project キーが生えた");
@@ -116,13 +116,13 @@ await check("/api/add（project なし）→ project キーが存在しない（
 const fooId = () => cardNamed("with project").id;
 
 await check("/api/schedule?id&project=bar → 設定できる（at/blocked なしでも 400 にしない）", async () => {
-	const r = await tf(`${BASE}/api/schedule?scope=session&sid=${SID}&id=${fooId()}&project=bar`);
+	const r = await tf(`${BASE}/api/schedule?scope=project&id=${fooId()}&project=bar`);
 	assert.equal(r.status, 200, `status ${r.status}`);
 	assert.equal(cardNamed("with project").project, "bar");
 });
 
 await check("/api/add?project=<正規化不能> → 400（無言で捨てない）", async () => {
-	const r = await tf(BASE + "/api/add?scope=session&sid=" + SID + "&text=bad+slug&project=" + encodeURIComponent("日本語"));
+	const r = await tf(BASE + "/api/add?scope=project&text=bad+slug&project=" + encodeURIComponent("日本語"));
 	assert.equal(r.status, 400, "status " + r.status);
 	assert.match(String((await r.json()).error ?? ""), /project/, "400 の理由が project でない");
 	assert.equal(cardNamed("bad slug"), undefined, "不正 project のカードが作られた");
@@ -131,23 +131,23 @@ await check("/api/add?project=<正規化不能> → 400（無言で捨てない�
 await check("/api/schedule?project=<空白のみ> → 400 かつラベルは消えない", async () => {
 	const id = cardNamed("with project").id;
 	const before = cardNamed("with project").project;
-	const r = await tf(BASE + "/api/schedule?scope=session&sid=" + SID + "&id=" + id + "&project=" + encodeURIComponent("   "));
+	const r = await tf(BASE + "/api/schedule?scope=project&id=" + id + "&project=" + encodeURIComponent("   "));
 	assert.equal(r.status, 400, "status " + r.status);
 	assert.equal(cardNamed("with project").project, before, "400 なのにラベルが消えた");
 });
 
 await check("?fields=project → project だけが返る", async () => {
-	const r = await tf(`${BASE}/api/kanban?scope=session&sid=${SID}&fields=project`);
+	const r = await tf(`${BASE}/api/kanban?scope=project&fields=project`);
 	assert.equal(r.status, 200);
 	const j = await r.json();
-	const withP = j.session.cards.filter((c) => c.project === "bar");
+	const withP = j.project.cards.filter((c) => c.project === "bar");
 	assert.equal(withP.length, 1, "project が射影から落ちている");
 	assert.deepEqual(Object.keys(withP[0]), ["project"], "射影が project 以外も返している");
-	assert.equal(j.session.cards.length, boardOf().cards.length, "射影でカードが減った");
+	assert.equal(j.project.cards.length, boardOf().cards.length, "射影でカードが減った");
 });
 
 await check("/api/schedule?project=（空）→ project キーが消える", async () => {
-	const r = await tf(`${BASE}/api/schedule?scope=session&sid=${SID}&id=${fooId()}&project=`);
+	const r = await tf(`${BASE}/api/schedule?scope=project&id=${fooId()}&project=`);
 	assert.equal(r.status, 200);
 	assert.ok(!("project" in cardNamed("with project")), "空指定で project が残った");
 });
@@ -156,11 +156,11 @@ await check("/api/schedule?project=（空）→ project キーが消える", asy
 	// このテストが固定するのは「不正な組み合わせでは at が永続化されない」というディスク状態の契約だけ。
 	await check("/api/schedule?at=<有効>&project=<不正> → 400 かつ at が適用されない", async () => {
 	const id = fooId();
-	const first = await tf(BASE + "/api/schedule?scope=session&sid=" + SID + "&id=" + id + "&at=2030-01-01T00:00:00Z");
+	const first = await tf(BASE + "/api/schedule?scope=project&id=" + id + "&at=2030-01-01T00:00:00Z");
 	assert.equal(first.status, 200, "at だけの設定で status " + first.status);
 	const armed = cardNamed("with project").nextFireAt;
 	// + must stay encoded: a bare +1h decodes to a space and 400s on "at must be ISO" — that would pass for the wrong reason.
-	const r = await tf(BASE + "/api/schedule?scope=session&sid=" + SID + "&id=" + id + "&at=2031-01-01T00:00:00Z&project=" + encodeURIComponent("日本語"));
+	const r = await tf(BASE + "/api/schedule?scope=project&id=" + id + "&at=2031-01-01T00:00:00Z&project=" + encodeURIComponent("日本語"));
 	assert.equal(r.status, 400, "status " + r.status);
 	assert.equal(cardNamed("with project").nextFireAt, armed, "400 なのに at が適用された");
 });
@@ -170,7 +170,7 @@ await check("/api/upload?project=<不正> → 400 かつカードも media も�
 	const mediaDir = KANBAN + "/media";
 	const mediaBefore = existsSync(mediaDir) ? readdirSync(mediaDir).length : 0;
 	const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
-	const r = await tf(BASE + "/api/upload?scope=session&sid=" + SID + "&ext=png&project=" + encodeURIComponent("日本語"), {
+	const r = await tf(BASE + "/api/upload?scope=project&ext=png&project=" + encodeURIComponent("日本語"), {
 		method: "POST",
 		body: png,
 		headers: { "content-type": "image/png" },
@@ -182,13 +182,17 @@ await check("/api/upload?project=<不正> → 400 かつカードも media も�
 });
 
 await check("project 無しの既存カードが混ざったボードが壊れない", async () => {
+	// 別リポジトリ（兄弟の project ボード）に古いカードを置く。このプロセスのボードは見ないが、
+	// GLOBAL 集約とダッシュボードはそれを読む。
 	const legacy = { cards: [{ id: 1, text: "legacy", col: "todo", movedBy: "old" }], nextId: 2 };
-	seedBoard(`${KANBAN}/sessions/legacy-session.json`, legacy);
-	const r = await tf(`${BASE}/api/kanban?scope=session&sid=legacy-session`);
+	seedBoard(`${KANBAN}/projects/legacy-session.json`, legacy);
+	const r = await tf(`${BASE}/api/kanban?scope=project`);
 	assert.equal(r.status, 200);
 	const j = await r.json();
-	assert.equal(j.session.cards[0].text, "legacy");
-	assert.ok(!("project" in j.session.cards[0]), "legacy カードに project が生えた");
+	const g = j.global.cards.find((c) => c.text === "legacy");
+	assert.ok(g, "GLOBAL 集約に旧カードが出ていない");
+	assert.ok(!("project" in g), "legacy カードに project が生えた");
+	assert.equal(g.sid, "legacy-session", "集約が由来プロジェクトを名乗っていない");
 	// ダッシュボード側の集計も落ちない（project を読むのは表示だけ）
 	const dash = await tf(`${BASE}/api/dashboard`);
 	assert.equal(dash.status, 200);
@@ -247,7 +251,7 @@ await check("ダッシュボード: #proj セレクト / .proj バッジ / projP
 	assert.ok(!html.includes("\u0000"), "生成 HTML に実 NUL が入っている（テンプレートのエスケープ漏れ）");
 	assert.match(
 		html,
-		/function uiSig\(\)\{ return JSON\.stringify\(\[sessOpen, gOpen, collapsed, query, projPick\]\)/,
+		/function uiSig\(\)\{ return JSON\.stringify\(\[gOpen, collapsed, query, projPick\]\)/,
 		"uiSig に projPick が入っていない",
 	);
 });
@@ -305,30 +309,30 @@ await check("ダッシュボード: #proj セレクト / .proj バッジ / projP
 	const payload = {
 		host: "test-host",
 		now: "2026-01-01T00:00:00.000Z",
-		stats: { sessions: 1, active: 1, todo: 3, doing: 0, done: 0, serve: 0, media: 0 },
+		stats: { todo: 3, doing: 0, done: 0, serve: 0, media: 0 },
 		global: {
 			counts: { todo: 2, doing: 0, done: 0 },
+			modes: {},
+			loops: 0,
+			halted: false,
 			cards: [
-				{ id: 10, text: "g alpha", col: "todo", project: "alpha" },
-				{ id: 11, text: "g beta", col: "todo", project: "beta" },
+				{ id: 10, text: "g alpha", col: "todo", project: "alpha", sid: "alpha" },
+				{ id: 11, text: "g beta", col: "todo", project: "beta", sid: "beta" },
 			],
 		},
-		sessions: [
-			{
-				id: "s1",
-				name: "kotomi",
-				cwd: "/tmp",
-				isActive: true,
-				updatedAt: "2026-01-01T00:00:00.000Z",
-				modes: { session: {}, global: {} },
-				counts: { todo: 3, doing: 0, done: 0 },
-				cards: [
-					{ id: 1, text: "alpha card", col: "todo", project: "alpha" },
-					{ id: 2, text: "beta card", col: "todo", project: "beta" },
-					{ id: 3, text: "orphan card", col: "todo" },
-				],
-			},
-		],
+		// #17: session 行は無い。project 1 枚と global 1 枚が看板。
+		project: {
+			id: "alpha",
+			counts: { todo: 3, doing: 0, done: 0 },
+			modes: { maxLoops: 10 },
+			loops: 3,
+			halted: false,
+			cards: [
+				{ id: 1, text: "alpha card", col: "todo", project: "alpha" },
+				{ id: 2, text: "beta card", col: "todo", project: "beta" },
+				{ id: 3, text: "orphan card", col: "todo" },
+			],
+		},
 		serve: [],
 	};
 	const urls = [];
@@ -360,7 +364,7 @@ await check("ダッシュボード: #proj セレクト / .proj バッジ / projP
 	const textOf = (root, txt) => walk(root).some((n) => n.textContent === txt || String(n.innerHTML || '') === txt);
 	// Counters read "TODO 1/3 ・ 更新 …", so the two count assertions need a substring match; everything else stays exact.
 	const textIncludes = (root, txt) => walk(root).some((n) => (n.textContent && String(n.textContent).includes(txt)) || String(n.innerHTML || '').includes(txt));
-	const addIn = () => walk(byId["sessions"]).find((n) => n.className === "addin");
+	const addIn = () => walk(byId["project"]).find((n) => n.className === "addin");
 	const pick = (v) => {
 		byId["proj"].value = v;
 		byId["proj"]._lis.change.forEach((fn) => fn({}));
@@ -377,15 +381,15 @@ await check("ダッシュボード: #proj セレクト / .proj バッジ / projP
 	await check("vm: slug を選ぶとそのプロジェクトのカードだけ残る", () => {
 		pick("alpha");
 		assert.equal(byId["proj"].value, "alpha", "選択値が失われた");
-		assert.ok(textOf(byId["sessions"], "alpha card"), "alpha card が出ていない");
-		assert.ok(!textOf(byId["sessions"], "beta card"), "beta card が残っている");
-		assert.ok(!textOf(byId["sessions"], "orphan card"), "無所属カードが残っている");
+		assert.ok(textOf(byId["project"], "alpha card"), "alpha card が出ていない");
+		assert.ok(!textOf(byId["project"], "beta card"), "beta card が残っている");
+		assert.ok(!textOf(byId["project"], "orphan card"), "無所属カードが残っている");
 	});
 
 	await check("vm: (無所属) は project を持たないカードだけ残る", () => {
 		pick("\u0000");
-		assert.ok(textOf(byId["sessions"], "orphan card"), "無所属カードが出ていない");
-		assert.ok(!textOf(byId["sessions"], "alpha card"), "alpha card が残っている");
+		assert.ok(textOf(byId["project"], "orphan card"), "無所属カードが出ていない");
+		assert.ok(!textOf(byId["project"], "alpha card"), "alpha card が残っている");
 	});
 
 	await check("vm: 絞り込み中の新規作成は project を載せる（要の UX）", () => {
@@ -425,9 +429,10 @@ await check("ダッシュボード: #proj セレクト / .proj バッジ / projP
 		assert.ok(!textOf(byId["global"], "g beta"), "GLOBAL に beta カードが残っている");
 	});
 
-	await check("vm: 絞り込み中の SESSIONS 件数が「表示/全体」になる", () => {
-		pick("alpha");
-		assert.ok(textIncludes(byId["sessions"], "TODO 1/3"), "SESSIONS の件数が絞り込み後の値になっていない");
+	// #17: 件数表示（TODO n/m）は GLOBAL 行の担当になった。project 行にはループ残数の行がある。
+	await check("vm: project 行にループ残数（残り 7 / 10）が出る", () => {
+		pick("");
+		assert.ok(textIncludes(byId["project"], "残り 7 / 10"), "project 行にループ残数が無い");
 	});
 
 	await check("vm: 絞り込み中の GLOBAL 件数が「表示/全体」になる", () => {

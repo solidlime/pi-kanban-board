@@ -47,13 +47,15 @@ function check(name, fn) {
 }
 const eq = (a, b) => assert.deepEqual(a, b);
 
-const SESSIONS = `${HOME_DIR}/.pi/kanban/sessions`;
+// #17: poll が回すのは project ボード（cwd の slug）1 枚。session ボードは無い。
+const SLUG = mod.projectSlugOf(process.cwd());
+const PROJECT_BOARD = `${HOME_DIR}/.pi/kanban/projects/${SLUG}.json`;
 const MODES = `${HOME_DIR}/.pi/kanban/modes.json`;
-const board = (sid) => `${SESSIONS}/${sid}.json`;
 const writeBoardFile = (sid) =>
-	seedBoard(board(sid), { cards: [{ id: 1, text: "t", col: "doing" }], nextId: 2 });
+	// DOING の所有権は movedBy === sid（#17）。無いと tickCardFor が拾わない。
+	seedBoard(PROJECT_BOARD, { cards: [{ id: 1, text: "t", col: "doing", movedBy: sid }], nextId: 2 });
 const writeModes = (sid) =>
-	writeFileSync(MODES, JSON.stringify({ SESSION: { [sid]: { doingLoop: true, autoPick: false } }, GLOBAL: {} }, null, 2));
+	writeFileSync(MODES, JSON.stringify({ PROJECT: { [SLUG]: { doingLoop: true, autoPick: false } }, GLOBAL: {} }, null, 2));
 const readJson = (p) => JSON.parse(readFileSync(p, "utf8"));
 
 // factory は 1 呼び出し = 1 クロージャ。テストごとに新しい pi を作って隔離する。
@@ -183,7 +185,7 @@ process.stderr.write = (chunk) => {
 
 process.stderr.write = origWrite;
 
-check("modes.json は読める（副作用の健全性）", () => assert.ok(readJson(MODES).SESSION));
+check("modes.json は読める（副作用の健全性）", () => assert.ok(readJson(MODES).PROJECT));
 
 console.log(`${passed} passed, ${failures.length} failed`);
 for (const failure of failures) console.log(`  FAIL ${failure}`);

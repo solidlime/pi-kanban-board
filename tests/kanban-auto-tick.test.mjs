@@ -106,24 +106,30 @@ check("lastTickAt 0 after loop ON -> fires on next poll (no 5m wait)", () => {
 
 check("GLOBAL: only another session's card -> no fire", () => {
 	const cards = [card(7, "doing", "other-session"), card(8, "todo", "me")];
-	const picked = tickCardFor(cards, "global", "me");
+	const picked = tickCardFor(cards, "me");
 	assert.equal(picked, undefined, "movedBy !== sid は対象外");
 	assert.equal(shouldAutoTick({ ...base, card: picked }), false);
 });
 
 check("GLOBAL: own card is picked", () => {
 	const cards = [card(7, "doing", "other-session"), card(9, "doing", "me")];
-	assert.equal(tickCardFor(cards, "global", "me").id, 9);
+	assert.equal(tickCardFor(cards, "me").id, 9);
 });
 
 check("GLOBAL: unstamped card is not picked", () => {
 	const cards = [card(3, "doing")];
-	assert.equal(tickCardFor(cards, "global", "me"), undefined);
+	assert.equal(tickCardFor(cards, "me"), undefined);
 });
 
-check("SESSION: any DOING card is picked, lowest id first", () => {
+// #17: session スコープの「所有権を無視する」特例は無くなった。DOING を拾えるのは
+// movedBy が自分と一致するカードだけで、未スタンプは誰も拾わない。
+check("movedBy の無い DOING は誰も拾わない", () => {
 	const cards = [card(5, "doing"), card(2, "doing"), card(1, "todo")];
-	assert.equal(tickCardFor(cards, "session", "me").id, 2);
+	assert.equal(tickCardFor(cards, "me"), undefined);
+});
+check("自分の所有する DOING は id 昇順で 1 枚", () => {
+	const cards = [card(5, "doing", "me"), card(2, "doing", "me"), card(1, "todo", "me")];
+	assert.equal(tickCardFor(cards, "me").id, 2);
 });
 
 check("default export is the extension factory", () => {
@@ -162,14 +168,17 @@ async function liveTick() {
 
 	// session_start が作った modes.json を上書き。
 	const modesPath = `${HOME_DIR}/.pi/kanban/modes.json`;
-	const boardPath = `${HOME_DIR}/.pi/kanban/sessions/${SID}.json`;
+	// #17: poll が見るのは project ボード（cwd の slug）1 枚。switch も同じ slug に載る。
+	const SLUG = mod.projectSlugOf(process.cwd());
+	const boardPath = `${HOME_DIR}/.pi/kanban/projects/${SLUG}.json`;
 	const writeModes = (doingLoop) =>
 		writeFileSync(
 			modesPath,
-			JSON.stringify({ SESSION: { [SID]: { doingLoop, autoPick: false } }, GLOBAL: {} }),
+			JSON.stringify({ PROJECT: { [SLUG]: { doingLoop, autoPick: false } }, GLOBAL: {} }),
 		);
 	const writeBoard = (cards) => seedBoard(boardPath, { cards, nextId: 9 });
-	const doing = [{ id: 1, text: "tick me", col: "doing" }];
+	// 所有権は movedBy === sid。ここが無いと poll は拾わない。
+	const doing = [{ id: 1, text: "tick me", col: "doing", movedBy: SID }];
 
 	// (A) doingLoop OFF + DOING あり -> 1 ターンも消費しない。
 	writeModes(false);

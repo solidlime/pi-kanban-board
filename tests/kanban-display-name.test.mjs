@@ -125,13 +125,15 @@ check("footer は 2 行固定", () => {
 	assert.equal(lines.length, 2, `lines=${JSON.stringify(lines)}`);
 });
 
-check("SESSION 行は 1 行・< 無し・サニタイズ済み", () => {
+check("PROJECT 行は 1 行・< 無し・改行なし（#17 で session 名は footer から消えた）", () => {
 	const lines = widgetCalls[widgetCalls.length - 1];
-	const sessionLine = lines[1];
-	assert.ok(sessionLine.startsWith("SESSION:"), sessionLine);
-	assert.ok(!sessionLine.includes("\n") && !sessionLine.includes("\r") && !sessionLine.includes("\t"), "改行/タブが残存");
-	assert.ok(!sessionLine.includes("<") && !sessionLine.includes('"'), `タグ文字が残存: ${sessionLine}`);
-	assert.match(sessionLine, /^SESSION: skill name=minimax-h3-creative-director: 0 todo \/ 0 doing/);
+	const projectLine = lines[1];
+	assert.ok(projectLine.startsWith("PROJECT:"), projectLine);
+	assert.ok(!projectLine.includes("\n") && !projectLine.includes("\r") && !projectLine.includes("\t"), "改行/タブが残存");
+	assert.ok(!projectLine.includes("<") && !projectLine.includes('"'), `タグ文字が残存: ${projectLine}`);
+	assert.match(projectLine, /^PROJECT: [a-z0-9-]+: 0 todo \/ 0 doing/);
+	// セッション名は 2 行目に出ない（出ればサニタイズが要る）。
+	assert.ok(!projectLine.includes("minimax-h3-creative-director"), projectLine);
 });
 
 // 6. nudge / 注入に生のセッション名は入らない（= 注入側にサニタイズ対象は無い）。

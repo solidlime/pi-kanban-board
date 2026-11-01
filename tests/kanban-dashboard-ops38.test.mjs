@@ -220,13 +220,12 @@ await check("#38-10 CSS: 経過用の .since は既存トークンだけを使�
 	const nowIso = "2026-01-01T12:00:00.000Z";
 	const NOW = new Date(nowIso).getTime();
 	const LONG_TEXT = "あ".repeat(61); // 60 字超 → クランプ対象
-	const session = {
-		id: "s1",
-		name: "kotomi",
-		cwd: "/tmp",
-		isActive: true,
-		updatedAt: nowIso,
-		modes: { session: {}, global: {} },
+	// #17: session 行は無くなった。同じカードを project ボードに置く。
+	const project = {
+		id: "alpha",
+		modes: {},
+		loops: 0,
+		halted: false,
 		counts: { todo: 1, doing: 3, done: 0 },
 		cards: [
 			{ id: 1, col: "todo", text: LONG_TEXT },
@@ -240,9 +239,9 @@ await check("#38-10 CSS: 経過用の .since は既存トークンだけを使�
 	const payload = {
 		host: "test-host",
 		now: nowIso,
-		stats: { sessions: 1, active: 1, todo: 1, doing: 3, done: 0, serve: 0, media: 0 },
-		global: { counts: { todo: 0, doing: 0, done: 0 }, cards: [] },
-		sessions: [session],
+		stats: { todo: 1, doing: 3, done: 0, serve: 0, media: 0 },
+		global: { counts: { todo: 0, doing: 0, done: 0 }, cards: [], modes: {}, loops: 0, halted: false },
+		project,
 		serve: [],
 	};
 	const timers = [];
@@ -277,7 +276,7 @@ await check("#38-10 CSS: 経過用の .since は既存トークンだけを使�
 	vm.runInContext(apiScript, sandbox);
 	for (let i = 0; i < 8; i++) await flush();
 
-	const sess = () => byId["sessions"];
+	const sess = () => byId["project"];
 	const cols = () => findAll(sess(), byClass("col"));
 	const colOf = (key) => cols().find((c) => c.getAttribute("data-col") === key);
 	const cardsOf = (key) => findAll(colOf(key), byClass("card"));
@@ -287,7 +286,7 @@ await check("#38-10 CSS: 経過用の .since は既存トークンだけを使�
 	const addBtnOf = (colEl) => findAll(colEl, byClass("addbtn"))[0];
 	const addInOf = (colEl) => findAll(colEl, byClass("addin"))[0];
 
-	await check("// 1. 前提: セッション看板が 3 列・カード 4 枚で描画された", () => {
+	await check("// 1. 前提: project ボードが 3 列・カード 4 枚で描画された", () => {
 		assert.equal(cols().length, 3, `cols=${cols().length}`);
 		assert.equal(findAll(sess(), byClass("card")).length, 4);
 	});
@@ -344,8 +343,8 @@ await check("#38-10 CSS: 経過用の .since は既存トークンだけを使�
 		const hit = urls.find((u) => u.includes("/api/add"));
 		assert.ok(hit, `add が飛んでいない: ${JSON.stringify(urls)}`);
 		assert.ok(hit.includes("col=todo"), hit);
-		assert.ok(hit.includes("scope=session"), hit);
-		assert.ok(hit.includes("sid=s1"), hit);
+		assert.ok(hit.includes("scope=project"), hit);
+		assert.ok(!hit.includes("sid="), `project なのに sid を送っている: ${hit}`);
 		assert.equal(inp.style.display, "none", "Enter 後に入力欄が閉じない");
 		for (let i = 0; i < 10; i++) await flush();
 		// Escape

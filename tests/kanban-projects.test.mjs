@@ -124,7 +124,7 @@ for (let i = 0; i < 40; i++) {
 
 const q = (s) => encodeURIComponent(s);
 const add = async (params) => {
-	const r = await tf(`${BASE}/api/add?scope=session&sid=${ACTIVE}&${params}`);
+	const r = await tf(`${BASE}/api/add?scope=project&${params}`);
 	return { status: r.status, body: await r.json() };
 };
 const get = async (path) => {
@@ -224,15 +224,11 @@ await check("/api/decision: 消せる。不正な id は 400", async () => {
 	assert.equal((await get("/api/decision?action=delete")).status, 400, "id 無しは 400");
 });
 
-// /api/projects の集計は projectRollup が担う。global は読み取り専用の集計ビューになったので、
-// セッションと project ボードの 2 つが供給元になる（project ボードの実カードをそのまま通す）。
+// /api/projects の集計は projectRollup が担う。#17 で session ボードは無くなり、供給元は
+// project ボード 1 種（global はそれを読み取り専用に集約しただけなので数えない）。
 const ROLLED = async () => {
-	const session = (await get(`/api/kanban?scope=session&sid=${ACTIVE}`)).body.session.cards;
 	const project = (await get("/api/kanban?scope=project")).body.project.cards;
-	const cards = [
-		...session.map((card) => ({ scope: "session", sid: ACTIVE, card })),
-		...project.map((card) => ({ scope: "project", sid: "pi-kanban-board", card })),
-	];
+	const cards = project.map((card) => ({ scope: "project", sid: "pi-kanban-board", card }));
 	return mod.projectRollup([], [], cards, "2026-06-01");
 };
 
@@ -247,9 +243,9 @@ await check("/api/projects: project ボードのカードも集計する", async
 });
 
 await check("/api/projects: 完了させると進捗が動く", async () => {
-	const body = (await get(`/api/kanban?scope=session&sid=${ACTIVE}`)).body.session;
+	const body = (await get("/api/kanban?scope=project")).body.project;
 	const moved = body.cards.find((c) => c.col === "todo" && c.project === "kb-core");
-	const r = await tf(`${BASE}/api/move?scope=session&sid=${ACTIVE}&id=${moved.id}&col=done`);
+	const r = await tf(`${BASE}/api/move?scope=project&id=${moved.id}&col=done`);
 	assert.equal(r.status, 200);
 	assert.equal((await get("/api/projects")).status, 200);
 	const p = projectOf({ projects: await ROLLED() }, "kb-core");

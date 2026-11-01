@@ -64,7 +64,8 @@ function check(name, fn) {
 }
 
 const MIN = 60_000;
-const card = (id) => ({ id, col: "doing" });
+// #17: DOING の所有権は movedBy === sid。無いと tickCardFor が拾わない。
+const card = (id) => ({ id, col: "doing", movedBy: "sid-stuck-clear" });
 // lastTickAt は interval を 1 つ超えた程度（starved=3 interval には届かない）に置く。
 const base = { isIdle: true, doingLoop: true, card: card(1), halted: null, now: 10 * MIN, lastTickAt: 4 * MIN };
 
@@ -97,7 +98,8 @@ check("starved: lastTickAt が interval*3 以上古ければ活動時計が新�
 
 // --- 2. 実タイマー: stuck-halt 解除 -> interval で発火 ----------------------
 const SID = "sid-stuck-clear";
-const BOARDS = `${HOME_DIR}/.pi/kanban/sessions/${SID}.json`;
+// #17: poll が回すのは project ボード（cwd の slug）。session ボードは無い。
+const BOARDS = `${HOME_DIR}/.pi/kanban/projects/${mod.projectSlugOf(process.cwd())}.json`;
 const MODES = `${HOME_DIR}/.pi/kanban/modes.json`;
 // intervalMin は分単位の実数。0.1 分 = 6 秒にして、既定 5 分を待たずに同じ判定を通す。
 const INTERVAL_MIN = 0.1;
@@ -106,7 +108,11 @@ const INTERVAL_MS = INTERVAL_MIN * MIN;
 const writeModes = (extra = {}) =>
 	writeFileSync(
 		MODES,
-		JSON.stringify({ SESSION: { [SID]: { doingLoop: true, autoPick: false, intervalMin: INTERVAL_MIN, ...extra } }, GLOBAL: {} }),
+		// #17: project のスイッチは slug、global は sid で引く。
+		JSON.stringify({
+			PROJECT: { [mod.projectSlugOf(process.cwd())]: { doingLoop: true, autoPick: false, intervalMin: INTERVAL_MIN, ...extra } },
+			GLOBAL: { [SID]: { doingLoop: true, autoPick: false } },
+		}),
 	);
 const writeBoard = (cards) => seedBoard(BOARDS, { cards, nextId: 9 });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

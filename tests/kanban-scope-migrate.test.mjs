@@ -1,8 +1,8 @@
-// phase0 自己検証: 一度きりの scope 移行（plans/phase0-cwd-scope.md の受け入れ条件 3〜5）。
+// #17: 一度きりの scope リセット（session 廃止。boards は project のみ）。
 // フレームワーク無しで `node tests/kanban-scope-migrate.test.mjs`。
-// 対象: migrateScopeOnce / mergeBoardInto（id の振り直し・blocks の remap・重複の保持）、
-// meta.scope_migrated による冪等、事前バックアップ、board 行の削除。
-// HOME を差し替えるので本番の ~/.pi/kanban には触れない。サーバは立てない（移行関数を直接呼ぶ）。
+// 対象: resetScopesOnce（project 以外の board 行の削除 / meta.scopes_reset による冪等 /
+// 事前バックアップ）。HOME を差し替えるので本番の ~/.pi/kanban には触れない。
+// サーバは立てない（リセット関数を直接呼ぶ）。
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
@@ -35,12 +35,13 @@ const jiti = createJiti(import.meta.url);
 const target = process.env.KANBAN_TS ?? fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url));
 const mod = await jiti.import(target);
 useKanban(mod);
-assert.equal(typeof mod.migrateScopeOnce, "function", "migrateScopeOnce が export されていない");
+assert.equal(typeof mod.resetScopesOnce, "function", "resetScopesOnce が export されていない");
 
 const HOME = `${HOME_DIR}/.pi/kanban`;
-const sessionPath = (sid) => `${HOME}/sessions/${sid}.json`;
+const DB_FILE = `${HOME}/boards.sqlite`;
+const BACKUP = `${DB_FILE}.pre-scope-reset`;
 const projectPath = (slug) => `${HOME}/projects/${slug}.json`;
-const BACKUP = `${HOME}/boards.sqlite.pre-scope-migration`;
+const globalPath = `${HOME}/global.json`;
 
 const failures = [];
 let passed = 0;
@@ -53,123 +54,120 @@ async function check(name, fn) {
 	}
 }
 
-const INBOX = "_inbox";
-const inbox = () => readBoardAt(projectPath(INBOX));
-/** Every project board this fixture can produce - the total is what must not change. */
-const SLUGS = [INBOX, "kb-core"];
-const allProjectCards = () => SLUGS.flatMap((slug) => readBoardAt(projectPath(slug)).cards);
-
-// --- シード: session 2 枚 x 2 ボード + global 3 枚（合計 7 枚） ----------------------
-// 移行時 cwd が引けない sid（テストの HOME にはセッションが無い）は _inbox 行き。
-seedBoard(sessionPath("mig-a"), {
-	cards: [
-		{ id: 1, text: "a-first", col: "todo" },
-		// 2 は 1 を待つ: 移行後も「同じボードに実在するカード」を指していること。
-		{ id: 2, text: "a-second", col: "todo", blocks: [1] },
-	],
-	nextId: 3,
-});
-seedBoard(sessionPath("mig-b"), {
-	cards: [
-		{ id: 1, text: "b-first", col: "doing" },
-		{ id: 2, text: "b-second", col: "done" },
-	],
-	nextId: 3,
-});
-seedBoard(`${HOME}/global.json`, {
-	cards: [
-		// project 指定あり -> projects/kb-core.json
-		{ id: 1, text: "g-core", col: "todo", project: "kb-core" },
-		{ id: 2, text: "g-loose-1", col: "todo" },
-		{ id: 3, text: "g-loose-2", col: "doing" },
-	],
-	nextId: 4,
-});
-
-assert.equal(allProjectCards().length, 0, "シード時点で project ボードは空のはず");
-assert.equal(existsSync(BACKUP), false, "移行前からバックアップがある");
-
-await mod.migrateScopeOnce();
-
-// --- 1. 合計枚数が一致（カードを 1 枚も落としていない） ---------------------------
-await check("移行後もプロジェクト全体で 7 枚", () => {
-	assert.equal(allProjectCards().length, 7, JSON.stringify(allProjectCards().map((c) => c.text)));
-});
-
-await check("_inbox に 6 枚、kb-core に 1 枚（card.project が尊重される）", () => {
-	assert.deepEqual(
-		inbox().cards.map((c) => c.text).sort(),
-		["a-first", "a-second", "b-first", "b-second", "g-loose-1", "g-loose-2"],
-	);
-	assert.deepEqual(
-		readBoardAt(projectPath("kb-core")).cards.map((c) => c.text),
-		["g-core"],
-	);
-});
-
-// --- 2. board 行が減っている -------------------------------------------------------
-await check("session / global の board 行が消えている", () => {
-	for (const sid of ["mig-a", "mig-b"]) {
-		assert.equal(boardExists(sessionPath(sid)), false, `session ボードが残っている: ${sid}`);
+/** The raw rows, read without the board layer so a scope=global row is still visible. */
+const raw = () => {
+	const { DatabaseSync } = require("node:sqlite");
+	const db = new DatabaseSync(DB_FILE);
+	try {
+		const boards = db.prepare("SELECT scope, sid FROM board ORDER BY scope, sid").all();
+		const meta = db.prepare("SELECT v FROM meta WHERE k = 'scopes_reset'").get();
+		return {
+			// null-prototype rows from node:sqlite do not deepEqual plain objects.
+			boards: boards.map((r) => `${r.scope}/${r.sid}`),
+			meta: meta === undefined ? undefined : String(meta.v),
+		};
+	} finally {
+		db.close();
 	}
-	assert.equal(boardExists(`${HOME}/global.json`), false, "global ボードが残っている");
+};
+
+// --- シード: project 2 枚 + global 1 枚（リセットで消える側） -----------------------
+seedBoard(projectPath("kb-core"), {
+	cards: [{ id: 1, text: "p-core", col: "todo" }],
+	nextId: 2,
+});
+seedBoard(projectPath("kb-other"), {
+	cards: [{ id: 1, text: "p-other", col: "doing" }],
+	nextId: 2,
+});
+seedBoard(globalPath, {
+	cards: [{ id: 1, text: "g-one", col: "todo" }],
+	nextId: 2,
 });
 
-// --- 3. blocks の remap ------------------------------------------------------------
-await check("blocks は移行後もボード内の実在カードを指す", () => {
-	const cards = inbox().cards;
-	const second = cards.find((c) => c.text === "a-second");
-	assert.ok(second, "a-second が _inbox に無い");
-	assert.ok(Array.isArray(second.blocks) && second.blocks.length === 1, JSON.stringify(second));
-	const first = cards.find((c) => c.id === second.blocks[0]);
-	assert.ok(first, `blocks=${second.blocks[0]} の参照先がボードに無い`);
-	assert.equal(first.text, "a-first", `参照先が別のカード: ${first.text}`);
+assert.equal(raw().boards.length, 3, JSON.stringify(raw().boards));
+assert.equal(existsSync(BACKUP), false, "リセット前からバックアップがある");
+assert.equal(raw().meta, undefined, "リセット前から scopes_reset が立っている");
+
+mod.resetScopesOnce();
+
+// --- 1. project 行は残る -----------------------------------------------------------
+await check("project の board 行とカードはそのまま残る", () => {
+	assert.deepEqual(raw().boards, ["project/kb-core", "project/kb-other"]);
+	assert.deepEqual(readBoardAt(projectPath("kb-core")).cards.map((c) => c.text), ["p-core"]);
+	assert.deepEqual(readBoardAt(projectPath("kb-other")).cards.map((c) => c.text), ["p-other"]);
 });
 
-await check("id は移行先で振り直され、重複しない", () => {
-	const ids = inbox().cards.map((c) => c.id);
-	assert.equal(new Set(ids).size, ids.length, JSON.stringify(ids));
+// --- 2. global / session 行は消える ------------------------------------------------
+await check("global 行が消えている（project 以外は全部落とす）", () => {
+	assert.equal(boardExists(globalPath), false, "global ボードが残っている");
 	assert.ok(
-		inbox().cards.every((c) => c.id < inbox().nextId),
-		`nextId=${inbox().nextId} が id より小さい`,
+		raw().boards.every((b) => b.startsWith("project/")),
+		`project 以外の行が残っている: ${JSON.stringify(raw().boards)}`,
 	);
 });
 
-// --- 4. バックアップ ---------------------------------------------------------------
-await check("boards.sqlite.pre-scope-migration が作られている", () => {
+// --- 3. meta.scopes_reset = "2" が立つ ---------------------------------------------
+await check("meta.scopes_reset が \"2\" になる", () => {
+	assert.equal(raw().meta, "2");
+});
+
+// --- 4. バックアップが作られる -----------------------------------------------------
+await check("boards.sqlite.pre-scope-reset が作られている", () => {
 	assert.ok(existsSync(BACKUP), `${BACKUP} が無い`);
 });
 
-// --- 5. 冪等（meta.scope_migrated で 2 回目は即 return） ----------------------------
-await check("2 回目は何もしない（新しい session ボードも畳まれない）", async () => {
-	// 移行後にできたボードは「2 回目」の対象になってはいけない。存在を残すことで確かめる。
-	seedBoard(sessionPath("mig-after"), { cards: [{ id: 1, text: "later", col: "todo" }], nextId: 2 });
-	await mod.migrateScopeOnce();
-	assert.equal(allProjectCards().length, 7, JSON.stringify(allProjectCards().map((c) => c.text)));
-	assert.equal(boardExists(sessionPath("mig-after")), true, "2 回目が session ボードを消した");
+// --- 5. 冪等: 2 回目は no-op（再 DELETE しない） -----------------------------------
+await check("2 回目は no-op（リセット後にできた非 project 行も消さない）", () => {
+	// 2 回目が走るならこの行は消える。残ることで「何もしなかった」を確かめる。
+	seedBoard(globalPath, { cards: [{ id: 1, text: "g-later", col: "todo" }], nextId: 2 });
+	mod.resetScopesOnce();
+	assert.equal(raw().meta, "2", "marker が書き直されている");
+	const rows = raw().boards;
+	assert.ok(rows.some((b) => b === "global/"), `2 回目が global 行を消した: ${JSON.stringify(rows)}`);
+	assert.equal(readBoardAt(globalPath).cards.length, 1, "2 回目が global ボードを空にした");
 });
 
-// --- 6. mergeBoardInto 単体: 重複は残す / 範囲外の blocks は落とす -------------------
-await check("mergeBoardInto は重複を残し、外部参照 blocks を落とす", () => {
-	const dst = { cards: [{ id: 1, text: "dup", col: "todo" }], nextId: 2 };
-	mod.mergeBoardInto(dst, {
-		cards: [
-			{ id: 5, text: "dup", col: "todo", blocks: [5] },
-			{ id: 6, text: "tail", col: "todo", blocks: [99] },
-		],
-		nextId: 7,
-	});
-	assert.deepEqual(
-		dst.cards.map((c) => [c.id, c.text]),
-		[
-			[1, "dup"],
-			[2, "dup"],
-			[3, "tail"],
-		],
+// --- 6. 失敗経路: DELETE が投げたら marker を立てない（次回起動で再試行できる） ---
+// 「202/返り値だけ見て成功とみなす」穴を塞ぐ。マーカーは DELETE の後にしか立たない、
+// を実測で固定する（3 つの DELETE が単一トランザクションでないのは許容: marker が立たないので
+// 次の起動でまた同じリセットが走り、収束する）。
+const BOOM = "injected delete failure";
+const exec = (fn) => {
+	const { DatabaseSync } = require("node:sqlite");
+	const db = new DatabaseSync(DB_FILE);
+	try {
+		return fn(db);
+	} finally {
+		db.close();
+	}
+};
+// 直前のチェックで marker="2" が立っているので、まず外して「次回起動」の状態にする。
+exec((db) => db.prepare("DELETE FROM meta WHERE k = 'scopes_reset'").run());
+
+await check("DELETE が throw すると marker を立てない（board 行も残る）", () => {
+	exec((db) =>
+		db.exec(
+			`CREATE TRIGGER kb_boom BEFORE DELETE ON board BEGIN SELECT RAISE(ABORT, '${BOOM}'); END`,
+		),
 	);
-	assert.deepEqual(dst.cards[1].blocks, [2], "自己参照が新しい自分の id になっていない");
-	assert.equal(dst.cards[2].blocks, undefined, "存在しない id への参照が残っている");
-	assert.equal(dst.nextId, 4);
+	try {
+		assert.throws(() => mod.resetScopesOnce(), (err) => String(err.message).includes(BOOM));
+		assert.equal(raw().meta, undefined, "失敗したのに scopes_reset が立っている");
+		assert.ok(
+			raw().boards.some((b) => b === "global/"),
+			`board 行が消えている: ${JSON.stringify(raw().boards)}`,
+		);
+	} finally {
+		exec((db) => db.exec("DROP TRIGGER kb_boom"));
+	}
+});
+
+// 同じ起動で「次回」を起こす: 障害が消えれば同じリセットが走って収束する。
+await check("リトライ（次回起動相当）は成功して marker が立つ", () => {
+	mod.resetScopesOnce();
+	assert.equal(raw().meta, "2");
+	assert.deepEqual(raw().boards, ["project/kb-core", "project/kb-other"]);
 });
 
 console.log(`${passed} passed, ${failures.length} failed`);

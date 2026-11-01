@@ -41,8 +41,8 @@ const jiti = createJiti(import.meta.url);
 const SRC = fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url));
 const mod = await jiti.import(SRC);
 useKanban(mod);
-// 起動時 migration は fire-and-forget。seed より先に消化しないと、seed した session/global
-// ボードが起動直後の移行に食われる（旧レイアウトを seed するテストの前提）。
+// 起動時の scope reset は fire-and-forget。seed より先に消化しないと、seed した
+// project 以外のボードが起動直後の reset に消される。
 useMigrate(mod);
 await settleMigration();
 const { parseKanbanArgs } = mod;
@@ -60,7 +60,8 @@ function check(name, fn) {
 const eq = (a, b) => assert.deepEqual(a, b);
 
 const SID = "img-session";
-const boardFile = `${HOME_DIR}/.pi/kanban/sessions/${SID}.json`;
+// #17: `/kanban img` の書き込み先は既定スコープ = この cwd の project ボード。
+const boardFile = `${HOME_DIR}/.pi/kanban/projects/${mod.projectSlugOf(process.cwd())}.json`;
 const MEDIA = `${HOME_DIR}/.pi/kanban/media`;
 const readCards = () => readBoardAt(boardFile).cards;
 const imgOf = (id) => readCards().find((c) => c.id === id).img;

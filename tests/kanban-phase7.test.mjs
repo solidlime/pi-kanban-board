@@ -9,7 +9,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
 import { authFetch } from "./helpers/token.mjs";
-import { readBoardAt, seedBoard, useKanban } from "./helpers/board.mjs";
+import { boardExists, readBoardAt, seedBoard, useKanban } from "./helpers/board.mjs";
 import { settleMigration, useMigrate } from "./helpers/migrate.mjs";
 
 // #83b: HTTP routes need the server token now; tf = fetch + the kb_auth cookie.
@@ -17,7 +17,7 @@ const tf = (input, init) => authFetch(input, init);
 
 const HOME_DIR = "/tmp/kb-phase7-home";
 rmSync(HOME_DIR, { recursive: true, force: true });
-mkdirSync(`${HOME_DIR}/.pi/kanban/sessions`, { recursive: true });
+mkdirSync(`${HOME_DIR}/.pi/kanban/projects`, { recursive: true });
 process.env.HOME = HOME_DIR;
 // Windows: os.homedir() prefers USERPROFILE over HOME, so keep them in step or the
 // server writes its token to the real profile and this test reads a missing file.
@@ -130,9 +130,9 @@ check("［priority abc 1］ -> reject（id 不正）", () => {
 // --- 6: 既存の非 priority ケースが壊れていないこと -----------------------------
 check("［買い物］ -> add", () => eq(parseKanbanArgs(["買い物"]), { kind: "add", text: "買い物" }));
 check("［interval 3］ -> interval", () =>
-	eq(parseKanbanArgs(["interval", "3"]), { kind: "interval", scope: "session", minutes: 3 }));
+	eq(parseKanbanArgs(["interval", "3"]), { kind: "interval", scope: "project", minutes: 3 }));
 check("［stuck 5］ -> stuck", () =>
-	eq(parseKanbanArgs(["stuck", "5"]), { kind: "stuck", scope: "session", count: 5 }));
+	eq(parseKanbanArgs(["stuck", "5"]), { kind: "stuck", scope: "project", count: 5 }));
 check("［loop on］ -> mode", () =>
 	eq(parseKanbanArgs(["loop", "on"]), { kind: "mode", key: "doingLoop", value: true }));
 check("［］ -> menu", () => eq(parseKanbanArgs([]), { kind: "menu" }));
@@ -141,9 +141,11 @@ check("［］ -> menu", () => eq(parseKanbanArgs([]), { kind: "menu" }));
 const SID = "phase7-sid";
 // project 層は /api/priority の scope=project ケース用に1枚だけ用意する（global は書き込み禁止になった）。
 // パスは実装の projectSlugOf(process.cwd()) から引く（sid 無しの書き込みは cwd で解決される）。
-const projectFile = `${HOME_DIR}/.pi/kanban/projects/${mod.projectSlugOf(process.cwd())}.json`;
+const SLUG = mod.projectSlugOf(process.cwd());
+const projectFile = `${HOME_DIR}/.pi/kanban/projects/${SLUG}.json`;
 seedBoard(projectFile, { cards: [{ id: 3, text: "project", col: "todo" }], nextId: 4 });
-const boardFile = `${HOME_DIR}/.pi/kanban/sessions/${SID}.json`;
+// #17: session ボードは消えた。priority の読み書きは全部この project ボードで起きる。
+const boardFile = projectFile;
 const readBoardFile = () => readBoardAt(boardFile);
 seedBoard(boardFile, {
 		cards: [
@@ -153,7 +155,8 @@ seedBoard(boardFile, {
 		nextId: 5,
 	});
 {
-	const picked = pickFirstTodo(SID, "session");
+	// boardPath("project", key) is the SLUG, not a session id.
+	const picked = pickFirstTodo(SLUG, "project");
 	check("#3(p=0) と #4(p=10) があると pickFirstTodo は #4 を選ぶ", () => assert.equal(picked && picked.id, 4));
 	check("選ばれた #4 は DOING、#3 は TODO のまま", () => {
 		const after = readBoardFile();
@@ -226,7 +229,7 @@ const kbCmd = async (args) => {
 
 const api = (q) => tf(`http://127.0.0.1:${PORT}/api/priority?${q}`);
 {
-	const res = await api(`sid=${SID}&scope=session&id=3&n=7`);
+	const res = await api(`scope=project&id=3&n=7`);
 	const body = await res.json();
 	check("GET /api/priority?id=3&n=7 -> 200 かつボードに 7", () => {
 		assert.equal(res.status, 200);
@@ -235,7 +238,7 @@ const api = (q) => tf(`http://127.0.0.1:${PORT}/api/priority?${q}`);
 	});
 }
 for (const bad of ["100", "-100", "2.5", "abc"]) {
-	const res = await api(`sid=${SID}&scope=session&id=3&n=${bad}`);
+	const res = await api(`scope=project&id=3&n=${bad}`);
 	const body = await res.json();
 	check(`GET /api/priority?n=${bad} -> 400 かつ現状維持（7）`, () => {
 		assert.equal(res.status, 400);
@@ -245,32 +248,42 @@ for (const bad of ["100", "-100", "2.5", "abc"]) {
 	});
 }
 {
-	const res = await api(`sid=${SID}&scope=session&id=99&n=5`);
+	const res = await api(`scope=project&id=99&n=5`);
 	await res.text();
 	check("GET /api/priority?id=99（無い id）-> 404", () => assert.equal(res.status, 404));
 }
 {
+	// 負の端（-99）も書ける。
 	const res = await tf(`http://127.0.0.1:${PORT}/api/priority?scope=project&id=3&n=-4`);
 	const body = await res.json();
-	check("GET /api/priority?scope=project -> 200（project ボード側に書く）", () => {
-		assert.equal(res.status, 200);
-		const g = readBoardAt(projectFile);
-		assert.equal(g.cards.find((c) => c.id === 3).priority, -4);
+	check("GET /api/priority?n=-4 -> 200（下限に近い値も通る）", () => {
+		assert.equal(res.status, 200, JSON.stringify(body));
+		assert.equal(readBoardFile().cards.find((c) => c.id === 3).priority, -4);
 	});
 }
 {
-	// #55: セッション単位の書き込みロックは無い。他セッションのボードもその sid で書ける。
-	const otherBoardFile = `${HOME_DIR}/.pi/kanban/sessions/other-session.json`;
-	seedBoard(otherBoardFile, { cards: [{ id: 3, text: "other", col: "todo" }], nextId: 4 });
-	const otherRes = await api(`sid=other-session&scope=session&id=3&n=3`);
+	// #17: session ボードは無い。sid を付けても scope=session は 400。
+	const res = await api(`sid=${SID}&scope=session&id=3&n=3`);
+	const body = await res.json();
+	check("GET /api/priority?scope=session -> 400（session は廃止）", () => {
+		assert.equal(res.status, 400, JSON.stringify(body));
+		assert.equal(body.ok, false);
+		assert.match(body.error, /scope=session is gone/);
+		assert.equal(readBoardFile().cards.find((c) => c.id === 3).priority, -4, "ボードが書き換わった");
+	});
+}
+{
+	// #17: project のキーは cwd の slug。cwd を知らない sid をキーには使わせない（#55 で
+	// セッション単位のロックは無くなったが、行き先の検証は残っている）。
+	const otherRes = await api(`sid=other-session&scope=project&id=3&n=3`);
 	const otherBody = await otherRes.json();
-	check("GET /api/priority 他セッション -> 200 かつそのボードに書かれる", () => {
-		assert.equal(otherRes.status, 200);
-		assert.equal(otherBody.ok, true);
-		const written = readBoardAt(otherBoardFile);
-		assert.equal(written.cards.find((c) => c.id === 3).priority, 3);
-		// driver 側のボードは変わらない
-		assert.equal(readBoardFile().cards.find((c) => c.id === 3).priority, 7);
+	check("GET /api/priority 未知の sid + scope=project -> 400 unknown sid（ボードは作られない）", () => {
+		assert.equal(otherRes.status, 400, JSON.stringify(otherBody));
+		assert.equal(otherBody.ok, false);
+		assert.equal(otherBody.error, "unknown sid");
+		assert.equal(boardExists(`${HOME_DIR}/.pi/kanban/projects/other-session.json`), false,
+			"sid 名の project ボードが作られた");
+		assert.equal(readBoardFile().cards.find((c) => c.id === 3).priority, -4, "ボードが書き換わった");
 	});
 }
 

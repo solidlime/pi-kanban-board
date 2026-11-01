@@ -70,10 +70,10 @@ check("［loop bogus］ -> 拒否（旧と同文言）", () => {
 });
 check("［loop on global］ -> scope global", () =>
 	eq(parseKanbanArgs(["loop", "on", "global"]), { kind: "mode", key: "doingLoop", value: true, scope: "global" }));
-check("［interval 3］", () => eq(parseKanbanArgs(["interval", "3"]), { kind: "interval", scope: "session", minutes: 3 }));
+check("［interval 3］", () => eq(parseKanbanArgs(["interval", "3"]), { kind: "interval", scope: "project", minutes: 3 }));
 check("［interval global 15］", () =>
 	eq(parseKanbanArgs(["interval", "global", "15"]), { kind: "interval", scope: "global", minutes: 15 }));
-check("［interval］ -> 現在値表示", () => eq(parseKanbanArgs(["interval"]), { kind: "intervalStatus", scope: "session" }));
+check("［interval］ -> 現在値表示", () => eq(parseKanbanArgs(["interval"]), { kind: "intervalStatus", scope: "project" }));
 check("［interval global］ -> 現在値表示", () => eq(parseKanbanArgs(["interval", "global"]), { kind: "intervalStatus", scope: "global" }));
 for (const bad of ["0", "abc", "-1", "", "NaN", "Infinity"]) {
 	check(`［interval ${JSON.stringify(bad)}］ -> 拒否`, () =>
@@ -209,7 +209,9 @@ const SID = "tree-test-sid";
 // of by a sidOf side effect. Drive the real event so the write gate has a sid.
 handlers.get("session_start")({}, mkCtx());
 const readJson = (p) => JSON.parse(readFileSync(p, "utf8"));
-const boardFile = `${HOME_DIR}/.pi/kanban/sessions/${SID}.json`;
+// #17: the board a write lands on is this process's cwd project board.
+const PROJ = mod.projectSlugOf(process.cwd());
+const boardFile = `${HOME_DIR}/.pi/kanban/projects/${PROJ}.json`;
 const modesFile = `${HOME_DIR}/.pi/kanban/modes.json`;
 const { join } = await import("node:path");
 void join;
@@ -268,14 +270,14 @@ const kanbanCmd = () => commands.get("kanban").handler;
 	const ctx4 = mkCtx();
 	await kanbanCmd()("interval 7", ctx4);
 	check("［interval 7］が modes.json に書かれる", () => {
-		assert.equal(readJson(modesFile).SESSION[SID].intervalMin, 7);
+		assert.equal(readJson(modesFile).PROJECT[PROJ].intervalMin, 7);
 		assert.match(ctx4.notes[0], /7分/);
 	});
 
 	const ctx5 = mkCtx();
 	await kanbanCmd()("interval 0", ctx5);
 	check("［interval 0］は拒否して現状維持（7分のまま）", () => {
-		assert.equal(readJson(modesFile).SESSION[SID].intervalMin, 7);
+		assert.equal(readJson(modesFile).PROJECT[PROJ].intervalMin, 7);
 		assert.match(ctx5.notes[0], /0より大きい数値/);
 	});
 
@@ -285,24 +287,30 @@ const kanbanCmd = () => commands.get("kanban").handler;
 
 	// B4 の書き込み経路（HTML の input が叩くのと同じ GET+query 規約）。
 	const api = (q) => tf(`http://127.0.0.1:${PORT}/api/interval?${q}`);
-	const okRes = await api(`scope=session&sid=${SID}&min=9`);
+	const okRes = await api(`min=9`);
 	check("GET /api/interval?min=9 -> 200 かつ modes.json に 9", () => {
 		assert.equal(okRes.status, 200);
-		assert.equal(readJson(modesFile).SESSION[SID].intervalMin, 9);
+		assert.equal(readJson(modesFile).PROJECT[PROJ].intervalMin, 9);
 	});
-	const badRes = await api(`scope=session&sid=${SID}&min=0`);
+	const badRes = await api(`min=0`);
 	check("GET /api/interval?min=0 -> 400 で現状維持", () => {
 		assert.equal(badRes.status, 400);
-		assert.equal(readJson(modesFile).SESSION[SID].intervalMin, 9);
+		assert.equal(readJson(modesFile).PROJECT[PROJ].intervalMin, 9);
 	});
-	const otherRes = await api(`scope=session&sid=other-session&min=3`);
+	// #17: project keys its switches by slug, so a bare session id is not a board - and
+	// GLOBAL still keys by session, which is where a second sid can be written.
+	const otherRes = await api(`scope=global&sid=other-session&min=3`);
 	const otherBody = await otherRes.json();
-	check("GET /api/interval 他セッション -> 200 かつ他セッションの interval が書かれる", () => {
-		// #55: セッション単位の書き込みロックは無い。
+	check("GET /api/interval scope=global 他セッション -> 200 かつ GLOBAL 側にだけ書かれる", () => {
 		assert.equal(otherRes.status, 200);
 		assert.equal(otherBody.ok, true);
-		assert.equal(readJson(modesFile).SESSION["other-session"].intervalMin, 3);
-		assert.equal(readJson(modesFile).SESSION[SID].intervalMin, 9);
+		assert.equal(readJson(modesFile).GLOBAL["other-session"].intervalMin, 3);
+		assert.equal(readJson(modesFile).PROJECT[PROJ].intervalMin, 9);
+	});
+	const unknownRes = await api(`sid=no-such-session&min=4`);
+	check("GET /api/interval 未知の sid -> 400（別 cwd のボードを書かない）", async () => {
+		assert.equal(unknownRes.status, 400);
+		assert.equal((await unknownRes.json()).ok, false);
 	});
 }
 
@@ -333,13 +341,16 @@ async function perSessionIntervals() {
 	};
 	const sentA = mk("sess-AAA");
 	const sentB = mk("sess-BBB");
-	for (const sid of ["sess-AAA", "sess-BBB"]) {
-		seedBoard(`${HOME_DIR}/.pi/kanban/sessions/${sid}.json`, { cards: [{ id: 1, text: "t", col: "doing" }], nextId: 2 });
-	}
+	// #17: ボードは project 1 枚を 2 セッションが共有する（lastTickAt だけが sid ごと）。
+	// DOING は movedBy の所有物なので、共有ボードで両方が起きる条件は TODO + autoPick。
+	seedBoard(`${HOME_DIR}/.pi/kanban/projects/${mod.projectSlugOf(process.cwd())}.json`, {
+		cards: [{ id: 1, text: "t", col: "todo" }],
+		nextId: 2,
+	});
 	writeFileSync(
 		modesFile,
 		JSON.stringify({
-			SESSION: { "sess-AAA": { doingLoop: true, autoPick: false }, "sess-BBB": { doingLoop: true, autoPick: false } },
+			PROJECT: { [mod.projectSlugOf(process.cwd())]: { doingLoop: true, autoPick: true } },
 			GLOBAL: {},
 		}),
 	);
@@ -368,9 +379,12 @@ async function pollFollowsTreeCtx() {
 	handlers.get("session_start")({}, ctxOld);
 	writeFileSync(
 		`${HOME_DIR}/.pi/kanban/modes.json`,
-		JSON.stringify({ SESSION: { [SID]: { doingLoop: true, autoPick: false } }, GLOBAL: {} }),
+		JSON.stringify({ PROJECT: { [mod.projectSlugOf(process.cwd())]: { doingLoop: true, autoPick: false } }, GLOBAL: {} }),
 	);
-seedBoard(`${HOME_DIR}/.pi/kanban/sessions/${SID}.json`, { cards: [{ id: 1, text: "tree tick", col: "doing" }], nextId: 2 });
+seedBoard(`${HOME_DIR}/.pi/kanban/projects/${mod.projectSlugOf(process.cwd())}.json`, {
+		cards: [{ id: 1, text: "tree tick", col: "doing", movedBy: SID }],
+		nextId: 2,
+	});
 	handlers.get("session_tree")({}, ctxNew);
 	await sleep(1800);
 	assert.equal(sent.length, 1, `poll must use the newest ctx (got ${sent.length})`);

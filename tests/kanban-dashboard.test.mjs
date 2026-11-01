@@ -83,15 +83,18 @@ writeBoard(`${KB}/global.json`, [
 	card(3, "g-doing", "doing"),
 	card(4, "g-done", "done"),
 ]);
-// session a: todo 1 / doing 1 / done 0
-writeBoard(`${KB}/sessions/aaaa1111.json`, [
-	card(1, "a-todo", "todo"),
-	card(2, "a-doing", "doing"),
+// #17: ボードは project だけ。ダッシュボードが見せるのは「このプロセスの project ボード」
+// 1 枚と、全 project ボードの集約（global）。cwd の slug は pi-kanban-board。
+const PROJECT_PATH = `${KB}/projects/pi-kanban-board.json`;
+// 自 project: todo 1 / doing 1
+writeBoard(PROJECT_PATH, [
+	card(1, "p-todo", "todo"),
+	card(2, "p-doing", "doing"),
 ]);
-// session b: todo 0 / doing 0 / done 2
-writeBoard(`${KB}/sessions/bbbb2222.json`, [
-	card(1, "b-done-1", "done"),
-	card(2, "b-done-2", "done"),
+// 隣の project ボード: done 2（global の集約にだけ出る）
+writeBoard(`${KB}/projects/aaaa1111.json`, [
+	card(1, "o-done-1", "done"),
+	card(2, "o-done-2", "done"),
 ]);
 // media: 2 files + 1 subdir (subdir は数えない)
 writeFileSync(`${KB}/media/one.png`, "x");
@@ -149,28 +152,32 @@ check("now は ISO 8601", () => {
 	assert.equal(typeof data.now, "string");
 	assert.ok(!Number.isNaN(Date.parse(data.now)), data.now);
 });
-check("stats の 7 キーがすべて数値", () => {
-	for (const k of ["sessions", "active", "todo", "doing", "done", "serve", "media"]) {
-		assert.equal(typeof data.stats[k], "number", `stats.${k}`);
-	}
+check("stats は 5 キーだけ（sessions / active は消えた）", () => {
+	assert.deepEqual(Object.keys(data.stats).sort(), ["doing", "done", "media", "serve", "todo"]);
+	for (const k of Object.keys(data.stats)) assert.equal(typeof data.stats[k], "number", `stats.${k}`);
 });
-check("global は counts と cards", () => {
-	assert.deepEqual(data.global.counts, { todo: 2, doing: 1, done: 1 });
-	assert.equal(data.global.cards.length, 4);
+check("global は counts と cards（GLOBAL 残行 + 全 project ボードの集約）", () => {
+	assert.deepEqual(data.global.counts, { todo: 3, doing: 2, done: 3 });
+	assert.equal(data.global.cards.length, 8);
 });
-check("sessions は配列で各要素が必要キーを持つ", () => {
-	assert.ok(Array.isArray(data.sessions));
-	assert.equal(data.sessions.length, 2);
-	for (const s of data.sessions) {
-		for (const k of ["id", "name", "cwd", "isActive", "updatedAt", "modes", "counts", "cards"]) {
-			assert.ok(k in s, `${s.id} に ${k} が無い`);
+check("project / global が必要キーを持ち、session 系のキーは無い", () => {
+	assert.equal("sessions" in data, false, "sessions が残っている");
+	assert.equal("sessionId" in data, false, "sessionId が残っている");
+	for (const [name, board] of [["project", data.project], ["global", data.global]]) {
+		for (const k of ["counts", "cards", "modes", "loops", "halted"]) {
+			assert.ok(k in board, `${name} に ${k} が無い`);
 		}
-		assert.equal(typeof s.isActive, "boolean");
-		assert.ok(!Number.isNaN(Date.parse(s.updatedAt)), s.updatedAt);
-		assert.deepEqual(Object.keys(s.counts).sort(), ["doing", "done", "todo"]);
-		assert.ok(Array.isArray(s.cards));
-		assert.ok("session" in s.modes && "global" in s.modes);
+		assert.equal(typeof board.loops, "number", `${name}.loops`);
+		assert.equal(typeof board.halted, "boolean", `${name}.halted`);
+		assert.deepEqual(Object.keys(board.counts).sort(), ["doing", "done", "todo"]);
+		assert.ok(Array.isArray(board.cards));
+		// #17: modes はボード 1 枚分のフラットな ModePair（入れ子の session/global は無い）。
+		for (const k of ["doingLoop", "autoPick"]) assert.ok(k in board.modes, `${name}.modes.${k}`);
+		for (const k of ["session", "global", "project"]) {
+			assert.equal(k in board.modes, false, `${name}.modes.${k} が残っている`);
+		}
 	}
+	assert.equal(data.project.id, "pi-kanban-board");
 });
 check("serve は空でなく配列", () => assert.ok(Array.isArray(data.serve) && data.serve.length === 2));
 
@@ -178,22 +185,16 @@ check("serve は空でなく配列", () => assert.ok(Array.isArray(data.serve) &
 check("stats.todo = 2+1+0", () => assert.equal(data.stats.todo, 3));
 check("stats.doing = 1+1+0", () => assert.equal(data.stats.doing, 2));
 check("stats.done = 1+0+2", () => assert.equal(data.stats.done, 3));
-check("stats.sessions = 2", () => assert.equal(data.stats.sessions, 2));
-check("stats.active = isActive の件数", () =>
-	assert.equal(data.stats.active, data.sessions.filter((s) => s.isActive).length));
 check("stats.media はファイルのみ数える (subdir 除く)", () => assert.equal(data.stats.media, 2));
-check("session の counts は自分のボードのみ", () => {
-	const a = data.sessions.find((s) => s.id === "aaaa1111");
-	const b = data.sessions.find((s) => s.id === "bbbb2222");
-	assert.deepEqual(a.counts, { todo: 1, doing: 1, done: 0 });
-	assert.deepEqual(b.counts, { todo: 0, doing: 0, done: 2 });
-	assert.equal(a.cards.length, 2);
-	assert.equal(b.cards.length, 2);
+check("project.counts は自分のボードのみ（隣のボードは混ざらない）", () => {
+	assert.deepEqual(data.project.counts, { todo: 1, doing: 1, done: 0 });
+	assert.equal(data.project.cards.length, 2);
 });
-check("session.name は生のまま（サニタイズしない）", () => {
-	const a = data.sessions.find((s) => s.id === "aaaa1111");
-	assert.equal(typeof a.name, "string");
-	assert.ok(a.name.length > 0);
+check("global のカードは sid でボードを名乗る（自ボード + 隣のボード）", () => {
+	const slugs = new Set(data.global.cards.map((c) => c.sid));
+	assert.ok(slugs.has(""), "GLOBAL 残行の sid が空でない");
+	assert.ok(slugs.has("aaaa1111"), "隣の project ボードのカードが集約に無い");
+	assert.ok(slugs.has("pi-kanban-board"), "自 project ボードのカードが集約に無い");
 });
 
 // --- 3. serve 一覧 + 存在しないパス ------------------------------------------
@@ -251,8 +252,8 @@ check("exists=false のエントリも一覧に残る", () => {
 		assert.match(html, /^<!doctype html>/i);
 	});
 	check("GET / は /api/dashboard を参照する", () => assert.match(html, /\/api\/dashboard/));
-	check("GET / はダッシュボード本体（stats/sessions/global/serve）", () => {
-		for (const id of ['id="stats"', 'id="sessions"', 'id="global"', 'id="serve"']) {
+	check("GET / はダッシュボード本体（stats/board/global/serve）", () => {
+		for (const id of ['id="stats"', 'id="pane-board"', 'id="global"', 'id="serve"']) {
 			assert.ok(html.includes(id), `${id} が無い`);
 		}
 		// 埋め込み時にバックスラッシュエスケープが二重化されていること。
@@ -337,8 +338,8 @@ check("exists=false のエントリも一覧に残る", () => {
 
 // --- 5. 全空状態 --------------------------------------------------------------
 removeBoard(`${KB}/global.json`);
-removeBoard(`${KB}/sessions/aaaa1111.json`);
-removeBoard(`${KB}/sessions/bbbb2222.json`);
+removeBoard(PROJECT_PATH);
+removeBoard(`${KB}/projects/aaaa1111.json`);
 rmSync(`${KB}/serve.json`, { force: true });
 rmSync(`${KB}/media/one.png`, { force: true });
 rmSync(`${KB}/media/two.mp4`, { force: true });
@@ -346,14 +347,12 @@ rmSync(`${KB}/media/two.mp4`, { force: true });
 	const empty = await (await tf(`${BASE}/api/dashboard`)).json();
 	check("空でも配列を返す (null にしない)", () => {
 		assert.deepEqual(empty.global.cards, []);
-		assert.deepEqual(empty.sessions, []);
+		assert.deepEqual(empty.project.cards, []);
 		assert.deepEqual(empty.serve, []);
 		assert.deepEqual(empty.global.counts, { todo: 0, doing: 0, done: 0 });
 	});
 	check("空状態の stats は全て 0", () => {
 		assert.deepEqual(empty.stats, {
-			sessions: 0,
-			active: 0,
 			todo: 0,
 			doing: 0,
 			done: 0,

@@ -78,10 +78,11 @@ for (let i = 0; i < 40; i++) {
 
 const q = (s) => encodeURIComponent(s);
 const add = async (params) => {
-	const res = await tf(`${BASE}/api/add?scope=session&sid=${ACTIVE}&${params}`);
+	const res = await tf(`${BASE}/api/add?scope=project&${params}`);
 	return { status: res.status, body: await res.json() };
 };
-const dash = async () => (await (await tf(`${BASE}/api/dashboard`)).json()).sessions.find((s) => s.id === ACTIVE);
+// #17: セッション行は無い。ボードはこのプロセスの project ボード 1 枚だけ。
+const dash = async () => (await (await tf(`${BASE}/api/dashboard`)).json()).project;
 const cardOf = async (id) => (await dash()).cards.find((c) => c.id === id);
 
 // --- 1. 期限と見積 -----------------------------------------------------------
@@ -138,7 +139,7 @@ await check("/api/add: 自己参照は 400", async () => {
 	const r = await add(`text=${q("自己")}&col=todo&blocks=999`);
 	assert.equal(r.status, 200, "前方参照は許可されるべき");
 	const selfId = r.body.cards.at(-1).id;
-	const res = await tf(`${BASE}/api/add?scope=session&sid=${ACTIVE}&text=${q("自己")}&col=todo&blocks=${selfId}`);
+	const res = await tf(`${BASE}/api/add?scope=project&text=${q("自己")}&col=todo&blocks=${selfId}`);
 	assert.equal(res.status, 200, "既存 id への参照は通る");
 	// 自己参照そのもの: 次に採番される id を自分で blocks する形は検出できないので、
 	// 2枚張って循環させる（次の check で見る）。
@@ -150,7 +151,7 @@ await check("/api/add: 循環する blocks は 400", async () => {
 	const b = await add(`text=${q("循環B")}&col=todo&blocks=${aid}`);
 	const bid = b.body.cards.at(-1).id;
 	// aid は bid を待つ → 相互依存で循環
-	const res = await tf(`${BASE}/api/add?scope=session&sid=${ACTIVE}&text=${q("循環C")}&col=todo&blocks=${aid}`);
+	const res = await tf(`${BASE}/api/add?scope=project&text=${q("循環C")}&col=todo&blocks=${aid}`);
 	void bid;
 	void res;
 });
@@ -167,7 +168,7 @@ await check("depState: 依存先が done になるまでブロック中、done �
 	const depBefore = poolBefore.find((c) => c.id === depId);
 	assert.notEqual(depBefore.col, "done");
 
-	await tf(`${BASE}/api/move?scope=session&sid=${ACTIVE}&id=${baseId}&col=done`);
+	await tf(`${BASE}/api/move?scope=project&id=${baseId}&col=done`);
 	const after = await cardOf(depId);
 	assert.deepEqual(after.blocks, [baseId], "解除後も依存の記録は残る（履歴）");
 });
@@ -178,7 +179,7 @@ await check("/api/remove: 依存先を消すと blocks からも外れる", asyn
 	const dep = await add(`text=${q("消える待ち")}&col=todo&blocks=${baseId}`);
 	const depId = dep.body.cards.at(-1).id;
 	assert.deepEqual((await cardOf(depId)).blocks, [baseId]);
-	await tf(`${BASE}/api/remove?scope=session&sid=${ACTIVE}&id=${baseId}`);
+	await tf(`${BASE}/api/remove?scope=project&id=${baseId}`);
 	const after = await cardOf(depId);
 	assert.ok(!after.blocks || after.blocks.length === 0, `孤児 blocks が残った: ${JSON.stringify(after.blocks)}`);
 });

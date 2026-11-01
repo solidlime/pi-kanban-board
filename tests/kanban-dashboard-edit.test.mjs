@@ -77,7 +77,7 @@ for (let i = 0; i < 40; i++) {
 	check("GET / は 200 を返す", () => assert.equal(res.status, 200));
 	check("配信 HTML にカード本体の dblclick が含まれる", () =>
 		assert.ok(html.includes('card.addEventListener("dblclick"'), "カード本体のリスナが無い"));
-	check("配信 HTML に RO 注記の定義が含まれる（#55 では発火しない）", () => {
+	check("配信 HTML に RO 注記の定義が含まれる（global で発火する）", () => {
 		// #55: セッション単位ロック撤去で ctx.active は常に true。分岐と文言の定義だけ残る。
 		assert.ok(html.includes("読み取り専用"), "読み取り専用の文言が無い");
 		assert.ok(html.includes('id="note"'), "#note 要素が無い");
@@ -94,14 +94,16 @@ check("DASHBOARD_HTML: dblclick はカード本体に付く（1 本だけ）", (
 	assert.ok(!SRC.includes('t.addEventListener("dblclick"'), ".t 側の登録が残っている（二重発火）");
 });
 
-check("DASHBOARD_HTML: RO 分岐は残るが ctx.active は常に true（#55）", () => {
+check("DASHBOARD_HTML: RO 分岐が残り、project は active / global は読み取り専用（#17）", () => {
 	const at = SRC.indexOf('card.addEventListener("dblclick"');
 	assert.ok(at > 0, "リスナが無い");
 	assert.ok(/if \(!ctx \|\| !ctx\.active\) \{ note\(RO_MSG\); return; \}/.test(SRC.slice(at, at + 900)), "分岐が無い");
 	assert.ok(/RO_MSG = "この看板は読み取り専用/.test(SRC), "文言が違う");
-	// 常に true を渡すので RO 分岐は到達しない
-	assert.ok(SRC.includes('boardCtx("session", s.id)'), "session ボードの ctx に isActive を渡している");
-	assert.ok(!SRC.includes('boardCtx("session", s.id, s.isActive)'), "isActive がまだ渡されている");
+	assert.match(SRC, /function board\(cards, nowMs, ctx\)/);
+	// #17: ボードは 2 板だけ。project = 書き込み可、global = 読み取り専用。
+	assert.ok(SRC.includes('boardCtx("project", "", true)'), "project が書き込み可になっていない");
+	assert.ok(SRC.includes('boardCtx("global", "", false)'), "global が読み取り専用になっていない");
+	assert.ok(!SRC.includes('boardCtx("session"'), "session ボードの ctx が残っている");
 });
 
 check("DASHBOARD_HTML: .ops / a / textarea を除外する", () => {
@@ -112,9 +114,8 @@ check("DASHBOARD_HTML: .ops / a / textarea を除外する", () => {
 	assert.ok(h.includes('closest("textarea")'), "編集中 textarea の除外が無い");
 });
 
-check("DASHBOARD_HTML: RO_TITLE の定義は残る（#55 では card.title に入らない）", () => {
-	assert.ok(/RO_TITLE = "読み取り専用（編集するにはセッションをアクティブに）"/.test(SRC), "title 文言が違う");
-	// session ボードは常に active:true なので、この代入はどの実セッションでも起きない。
+check("DASHBOARD_HTML: RO_TITLE の定義は残る（global のカードにだけ入る）", () => {
+	assert.ok(/RO_TITLE = "読み取り専用（プロジェクトの看板で編集する）"/.test(SRC), "title 文言が違う");
 	assert.ok(/card\.title = RO_TITLE/.test(SRC), "RO_TITLE 代入の分岐自体が消えている");
 });
 
@@ -200,30 +201,23 @@ check("dashboard の <script> は構文として妥当", () => {
 	const payload = {
 		host: "test-host",
 		now: "2026-01-01T00:00:00.000Z",
-		stats: { sessions: 2, active: 1, todo: 2, doing: 0, done: 0, serve: 0, media: 0 },
-		global: { counts: { todo: 0, doing: 0, done: 0 }, cards: [] },
-		sessions: [
-			{
-				id: "01a1480c",
-				name: "active-one",
-				cwd: "/tmp",
-				isActive: true,
-				updatedAt: "2026-01-01T00:00:00.000Z",
-				modes: { session: {}, global: {} },
-				counts: { todo: 1, doing: 0, done: 0 },
-				cards: [{ id: "1", col: "todo", text: "書けるカード" }],
-			},
-			{
-				id: "01a1266c",
-				name: "readonly-one",
-				cwd: "/tmp",
-				isActive: false,
-				updatedAt: "2026-01-01T00:00:00.000Z",
-				modes: { session: {}, global: {} },
-				counts: { todo: 1, doing: 0, done: 0 },
-				cards: [{ id: "2", col: "todo", text: "読むだけのカード" }],
-			},
-		],
+		stats: { todo: 2, doing: 0, done: 0, serve: 0, media: 0 },
+		// #17: project は書き込み可、global は読み取り専用。
+		global: {
+			counts: { todo: 1, doing: 0, done: 0 },
+			cards: [{ id: "2", col: "todo", text: "読むだけのカード" }],
+			modes: {},
+			loops: 0,
+			halted: false,
+		},
+		project: {
+			id: "alpha",
+			modes: {},
+			loops: 0,
+			halted: false,
+			counts: { todo: 1, doing: 0, done: 0 },
+			cards: [{ id: "1", col: "todo", text: "書けるカード" }],
+		},
 		serve: [],
 	};
 	const timers = [];
@@ -253,7 +247,7 @@ check("dashboard の <script> は構文として妥当", () => {
 
 	// カードは dblclick を登録した要素 = 1 枚につき 1 つ
 	const cards = created.filter((e) => e.className === "card");
-	check("カード 2 枚とも dblclick を登録している（active / readonly 両方）", () => {
+	check("カード 2 枚とも dblclick を登録している（project / global 両方）", () => {
 		assert.equal(cards.length, 2, `cards=${cards.length}`);
 		for (const c of cards) assert.ok(c.lis.dblclick && c.lis.dblclick.length === 1, "dblclick が 1 本でない");
 	});
@@ -267,23 +261,25 @@ check("dashboard の <script> は構文として妥当", () => {
 
 	// #note は note() が getElementById で引く。先に実体を作っておく。
 	const noteEl = document.getElementById("note");
-	const RO_TITLE = "読み取り専用（編集するにはセッションをアクティブに）";
+	const RO_TITLE = "読み取り専用（プロジェクトの看板で編集する）";
 	const idle = { target: { closest: () => null } };
 	// dblclick は .t を textarea に置き換えるので、カードの同定は先に済ませる。
 	const cardOf = (text) => cards.find((c) => c.children.some((x) => String(x.innerHTML).includes(text)));
-	const otherCard = cardOf("読むだけのカード");
-	const activeCard = cardOf("書けるカード");
-	check("どちらのカードにも RO_TITLE は付かない（#55: 全セッション編集可）", () => {
-		assert.equal(cards.filter((c) => c.title === RO_TITLE).length, 0, "読み取り専用扱いのカードがある");
+	const otherCard = cardOf("読むだけのカード"); // global（読み取り専用）
+	const activeCard = cardOf("書けるカード"); // project（書き込み可）
+	check("global のカードにだけ RO_TITLE が付く", () => {
+		assert.equal(cards.filter((c) => c.title === RO_TITLE).length, 1, "読み取り専用の title が 1 枚でない");
+		assert.equal(otherCard.title, RO_TITLE);
+		assert.notEqual(activeCard.title, RO_TITLE);
 	});
-	check("driver でないセッションのカードも dblclick で textarea になる", () => {
-		assert.ok(otherCard, "他セッションのカードが無い");
+	check("global のカードは dblclick で note(RO_MSG) を出し、textarea にしない", () => {
+		assert.ok(otherCard, "global のカードが無い");
 		noteEl.hidden = true;
+		noteEl.textContent = "";
 		otherCard.lis.dblclick[0](idle);
-		assert.equal(noteEl.hidden, true, "note が誤発火している");
-		const ta = otherCard.children.find((x) => x.className === "ted");
-		assert.ok(ta, "textarea.ted に置き換わっていない");
-		assert.equal(ta.value, "読むだけのカード");
+		assert.equal(noteEl.hidden, false, "note が出ていない");
+		assert.match(noteEl.textContent, /読み取り専用/);
+		assert.ok(!otherCard.children.some((x) => x.className === "ted"), "読み取り専用なのに textarea になった");
 	});
 	check(".ops 内のダブルクリックは無視する", () => {
 		assert.ok(activeCard, "active カードが無い");

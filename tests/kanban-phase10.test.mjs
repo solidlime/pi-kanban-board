@@ -54,17 +54,20 @@ function check(name, fn) {
 const eq = (a, b) => assert.deepEqual(a, b);
 
 const MODES = `${HOME_DIR}/.pi/kanban/modes.json`;
-const boardFile = (sid) => `${HOME_DIR}/.pi/kanban/sessions/${sid}.json`;
-const writeBoardFile = (sid, cards) =>
-	seedBoard(boardFile(sid), { cards, nextId: 90 });
-const readCards = (sid) => readBoardAt(boardFile(sid)).cards;
+// #17: session ボードは無い。poll が見るのは project ボード（cwd の slug）1 枚だけ。
+// どの sid で seed しても同じ 1 枚を指すので、引数は互換のために残している。
+const SLUG = mod.projectSlugOf(process.cwd());
+const boardFile = () => `${HOME_DIR}/.pi/kanban/projects/${SLUG}.json`;
+const writeBoardFile = (_sid, cards) => seedBoard(boardFile(), { cards, nextId: 90 });
+const readCards = (_sid) => readBoardAt(boardFile()).cards;
 const readModes = () => JSON.parse(readFileSync(MODES, "utf8"));
 
 // 全セッション分を毎回書き戻す: poll は 1.5s ごとに modes.json を読み直す。
-const modesState = { SESSION: {}, GLOBAL: {} };
+const modesState = { PROJECT: {}, GLOBAL: {} };
 const writeModes = () => writeFileSync(MODES, JSON.stringify(modesState, null, 2));
+// #17: project のスイッチは slug で引く（modesFor(f, slug, "project")）。GLOBAL は sid。
 const setModes = (sid, doingLoop, autoPick) => {
-	modesState.SESSION[sid] = { doingLoop, autoPick };
+	modesState.PROJECT[SLUG] = { doingLoop, autoPick };
 	writeModes();
 };
 
@@ -80,7 +83,7 @@ writeBoardFile(ORD, [
 const ordCards = readCards(ORD);
 check("nextTodo は priority 降順 -> #2", () => assert.equal(nextTodo(ordCards).id, 2));
 check("nextTodo の選定は pickFirstTodo と一致する（#2）", () => {
-	const picked = pickFirstTodo(ORD, "session");
+	const picked = pickFirstTodo(SLUG, "project");
 	assert.equal(picked && picked.id, nextTodo(ordCards).id);
 	assert.equal(picked.col, "doing", "pickFirstTodo は実際に DOING へ移す");
 });
@@ -127,23 +130,24 @@ check("TODO 用でも本文は 80 文字で切られる", () => {
 // ---------------------------------------------------------------------------
 // 3: poll の wake 対象選定 = tickCardFor ?? nextTodo（DOING 優先。二重に拾わない）
 // ---------------------------------------------------------------------------
-const pickWake = (cards, sid) => tickCardFor(cards, "session", sid) ?? nextTodo(cards);
+// #17: tickCardFor(cards, sid, now)。所有権は常に movedBy === sid。
+const pickWake = (cards, sid) => tickCardFor(cards, sid) ?? nextTodo(cards);
 check("DOING あり + TODO あり -> DOING カードで wake（TODO は拾わない）", () => {
 	const cards = [
 		{ id: 4, text: "t", col: "todo" },
-		{ id: 6, text: "d", col: "doing" },
+		{ id: 6, text: "d", col: "doing", movedBy: "me" },
 	];
-	const woken = pickWake(cards, "session");
+	const woken = pickWake(cards, "me");
 	assert.equal(woken.id, 6);
 	assert.equal(woken.col, "doing");
 });
 check("DOING 空 + TODO あり -> TODO カードで wake", () => {
-	const woken = pickWake([{ id: 4, text: "t", col: "todo" }], "session");
+	const woken = pickWake([{ id: 4, text: "t", col: "todo" }], "me");
 	assert.equal(woken.id, 4);
 	assert.equal(woken.col, "todo");
 });
 check("DOING 空 + TODO 空 -> wake 対象なし", () =>
-	assert.equal(pickWake([{ id: 8, text: "done", col: "done" }], "session"), undefined));
+	assert.equal(pickWake([{ id: 8, text: "done", col: "done" }], "me"), undefined));
 
 // ---------------------------------------------------------------------------
 // 4: parseKanbanArgs の既存全ケース（Phase 5-9 の非破壊）
@@ -159,15 +163,15 @@ const ARGS_TABLE = [
 	[["loop", "status"], { kind: "modeStatus", key: "doingLoop" }],
 	[["pick", "off"], { kind: "mode", key: "autoPick", value: false }],
 	[["pick", "on", "global"], { kind: "mode", key: "autoPick", value: true, scope: "global" }],
-	[["loop", "maybe"], { kind: "reject", reason: "使い方: /kanban loop on|off|status [session|global] / /kanban pick on|off" }],
-	[["interval", "3"], { kind: "interval", scope: "session", minutes: 3 }],
+	[["loop", "maybe"], { kind: "reject", reason: "使い方: /kanban loop on|off|status [project|global] / /kanban pick on|off" }],
+	[["interval", "3"], { kind: "interval", scope: "project", minutes: 3 }],
 	[["interval", "global", "7"], { kind: "interval", scope: "global", minutes: 7 }],
-	[["interval"], { kind: "intervalStatus", scope: "session" }],
+	[["interval"], { kind: "intervalStatus", scope: "project" }],
 	[["interval", "global"], { kind: "intervalStatus", scope: "global" }],
 	[["interval", "off"], { kind: "reject", reason: "使い方: /kanban interval [global] <分>（0より大きい数値）: off" }],
-	[["stuck", "5"], { kind: "stuck", scope: "session", count: 5 }],
+	[["stuck", "5"], { kind: "stuck", scope: "project", count: 5 }],
 	[["stuck", "global", "2"], { kind: "stuck", scope: "global", count: 2 }],
-	[["stuck"], { kind: "stuckStatus", scope: "session" }],
+	[["stuck"], { kind: "stuckStatus", scope: "project" }],
 	[["stuck", "0"], { kind: "reject", reason: "使い方: /kanban stuck [global] <回>（1〜20の整数）: 0" }],
 	[["priority"], { kind: "priority", id: undefined, value: undefined }],
 	[["priority", "3"], { kind: "priority", id: 3, value: undefined }],
@@ -183,13 +187,16 @@ for (const [argv, expected] of ARGS_TABLE) {
 // ライブ経路: 実タイマー poll -> sendUserMessage / agent_before_settle -> 実ファイル
 // ---------------------------------------------------------------------------
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const commands = new Map();
 
 function startSession(sid, sessionEntries = []) {
 	const handlers = new Map();
 	const sent = [];
 	const entries = [];
 	const pi = {
-		registerCommand() {},
+		registerCommand(name, spec) {
+			commands.set(name, spec);
+		},
 		registerTool() {},
 		appendEntry(customType, data) {
 			entries.push({ customType, data: JSON.parse(JSON.stringify(data)) });
@@ -219,9 +226,13 @@ const settle = (sess) =>
 	sess.handlers.get("agent_before_settle")({ context: { contextMessages: [{ role: "assistant" }] } }, sess.ctx);
 
 try {
+	// #17: session ボードが無くなり、poll が回すのは project ボード 1 枚 + 単一の ownCtx。
+	// 同じセッションで続けて wake を試すと lastTickAt の間隔で止まるので、局面の変わり目は
+	// /kanban take（lastTickAt = 0 に戻す唯一の口）で区切る。
 	// --- (A) TODO のみ + DOING 空 + autoPick ON -> TODO で wake する -------------
 	const A = "phase10-a";
 	const sessA = startSession(A);
+	const take = () => commands.get("kanban").handler("take", sessA.ctx);
 	setModes(A, true, true);
 	writeBoardFile(A, [
 		{ id: 1, text: "first task", col: "todo" },
@@ -239,42 +250,50 @@ try {
 	assert.equal(afterWake.find((c) => c.id === 1).col, "todo", "poll は盤面を書かない（移すのは agent）");
 	passed += 1;
 
-	// --- (B) TODO のみ + autoPick OFF -> wake しない（(C) DOING は同時に走らせる） ---
-	const B = "phase10-b";
-	const sessB = startSession(B);
-	const C = "phase10-c";
-	const sessC = startSession(C);
-	setModes(B, true, false); // doingLoop ON / autoPick OFF
-	modesState.SESSION[C] = { doingLoop: true, autoPick: true };
-	writeModes();
-	writeBoardFile(B, [{ id: 1, text: "should stay", col: "todo" }]);
-	writeBoardFile(C, [
-		{ id: 1, text: "doing work", col: "doing" },
+	// --- (B) TODO のみ + autoPick OFF -> wake しない -----------------------------
+	// sent は累積するので、以降は「増えないこと」で見る。
+	const sentA = sessA.sent.length;
+	const entriesA = sessA.entries.length;
+	setModes(A, true, false); // doingLoop ON / autoPick OFF
+	writeBoardFile(A, [{ id: 1, text: "should stay", col: "todo" }]);
+	take();
+	await sleep(2000);
+	assert.equal(sessA.sent.length, sentA, `autoPick OFF は wake しない: ${JSON.stringify(sessA.sent)}`);
+	assert.equal(sessA.entries.length, entriesA, "autoPick OFF の poll は loop を進めない");
+	passed += 1;
+
+	// --- (C) DOING あり + TODO あり -> DOING で 1 回だけ wake（TODO は拾わない） ---
+	setModes(A, true, true);
+	writeBoardFile(A, [
+		{ id: 1, text: "doing work", col: "doing", movedBy: A },
 		{ id: 2, text: "todo work", col: "todo" },
 	]);
+	take();
 	await sleep(2000);
-	assert.equal(sessB.sent.length, 0, `autoPick OFF は wake しない: ${JSON.stringify(sessB.sent)}`);
-	assert.equal(sessB.entries.length, 0, "autoPick OFF の poll は loop を進めない");
-	assert.equal(sessC.sent.length, 1, `DOING ありは従来どおり 1 回 wake: ${JSON.stringify(sessC.sent)}`);
-	assert.match(sessC.sent[0], /^DOING #1 "doing work" を完了させろ/);
-	assert.doesNotMatch(sessC.sent[0], /TODO/);
-	assert.equal(readCards(C).find((c) => c.id === 2).col, "todo", "TODO は二重に拾わない");
+	assert.equal(sessA.sent.length, sentA + 1, `DOING ありは 1 回 wake: ${JSON.stringify(sessA.sent)}`);
+	assert.match(sessA.sent.at(-1), /^DOING #1 "doing work" を完了させろ/);
+	assert.doesNotMatch(sessA.sent.at(-1), /TODO/);
+	assert.equal(readCards(A).find((c) => c.id === 2).col, "todo", "TODO は二重に拾わない");
 	passed += 1;
 
 	// --- (D) doingLoop OFF -> autoPick ON でも wake しない ----------------------
-	setModes(B, false, true);
+	setModes(A, false, true);
+	writeBoardFile(A, [{ id: 1, text: "should stay", col: "todo" }]);
+	take();
 	await sleep(2000);
-	assert.equal(sessB.sent.length, 0, `doingLoop OFF は wake しない: ${JSON.stringify(sessB.sent)}`);
-	assert.equal(readCards(B).find((c) => c.id === 1).col, "todo");
+	assert.equal(sessA.sent.length, sentA + 1, `doingLoop OFF は wake しない: ${JSON.stringify(sessA.sent)}`);
+	assert.equal(readCards(A).find((c) => c.id === 1).col, "todo");
 	passed += 1;
 
 	// --- (E) settle: DOING あり + TODO あり + autoPick ON -> WIP=1 で TODO は移らない --
 	// 旧 Phase 10 はここで TODO が 1 枚移ることを固定していた。通し番号 #32 で DOING 堆積の
 	// 原因と判明したため WIP=1 に反転。DOING 空の陽性対照は tests/kanban-wip.test.mjs 側。
+	setModes(A, true, true); // (D) で落とした doingLoop を戻す
 	writeBoardFile(A, [
 		{ id: 1, text: "first task", col: "todo" },
 		{ id: 2, text: "second task", col: "todo" },
-		{ id: 3, text: "already doing", col: "doing" },
+		// #17: 自分の DOING は movedBy が無いと「他者のカード」になり WIP=1 が効かない。
+		{ id: 3, text: "already doing", col: "doing", movedBy: A },
 	]);
 	const before = readCards(A);
 	const res = settle(sessA);
@@ -314,7 +333,8 @@ try {
 	assert.equal(resG, undefined, "上限では continue しない");
 	assert.equal(readCards(G).find((c) => c.id === 1).col, "doing", "TODO は拾われたうえで halt する");
 	const fg = readModes();
-	assert.equal(fg.SESSION[G].doingLoop, false, "halt は両 scope の doingLoop を落とす");
+	// #17: project のスイッチは slug、global は sid で引く。
+	assert.equal(fg.PROJECT[SLUG].doingLoop, false, "halt は両 scope の doingLoop を落とす");
 	assert.equal(fg.GLOBAL[G].doingLoop, false);
 	passed += 1;
 } catch (err) {

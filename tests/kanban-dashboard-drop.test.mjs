@@ -420,14 +420,13 @@ const hasCls = (el, c) => el.className.split(" ").includes(c);
 		documentElement: makeEl("html"),
 		querySelectorAll: () => [],
 	};
-	const roSession = {
-		id: "s-ro",
-		name: "read only",
-		cwd: "",
-		isActive: false,
-		modified: 0,
+	// #17: session 行は無くなった。project ボードのカードに置き換える。
+	const projBoard = {
+		id: "demo",
+		loops: 0,
+		halted: false,
 		counts: { todo: 1, doing: 0, done: 0 },
-		modes: { session: {}, global: {} },
+		modes: {},
 		cards: [{ id: 3, text: "ro card", col: "todo" }],
 	};
 	const sandbox = {
@@ -446,9 +445,9 @@ const hasCls = (el, c) => el.className.split(" ").includes(c);
 					Promise.resolve({
 						host: "test-host",
 						now: "2026-01-01T00:00:00.000Z",
-						stats: { sessions: 1, active: 0, todo: 1, doing: 0, done: 0, serve: 0, media: 0 },
-						global: { counts: { todo: 0, doing: 0, done: 0 }, modes: {}, cards: [] },
-						sessions: [roSession],
+						stats: { todo: 1, doing: 0, done: 0, serve: 0, media: 0 },
+						global: { counts: { todo: 0, doing: 0, done: 0 }, modes: {}, cards: [], loops: 0, halted: false },
+						project: projBoard,
 						serve: [],
 					}),
 			});
@@ -463,10 +462,10 @@ const hasCls = (el, c) => el.className.split(" ").includes(c);
 	vm.createContext(sandbox);
 	vm.runInContext(apiScript, sandbox);
 	for (let i = 0; i < 8; i++) await flush();
-	const roCard = walk(byId.sessions).find((n) => hasCls(n, "card"));
+	const roCard = walk(byId.project).find((n) => hasCls(n, "card"));
 
-	await check("vm: driver でないセッションのカードにもファイルをドロップできる（#55）", async () => {
-		assert.ok(roCard, "セッションのカードが描画されていない");
+	await check("vm: project ボードのカードにもファイルをドロップできる（#17）", async () => {
+		assert.ok(roCard, "project のカードが描画されていない");
 		calls.length = 0;
 		const file = { name: "x.png", arrayBuffer: () => Promise.resolve(new ArrayBuffer(4)) };
 		fire(roCard, "drop", {
@@ -477,7 +476,8 @@ const hasCls = (el, c) => el.className.split(" ").includes(c);
 		for (let i = 0; i < 4; i++) await flush();
 		const up = calls.find((u) => u.includes("/api/upload"));
 		assert.ok(up, `upload が飛んでいない: ${JSON.stringify(calls)}`);
-		assert.ok(up.includes("sid=s-ro") && up.includes("id=3"), up);
+		assert.ok(up.includes("scope=project") && up.includes("id=3"), up);
+		assert.ok(!up.includes("sid="), `project なのに sid を送っている: ${up}`);
 	});
 }
 

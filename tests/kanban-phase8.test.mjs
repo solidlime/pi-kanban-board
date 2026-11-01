@@ -157,9 +157,9 @@ check("完全静止（発話から 5 分）-> poll は注入する", () => {
 // --- 5: 既存の非ループ機能（parseKanbanArgs）が壊れていないこと ---------------
 check("［買い物］ -> add", () => eq(parseKanbanArgs(["買い物"]), { kind: "add", text: "買い物" }));
 check("［interval 3］ -> interval", () =>
-	eq(parseKanbanArgs(["interval", "3"]), { kind: "interval", scope: "session", minutes: 3 }));
+	eq(parseKanbanArgs(["interval", "3"]), { kind: "interval", scope: "project", minutes: 3 }));
 check("［stuck 5］ -> stuck", () =>
-	eq(parseKanbanArgs(["stuck", "5"]), { kind: "stuck", scope: "session", count: 5 }));
+	eq(parseKanbanArgs(["stuck", "5"]), { kind: "stuck", scope: "project", count: 5 }));
 check("［loop on］ -> mode", () =>
 	eq(parseKanbanArgs(["loop", "on"]), { kind: "mode", key: "doingLoop", value: true }));
 check("［pick off］ -> mode", () =>

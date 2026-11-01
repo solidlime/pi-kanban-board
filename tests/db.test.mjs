@@ -8,7 +8,7 @@ import { openKanbanDb } from "../extensions/db.ts";
 const fresh = async () => {
 	const dir = mkdtempSync(join(tmpdir(), "kbdb-"));
 	const db = await openKanbanDb(join(dir, "board.sqlite"));
-	return { db, key: { scope: "session", sid: "s1" } };
+	return { db, key: { scope: "project", sid: "s1" } };
 };
 
 test("an unwritten board reads as null, not as an empty one", async () => {
@@ -49,27 +49,8 @@ test("rev moves on every write and only on writes", async () => {
 	db.writeBoard(key, { cards: [], nextId: 1 });
 	assert.ok(one > 0);
 	assert.ok(db.revOf(key) > one);
-	db.writeBoard({ scope: "session", sid: "other" }, { cards: [], nextId: 1 });
-	assert.equal(db.revOf({ scope: "session", sid: "other" }), 1);
-	db.close();
-});
-
-test("importBoard never overwrites a board that already exists", async () => {
-	const { db, key } = await fresh();
-	db.writeBoard(key, { cards: [{ id: 1, text: "live", col: "todo" }], nextId: 2 });
-	assert.equal(db.importBoard(key, { cards: [{ id: 7, text: "stale json", col: "done" }], nextId: 8 }), false);
-	assert.deepEqual(db.readBoard(key).cards, [{ id: 1, text: "live", col: "todo" }]);
-	assert.equal(db.importBoard({ scope: "global", sid: "" }, { cards: [], nextId: 1 }), true);
-	db.close();
-});
-
-test("sweepSessions drops only old session boards", async () => {
-	const { db, key } = await fresh();
-	db.writeBoard(key, { cards: [{ id: 1, text: "a", col: "todo" }], nextId: 2 });
-	db.writeBoard({ scope: "global", sid: "" }, { cards: [], nextId: 1 });
-	assert.equal(db.sweepSessions(Date.now() + 1000), 1);
-	assert.equal(db.readBoard(key), null);
-	assert.ok(db.readBoard({ scope: "global", sid: "" }), "the global board must survive a session sweep");
+	db.writeBoard({ scope: "project", sid: "other" }, { cards: [], nextId: 1 });
+	assert.equal(db.revOf({ scope: "project", sid: "other" }), 1);
 	db.close();
 });
 
@@ -78,7 +59,7 @@ test("a second handle on the same file sees the first one's writes", async () =>
 	const file = join(dir, "board.sqlite");
 	const a = await openKanbanDb(file);
 	const b = await openKanbanDb(file);
-	const key = { scope: "session", sid: "shared" };
+	const key = { scope: "project", sid: "shared" };
 	a.writeBoard(key, { cards: [{ id: 1, text: "from a", col: "todo" }], nextId: 2 });
 	assert.deepEqual(b.readBoard(key).cards, [{ id: 1, text: "from a", col: "todo" }]);
 	b.writeBoard(key, { cards: [{ id: 1, text: "from b", col: "done" }], nextId: 2 });
@@ -101,18 +82,49 @@ test("a board written before due/estimate existed migrates and keeps its cards",
 	old.exec(
 		"CREATE TABLE card (scope TEXT NOT NULL, sid TEXT NOT NULL, id INTEGER NOT NULL, ord INTEGER NOT NULL, text TEXT NOT NULL, col TEXT NOT NULL, img TEXT, moved_at INTEGER, moved_by TEXT, priority INTEGER, next_fire_at TEXT, blocked TEXT, fired_for TEXT, project TEXT, PRIMARY KEY (scope, sid, id))",
 	);
-	old.exec("INSERT INTO board (scope, sid, next_id, rev, touched_at) VALUES ('session','s1',2,1,0)");
-	old.exec("INSERT INTO card (scope, sid, id, ord, text, col) VALUES ('session','s1',1,0,'old','todo')");
+	old.exec("INSERT INTO board (scope, sid, next_id, rev, touched_at) VALUES ('project','s1',2,1,0)");
+	old.exec("INSERT INTO card (scope, sid, id, ord, text, col) VALUES ('project','s1',1,0,'old','todo')");
 	old.close();
 
 	const db = await openKanbanDb(file);
-	const key = { scope: "session", sid: "s1" };
+	const key = { scope: "project", sid: "s1" };
 	assert.deepEqual(db.readBoard(key).cards, [{ id: 1, text: "old", col: "todo" }]);
 	// The point of the migration: the new columns are usable on the old board.
 	db.writeBoard(key, { cards: [{ id: 1, text: "old", col: "todo", due: "2026-11-05", estimate: 3 }], nextId: 2 });
 	const back = db.readBoard(key).cards[0];
 	assert.equal(back.due, "2026-11-05");
 	assert.equal(back.estimate, 3);
+	db.close();
+});
+
+test("a v0 database missing due/estimate is repaired on open, not on a version bump", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "kbdb-v0-"));
+	const file = join(dir, "v0.sqlite");
+	// The live DB that exposed #17: user_version 0, a card table without due/estimate, and
+	// no project/card_dep/decision. A `if (version < …)` gate had silently skipped the ALTER.
+	const { createRequire } = await import("node:module");
+	const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite");
+	const old = new DatabaseSync(file);
+	old.exec("CREATE TABLE meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)");
+	old.exec("CREATE TABLE board (scope TEXT NOT NULL, sid TEXT NOT NULL, next_id INTEGER NOT NULL, rev INTEGER NOT NULL DEFAULT 0, touched_at INTEGER NOT NULL, PRIMARY KEY (scope, sid))");
+	old.exec("CREATE TABLE card (scope TEXT NOT NULL, sid TEXT NOT NULL, id INTEGER NOT NULL, ord INTEGER NOT NULL, text TEXT NOT NULL, col TEXT NOT NULL, img TEXT, moved_at INTEGER, moved_by TEXT, priority INTEGER, next_fire_at TEXT, blocked TEXT, fired_for TEXT, project TEXT, PRIMARY KEY (scope, sid, id))");
+	old.exec("INSERT INTO board (scope, sid, next_id, rev, touched_at) VALUES ('project','kb',2,1,0)");
+	old.exec("INSERT INTO card (scope, sid, id, ord, text, col) VALUES ('project','kb',1,0,'old','todo')");
+	old.close();
+
+	const db = await openKanbanDb(file);
+	// A second handle, because KanbanDb only exposes rows, not pragmas.
+	const probe = new DatabaseSync(file);
+	const cols = probe.prepare("PRAGMA table_info(card)").all().map((r) => r.name);
+	assert.ok(cols.includes("due"), "due 列が増えていない");
+	assert.ok(cols.includes("estimate"), "estimate 列が増えていない");
+	const tables = probe.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map((r) => r.name);
+	for (const t of ["board", "card", "project", "card_dep", "decision"]) {
+		assert.ok(tables.includes(t), `${t} テーブルが無い`);
+	}
+	assert.equal(probe.prepare("PRAGMA user_version").get().user_version, 2, "user_version が目印の 2 になっていない");
+	probe.close();
+	assert.deepEqual(db.readBoard({ scope: "project", sid: "kb" }).cards, [{ id: 1, text: "old", col: "todo" }]);
 	db.close();
 });
 
@@ -195,12 +207,12 @@ test("a v1 database gains the project and decision tables without losing cards",
 	old.exec("PRAGMA user_version = 1");
 	old.exec("CREATE TABLE board (scope TEXT NOT NULL, sid TEXT NOT NULL, next_id INTEGER NOT NULL, rev INTEGER NOT NULL DEFAULT 0, touched_at INTEGER NOT NULL, PRIMARY KEY (scope, sid))");
 	old.exec("CREATE TABLE card (scope TEXT NOT NULL, sid TEXT NOT NULL, id INTEGER NOT NULL, ord INTEGER NOT NULL, text TEXT NOT NULL, col TEXT NOT NULL, img TEXT, moved_at INTEGER, moved_by TEXT, priority INTEGER, next_fire_at TEXT, blocked TEXT, fired_for TEXT, project TEXT, due TEXT, estimate INTEGER, PRIMARY KEY (scope, sid, id))");
-	old.exec("INSERT INTO board (scope, sid, next_id, rev, touched_at) VALUES ('session','s1',2,1,0)");
-	old.exec("INSERT INTO card (scope, sid, id, ord, text, col, project) VALUES ('session','s1',1,0,'v1 card','todo','kb')");
+	old.exec("INSERT INTO board (scope, sid, next_id, rev, touched_at) VALUES ('project','s1',2,1,0)");
+	old.exec("INSERT INTO card (scope, sid, id, ord, text, col, project) VALUES ('project','s1',1,0,'v1 card','todo','kb')");
 	old.close();
 
 	const db = await openKanbanDb(file);
-	const key = { scope: "session", sid: "s1" };
+	const key = { scope: "project", sid: "s1" };
 	assert.deepEqual(db.readBoard(key).cards, [{ id: 1, text: "v1 card", col: "todo", project: "kb" }]);
 	assert.equal(db.writeProject("kb", "kanban"), true);
 	db.addDecision("kb", "v1 から昇格");

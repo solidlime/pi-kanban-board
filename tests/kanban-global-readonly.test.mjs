@@ -34,13 +34,15 @@ const occurrences = (haystack, needle) => {
 };
 
 // --- 1: global の読み取りは集約から -------------------------------------------------
-check("ドリルダウンが readBoard(boardPath(scope, sid)) を直接呼ぶのは drillBoard の中だけ", () => {
-	const hits = occurrences(DRILL, "readBoard(boardPath(scope, sid))");
+check("ドリルダウンが readBoard(boardPath(scope, projKey)) を直接呼ぶのは drillBoard の中だけ", () => {
+	const hits = occurrences(DRILL, "readBoard(boardPath(scope, projKey))");
 	assert.equal(
 		hits.length,
 		1,
 		`直接読みが ${hits.length} か所ある（global では GLOBAL_JSON = 移行後は常に空を読む）`,
 	);
+	// その 1 か所は drillBoard の定義の中（列ループより前）にあること。
+	assert.ok(hits[0] < DRILL.indexOf("for (;;) {"), "直接読みが列ループの中にある");
 });
 
 check("drillBoard の global 分岐は aggregateGlobal() の集約から組む", () => {
@@ -52,8 +54,8 @@ check("drillBoard の global 分岐は aggregateGlobal() の集約から組む",
 });
 
 // --- 2: 書き込みは列ループ先頭のガードの後ろだけ -------------------------------------
-check("writeBoard(boardPath(scope, sid)) はすべてガードの直後から始まる列ループの中", () => {
-	const writes = occurrences(DRILL, "writeBoard(boardPath(scope, sid)");
+check("writeBoard(boardPath(scope, projKey)) はすべてガードの直後から始まる列ループの中", () => {
+	const writes = occurrences(DRILL, "writeBoard(boardPath(scope, projKey)");
 	assert.ok(writes.length > 0, "書き込みが見つからない（テストの切り出しが壊れている）");
 	for (const w of writes) {
 		const loop = DRILL.lastIndexOf("for (;;) {", w);

@@ -151,7 +151,8 @@ test("#8 ペインと取り込み先がある", () => {
 test("#8 決定を打っている間はポーリングが描き直さない", () => {
 	// #11: ループ設定の入力欄は #settings-loops に移ったので、そこも編集中の対象に含める。
 	// phase0: project 看板の入力欄も再描画で消してはいけないので #project が加わった。
-	assert.match(html, /closest\("#stats, #project, #sessions, #global, #serve, #projects, #settings-loops"\)/);
+	// #17: #sessions は無くなった（タブは board / projects / settings の 3 つ）。
+	assert.match(html, /closest\("#stats, #project, #global, #serve, #projects, #settings-loops"\)/);
 	assert.ok(html.includes("if (!isEditing()) renderProjects()"), "取得後も編集中は描かない");
 });
 

@@ -1,12 +1,12 @@
 # プロジェクト総合管理ボードへ
 
-いまのボードは「1セッションのカンバン + 自動 doing ループ + ファイル配信」で、
+いまのボードは「1プロジェクトのカンバン + 全プロジェクトの集約ビュー + 自動 doing ループ + ファイル配信」で、
 その形は完成している。足りないのは**横断**と**時間軸**の2つだけで、どちらも
 データモデルの変更1回で入る。
 
 ## いま出来ること
 
-- セッション単位のボード（`~/.pi/kanban/sessions/<sid>.json`）と共有ボード（`global.json`）
+- プロジェクト単位のボード（`~/.pi/kanban/projects/<slug>.json`）と、全プロジェクトを集約する読み取り専用の GLOBAL（`global.json`）
 - カード = `id` / `text` / `col`（TODO|DOING|DONE）/ `project` ラベル。1枚に1状態、履歴なし
 - 自動 doing ループ（`AUTO_TICK_MS`、飢餓検出、停止理由の公開）
 - 配信（`serve`）とメディア添付、1画面ダッシュボード、5秒ポーリング + ETag
@@ -15,7 +15,7 @@
 
 | 軸 | いま | 足りないこと |
 |----|------|--------------|
-| 横断 | per-session が基本、共有ボードは1枚 | 全セッション・全プロジェクトを1画面で見る |
+| 横断 | per-project が基本、GLOBAL は集約ビュー | 全プロジェクトを1画面で見る |
 | 履歴 | 現在状態だけ | いつ誰がどこへ動かしたか |
 | 関係 | 無い | A が終わるまで B は着手不可、という依存 |
 | 時間 | 無い | 期限、停滞日数、見積/実績 |
@@ -27,7 +27,7 @@
 
 1. **Projects タブ** — プロジェクトごとに枚数 / DOING / 最終活動 / 停滞日数。行クリックで既存ボードへ降りる
 2. **Timeline タブ** — 全カードの移動履歴。`move` 時にイベントを1行追記するだけで、既存 API は変えない
-3. **横断検索** — いまの `#q` はセッション内。全セッション横断に広げる
+3. **横断検索** — いまの `#q` はボード内。全プロジェクト横断に広げる
 
 ### P1 — 計画の道具
 
@@ -71,11 +71,10 @@ web/
 ### データモデル
 
 ```sql
-cards(id PK, sid, project, text, col, created_at, moved_at, due, estimate, created_by)
+cards(id PK, project, text, col, created_at, moved_at, due, estimate, created_by)
 events(id PK, card_id, at, kind, from_col, to_col, actor)   -- 唯一の真実
 deps(card_id, blocked_by, PRIMARY KEY(card_id, blocked_by))
 serve(id PK, path, title, expires_at, permanent)
-sessions(sid PK, last_activity_at, loop_halted)
 ```
 
 `events` が真実で、`cards` はそこから畳める Materialized View。最初は素直に両方書く。

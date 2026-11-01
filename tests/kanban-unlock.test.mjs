@@ -1,7 +1,9 @@
 // #55: セッション単位の書き込みロックが無いことの自己検証。`node tests/kanban-unlock.test.mjs`。
-// 2 セッション（A が driver、B は後発）を起こし、driver でない A のボードにも
-// add / rename が 200 で通ること、session_shutdown が driver の pin を解放すること、
-// ディスクに無い sid でもボードが作られることを固定する。
+// #17 で session ボードは消えたので、生き残った不変条件を固定する:
+//   - 書き込みに pin / driver は要らない（2 セッション起こしても project ボードに書ける）
+//   - /api/sessions は 404、dashboard に sessions / driver / stats.active は無い
+//   - global は読み取り専用のまま
+//   - ディスクにボードが無くても /api/add が作る
 // HOME と KANBAN_PORT を差し替えるので、本番の ~/.pi/kanban と 8789 には触れない。
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
@@ -62,7 +64,7 @@ mod.default({
 });
 for (let i = 0; i < 40; i++) {
 	try {
-		if ((await tf(`http://127.0.0.1:${PORT}/api/sessions`)).ok) break;
+		if ((await tf(`http://127.0.0.1:${PORT}/api/kanban`)).ok) break;
 	} catch {
 		// まだ listen していない
 	}
@@ -75,94 +77,89 @@ const ctxFor = (sid) => ({
 	ui: { notify() {}, setWidget() {} },
 	sessionManager: { getSessionId: () => sid, getEntries: () => [] },
 });
-const boardFile = (sid) => `${HOME_DIR}/.pi/kanban/sessions/${sid}.json`;
-const readBoard = (sid) => readBoardAt(boardFile(sid));
+const SLUG = mod.projectSlugOf(process.cwd());
+const boardFile = () => `${HOME_DIR}/.pi/kanban/projects/${SLUG}.json`;
+const globalFile = `${HOME_DIR}/.pi/kanban/global.json`;
+const readBoard = () => readBoardAt(boardFile());
 const get = (path) => tf(`http://127.0.0.1:${PORT}${path}`);
-const sessionsJson = async () => (await get("/api/sessions")).json();
+const kanbanJson = async () => (await get("/api/kanban")).json();
 
 const A = "unlock-a";
 const B = "unlock-b";
-// A を先に起こす = A が driver（activeSessionId は最初の session_start で固定）。
+// 2 セッション起こす。もう driver / pin という概念は無い（ownCtx は /kanban take で切替）。
 handlers.get("session_start")({}, ctxFor(A));
 handlers.get("session_start")({}, ctxFor(B));
-// A のボードをディスクに置く（B はファイル無し = 合成行の対象）。
-seedBoard(boardFile(A), { cards: [{ id: 1, text: "最初", col: "todo" }], nextId: 2 });
+seedBoard(boardFile(), { cards: [{ id: 1, text: "最初", col: "todo" }], nextId: 2 });
 
-await check("driver は A のまま（B の session_start では動かない）", async () => {
-	const j = await sessionsJson();
-	assert.equal(j.activeSessionId, A);
-	const act = j.sessions.filter((s) => s.mine).map((s) => s.id);
-	assert.deepEqual(act, [A]);
+await check("/api/sessions は消えた（404）", async () => {
+	const res = await get("/api/sessions");
+	assert.equal(res.status, 404);
 });
 
-await check("driver のボードに /api/add が 200", async () => {
-	const res = await get(`/api/add?scope=session&sid=${A}&text=${encodeURIComponent("A追加")}`);
-	assert.equal(res.status, 200);
-	assert.ok(readBoard(A).cards.some((c) => c.text === "A追加"), "A のボードに入っていない");
-});
-
-await check("driver のボードに /api/rename が 200 で反映される", async () => {
-	const res = await get(`/api/rename?scope=session&sid=${A}&id=1&text=${encodeURIComponent("改名")}`);
-	assert.equal(res.status, 200);
-	assert.equal(readBoard(A).cards.find((c) => c.id === 1).text, "改名");
-});
-
-await check("driver でない B のボードにも /api/add が 200 で入る（#55）", async () => {
-	const res = await get(`/api/add?scope=session&sid=${B}&text=${encodeURIComponent("B追加")}`);
-	assert.equal(res.status, 200);
-	assert.ok(readBoardAt(boardFile(B)), "B のボードファイルが作られていない");
-	assert.ok(readBoard(B).cards.some((c) => c.text === "B追加"), "B のボードに入っていない");
-});
-
-await check("driver でない B のボードにも /api/rename が 200 で反映される（#55）", async () => {
-	const res = await get(`/api/rename?scope=session&sid=${B}&id=1&text=${encodeURIComponent("B改名")}`);
-	assert.equal(res.status, 200);
-	assert.equal(readBoard(B).cards.find((c) => c.id === 1).text, "B改名");
-});
-
-await check("ディスクに無い sid でも /api/add が 200 でそのボードが作られる", async () => {
-	const fresh = "unlock-fresh";
-	assert.equal(boardExists(boardFile(fresh)), false, "前提が壊れている: 既にファイルがある");
-	const res = await get(`/api/add?scope=session&sid=${fresh}&text=${encodeURIComponent("新規")}`);
-	assert.equal(res.status, 200);
-	assert.ok(readBoardAt(boardFile(fresh)), "ボードファイルが作られていない");
-	assert.ok(readBoard(fresh).cards.some((c) => c.text === "新規"));
-});
-
-await check("ボードファイルが無い driver は一覧に出るが ACTIVE 扱いにはならない", async () => {
-	// 合成行（ディスクに無い sid を一覧に足す）は残すが、mine は false。
-	removeBoard(boardFile(A));
-	const j = await sessionsJson();
-	const row = j.sessions.find((s) => s.id === A);
-	assert.ok(row, "合成行が一覧に無い");
-	assert.equal(row.mine, false, "死んだセッションが driver/ACTIVE で居座っている");
+await check("dashboard に sessions / driver / stats.active は無い", async () => {
 	const dash = await (await get("/api/dashboard")).json();
-	assert.equal(dash.sessions.filter((s) => s.isActive).length, 0, "dashboard が ACTIVE を出している");
-	assert.equal(dash.sessions.find((s) => s.id === A).isActive, false);
-	assert.equal(j.activeSessionId, A, "driver の pin 自体は残る（auto-tick の駆動元）");
-	// 再び書けばファイルが戻る。
-	const res = await get(`/api/add?scope=session&sid=${A}&text=${encodeURIComponent("復帰")}`);
-	assert.equal(res.status, 200);
-	assert.ok(readBoardAt(boardFile(A)), "ボードファイルが戻っていない");
+	assert.equal(dash.sessions, undefined, "sessions が残っている");
+	assert.equal(dash.driver, undefined, "driver が残っている");
+	assert.equal(dash.stats.sessions, undefined);
+	assert.equal(dash.stats.active, undefined);
+	// #17: 代わりに project / global が loops と halted を持つ。
+	for (const row of [dash.project, dash.global]) {
+		assert.equal(typeof row.loops, "number", "loops が無い");
+		assert.equal(typeof row.halted, "boolean", "halted が無い");
+	}
 });
 
-await check("session_shutdown で driver の pin が解放される（#55）", async () => {
-	const before = await sessionsJson();
-	assert.equal(before.activeSessionId, A, "前提: A が driver");
+await check("/api/kanban は project/global とモードだけを返す", async () => {
+	const j = await kanbanJson();
+	assert.equal(j.ok, true);
+	assert.equal(j.sessionId, undefined, "sessionId が残っている");
+	assert.equal(j.session, undefined, "session が残っている");
+	assert.deepEqual(Object.keys(j.modes).sort(), ["global", "project"]);
+	assert.equal(j.projectId, SLUG);
+});
+
+await check("誰も take していなくても project ボードに /api/add が 200", async () => {
+	const res = await get(`/api/add?scope=project&text=${encodeURIComponent("A追加")}`);
+	assert.equal(res.status, 200);
+	assert.ok(readBoard().cards.some((c) => c.text === "A追加"), "project ボードに入っていない");
+});
+
+await check("project ボードに /api/rename が 200 で反映される", async () => {
+	const res = await get(`/api/rename?scope=project&id=1&text=${encodeURIComponent("改名")}`);
+	assert.equal(res.status, 200);
+	assert.equal(readBoard().cards.find((c) => c.id === 1).text, "改名");
+});
+
+await check("scope 省略（既定 project）でも /api/add が 200", async () => {
+	const res = await get(`/api/add?text=${encodeURIComponent("既定スコープ")}`);
+	assert.equal(res.status, 200);
+	assert.ok(readBoard().cards.some((c) => c.text === "既定スコープ"));
+});
+
+await check("global は読み取り専用（#17 で編集口は project だけ）", async () => {
+	seedBoard(globalFile, { cards: [], nextId: 1 });
+	const res = await get(`/api/add?scope=global&sid=${A}&text=${encodeURIComponent("global 追加")}`);
+	assert.equal(res.status, 400);
+	const j = await res.json();
+	assert.equal(j.ok, false);
+	assert.match(String(j.error), /read-only/);
+	assert.equal(readBoardAt(globalFile).cards.length, 0, "global に書けてしまった");
+});
+
+await check("ディスクに無い project ボードでも /api/add が作る", async () => {
+	removeBoard(boardFile());
+	assert.equal(boardExists(boardFile()), false, "前提: ボードが無い");
+	const res = await get(`/api/add?scope=project&text=${encodeURIComponent("新規")}`);
+	assert.equal(res.status, 200);
+	assert.ok(readBoardAt(boardFile()), "ボードファイルが作られていない");
+	assert.ok(readBoard().cards.some((c) => c.text === "新規"));
+});
+
+await check("session_shutdown してもボードは書けるまま（pin は無い）", async () => {
 	handlers.get("session_shutdown")();
-	const after = await sessionsJson();
-	assert.equal(after.activeSessionId, null, "shutdown 後も pin が残っている");
-	assert.equal(after.sessions.filter((s) => s.mine).length, 0, "ACTIVE の看板が残っている");
-	const dash = await (await get("/api/dashboard")).json();
-	assert.equal(dash.driver, null);
-	assert.equal(dash.sessions.filter((s) => s.isActive).length, 0);
-	assert.equal(dash.stats.active, 0);
-});
-
-await check("解放後もどのボードにも書ける", async () => {
-	const res = await get(`/api/add?scope=session&sid=${A}&text=${encodeURIComponent("解放後")}`);
+	const res = await get(`/api/add?scope=project&text=${encodeURIComponent("解放後")}`);
 	assert.equal(res.status, 200);
-	assert.ok(readBoard(A).cards.some((c) => c.text === "解放後"));
+	assert.ok(readBoard().cards.some((c) => c.text === "解放後"));
 });
 
 console.log(`${passed} passed, ${failures.length} failed`);

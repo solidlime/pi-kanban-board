@@ -1,9 +1,10 @@
 // #61 「デフォルト pick on」の自己検証。
 // 発端: ボードが「ピック OFF」と表示していたのに、ループは実際に TODO を拾っていた。
-// 原因は modesFor() が SESSION[sid] のエントリをそのまま返していたこと。エントリが
+// 原因は modesFor() がセッションのエントリをそのまま返していたこと。エントリが
 // 部分的（{doingLoop:true} だけで autoPick が無い）だと autoPick が undefined になり、
 // GUI は `!!m.autoPick` で描くので OFF に見える。フラット既定（autoPick: true）に
 // フォールバックしていなかった。
+// #17: スイッチのキーは board（PROJECT = プロジェクト slug / GLOBAL = セッション）になった。
 // フレームワーク無しで `node tests/kanban-default-pick.test.mjs`。
 // HOME と KANBAN_PORT を差し替えるので本番の ~/.pi/kanban と 8789 には触れない。
 import { fileURLToPath } from "node:url";
@@ -19,7 +20,6 @@ const tf = (input, init) => authFetch(input, init);
 
 const HOME_DIR = "/tmp/kb-default-pick-home";
 rmSync(HOME_DIR, { recursive: true, force: true });
-mkdirSync(`${HOME_DIR}/.pi/kanban/sessions`, { recursive: true });
 mkdirSync(`${HOME_DIR}/.pi/kanban/media`, { recursive: true });
 process.env.HOME = HOME_DIR;
 // Windows: os.homedir() prefers USERPROFILE over HOME, so keep them in step or the
@@ -65,7 +65,7 @@ const check = (name, fn) => {
 const MODES = `${HOME_DIR}/.pi/kanban/modes.json`;
 const writeModes = (o) => writeFileSync(MODES, JSON.stringify(o, null, 2));
 const readModes = () => JSON.parse(readFileSync(MODES, "utf8"));
-const SID = "sess-partial";
+const SLUG = mod.projectSlugOf(process.cwd());
 
 // --- サーバ起動 (このテスト専用ポート) ----------------------------------------
 const pi = {
@@ -85,14 +85,16 @@ for (let i = 0; i < 40; i++) {
 	}
 	await new Promise((r) => setTimeout(r, 100));
 }
+// 最初の読みで modes.json が無ければ既定が書かれる（readModesFile の repair 経路）。
+assert.ok((await tf(`${BASE}/api/kanban?fields=id`)).ok, "起動したサーバが /api/kanban に答えない");
 
 /** /api/kanban?sid= は modes を直接返す（GET。実在セッションに限らない）。 */
-async function sessionModes() {
-	const r = await tf(`${BASE}/api/kanban?sid=${SID}&fields=id`);
+async function boardModes() {
+	const r = await tf(`${BASE}/api/kanban?fields=id`);
 	assert.ok(r.ok, `/api/kanban が ${r.status}`);
 	const j = await r.json();
-	assert.ok(j.modes && j.modes.session, `modes.session が無い: ${JSON.stringify(j).slice(0, 300)}`);
-	return j.modes.session;
+	assert.ok(j.modes && j.modes.project, `modes.project が無い: ${JSON.stringify(j).slice(0, 300)}`);
+	return j.modes.project;
 }
 
 // ===========================================================================
@@ -104,46 +106,47 @@ await check("#61 新品の modes.json は両方 true で生成される（既定
 	assert.equal(m.autoPick, true, `autoPick の既定が true でない: ${m.autoPick}`);
 });
 
-await check("#61 SESSION エントリが部分的（autoPick 欠落）でも autoPick は true に解決される", async () => {
-	writeModes({ doingLoop: true, autoPick: true, SESSION: { [SID]: { doingLoop: true } } });
-	const m = await sessionModes();
+await check("#61 PROJECT エントリが部分的（autoPick 欠落）でも autoPick は true に解決される", async () => {
+	writeModes({ doingLoop: true, autoPick: true, PROJECT: { [SLUG]: { doingLoop: true } } });
+	const m = await boardModes();
 	assert.equal(m.autoPick, true, `部分エントリで autoPick が true にならない（GUI は OFF と表示する）: ${JSON.stringify(m)}`);
 });
 
-await check("#61 SESSION エントリが部分的（doingLoop 欠落）でも doingLoop は true に解決される", async () => {
-	writeModes({ doingLoop: true, autoPick: true, SESSION: { [SID]: { autoPick: true } } });
-	const m = await sessionModes();
+await check("#61 PROJECT エントリが部分的（doingLoop 欠落）でも doingLoop は true に解決される", async () => {
+	writeModes({ doingLoop: true, autoPick: true, PROJECT: { [SLUG]: { autoPick: true } } });
+	const m = await boardModes();
 	assert.equal(m.doingLoop, true, `部分エントリで doingLoop が true にならない: ${JSON.stringify(m)}`);
 });
 
 await check("#61 明示 false は尊重される（autoPick: false を勝手に ON にしない）", async () => {
-	writeModes({ doingLoop: true, autoPick: true, SESSION: { [SID]: { doingLoop: true, autoPick: false } } });
-	const m = await sessionModes();
+	writeModes({ doingLoop: true, autoPick: true, PROJECT: { [SLUG]: { doingLoop: true, autoPick: false } } });
+	const m = await boardModes();
 	assert.equal(m.autoPick, false, `明示 false が true に化けた: ${JSON.stringify(m)}`);
 });
 
 await check("#61 明示 false は尊重される（doingLoop: false）", async () => {
-	writeModes({ doingLoop: true, autoPick: true, SESSION: { [SID]: { doingLoop: false, autoPick: true } } });
-	const m = await sessionModes();
+	writeModes({ doingLoop: true, autoPick: true, PROJECT: { [SLUG]: { doingLoop: false, autoPick: true } } });
+	const m = await boardModes();
 	assert.equal(m.doingLoop, false, `明示 false が true に化けた: ${JSON.stringify(m)}`);
 });
 
-await check("#61 エントリが全く無いセッションはフラット既定に解決される", async () => {
-	writeModes({ doingLoop: true, autoPick: true, SESSION: {} });
-	const m = await sessionModes();
+await check("#61 エントリが全く無いボードはフラット既定に解決される", async () => {
+	writeModes({ doingLoop: true, autoPick: true, PROJECT: {} });
+	const m = await boardModes();
 	assert.equal(m.doingLoop, true, `エントリ無しで doingLoop が true でない: ${JSON.stringify(m)}`);
 	assert.equal(m.autoPick, true, `エントリ無しで autoPick が true でない: ${JSON.stringify(m)}`);
 });
 
 await check("#61 片方だけ切り替えても、応答の modes は両方 boolean で返る", async () => {
-	writeModes({ doingLoop: true, autoPick: true, SESSION: { [SID]: { doingLoop: true } } });
-	const r = await tf(`${BASE}/api/modes?scope=session&sid=${SID}&key=autoPick&value=off`);
+	writeModes({ doingLoop: true, autoPick: true, PROJECT: { [SLUG]: { doingLoop: true } } });
+	// #17: スイッチの書き込み先はボード。project は sid 無しならこのプロセスの cwd。
+	const r = await tf(`${BASE}/api/modes?scope=project&key=autoPick&value=off`);
 	assert.ok(r.ok, `/api/modes が ${r.status}`);
 	const j = await r.json();
 	assert.equal(j.ok, true, `modes 書き込みが失敗: ${JSON.stringify(j)}`);
-	assert.equal(typeof j.modes.session.autoPick, "boolean", `autoPick が boolean でない: ${JSON.stringify(j.modes.session)}`);
-	assert.equal(j.modes.session.autoPick, false, `off にしたのに false でない: ${JSON.stringify(j.modes.session)}`);
-	assert.equal(typeof j.modes.session.doingLoop, "boolean", `doingLoop が boolean でない: ${JSON.stringify(j.modes.session)}`);
+	assert.equal(typeof j.modes.project.autoPick, "boolean", `autoPick が boolean でない: ${JSON.stringify(j.modes.project)}`);
+	assert.equal(j.modes.project.autoPick, false, `off にしたのに false でない: ${JSON.stringify(j.modes.project)}`);
+	assert.equal(typeof j.modes.project.doingLoop, "boolean", `doingLoop が boolean でない: ${JSON.stringify(j.modes.project)}`);
 });
 
 // --- 集計 ---------------------------------------------------------------------

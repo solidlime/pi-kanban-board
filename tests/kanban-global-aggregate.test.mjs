@@ -125,18 +125,13 @@ await check("/api/dashboard: global.counts は project 2 枚 + global 1 枚の�
 	assert.equal(j.global.cards.length, 4);
 });
 
-// 契約が変わった（#16）: stats = 全 project + GLOBAL 残行 + 全セッション。
-// 不変条件: stats − 全セッションの counts === global.counts。
-await check("/api/dashboard: stats − 全セッション === global.counts", async () => {
+// 契約が変わった（#17）: セッション行が消え、global の集約がそのまま総数になった。
+// 不変条件: stats === global.counts（stats は集約を数え直したもの）。
+await check("/api/dashboard: stats === global.counts（二重計上しない）", async () => {
 	const j = await (await tf(`${BASE}/api/dashboard`)).json();
-	const sess = { todo: 0, doing: 0, done: 0 };
-	for (const s of j.sessions) for (const k of Object.keys(sess)) sess[k] += s.counts[k];
-	for (const k of Object.keys(sess)) {
-		assert.equal(
-			j.stats[k] - sess[k],
-			j.global.counts[k],
-			`${k}: stats=${j.stats[k]} sessions=${sess[k]} global=${j.global.counts[k]}`,
-		);
+	assert.equal("sessions" in j, false, "sessions が残っている");
+	for (const k of ["todo", "doing", "done"]) {
+		assert.equal(j.stats[k], j.global.counts[k], `${k}: stats=${j.stats[k]} global=${j.global.counts[k]}`);
 	}
 });
 

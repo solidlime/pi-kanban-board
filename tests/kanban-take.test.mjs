@@ -14,7 +14,7 @@ const tf = (input, init) => authFetch(input, init);
 
 const HOME_DIR = "/tmp/kb-take-home";
 rmSync(HOME_DIR, { recursive: true, force: true });
-mkdirSync(`${HOME_DIR}/.pi/kanban/sessions`, { recursive: true });
+mkdirSync(`${HOME_DIR}/.pi/kanban/projects`, { recursive: true });
 process.env.HOME = HOME_DIR;
 // Windows: os.homedir() prefers USERPROFILE over HOME, so keep them in step or the
 // server writes its token to the real profile and this test reads a missing file.
@@ -51,16 +51,21 @@ function check(name, fn) {
 const eq = (a, b) => assert.deepEqual(a, b);
 
 const MODES = `${HOME_DIR}/.pi/kanban/modes.json`;
-const board = (sid) => `${HOME_DIR}/.pi/kanban/sessions/${sid}.json`;
-const writeBoardFile = (sid, cards = [{ id: 1, text: "t", col: "doing" }]) =>
-	seedBoard(board(sid), { cards, nextId: cards.length + 1 });
+// #17: ボードは project / global だけ。project のキーは cwd の slug なので、
+// どのセッションが駆動元でも同じ 1 枚を見る。movedBy で持ち主を示す。
+const SLUG = mod.projectSlugOf(process.cwd());
+const PROJECT = `${HOME_DIR}/.pi/kanban/projects/${SLUG}.json`;
+const GLOBAL = `${HOME_DIR}/.pi/kanban/global.json`;
+const writeBoardFile = (cards = [{ id: 1, text: "t", col: "doing" }]) =>
+	seedBoard(PROJECT, { cards, nextId: cards.length + 1 });
 // doingLoop を ON にした modes.json を、指定 sid ぶんまとめて書く。
 const writeModes = (...sids) =>
 	writeFileSync(
 		MODES,
 		JSON.stringify({
-			SESSION: Object.fromEntries(sids.map((s) => [s, { doingLoop: true, autoPick: false }])),
-			GLOBAL: {},
+			GLOBAL: Object.fromEntries(sids.map((s) => [s, { doingLoop: true, autoPick: false }])),
+			// project のスイッチはボード（slug）に付く。#17 で session ごとではない。
+			PROJECT: { [SLUG]: { doingLoop: true, autoPick: false } },
 		}),
 	);
 
@@ -112,7 +117,7 @@ const haltingEntry = (at) => ({
 	data: { count: 10, halted: "limit", scope: null, stuckId: null, stuckCount: 0, lastActivityAt: at },
 });
 
-const driver = async () => (await (await tf(`${BASE}/api/dashboard`)).json()).driver;
+const dashboard = async () => (await (await tf(`${BASE}/api/dashboard`)).json());
 
 // KANBAN_DEBUG の poll verdict 行を集める（なぜ発火/停止したかの観測用）。
 const traces = [];
@@ -123,14 +128,13 @@ process.stderr.write = (chunk) => {
 	return true;
 };
 // その sid の verdict（"fire" / "skip:halted:limit" / ...）。無ければ null。
-// poll は session -> global の順に 2 行吐くので、先頭（= session 層）の行を採る。
+// poll は global -> project の順に 2 行吐くので、末尾（= project 層）の行を採る。
 const verdictOf = (sid) => {
-	for (const line of traces) {
-		if (!line.includes(`sid=${sid} `)) continue;
-		const m = /=> (\S+)/.exec(line);
-		if (m !== null) return m[1];
-	}
-	return null;
+	const mine = traces.filter((line) => line.includes(`sid=${sid} `));
+	const last = mine.at(-1);
+	if (last === undefined) return null;
+	const m = /=> (\S+)/.exec(last);
+	return m === null ? null : m[1];
 };
 
 // --- 1. parseKanbanArgs が take を返す ----------------------------------------
@@ -152,8 +156,8 @@ check("未知語はカードのまま", () => eq(mod.parseKanbanArgs(["買い物
 
 	const SID_A = "sid-take-a";
 	const SID_B = "sid-take-b";
-	writeBoardFile(SID_A);
-	writeBoardFile(SID_B);
+	const MOVED_AT = 1_600_000_000_000; // 古い所有者が動かした時刻。take で変わらないこと
+	writeBoardFile([{ id: 1, text: "t", col: "doing", movedBy: SID_A, movedAt: MOVED_AT }]);
 	writeModes(SID_A, SID_B);
 
 	const ctxA = mkCtx(SID_A);
@@ -164,12 +168,19 @@ check("未知語はカードのまま", () => eq(mod.parseKanbanArgs(["買い物
 
 	await kanban.handler("take", ctxB);
 	check("take で ownCtx が後発セッションへ移る", () => eq(t.ownCtx(), ctxB));
-	check("take の notify 文言", () =>
-		eq(ctxB.notes.at(-1), `kanban: 駆動元を ${SID_A} → ${SID_B} に切り替えた`));
+	check("take の notify 文言（引き継いだ枚数付き）", () =>
+		eq(ctxB.notes.at(-1), `kanban: 駆動元を ${SID_A} → ${SID_B} に切り替えた（DOING 1 枚の所有権も引き継いだ）`));
 
-	// dashboard は読み取り専用の `driver` を返す（書き込み経路は無い）。
-	const drv = await driver();
-	check("dashboard.driver が切り替え後は SID_B", () => assert.equal(drv, SID_B));
+	// #17: 死んだセッションが刻んだ movedBy はどの actor とも一致しないので、DOING の
+	// カードは永久に拾われない。take が明示的な引き継ぎになる。
+	check("take は DOING カードの movedBy を新しい sid に付け替える", () =>
+		eq(readBoardAt(PROJECT).cards.map((c) => c.movedBy), [SID_B]));
+	check("take は movedAt を書き換えない（所有権の移動は進捗ではない）", () =>
+		eq(readBoardAt(PROJECT).cards.map((c) => c.movedAt), [MOVED_AT]));
+
+	// dashboard に driver は無い（#17 で session 行ごと削除）。
+	const dash = await dashboard();
+	check("dashboard に driver は無い", () => assert.equal("driver" in dash, false, Object.keys(dash).join(",")));
 
 	// /kanban help の本文は take を 1 行で説明している。
 	await kanban.handler("help", ctxB);
@@ -191,8 +202,8 @@ check("未知語はカードのまま", () => eq(mod.parseKanbanArgs(["買い物
 
 	const SID_A = "sid-halt-a";
 	const SID_B = "sid-halt-b";
-	writeBoardFile(SID_A);
-	writeBoardFile(SID_B);
+	// A（駆動元）が所有する DOING。take で B に移る（#17 でボードは共有）。
+	writeBoardFile([{ id: 1, text: "t", col: "doing", movedBy: SID_A, movedAt: 1_600_000_000_000 }]);
 	writeModes(SID_A, SID_B);
 
 	handlers.get("session_start")({ type: "session_start" }, mkCtx(SID_A));
@@ -217,7 +228,8 @@ check("未知語はカードのまま", () => eq(mod.parseKanbanArgs(["買い物
 	const { pi: pi2, handlers: h2, sent: sent2 } = mkPi();
 	const t2 = mod.default(pi2).__test;
 	const SID_C = "sid-halt-c";
-	writeBoardFile(SID_C);
+	// 対象のカードを C の所有に戻す（ボードは 1 枚だから、B が引き継いだままだと no-card）。
+	writeBoardFile([{ id: 1, text: "t", col: "doing", movedBy: SID_C, movedAt: 1_600_000_000_000 }]);
 	writeModes(SID_A, SID_B, SID_C);
 	h2.get("session_start")({ type: "session_start" }, mkCtx(SID_C, [haltingEntry(Date.now())]));
 	traces.length = 0;
@@ -241,7 +253,8 @@ const atFixedClock = async (take, SID) => {
 	const t = mod.default(pi).__test;
 	const kanban = commands.get("kanban");
 	process.env.KANBAN_DEBUG = "1";
-	writeBoardFile(SID);
+	// このセッションが所有する DOING を置く（quiet 判定の対象になるカード）。
+	writeBoardFile([{ id: 1, text: "t", col: "doing", movedBy: SID, movedAt: 1_600_000_000_000 }]);
 	writeModes(SID);
 
 	const T0 = 1_700_000_000_000;

@@ -100,8 +100,9 @@ await check("P4 GLOBAL DOING: 他人の DOING は tickCardFor が拾わない（
 		{ id: 5, text: "theirs", col: "doing", movedBy: B },
 		{ id: 6, text: "mine", col: "doing", movedBy: A },
 	];
-	assert.equal(tickCardFor(cards, "global", A)?.id, 6);
-	assert.equal(tickCardFor([{ id: 5, text: "theirs", col: "doing", movedBy: B }], "global", A), undefined);
+	// #17: tickCardFor(cards, sid) — scope 引数は無い。所有権は movedBy === sid だけ。
+	assert.equal(tickCardFor(cards, A)?.id, 6);
+	assert.equal(tickCardFor([{ id: 5, text: "theirs", col: "doing", movedBy: B }], A), undefined);
 });
 
 // ---------------------------------------------------------------------------
@@ -195,7 +196,7 @@ try {
 	await check("1c 移した後は A の DOING になり、poll の wake 式がそのカードを返す", () => {
 		// poll の wake 式そのもの（AUTO_TICK は 5 分待つので、実時間ではなく式で見る）
 		const cards = readGlobal();
-		const picked = tickCardFor(cards, "global", A) ?? nextTodo(cards, "global", A);
+		const picked = tickCardFor(cards, A) ?? nextTodo(cards, "global", A);
 		assert.equal(picked?.id, 1, `A が DOING を駆動できない: ${JSON.stringify(cards)}`);
 		assert.match(continuationPrompt(picked, "global"), /^GLOBAL DOING #1/);
 	});

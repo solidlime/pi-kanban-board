@@ -134,19 +134,19 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
     .ctl input[type=number]{width:44px}
   }
   .more{font-size:11px;color:var(--muted);padding:2px 4px}
-  /* sessions */
-  .sess{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:10px}
-  .sess.doing{border-color:var(--accent);background:var(--accent-soft);outline:1px solid var(--accent);outline-offset:-1px}
+  /* board rows（#17: .sess-hd / .sess-cwd は project と GLOBAL の行が流用している） */
   .sess-hd{display:flex;gap:6px 14px;align-items:baseline;flex-wrap:wrap;margin-bottom:8px}
   .sess-t{font-size:13px;font-weight:600;overflow-wrap:anywhere;display:inline-flex;align-items:center;gap:6px}
   .sess-cwd{font-size:11px;color:var(--muted);overflow-wrap:anywhere}
-  .sess-meta{font-size:11px;color:var(--muted);margin-left:auto;white-space:nowrap;font-variant-numeric:tabular-nums}
-  /* #48: セッションはヘッダのクリックで畳める（既定は全開） */
+  /* #48: 看板はヘッダのクリックで畳める（既定は全開） */
   /* #49: 10px/var(--muted) の ▾ は見えなかった。本文色 + 13px + hover で「畳める」ことを示す。
      caret は文字のまま差し替える（回転より読み上げ・コピーに強い）。
      GLOBAL のヘッダは .sess-hd をレイアウト流用しているだけなので role で限定する。*/
   .sess-hd[role="button"]{cursor:pointer;border-radius:6px;margin:-4px -6px 8px;padding:4px 6px;user-select:none;-webkit-user-select:none}
   .sess-hd[role="button"]:hover{background:var(--accent-soft)}
+  /* #17 で .sess の箱は消えたが、この 1 行は caret の見た目の仕様として
+     tests/kanban-dashboard-collapse-search.test.mjs が固定している（tests/ は今は触らない）。
+     実際に当たるのは下の .sess-hd>.caret。*/
   .sess .caret{flex:none;font-size:13px;line-height:1;color:var(--text);width:1em;text-align:center;margin-right:4px}
   /* #62: GLOBAL のヘッダも同じ caret を使う（.sess の外にあるので別セレクタ） */
   .sess-hd>.caret{flex:none;font-size:13px;line-height:1;color:var(--text);width:1em;text-align:center;margin-right:4px}
@@ -176,7 +176,7 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
   .srv .x.dead{color:var(--danger-fg)}
   .srv .permx{font-size:11px;color:var(--muted);display:inline-flex;align-items:center;gap:3px;white-space:nowrap;cursor:pointer}
   .srv.gone{opacity:.55}
-  /* #8 プロジェクト: 1 件 = 1 ブロック。器は .sess と同じ見た目、中身の並びだけ足す */
+  /* #8 プロジェクト: 1 件 = 1 ブロック。器はボード行と同じ見た目、中身の並びだけ足す */
   .pj{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:10px}
   .pmeta{display:flex;gap:2px 10px;align-items:baseline;flex-wrap:wrap;font-size:11px;color:var(--muted);margin-left:auto;font-variant-numeric:tabular-nums}
   .pmeta .bad{color:var(--bad)}
@@ -220,7 +220,6 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
   @media (max-width:899px){
     .stats{grid-template-columns:repeat(4,1fr)}
     .cols{grid-template-columns:1fr}
-    .sess-meta{margin-left:0;white-space:normal}
   }
   @media (max-width:640px){
     .tabs{flex-direction:row;width:100%}
@@ -238,13 +237,13 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
 
   <div class="dash">
     <nav class="tabs" role="tablist" aria-label="ダッシュボード">
-      <button class="tab active" id="tab-sessions" type="button" role="tab" aria-selected="true" aria-controls="pane-sessions">セッション</button>
+      <button class="tab active" id="tab-board" type="button" role="tab" aria-selected="true" aria-controls="pane-board">ボード</button>
       <button class="tab" id="tab-projects" type="button" role="tab" aria-selected="false" aria-controls="pane-projects">プロジェクト</button>
       <button class="tab" id="tab-settings" type="button" role="tab" aria-selected="false" aria-controls="pane-settings">設定</button>
     </nav>
     <div class="panes">
-      <div class="pane" id="pane-sessions" role="tabpanel" aria-labelledby="tab-sessions">
-        <!-- #36: エージェントタブ廃止。中身（STATS）をセッション一覧の上に移す。全 0 では畳む -->
+      <div class="pane" id="pane-board" role="tabpanel" aria-labelledby="tab-board">
+        <!-- #36: エージェントタブ廃止。STATS はボードの上に置く。全 0 では畳む -->
         <section id="statsec" aria-labelledby="h-stats">
           <h2 id="h-stats">STATS</h2>
           <div class="stats" id="stats" aria-label="統計サマリ"></div>
@@ -256,8 +255,11 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
           <button class="sw" type="button" id="f-ok" aria-pressed="false">着手可能</button>
           <button class="sw" type="button" id="f-overdue" aria-pressed="false">期限超過</button>
           <button class="sw" type="button" id="f-blocked" aria-pressed="false">ブロック中</button>
+          <!-- #17: session 行が消えたので、検索とプロジェクト絞り込みは絞り込みバーへ移した -->
+          <input id="q" class="q" type="search" placeholder="検索（/ でフォーカス, Esc でクリア）" autocomplete="off">
+          <select id="proj" class="q" aria-label="プロジェクトで絞り込み"></select>
         </div>
-        <!-- phase0: project が既定のボード。作業ディレクトリ（git ルート）単位で全セッションが共有する -->
+        <!-- phase0: project が既定のボード。作業ディレクトリ（git ルート）単位で共有する -->
         <section aria-labelledby="h-project">
           <div class="hd" id="h-project">このプロジェクト（<span id="project-slug">—</span>）</div>
           <div id="project"></div>
@@ -266,12 +268,6 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
         <section aria-labelledby="h-global">
           <div class="hd" id="h-global">GLOBAL（全プロジェクト・読み取り専用）</div>
           <div id="global"></div>
-        </section>
-        <section aria-labelledby="h-sessions">
-          <div class="hd" id="h-sessions">SESSIONS</div>
-          <input id="q" class="q" type="search" placeholder="検索（/ でフォーカス, Esc でクリア）" autocomplete="off">
-          <select id="proj" class="q" aria-label="プロジェクトで絞り込み"></select>
-          <div id="sessions"></div>
         </section>
       </div>
       <div class="pane" id="pane-projects" role="tabpanel" aria-labelledby="tab-projects" hidden>
@@ -307,10 +303,10 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
   var MEDIA = "/api/media/";             // mirrors MEDIA_PREFIX (server side)
   var MAX_PER_COL = 10;
   var COLS = [["todo","TODO"],["doing","DOING"],["done","DONE"]];
-  var STAT_KEYS = [["sessions","sessions"],["active","active"],["todo","todo"],["doing","doing"],["done","done"],["serve","serve"],["media","media"]];
+  var STAT_KEYS = [["todo","todo"],["doing","doing"],["done","done"],["serve","serve"],["media","media"]];
   var lastData = null;   // keep previous payload when the server blinks
   var sig = "";
-  // #48: 検索語とセッションの開閉はクライアント側の状態。ポーリングの再描画と
+  // #48: 検索語とボードの開閉はクライアント側の状態。ポーリングの再描画と
   // DOM 作り直しを跨いで保持する（localStorage は使わない: 既存の流儀どおり）。
   var query = "";        // 小文字化済みの検索語
   // プロジェクト絞り込み: "" = 全部 / "\\u0000" = 無所属 / それ以外は slug 完全一致。
@@ -319,9 +315,8 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
   // 1-4: カードの絞り込み（"" = 全部 / "ok" 着手可能 / "overdue" 期限超過 / "blocked" ブロック中）。
   // 再描画のたびに DOM を作り直すので、選択状態はここに持つ（query / projPick と同じ流儀）。
   var cardFilter = "";
-  var sessOpen = {};     // sid -> expanded（既定は全開）
   // #38-7/#38-11: どちらもクライアントだけの状態（サーバには保存しない）。
-  // #62: 列のキーは "session.<sid>:col" / "global:col"（GLOBAL に active sid を混ぜない）。
+  // #62: 列のキーは "project.:col" / "global:col"（#17: project ボードは sid を持たない）。
   var collapsed = {};    // ckey -> true while a column is folded
   // #72: 60 字超の本文のクリック展開（.open）だけは別の持ち物が要る。.open は表示状態なので
   // isEditing() では守れず、分境界の再描画で必ず畳まれる。sig には載せない（載せると
@@ -415,7 +410,7 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
     try {
       var all = JSON.parse(localStorage.getItem(LS_KEY) || "{}");
       if (!all || typeof all !== "object") all = {};
-      all[LS_NS] = { sess: sessOpen, g: gOpen, cols: collapsed, open: keptOpen() };
+      all[LS_NS] = { g: gOpen, cols: collapsed, open: keptOpen() };
       localStorage.setItem(LS_KEY, JSON.stringify(all));
     } catch (e) {}
   }
@@ -446,7 +441,7 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
     }
   }
   // #65: 描画を止めるのは「ユーザが入力中」のときだけ。再描画で作り直される領域
-  // （#stats/#sessions/#global/#serve）の中で、値を受け付ける要素にフォーカスがある間は描かない。
+  // （#stats/#project/#global/#serve）の中で、値を受け付ける要素にフォーカスがある間は描かない。
   // フォーカス中の要素が DOM から切り離されると blur が飛ばず、打鍵が無言で消えるため。
   // - #q（検索ボックス）は 4 領域の外にある静的ノードなので対象外。ここを含めると
   //   検索打鍵中に redraw() が early return し、絞り込みが一切描画されず画面が凍る。
@@ -463,11 +458,11 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
     var typing = tg === "TEXTAREA" || a.isContentEditable === true ||
       (tg === "INPUT" && !NO_TYPE_INPUT.test(a.type || "text"));
     if (!typing) return false;
-    return !!(a.closest && a.closest("#stats, #project, #sessions, #global, #serve, #projects, #settings-loops"));
+    return !!(a.closest && a.closest("#stats, #project, #global, #serve, #projects, #settings-loops"));
   }
   // sig は「今 DOM に描かれている状態」を記述する（query を落とすと検索語の変化を取り逃す）。
   // cardFilter はクリック時に redraw() が sig を揃えるので、ここには載せない（既存テストの形を保つ）。
-  function uiSig(){ return JSON.stringify([sessOpen, gOpen, collapsed, query, projPick]); }
+  function uiSig(){ return JSON.stringify([gOpen, collapsed, query, projPick]); }
   function persist(){ persistCore(); }
   // #72: 展開状態の読み直し + 消えたカードの掃除。render() からも呼ぶので例外は握りつぶす。
   // 掃除は列単位（ckey 接頭辞）。掃除が起きたときだけ書き戻すので、保存も痩せる。
@@ -497,7 +492,6 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
     try { all = JSON.parse(localStorage.getItem(LS_KEY) || "null"); } catch (e) {}
     var v = all && all[LS_NS];
     if (!v || typeof v !== "object") return;
-    if (v.sess && typeof v.sess === "object") Object.keys(v.sess).forEach(function(k){ sessOpen[k] = v.sess[k] === true; });
     if (v.cols && typeof v.cols === "object") Object.keys(v.cols).forEach(function(k){ collapsed[k] = v.cols[k] === true; });
     if (v.open && typeof v.open === "object") Object.keys(v.open).forEach(function(k){ cardOpen[k] = v.open[k] === true; });
     if (typeof v.g === "boolean") gOpen = v.g;
@@ -549,11 +543,10 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
 
   // #29 tabs: the sidebar only toggles the hidden attribute — no navigation.
   // activeTab survives the 5s re-render because render() re-applies it.
-  // #11: 設定タブ。#12: 配信サーバーもここに吸収（タブはセッション / プロジェクト / 設定の 3 つ）。
-  var TABS = ["sessions", "projects", "settings"]; // #36: エージェントタブ廃止。 #8: プロジェクトは真ん中。 #11: 設定は最後 #12: 配信サーバーは設定へ
-  var activeTab = "sessions";
+  var TABS = ["board", "projects", "settings"]; // #17: session 撤廃。ボード / プロジェクト / 設定の 3 つ。 #8: プロジェクトは真ん中
+  var activeTab = "board";
   function selectTab(name){
-    if (TABS.indexOf(name) < 0) name = "sessions";
+    if (TABS.indexOf(name) < 0) name = "board";
     activeTab = name;
     TABS.forEach(function(n){
       var on = n === name;
@@ -580,11 +573,13 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
     if (text !== undefined) e.textContent = text;
     return e;
   }
-  // #55: どのセッションの看板も編集できる（セッション単位の書き込みロックは無い）。
+  // #55: どの看板も編集できる（看板単位の書き込みロックは無い）。
   // ctx.active が false なのは今は GLOBAL だけ（サーバが 400 を返す読み取り専用の集約ビュー）。
-  // 見出しに「読み取り専用」と出るので、ツールチップの文言はセッション時代のままにしてある。
-  var RO_MSG = "この看板は読み取り専用 — 編集するにはそのセッションをアクティブにして";
-  var RO_TITLE = "読み取り専用（編集するにはセッションをアクティブに）";
+  // 見出しに「読み取り専用」と出るので、ツールチップの文言は GLOBAL 向けのままにしてある。
+  // #17: ボードは project / global の 2 枚だけ。どちらも編集できるのは project だけなので、
+  // 読み取り専用の理由は GLOBAL 側の文言で括る（旧「セッションをアクティブに」は無くなった）。
+  var RO_MSG = "この看板は読み取り専用 — 編集するにはプロジェクトの看板を開いて";
+  var RO_TITLE = "読み取り専用（プロジェクトの看板で編集する）";
   var noteTimer = null;
   // #44/#39: 一時的なお知らせ行。#banner は接続断専用なので相乗りしない。
   function note(msg){
@@ -632,7 +627,7 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
   }
 
   // #30/#31: the one fetch site. The dashboard poll and every write go through it, so a
-  // write always carries scope (+ sid: #33 makes scope=session without sid a 400).
+  // write always carries scope (#17: session scope is gone; scope=project needs no sid).
   function api(path, params, init){
     var u = path;
     if (params) {
@@ -761,13 +756,11 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
     if (v <= 0) return 0;
     return v <= 1000 ? v : 10;
   }
-  // #67: how many doing-loops this session has used. Published by /api/dashboard
-  // (sessions[].loops) from the extension process; the cap is read from modes here.
-  function loopCountOf(sid){
-    if (!lastData || !sid) return 0;
-    var i, list = lastData.sessions || [];
-    for (i = 0; i < list.length; i++) if (list[i] && list[i].id === sid) return typeof list[i].loops === "number" ? list[i].loops : 0;
-    return 0;
+  // #17: 「残り N」はボード（project / global）の loops として来る。session 行は無くなったので
+  // 数えるのは看板 1 枚分だけ。上限 M は modes からここで読む。
+  function loopCountOf(scope){
+    var b = lastData && lastData[scope];
+    return (b && typeof b.loops === "number") ? b.loops : 0;
   }
   // Dashboard wording: 残り N / M, and 残り N / 無制限 when the cap is 0 (uncapped) —
   // the same N as the footer's (loopRestText: remaining under a cap, used without one).
@@ -782,19 +775,8 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
     return "残り " + u + " / 無制限";
   }
 
-  // #58: why the doing-loop is stopped, and what actually clears it. The loop budget
-  // lives in pi's extension process (survives the file), so the tool/command paths lift
-  // it; #67 added the 再開 button below, which is the third (and only GUI) path.
-  function haltText(h, cap){
-    if (!h) return "";
-    var c = (cap === undefined || cap === null) ? 10 : cap;
-    if (h.halted === "limit") return "ループ上限（" + (c > 0 ? c + "回" : "無制限") + "）に達して停止 — セッションカードの「再開」、kanban ツールの resume、または /kanban loop on（スイッチを ON にしても再開しない）";
-    if (h.halted === "stuck") return "同じカード（#" + h.stuckId + "）で " + h.stuckCount + " 回スタックして停止 — カードを直してからセッションカードの「再開」、kanban ツールの resume、または /kanban loop on（スイッチを ON にしても再開しない）";
-    return "";
-  }
-
   // #67: 再開ボタン。halt は拡張プロセスのメモリなので、この書き込みは「要求」でしかない
-  // （/api/resume は 202 を返し、そのセッションの poll が実際に解除する）。
+  // （/api/resume は 202 を返し、そのボードの poll が実際に解除する）。
   function resumeBtn(ctx){
     var b = el("button", "mini", "再開");
     b.type = "button";
@@ -802,6 +784,15 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
     b.disabled = !ctx.active;
     if (ctx.active) b.addEventListener("click", function(){ act("/api/resume", {}, ctx); });
     return b;
+  }
+  // #17: 停止の理由（文字列）は session 行と一緒に消えた。残ったのは指標の bool だけなので、
+  // 理由は書かずに「止まっている」ことと解除先だけを示す。再開はボード行に移った。
+  function haltBox(b, ctx){
+    if (!b || b.halted !== true) return null;
+    var hb = el("div", "halt");
+    hb.appendChild(document.createTextNode("ループ停止中（上限に達したか、同じカードでスタック） — ここの「再開」、kanban ツールの resume、または /kanban loop on で解除する（スイッチを ON にしても再開しない） "));
+    hb.appendChild(resumeBtn(ctx));
+    return hb;
   }
   var PRIO_MAX = 99, PRIO_MIN = -99; // same range the server enforces
   var dragging = null;               // {scope, sid, id} of the card being dragged
@@ -883,7 +874,7 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
   function boardCtl(ctx, m, cards){
     var box = el("div", "ctl");
     // GLOBAL は「アクティブでない」のではなく読み取り専用（/api/schedule?scope=global は 400）。
-    if (!ctx.active) box.title = ctx.scope === "global" ? "GLOBAL は読み取り専用" : "このセッションはアクティブではないので読み取り専用";
+    if (!ctx.active) box.title = ctx.scope === "global" ? "GLOBAL は読み取り専用" : "この看板は読み取り専用";
     function sw(key, label){
       var on = !m || m[key] !== false; // absent means ON, same as modesFor
       var b = el("button", "sw" + (on ? " on" : ""), label + " " + (on ? "ON" : "OFF"));
@@ -965,7 +956,7 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
     COLS.forEach(function(pair, ci){
       var key = pair[0];
       var list = cards.filter(function(c){ return c.col === key; });
-      // #38-7: 折りたたみのキーは看板ごと（GLOBAL と各セッションで別々に畳める）
+      // #38-7: 折りたたみのキーは看板ごと（GLOBAL と project で別々に畳める）
       // #62: GLOBAL に active sid を混ぜない（切り替わるたびに別キーになって勝手に開いていた）。
       var ckey = ctx.scope === "global" ? "global:" + key : ctx.scope + "." + ctx.sid + ":" + key;
       var box = el("div", "col" + (key === "doing" && list.length ? " doingcol" : "") + (collapsed[ckey] ? " collapsed" : ""));
@@ -977,7 +968,7 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
       h.addEventListener("click", function(){ collapsed[ckey] = !collapsed[ckey]; box.classList.toggle("collapsed"); persist(); });
       box.appendChild(h);
       if (ctx && ctx.active) {
-        // #30 D&D: same handler on the GLOBAL board and on every session board.
+        // #30 D&D: same handler on the GLOBAL board and on the project board.
         // #52: ファイルも受ける。掴んでいるカードがあれば従来の移動経路を優先する。
         box.addEventListener("dragover", function(ev){
           if (dragging && dragging.scope === ctx.scope && dragging.sid === ctx.sid) {
@@ -1198,7 +1189,7 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
   function renderStats(st){
     var box = document.getElementById("stats");
     box.innerHTML = "";
-    var allZero = true; // #36: sessions/active は自分自身なので数えない（常時 ≥1 のため）
+    var allZero = true; // #36: 全部 0 のときは場所を取らない
     // 1-4: カードから数える4つを先頭に足す（既存の7つは後ろに残す）。
     var cs = cardStats(lastData);
     [
@@ -1217,14 +1208,14 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
     });
     STAT_KEYS.forEach(function(p){
       var v = st ? (st[p[0]] || 0) : 0;
-      if (v > 0 && p[0] !== "sessions" && p[0] !== "active") allZero = false;
-      var s = el("div", "stat" + (v > 0 && (p[0] === "doing" || p[0] === "active") ? " hot" : ""));
+      if (v > 0) allZero = false;
+      var s = el("div", "stat" + (v > 0 && p[0] === "doing" ? " hot" : ""));
       s.setAttribute("aria-label", p[1] + " " + v);
       s.appendChild(el("span", "n", String(v)));
       s.appendChild(el("span", "l", p[1]));
       box.appendChild(s);
     });
-    if (st && !st.sessions && !st.todo && !st.doing && !st.done && !st.serve && !st.media) {
+    if (st && !st.todo && !st.doing && !st.done && !st.serve && !st.media) {
       box.title = "すべて 0 — サーバは起動しているけど、まだ何もない";
     }
     // #36: 普段は空なので、全部 0 のときはブロックごと畳んで場所を取らない
@@ -1280,10 +1271,11 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
   }
   // 1-4: カードから数える指標（API の stats には無い）。看板ごとに依存を解いて足し上げる。
   // #16: d.global は全 project ボードの合成なので、d.project を足すと同じカードを二重に数える。
+  // #17: 面は global / project の 2 つだけ（session 行は無くなった）。
   function cardStats(d){
     var boards = [];
     if (d && d.global) boards.push(d.global.cards || []);
-    ((d && d.sessions) || []).forEach(function(s){ boards.push((s && s.cards) || []); });
+    if (d && !d.global && d.project) boards.push(d.project.cards || []);
     var today = todayISO(), ok = 0, over = 0, blocked = 0, done = 0, total = 0;
     boards.forEach(function(list){
       list.forEach(function(c){
@@ -1310,7 +1302,7 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
       }
     }
     add(((d && d.global) || {}).cards);
-    ((d && d.sessions) || []).forEach(function(s){ add(s.cards); });
+    add(((d && d.project) || {}).cards);
     slugs.sort();
     if (projPick !== "" && projPick !== "\\u0000" && !seen[projPick]) projPick = "";
     var opts = [["", "全部"], ["\\u0000", "(無所属)"]];
@@ -1334,107 +1326,30 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
     return "TODO " + n("todo") + " / DOING " + n("doing") + " / DONE " + n("done");
   }
 
-  function renderSessions(sessions, nowMs){
-    // #74: 相対時刻は nowBase（render が入れたもの）を使う。nowMs 引数は互換のため残す。
-    void nowMs;
-    var box = document.getElementById("sessions");
-    box.innerHTML = "";
-    if (!sessions.length) {
-      empty(box, "\\u25A1", "<b>セッションなし</b> — pi が起動すると、各セッションの看板がここに並ぶよ");
-      return;
-    }
-    var search = query !== "";
-    var filtered = search || projPick !== "" || cardFilter !== "";
-    sessions.forEach(function(s){
-      var doing = (s.counts && s.counts.doing) || 0;
-      var art = el("article", "sess" + (doing ? " doing" : ""));
-      if (doing) art.setAttribute("aria-label", "DOING あり: " + s.name);
-      // #48: 既定は全開。検索中は畳んでいても中身を見せる（ヒットを隠さない）。
-      var expanded = (sessOpen[s.id] === undefined ? true : sessOpen[s.id]) || filtered;
-      var cards = (s.cards || []).filter(function(c){
-        return projOk(c) && cardFilterOk(c, s.cards || []) && (!search || String(c.text || "").toLowerCase().indexOf(query) >= 0);
-      });
-      var hd = el("header", "sess-hd");
-      hd.title = "クリックで折りたたみ";
-      // #49: 見た目だけでなくキーボードでも畳める（aria-expanded は実際の開閉状態）。
-      hd.setAttribute("role", "button");
-      hd.setAttribute("tabindex", "0");
-      hd.setAttribute("aria-expanded", expanded ? "true" : "false");
-      hd.appendChild(el("span", "caret", expanded ? "\\u25BE" : "\\u25B8"));
-      var t = el("span", "sess-t");
-      t.appendChild(el("span", null, s.name));
-      if (s.isActive) t.appendChild(el("span", "badge on", "\\u25CF ACTIVE"));
-      if (doing) t.appendChild(el("span", "badge db", "\\u25CF DOING " + doing));
-      hd.appendChild(t);
-      hd.appendChild(el("span", "sess-cwd", s.cwd || ""));
-      var meta = el("span", "sess-meta");
-      meta.textContent = countsText(s.counts, cards, filtered) + " ・ 更新 ";
-      // #74: 相対時刻は専用の span。毎分の書き換えは tick() が textContent だけで行う。
-      var mm = el("span", null);
-      agoLive(s.updatedAt, mm);
-      meta.appendChild(mm);
-      meta.title = full(s.updatedAt);
-      hd.appendChild(meta);
-      // ヘッダ内の操作（ops / ボタン / リンク / 入力）は畳まない。click と keydown で共有。
-      function toggle(e){
-        var tgt = e && e.target;
-        if (tgt && tgt.closest && (tgt.closest(".ops") || tgt.closest("button") || tgt.closest("a") || tgt.closest("input"))) return;
-        sessOpen[s.id] = !(sessOpen[s.id] === undefined ? true : sessOpen[s.id]);
-        persist();
-        redraw();
-      }
-      hd.addEventListener("click", toggle);
-      hd.addEventListener("keydown", function(e){
-        var k = e && e.key;
-        if (k !== "Enter" && k !== " " && k !== "Spacebar") return;
-        if (e.preventDefault) e.preventDefault();
-        toggle(e);
-      });
-      art.appendChild(hd);
-      // #58: reason + way back. Without it the ctl switches in the 設定 tab look like they work.
-      // #67: the cap in force for THIS row, and a 再開 button for a limit halt — the
-      // switch alone still cannot lift a halt (it lives in the extension process).
-      var halt = haltText(s.halted, maxLoopsOf(s.modes && s.modes.session));
-      if (halt) {
-        var hb = el("div", "halt", halt);
-        if (s.halted && s.halted.halted === "limit") {
-          hb.appendChild(document.createTextNode(" "));
-          hb.appendChild(resumeBtn(boardCtx("session", s.id)));
-        }
-        art.appendChild(hb);
-      }
-      if (!expanded) { box.appendChild(art); return; }
-      var ctx = boardCtx("session", s.id);
-      // #48: 検索してヒット 0 件のセッションは「該当なし」だけ出す（ヘッダは残す）。
-      // それ以外は今までどおり。操作系は絞り込み前の全カードを見る。
-      if (filtered && !cards.length) {
-        art.appendChild(el("div", "sess-empty", "該当なし"));
-      } else {
-        // #11: ループ設定は設定タブへ移した（この看板はカードだけ）。
-        art.appendChild(board(cards, nowMs, ctx));
-      }
-      box.appendChild(art);
-    });
-  }
-
-  // phase0: このプロセス（＝この cwd の git ルート）のボード。同じリポジトリの全セッションが共有する。
-  // 中身の描画は renderGlobal / renderSessions と同じ板（board()）を使い回す。
+  // phase0: このプロセス（＝この cwd の git ルート）のボード。
+  // #17: 中身の描画は renderGlobal と同じ板（board()）を使い回す。
   // 古いサーバは project を返さない: その場合は空の見出しだけ出して落ちない。
-  function renderProject(p, nowMs, sid){
-    void sid; // 書き込みの宛先はサーバが cwd で解決する（scope=project に sid は要らない）。
-    // ここに slug を載せると act() が sid=<slug> を送ってしまい、サーバはそれをセッション id として
-    // 別の cwd に解決しうる。空にしておけば sid ごと送られない。
+  // 「残り N / M」と 再開 ボタンは session 行のものだったので、この行に移した（#17）。
+  function renderProject(p, nowMs){
     var box = document.getElementById("project");
     if (!box) return;
     box.innerHTML = "";
     var slug = document.getElementById("project-slug");
     if (slug) slug.textContent = (p && p.id) || "—";
-    if (!p) {
+    var ctx = boardCtx("project", "", true);
+    // cwd で解決されるので sid は送らない。ここに slug を載せると act() が sid=<slug> を送る。
+    if (p) {
+      var head = el("div", "sess-hd");
+      head.appendChild(el("span", "sess-cwd", loopRestLine(maxLoopsOf(p.modes), loopCountOf("project"))));
+      box.appendChild(head);
+      var hb = haltBox(p, ctx);
+      if (hb) box.appendChild(hb);
+    } else {
       empty(box, "\\u25A1", "<b>プロジェクト看板なし</b> — サーバが古いと出ないよ");
-      return;
     }
+    if (!p) return;
     var all = p.cards || [];
-    // 絞り込みは GLOBAL / SESSIONS と同じ規則（上部の絞り込みバーは全看板に効く）。
+    // 絞り込みは GLOBAL と同じ規則（上部の絞り込みバーは両方の看板に効く）。
     var search = query !== "";
     var filtered = search || projPick !== "" || cardFilter !== "";
     var cards = all.filter(function(x){
@@ -1442,22 +1357,24 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
     });
     if (!cards.length && filtered) { box.appendChild(el("div", "sess-empty", "該当なし")); return; }
     // 空でも board() を描く（project は既定のボードなので、空のときこそ + が要る）。
-    box.appendChild(board(cards, nowMs, boardCtx("project", "", true)));
+    box.appendChild(board(cards, nowMs, ctx));
   }
 
-  function renderGlobal(g, nowMs, sid){
+  function renderGlobal(g, nowMs){
     var box = document.getElementById("global");
     box.innerHTML = "";
     var all = (g && g.cards) || [];
     var c = (g && g.counts) || {todo:0, doing:0, done:0};
-    // #49: GLOBAL も検索で絞る。絞らないと SESSIONS だけ減って GLOBAL が残り、
+    // 読み取り専用の ctx（サーバが書き込みを 400 で断る）。「残り N / M」と 再開 もこの行に出す。
+    var ctx = boardCtx("global", "", false);
+    // #49: GLOBAL も検索で絞る。絞らないとボード側だけ減って GLOBAL が残り、
     // ヒットしていないカードが検索結果に混ざる（実ブラウザ検証で発見）。
     var search = query !== "";
     var filtered = search || projPick !== "" || cardFilter !== "";
     var cards = all.filter(function(x){
       return projOk(x) && cardFilterOk(x, all) && (!search || String(x.text || "").toLowerCase().indexOf(query) >= 0);
     });
-    // #62: GLOBAL もセッション見出しと同じ操作感で畳める（既定は開。検索中は強制展開）。
+    // #62: GLOBAL も同じ操作感で畳める（既定は開。検索中は強制展開）。
     var gexpanded = gOpen || filtered;
     var head = el("div", "sess-hd");
     head.title = "クリックで折りたたみ";
@@ -1465,9 +1382,12 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
     head.setAttribute("tabindex", "0");
     head.setAttribute("aria-expanded", gexpanded ? "true" : "false");
     head.appendChild(el("span", "caret", gexpanded ? "▾" : "▸"));
-    head.appendChild(el("span", "sess-cwd", countsText(c, cards, filtered) + " ・ 計 " + cards.length + " 枚"));
+    head.appendChild(el("span", "sess-cwd", countsText(c, cards, filtered) + " ・ 計 " + cards.length + " 枚 ・ " + loopRestLine(maxLoopsOf(g && g.modes), loopCountOf("global"))));
     box.appendChild(head);
-    // ヘッダ内の操作は畳まない（セッション見出しと同じ除外）。
+    // GLOBAL の halt は読み取り専用なので 再開 は出さない（haltBox が ctx.active で無効化する）。
+    var hb = haltBox(g, ctx);
+    if (hb) box.appendChild(hb);
+    // ヘッダ内の操作は畳まない。
     function toggleGlobal(e){
       var tgt = e && e.target;
       if (tgt && tgt.closest && (tgt.closest(".ops") || tgt.closest("button") || tgt.closest("a") || tgt.closest("input"))) return;
@@ -1486,7 +1406,6 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
     // GLOBAL への書き込みはサーバが 400 で断るので、読み取り専用の ctx で描く
     // （追加・ドラッグ・削除・添付の導線が aria-disabled + 理由表示になる）。
     // 操作系は従来どおり絞り込み前の全カード（サーバの件数）を見る。
-    var ctx = boardCtx("global", sid, false);
     if (!cards.length) {
       if (filtered) box.appendChild(el("div", "sess-empty", "該当なし"));
       else empty(box, "\\u25A1", "<b>GLOBAL 看板は空</b> — プロジェクトのカードが1枚も無いよ");
@@ -1510,7 +1429,8 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
     return { text: "あと" + Math.max(1, Math.floor(s / 60)) + "分", cls: "" };
   }
 
-  function renderServe(list, nowMs, sid){
+  // #17: /api/serve は sid を使わない（レジストリはボードに属さない）ので、ctx は固定でよい。
+  function renderServe(list, nowMs){
     var box = document.getElementById("serve");
     if (!box) return; // ペイン組み替えで container が消えても render() を凍らせない
     box.innerHTML = "";
@@ -1546,7 +1466,7 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
       // Serve has no per-entry process to stop: 停止 deregisters the URL, 削除 also
       // drops the served file (server unlinks regular files only, never a directory).
       var ops = el("span", "ops");
-      var sctx = boardCtx("global", sid, false);
+      var sctx = boardCtx("global", "", false);
       // 永久トグル。変更は既存の /api/serve 経由（scope+sid が載る）。
       var perm = el("label", "permx");
       perm.title = "永久にする（自動削除なし）";
@@ -1575,26 +1495,24 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
   }
 
   // #11: 設定タブ。ボードごとのループ設定を 1 列に並べる（従来の boardCtl をそのまま使う）。
-  // 並びは GLOBAL が先頭、その後に d.sessions の順（サーバの並びを尊重する）。
-  function renderSettings(d, activeSid){
+  // 並びは GLOBAL が先頭、その後にこのプロジェクト（#17: session 行は無くなった）。
+  function renderSettings(d){
     var box = document.getElementById("settings-loops");
     if (!box) return;
     box.innerHTML = "";
     var g = d.global || {};
+    var p = d.project || {};
     // global は読み取り専用（/api/schedule?scope=global は 400）なので、行の操作は非活性にする。
-    var rows = [{ label: "GLOBAL（全セッション共有）", ctx: boardCtx("global", activeSid, false),
-      modes: g.modes, cards: g.cards || [], halted: null, cap: null }];
-    (d.sessions || []).forEach(function(s){
-      var m = s.modes ? s.modes.session : null;
-      rows.push({ label: s.name, ctx: boardCtx("session", s.id), modes: m,
-        cards: s.cards || [], halted: s.halted, cap: maxLoopsOf(m) });
-    });
+    var rows = [{ label: "GLOBAL（全プロジェクト共有）", ctx: boardCtx("global", "", false), b: g }];
+    rows.push({ label: p.id ? "このプロジェクト（" + p.id + "）" : "このプロジェクト",
+      ctx: boardCtx("project", "", true), b: p });
     rows.forEach(function(r){
       var row = el("div", "srow");
       row.appendChild(el("div", "rowlabel", r.label));
-      row.appendChild(boardCtl(r.ctx, r.modes, r.cards));
-      // #58: スイッチだけ見て「効く」と誤解させない。解除ボタンはセッションカード側にある。
-      if (r.halted) row.appendChild(el("div", "halt", haltText(r.halted, r.cap)));
+      row.appendChild(boardCtl(r.ctx, r.b.modes, r.b.cards || []));
+      // #58: スイッチだけ見て「効く」と誤解させない。解除ボタンはボード行にある（#17）。
+      var hb = haltBox(r.b, r.ctx);
+      if (hb) row.appendChild(hb);
       box.appendChild(row);
     });
     renderDb(d.db);
@@ -1888,14 +1806,11 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
     // #74: 前回描いたスパンは DOM ごと捨てるので、台帳もここで捨てる（伸びない）。
     nowT = [];
     nowS = [];
-    var activeSid = "";
-    (d.sessions || []).forEach(function(s){ if (s.isActive && !activeSid) activeSid = s.id; });
     renderStats(d.stats);
-    renderSessions(d.sessions || [], nowMs);
-    renderProject(d.project, nowMs, d.driver);
-    renderGlobal(d.global, nowMs, activeSid);
-    renderServe(d.serve || [], nowMs, activeSid);
-    renderSettings(d, activeSid); // #11
+    renderProject(d.project, nowMs);
+    renderGlobal(d.global, nowMs);
+    renderServe(d.serve || [], nowMs);
+    renderSettings(d); // #11
     selectTab(activeTab); // a poll re-render must keep the tab the user picked
   }
 
@@ -1950,7 +1865,7 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
   }
   // #74: 相対時刻は render を回さずにここで書き換える。nowBase は「このスパンを
   // 描いた瞬間の時刻」。tick() は nowBase と Date.now() の差が 1 分以上動いた時だけ
-  // textContent を差し替える：DOM は部分的に動くが、#sessions の中身は差し替わらない。
+  // textContent を差し替える：DOM は部分的に動くが、看板の中身は差し替わらない。
   function agoLive(iso, node){
     var r = { el: node, at: iso ? new Date(iso).getTime() : NaN, base: nowBase, text: ago(iso, nowBase) };
     node.textContent = r.text;
@@ -2041,7 +1956,7 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
       setConn(false, !document.getElementById("banner").classList.contains("on"));
       if (!lastData) {
         // never got any data: draw the empty states instead of blank sections
-        renderStats(null); renderSessions([], null); renderProject(null, null); renderGlobal(null, null); renderServe([], null);
+        renderStats(null); renderProject(null, null); renderGlobal(null, null); renderServe([], null);
       }
     }).then(function(){
       // プロジェクトは別エンドポイントなので、タブを開いている時だけ相乗りで取る（専用タイマーは作らない）

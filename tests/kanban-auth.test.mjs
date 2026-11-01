@@ -72,11 +72,10 @@ for (let i = 0; i < 40; i++) {
 }
 
 const SID = "auth-sid";
-const OTHER = "auth-other";
 const modesFile = `${HOME_DIR}/.pi/kanban/modes.json`;
 const globalFile = `${HOME_DIR}/.pi/kanban/global.json`;
-const boardFile = `${HOME_DIR}/.pi/kanban/sessions/${SID}.json`;
-const otherBoardFile = `${HOME_DIR}/.pi/kanban/sessions/${OTHER}.json`;
+const SLUG = mod.projectSlugOf(process.cwd());
+const boardFile = `${HOME_DIR}/.pi/kanban/projects/${SLUG}.json`;
 const readJson = (p) => JSON.parse(readFileSync(p, "utf8"));
 const writeJson = (p, o) => writeFileSync(p, JSON.stringify(o, null, 2));
 
@@ -92,74 +91,70 @@ handlers.get("session_start")({}, {
 // priority 用にカードを1枚用意（SESSION / GLOBAL 両方）
 seedBoard(boardFile, { cards: [{ id: 1, text: "c", col: "todo" }], nextId: 9 });
 seedBoard(globalFile, { cards: [{ id: 1, text: "g", col: "todo" }], nextId: 9 });
-// #55: 他セッションのボードも書き込み対象。priority はそのボードのカードを見る。
-seedBoard(otherBoardFile, { cards: [{ id: 1, text: "o", col: "todo" }], nextId: 9 });
 
 const status = async (path) => (await tf(`http://127.0.0.1:${PORT}${path}`)).status;
+const bodyOf = async (path) => (await tf(`http://127.0.0.1:${PORT}${path}`)).json();
 
-const SESSION_WRITES = [
-	["/api/modes", `scope=session&key=autoPick&value=on`],
-	["/api/interval", `scope=session&min=5`],
-	["/api/stuck", `scope=session&n=5`],
-	["/api/priority", `scope=session&id=1&n=5`],
+// #17: 設定の書き込み先は project（この cwd のボード）か global だけ。sid は要らない。
+const SETTINGS = [
+	["/api/modes", `key=autoPick&value=on`],
+	["/api/interval", `min=5`],
+	["/api/stuck", `n=5`],
+	["/api/priority", `id=1&n=5`],
 ];
 
-// --- sid 省略 -> 400 ---------------------------------------------------------
-for (const [name, q] of SESSION_WRITES) {
-	await check(`${name} sid 省略 -> 400`, async () => assert.equal(await status(`${name}?${q}`), 400));
+// --- scope=session は 400（#17 でボードごと廃止） ------------------------------
+for (const [name, q] of SETTINGS) {
+	await check(`${name} scope=session -> 400`, async () =>
+		assert.equal(await status(`${name}?scope=session&${q}`), 400));
 }
-await check("/api/modes sid 空文字 -> 400", async () =>
-	assert.equal(await status(`/api/modes?scope=session&sid=&key=autoPick&value=on`), 400));
-
-// --- 正しい sid -> 200 -------------------------------------------------------
-for (const [name, q] of SESSION_WRITES) {
-	await check(`${name} 正しい sid -> 200`, async () =>
-		assert.equal(await status(`${name}?${q}&sid=${SID}`), 200));
-}
-
-// --- 他セッションの sid -> 200 かつ実際に書かれる（#55: セッション単位ロック撤去）---
-for (const [name, q] of SESSION_WRITES) {
-	await check(`${name} 他セッション sid -> 200`, async () =>
-		assert.equal(await status(`${name}?${q}&sid=${OTHER}`), 200));
-}
-// modes.json は sid ごとのバケット: OTHER のキーができていること
-await check("他セッションの modes が modes.json に書かれる", () =>
-	assert.equal(readJson(modesFile).SESSION[OTHER].autoPick, true));
-await check("他セッションの interval が modes.json に書かれる", () =>
-	assert.equal(readJson(modesFile).SESSION[OTHER].intervalMin, 5));
-await check("他セッションの stuck が modes.json に書かれる", () =>
-	assert.equal(readJson(modesFile).SESSION[OTHER].stuckLimit, 5));
-await check("他セッションの priority がそのボードのカードに書かれる", () =>
-	assert.equal(readBoardAt(otherBoardFile).cards[0].priority, 5));
-await check("priority は sid 指定のボードにだけ入る", () => {
-	assert.equal(readBoardAt(otherBoardFile).cards[0].priority, 5);
-	assert.equal(readBoardAt(otherBoardFile).cards[0].text, "o");
-	assert.equal(readBoardAt(boardFile).cards[0].text, "c");
+await check("scope=session の 400 は移行先を名指しする", async () => {
+	const body = await bodyOf(`/api/modes?scope=session&key=autoPick&value=on`);
+	assert.equal(body.error, "scope=session is gone; boards are project-scoped");
 });
 
-// --- scope=global の逃げ道: sid 省略でも 200（現状維持・スコープ外） ---------
-await check("scope=global sid 省略 -> 200（既存挙動を維持）", async () =>
+// --- scope=project（sid 省略）-> 200 かつ project バケットに書かれる -----------
+for (const [name, q] of SETTINGS) {
+	await check(`${name} scope=project sid 省略 -> 200`, async () =>
+		assert.equal(await status(`${name}?scope=project&${q}`), 200));
+}
+await check("project の modes は modes.json の PROJECT[slug] に入る", () =>
+	assert.equal(readJson(modesFile).PROJECT[SLUG].autoPick, true));
+await check("project の interval が PROJECT[slug] に入る", () =>
+	assert.equal(readJson(modesFile).PROJECT[SLUG].intervalMin, 5));
+await check("project の stuck が PROJECT[slug] に入る", () =>
+	assert.equal(readJson(modesFile).PROJECT[SLUG].stuckLimit, 5));
+await check("priority は project ボードのカードに入る", () =>
+	assert.equal(readBoardAt(boardFile).cards[0].priority, 5));
+await check("priority はカードの本文を壊さない", () => {
+	assert.equal(readBoardAt(boardFile).cards[0].text, "c");
+	assert.equal(readBoardAt(globalFile).cards[0].text, "g");
+});
+
+await check("scope 省略は project 扱い（既定）", async () => {
+	assert.equal(await status(`/api/stuck?n=6`), 200);
+	assert.equal(readJson(modesFile).PROJECT[SLUG].stuckLimit, 6);
+});
+
+await check("未知の sid + scope=project は 400（黙って cwd のボードに書かない）", async () =>
+	assert.equal(await status(`/api/modes?scope=project&sid=no-such-session&key=autoPick&value=off`), 400));
+
+// --- scope=global は driver にフォールバックする（#67/#78） -------------------
+await check("scope=global sid 省略 -> 200（driver に落ちる）", async () =>
 	assert.equal(await status(`/api/stuck?scope=global&n=7`), 200));
-await check("scope=global 書き込み先は GLOBAL（sid 省略でも）", () =>
+await check("scope=global の書き込み先は GLOBAL[sid]", () =>
 	assert.equal(readJson(modesFile).GLOBAL[SID].stuckLimit, 7));
 
-// --- #78: scope=global で driver 不在のとき、400 は global を名指しする ---------
-// 旧: scope=global なのに "scope=session requires sid" と答えていた（呼んでない scope を名指し）。
-// fallback 先（activeSessionId）が空なのが真因なので、それを言う。最後に置く: shutdown が
-// activeSessionId を落とすため、以降のチェックは driver 前提で書けない。
+// --- shutdown 後の 400 は global を名指しする ---------------------------------
 handlers.get("session_shutdown")();
 await check("shutdown 後の scope=global sid 省略 -> 400", async () =>
 	assert.equal(await status(`/api/modes?scope=global&key=autoPick&value=on`), 400));
 await check("その 400 は global を名指しする（session ではない）", async () => {
-	const body = await (await tf(`http://127.0.0.1:${PORT}/api/modes?scope=global&key=autoPick&value=on`)).json();
+	const body = await bodyOf(`/api/modes?scope=global&key=autoPick&value=on`);
 	assert.equal(body.error, "scope=global requires sid (no active session to fall back to)");
 });
-await check("scope=session の 400 文言は変わらない", async () => {
-	const body = await (await tf(`http://127.0.0.1:${PORT}/api/modes?scope=session&key=autoPick&value=on`)).json();
-	assert.equal(body.error, "scope=session requires sid");
-});
 await check("/api/interval も同じ文言（#78 の設定系5端点で共通）", async () => {
-	const body = await (await tf(`http://127.0.0.1:${PORT}/api/interval?scope=global&min=5`)).json();
+	const body = await bodyOf(`/api/interval?scope=global&min=5`);
 	assert.equal(body.error, "scope=global requires sid (no active session to fall back to)");
 });
 

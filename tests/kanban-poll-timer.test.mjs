@@ -54,11 +54,14 @@ function check(name, fn) {
 	}
 }
 
-const SESSIONS = `${HOME_DIR}/.pi/kanban/sessions`;
+// #17: poll が回すのは project ボード（cwd の slug）1 枚。session ボードは無い。
+const SLUG = mod.projectSlugOf(process.cwd());
+const PROJECT_BOARD = `${HOME_DIR}/.pi/kanban/projects/${SLUG}.json`;
 const MODES = `${HOME_DIR}/.pi/kanban/modes.json`;
-writeFileSync(MODES, JSON.stringify({ SESSION: {}, GLOBAL: {} }));
+writeFileSync(MODES, JSON.stringify({ PROJECT: {}, GLOBAL: {} }));
 const writeBoardFile = (sid) =>
-	seedBoard(`${SESSIONS}/${sid}.json`, { cards: [{ id: 1, text: "t", col: "doing" }], nextId: 2 });
+	// DOING の所有権は movedBy === sid（#17）。
+	seedBoard(PROJECT_BOARD, { cards: [{ id: 1, text: "t", col: "doing", movedBy: sid }], nextId: 2 });
 const writeModes = (sid) =>
 	writeFileSync(MODES, JSON.stringify({ SESSION: { [sid]: { doingLoop: true, autoPick: false } }, GLOBAL: {} }));
 

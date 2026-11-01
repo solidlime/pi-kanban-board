@@ -126,16 +126,16 @@ await check("#76 memClamp: 保存値 5000 / 小さい scrollHeight は最大値�
 
 await check("#76 memCompactCards: DONE を落とし上限は挿入順の古い方から捨てる", () => {
 	const obj = {};
-	for (let i = 1; i <= 42; i++) obj[`session.s1:todo#${i}`] = true;
-	obj["session.s1:done#900"] = true;
+	for (let i = 1; i <= 42; i++) obj[`project.:todo#${i}`] = true;
+	obj["project.:done#900"] = true;
 	obj["global:doing#901"] = true;
-	obj["session.s1:todo#2"] = false; // false は保存しない
+	obj["project.:todo#2"] = false; // false は保存しない
 	const out = mem.memCompactCards(obj, 40);
 	assert.equal(Object.keys(out).length, 40, `上限が効いていない: ${Object.keys(out).length}`);
-	assert.ok(!out["session.s1:done#900"], "DONE が保存対象になっている");
-	assert.ok(!out["session.s1:todo#2"], "false が保存対象になっている");
-	assert.ok(out["session.s1:todo#42"], "新しいものが落ちている");
-	assert.ok(!out["session.s1:todo#1"], "古いものが落ちていない");
+	assert.ok(!out["project.:done#900"], "DONE が保存対象になっている");
+	assert.ok(!out["project.:todo#2"], "false が保存対象になっている");
+	assert.ok(out["project.:todo#42"], "新しいものが落ちている");
+	assert.ok(!out["project.:todo#1"], "古いものが落ちていない");
 	assert.deepEqual(Object.keys(out).slice(-1), ["global:doing#901"], "挿入順（末尾）が保たれていない");
 });
 
@@ -145,11 +145,11 @@ await check("#76 memCompactCards: 上限以内なら全部残る（DONE だけ�
 });
 
 await check("#76 memPruneColumn: 同じ列の消えた id だけ落とす", () => {
-	const obj = { "session.s1:todo#1": true, "session.s1:todo#2": true, "session.s1:doing#3": true };
-	const removed = mem.memPruneColumn(obj, "session.s1:todo", [2]);
+	const obj = { "project.:todo#1": true, "project.:todo#2": true, "project.:doing#3": true };
+	const removed = mem.memPruneColumn(obj, "project.:todo", [2]);
 	assert.equal(removed, true, "掃除したことが伝わっていない");
-	assert.deepEqual(Object.keys(obj).sort(), ["session.s1:doing#3", "session.s1:todo#2"]);
-	const again = mem.memPruneColumn(obj, "session.s1:todo", [2]);
+	assert.deepEqual(Object.keys(obj).sort(), ["project.:doing#3", "project.:todo#2"]);
+	const again = mem.memPruneColumn(obj, "project.:todo", [2]);
 	assert.equal(again, false, "掃除していないのに true を返した");
 });
 
@@ -284,20 +284,15 @@ const makeStorage = (seed) => {
 };
 
 const LONG = "x".repeat(80); // 60 字超 = クリック展開できるカード
-const sessionPayload = (cards) => [
-	{
-		id: "s1",
-		name: "kotomi",
-		cwd: "/tmp",
-		isActive: true,
-		mine: true,
-		updatedAt: "2026-01-01T00:00:00.000Z",
-		modified: 0,
-		modes: { session: {}, global: {} },
-		counts: { todo: cards.length, doing: 0, done: 1 },
-		cards,
-	},
-];
+// #17: session 行は無い。project ボード 1 枚（列のキーは project.<sid>:<col> で sid は空）。
+const projectPayload = (cards) => ({
+	id: "alpha",
+	modes: {},
+	loops: 0,
+	halted: false,
+	counts: { todo: cards.length, doing: 0, done: 1 },
+	cards,
+});
 const defaultCards = () => [
 	{ id: 1, col: "todo", text: LONG },
 	{ id: 2, col: "todo", text: LONG },
@@ -329,9 +324,9 @@ const runDashboard = async (storage, cards) => {
 	const payload = {
 		host: "test-host",
 		now: "2026-01-01T00:00:00.000Z",
-		stats: { sessions: 1, active: 1, todo: list.length, doing: 0, done: 1, serve: 0, media: 0 },
-		global: { counts: { todo: 0, doing: 0, done: 0 }, cards: [] },
-		sessions: sessionPayload(list),
+		stats: { todo: list.length, doing: 0, done: 1, serve: 0, media: 0 },
+		global: { counts: { todo: 0, doing: 0, done: 0 }, cards: [], modes: {}, loops: 0, halted: false },
+		project: projectPayload(list),
 		serve: [],
 	};
 	const timers = [];
@@ -360,13 +355,13 @@ const runDashboard = async (storage, cards) => {
 	return { byId, timers, sandbox };
 };
 
-const cardsIn = (byId) => walk(byId["sessions"]).filter(byClass("card"));
+const cardsIn = (byId) => walk(byId["project"]).filter(byClass("card"));
 const cardOfId = (byId, id) =>
 	cardsIn(byId).find((c) => c.children.some((x) => x.className === "id" && x.textContent === "#" + id));
 const openOf = (card) => card.children.find(byClass("clampable"));
 // 位置を持つのは列そのものではなく .cards の deck（data-ckey 側）。
 const deckOf = (byId, key) =>
-	walk(byId["sessions"]).find((n) => n.getAttribute && n.getAttribute("data-ckey") === key);
+	walk(byId["project"]).find((n) => n.getAttribute && n.getAttribute("data-ckey") === key);
 const runTimers = (timers) => {
 	const pending = timers.splice(0, timers.length);
 	pending.forEach((t) => t.fn());
@@ -391,7 +386,7 @@ const runTimers = (timers) => {
 		assert.ok(t.classList.contains("open"), "展開していない");
 		const saved = storage.read("kb-open");
 		assert.ok(saved && saved.dash, "kb-open の名前空間が無い");
-		assert.equal(saved.dash["session.s1:todo#1"], true, "TODO の展開が保存されていない");
+		assert.equal(saved.dash["project.:todo#1"], true, "TODO の展開が保存されていない");
 	});
 
 	await check("#76(b) DONE を展開しても kb-open には入らない", () => {
@@ -399,13 +394,14 @@ const runTimers = (timers) => {
 		t._lis.click[0]({ target: null });
 		assert.ok(t.classList.contains("open"), "画面上は展開する");
 		const saved = storage.read("kb-open");
-		assert.ok(!saved.dash["session.s1:done#3"], "DONE の展開が保存されている");
+		assert.ok(!saved.dash["project.:done#3"], "DONE の展開が保存されている");
 		// 既存の kb-collapse もキー名・スキーマは不変。ただし DONE はリロードで閉じるので
 		// open には載せない（載せると次回の起動で開いたまま復元されてしまう）。
 		const collapse = storage.read("kb-collapse");
-		assert.deepEqual(Object.keys(collapse.dash).sort(), ["cols", "g", "open", "sess"], "スキーマが変わった");
-		assert.equal(collapse.dash.open["session.s1:todo#1"], true, "TODO が kb-collapse から落ちた");
-		assert.ok(!collapse.dash.open["session.s1:done#3"], "DONE が kb-collapse に載っている");
+		// #17: sessOpen（session 行の開閉）は廃止。残るのは cols / g / open。
+		assert.deepEqual(Object.keys(collapse.dash).sort(), ["cols", "g", "open"], "スキーマが変わった");
+		assert.equal(collapse.dash.open["project.:todo#1"], true, "TODO が kb-collapse から落ちた");
+		assert.ok(!collapse.dash.open["project.:done#3"], "DONE が kb-collapse に載っている");
 	});
 
 	const d2 = await runDashboard(storage);
@@ -417,7 +413,7 @@ const runTimers = (timers) => {
 	await check("#76(b) 畳むと kb-open からキーが消える（false は保存しない）", () => {
 		openOf(cardOfId(d2.byId, 1))._lis.click[0]({ target: null });
 		const saved = storage.read("kb-open");
-		assert.ok(!("session.s1:todo#1" in saved.dash), "閉じたのにキーが残っている");
+		assert.ok(!("project.:todo#1" in saved.dash), "閉じたのにキーが残っている");
 	});
 }
 
@@ -428,7 +424,7 @@ const runTimers = (timers) => {
 // ---------------------------------------------------------------------------
 {
 	const seeded = {};
-	for (let i = 11; i <= 50; i++) seeded[`session.s1:todo#${i}`] = true;
+	for (let i = 11; i <= 50; i++) seeded[`project.:todo#${i}`] = true;
 	const storage = makeStorage({ "kb-open": JSON.stringify({ dash: seeded }) });
 	const cards = Array.from({ length: 50 }, (_, i) => ({ id: i + 1, col: "todo", text: LONG }));
 	const d = await runDashboard(storage, cards);
@@ -437,10 +433,10 @@ const runTimers = (timers) => {
 		openOf(cardOfId(d.byId, 5))._lis.click[0]({ target: null });
 		const saved = storage.read("kb-open").dash;
 		assert.equal(Object.keys(saved).length, 40, `上限が効いていない: ${Object.keys(saved).length}`);
-		assert.ok(!saved["session.s1:todo#11"], "最も古い #11 が残っている");
-		assert.ok(saved["session.s1:todo#12"], "2 番目まで落としている");
-		assert.equal(saved["session.s1:todo#5"], true, "新しく開いた #5 が入っていない");
-		assert.deepEqual(Object.keys(saved).slice(-1), ["session.s1:todo#5"], "末尾が最新でない");
+		assert.ok(!saved["project.:todo#11"], "最も古い #11 が残っている");
+		assert.ok(saved["project.:todo#12"], "2 番目まで落としている");
+		assert.equal(saved["project.:todo#5"], true, "新しく開いた #5 が入っていない");
+		assert.deepEqual(Object.keys(saved).slice(-1), ["project.:todo#5"], "末尾が最新でない");
 	});
 }
 
@@ -454,8 +450,8 @@ const runTimers = (timers) => {
 	openOf(cardOfId(d.byId, 2))._lis.click[0]({ target: null });
 	await check("#76(d) 前提: 2 枚とも保存されている", () => {
 		const saved = storage.read("kb-open").dash;
-		assert.equal(saved["session.s1:todo#1"], true);
-		assert.equal(saved["session.s1:todo#2"], true);
+		assert.equal(saved["project.:todo#1"], true);
+		assert.equal(saved["project.:todo#2"], true);
 	});
 	// カード #1 がボードから消えた状態で読み直す
 	await runDashboard(storage, [
@@ -464,8 +460,8 @@ const runTimers = (timers) => {
 	]);
 	await check("#76(d) 描画時に消えたカードのキーが掃除される", () => {
 		const saved = storage.read("kb-open").dash;
-		assert.ok(!("session.s1:todo#1" in saved), "#1 が残っている");
-		assert.equal(saved["session.s1:todo#2"], true, "生きているカードまで消した");
+		assert.ok(!("project.:todo#1" in saved), "#1 が残っている");
+		assert.equal(saved["project.:todo#2"], true, "生きているカードまで消した");
 	});
 }
 
@@ -475,7 +471,7 @@ const runTimers = (timers) => {
 {
 	const storage = makeStorage();
 	const d = await runDashboard(storage);
-	const col = () => deckOf(d.byId, "session.s1:todo");
+	const col = () => deckOf(d.byId, "project.:todo");
 
 	await check("#76(e) スクロール直後は書かず、debounce 後に書く", () => {
 		const c = col();
@@ -490,12 +486,12 @@ const runTimers = (timers) => {
 		runTimers(d.timers);
 		const saved = storage.read("kb-scroll");
 		assert.ok(saved && saved.dash, "kb-scroll の名前空間が無い");
-		assert.equal(saved.dash["session.s1:todo"], 4200, "スクロール位置が保存されていない");
+		assert.equal(saved.dash["project.:todo"], 4200, "スクロール位置が保存されていない");
 	});
 
 	const d2 = await runDashboard(storage);
 	await check("#76(e) 復元は今の高さにクランプする（保存 4200 / 最大 2900）", () => {
-		const c = deckOf(d2.byId, "session.s1:todo");
+		const c = deckOf(d2.byId, "project.:todo");
 		c.scrollHeight = 3000;
 		c.clientHeight = 100;
 		c.scrollTop = 0;
@@ -506,20 +502,20 @@ const runTimers = (timers) => {
 	// 描画時点で測れる高さ（makeEl の既定 scrollHeight 3000 / clientHeight 100 = 最大 2900）で
 	// 復元されることを、保存値だけを差し替えて確かめる。
 	const storage2 = makeStorage({
-		"kb-scroll": JSON.stringify({ dash: { "session.s1:todo": 4200 } }),
+		"kb-scroll": JSON.stringify({ dash: { "project.:todo": 4200 } }),
 	});
 	const d3 = await runDashboard(storage2);
 	await check("#76(e) 保存値 4200 は最大 2900 に丸めて復元される", () => {
-		const c = deckOf(d3.byId, "session.s1:todo");
+		const c = deckOf(d3.byId, "project.:todo");
 		assert.equal(c.scrollTop, 2900, `クランプされていない: ${c.scrollTop}`);
 	});
 
 	const storage3 = makeStorage({
-		"kb-scroll": JSON.stringify({ dash: { "session.s1:todo": 400 } }),
+		"kb-scroll": JSON.stringify({ dash: { "project.:todo": 400 } }),
 	});
 	const d4 = await runDashboard(storage3);
 	await check("#76(e) 収まる保存値はそのまま復元される", () => {
-		assert.equal(deckOf(d4.byId, "session.s1:todo").scrollTop, 400, "収まる値まで丸めている");
+		assert.equal(deckOf(d4.byId, "project.:todo").scrollTop, 400, "収まる値まで丸めている");
 	});
 }
 
@@ -534,16 +530,16 @@ const runTimers = (timers) => {
 		assert.ok(!openOf(cardOfId(d.byId, 1)).classList.contains("open"), "既定は閉");
 		openOf(cardOfId(d.byId, 1))._lis.click[0]({ target: null });
 		const saved = storage.read("kb-open");
-		assert.equal(saved.dash["session.s1:todo#1"], true, "壊れた値を引きずって書けない");
+		assert.equal(saved.dash["project.:todo#1"], true, "壊れた値を引きずって書けない");
 	});
 
 	const weird = makeStorage({
-		"kb-scroll": JSON.stringify({ dash: { "session.s1:todo": "5000" } }),
-		"kb-open": JSON.stringify({ dash: { "session.s1:todo#1": "yes", "session.s1:todo#2": true } }),
+		"kb-scroll": JSON.stringify({ dash: { "project.:todo": "5000" } }),
+		"kb-open": JSON.stringify({ dash: { "project.:todo#1": "yes", "project.:todo#2": true } }),
 	});
 	const d5 = await runDashboard(weird);
 	await check("#76(f) 数値でないスクロール値・true でない展開値は無視する", () => {
-		assert.equal(deckOf(d5.byId, "session.s1:todo").scrollTop, 0, "文字列を数値として使っている");
+		assert.equal(deckOf(d5.byId, "project.:todo").scrollTop, 0, "文字列を数値として使っている");
 		assert.ok(!openOf(cardOfId(d5.byId, 1)).classList.contains("open"), "文字列の true 扱いをしている");
 		assert.ok(openOf(cardOfId(d5.byId, 2)).classList.contains("open"), "true の復元が壊れている");
 	});

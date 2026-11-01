@@ -18,7 +18,7 @@ const tf = (input, init) => authFetch(input, init);
 const TMP_ROOT = tmpdir();
 const HOME_DIR = TMP_ROOT + "/kb-dashboard-addremove-home";
 rmSync(HOME_DIR, { recursive: true, force: true });
-mkdirSync(`${join(HOME_DIR, ".pi/kanban/sessions")}`, { recursive: true });
+mkdirSync(`${join(HOME_DIR, ".pi/kanban/projects")}`, { recursive: true });
 mkdirSync(`${join(HOME_DIR, "workspace")}`, { recursive: true });
 process.env.HOME = HOME_DIR;
 // Windows: os.homedir() prefers USERPROFILE over HOME, so keep them in step or the
@@ -132,21 +132,25 @@ await check("DASHBOARD_HTML: 削除は confirm() で確認し、false なら何�
 	assert.ok(h.includes('act("/api/remove", { id: c.id }, ctx)'), "remove が confirm の後に無い");
 });
 
-await check("DASHBOARD_HTML: RO 分岐は残るが ctx.active は常に true（#55 で発火しない）", () => {
-	// #55: セッション単位の書き込みロックを外したので boardCtx は active を落とさない。
+await check("DASHBOARD_HTML: RO 分岐は残る（project は書き込み可、global は読み取り専用）", () => {
+	// boardCtx の既定は active:true。非活性は呼び出し側が明示する。
 	assert.ok(/function boardCtx\(scope, sid, active\)\{ return \{ scope: scope, sid: sid \|\| "", active: active !== false \}; \}/.test(SRC), "boardCtx の既定 active:true が崩れている");
-	assert.ok(!/boardCtx\("session", row\.id, row\.mine\)/.test(SRC), "session ボードに mine を渡している");
+	// #17: session ボードは無い。project 行は書き込み可、global 行は読み取り専用。
+	assert.ok(SRC.includes('boardCtx("project", "", true)'), "project 行の ctx が無い");
+	assert.ok(SRC.includes('boardCtx("global", "", false)'), "global 行の ctx が読み取り専用でない");
+	assert.ok(!SRC.includes('boardCtx("session"'), "session ボードの ctx が残っている");
 	// 分岐コードと文言の定義自体は残す（他用途で参照されうる）。
 	assert.ok(/RO_MSG = "この看板は読み取り専用/.test(SRC), "RO_MSG が消えている");
-	assert.ok(/RO_TITLE = "読み取り専用（編集するにはセッションをアクティブに）"/.test(SRC), "RO_TITLE が消えている");
+	assert.ok(/RO_TITLE = "読み取り専用（プロジェクトの看板で編集する）"/.test(SRC), "RO_TITLE が消えている");
 });
 
-await check("DASHBOARD_HTML: + は ctx.active だけで分岐し、その active は常に true", () => {
-	// #55: session ボードの ctx は isActive/mine ではなく常時 true の active。
+await check("DASHBOARD_HTML: + と × は ctx.active だけで分岐し、project の active は常に true", () => {
 	assert.ok(/addBtn\.setAttribute\("aria-disabled", ctx\.active \? "false" : "true"\)/.test(SRC));
 	assert.ok(/addBtn\.title = ctx\.active \? "この列にカードを追加" : RO_TITLE/.test(SRC));
-	assert.ok(SRC.includes('boardCtx("session", s.id)'), "session ボードの ctx に isActive が渡されている");
-	assert.ok(!SRC.includes('boardCtx("session", s.id, s.isActive)'), "isActive がまだ渡されている");
+	// 削除も同じゲート。ネイティブ disabled は使わない（理由を出せないため）。
+	assert.ok(/del\.setAttribute\("aria-disabled", ctx\.active \? "false" : "true"\)/.test(SRC), "× が ctx.active でゲートされていない");
+	// project の act() は sid を送らない（送ると projectKeyOfWrite が slug を sid として読む）。
+	assert.ok(SRC.includes("// cwd で解決されるので sid は送らない"), "sid を送らない理由のコメントが消えている");
 });
 
 // --- 2. ブラウザ側 JS の構文検査 ---------------------------------------------
@@ -161,60 +165,75 @@ await check("dashboard の <script> は構文として妥当", () => {
 const dash = async () => (await tf(`${BASE}/api/dashboard`)).json();
 const q = (s) => encodeURIComponent(s);
 
-await check("/api/add: カードが増え、dashboard に出る", async () => {
-	const res = await tf(`${BASE}/api/add?scope=session&sid=${ACTIVE}&text=${q("テスト追加")}&col=todo`);
+await check("/api/add: カードが増え、dashboard の project に出る", async () => {
+	const res = await tf(`${BASE}/api/add?scope=project&text=${q("テスト追加")}&col=todo`);
 	assert.equal(res.status, 200, `status=${res.status}`);
 	const d = await dash();
-	const card = d.sessions.find((s) => s.id === ACTIVE)?.cards.find((c) => c.text === "テスト追加");
+	const card = d.project.cards.find((c) => c.text === "テスト追加");
 	assert.ok(card, "dashboard に追加カードが無い");
 	assert.equal(card.col, "todo");
 });
 
 await check("/api/add: 空 text は 400", async () => {
-	const res = await tf(`${BASE}/api/add?scope=session&sid=${ACTIVE}&text=`);
+	const res = await tf(`${BASE}/api/add?scope=project&text=`);
 	assert.equal(res.status, 400, `status=${res.status}`);
 });
 
-await check("/api/add: driver でないセッションでも 200 で、そのボードに入る", async () => {
-	handlers.get("session_start")({}, ctxFor(OTHER)); // activeSessionId は #40 で固定なので ACTIVE のまま
-	const res = await tf(`${BASE}/api/add?scope=session&sid=${OTHER}&text=${q("他セッション追加")}`);
-	assert.equal(res.status, 200, `status=${res.status}`);
-	// 実際にその sid のボードファイルに書かれていること
+await check("/api/add: scope=session は 400（session ボードは廃止）", async () => {
+	// 古いタブはまだ scope=session を送ってくる。parseScope は project と読むので、
+	// project ボードに紛れ込む前に生の値をゲートで断る。
+	const res = await tf(`${BASE}/api/add?scope=session&sid=${ACTIVE}&text=${q("廃止された書き込み")}&col=todo`);
+	assert.equal(res.status, 400, `status=${res.status}`);
+	const body = await res.json();
+	assert.equal(body.ok, false);
+	assert.match(String(body.error), /scope=session is gone/);
 	const d = await dash();
-	const card = d.sessions.find((s) => s.id === OTHER)?.cards.find((c) => c.text === "他セッション追加");
-	assert.ok(card, "他セッションのボードにカードが無い");
+	assert.ok(!d.project.cards.some((c) => c.text === "廃止された書き込み"), "捨てるはずの書き込みが project ボードに入った");
+});
+
+await check("/api/add: sid を渡さなくても cwd の project ボードに入る", async () => {
+	handlers.get("session_start")({}, ctxFor(OTHER)); // activeSessionId は #40 で固定なので ACTIVE のまま
+	const res = await tf(`${BASE}/api/add?scope=project&text=${q("sid なし追加")}`);
+	assert.equal(res.status, 200, `status=${res.status}`);
+	// project は cwd で解決する。sid は書かない。
+	const d = await dash();
+	const card = d.project.cards.find((c) => c.text === "sid なし追加");
+	assert.ok(card, "cwd の project ボードにカードが無い");
 });
 
 await check("/api/remove: カードが消え、dashboard からも消える", async () => {
 	const before = await dash();
-	const card = before.sessions.find((s) => s.id === ACTIVE).cards.find((c) => c.text === "テスト追加");
+	const card = before.project.cards.find((c) => c.text === "テスト追加");
 	assert.ok(card, "対象カードが無い");
-	const res = await tf(`${BASE}/api/remove?scope=session&sid=${ACTIVE}&id=${card.id}`);
+	const res = await tf(`${BASE}/api/remove?scope=project&id=${card.id}`);
 	assert.equal(res.status, 200, `status=${res.status}`);
 	const after = await dash();
-	assert.ok(
-		!after.sessions.find((s) => s.id === ACTIVE).cards.some((c) => c.id === card.id),
-		"dashboard にまだ残っている",
-	);
+	assert.ok(!after.project.cards.some((c) => c.id === card.id), "dashboard にまだ残っている");
 });
 
 await check("/api/remove: 存在しない id は 404", async () => {
-	const res = await tf(`${BASE}/api/remove?scope=session&sid=${ACTIVE}&id=999999`);
+	const res = await tf(`${BASE}/api/remove?scope=project&id=999999`);
 	assert.equal(res.status, 404, `status=${res.status}`);
+});
+
+await check("/api/remove: global ボードは読み取り専用（400）", async () => {
+	const res = await tf(`${BASE}/api/remove?scope=global&id=999999`);
+	assert.equal(res.status, 400, `status=${res.status}`);
+	assert.match(String((await res.json()).error), /read-only/);
 });
 
 
 await check("/api/remove: 消したカードは他の blocks からも外れる", async () => {
-	const a = await tf(`${BASE}/api/add?scope=session&sid=${ACTIVE}&text=${q("土台")}&col=done`);
+	const a = await tf(`${BASE}/api/add?scope=project&text=${q("土台")}&col=done`);
 	const aid = (await a.json()).cards.at(-1).id;
-	const b = await tf(`${BASE}/api/add?scope=session&sid=${ACTIVE}&text=${q("依存先")}&col=todo&blocks=${aid}`);
+	const b = await tf(`${BASE}/api/add?scope=project&text=${q("依存先")}&col=todo&blocks=${aid}`);
 	const bid = (await b.json()).cards.at(-1).id;
 	let dash = await (await tf(`${BASE}/api/dashboard`)).json();
-	const before = dash.sessions.find((s) => s.id === ACTIVE).cards.find((c) => c.id === bid);
+	const before = dash.project.cards.find((c) => c.id === bid);
 	assert.deepEqual(before.blocks, [aid], "blocks が張られていない");
-	await tf(`${BASE}/api/remove?scope=session&sid=${ACTIVE}&id=${aid}`);
+	await tf(`${BASE}/api/remove?scope=project&id=${aid}`);
 	dash = await (await tf(`${BASE}/api/dashboard`)).json();
-	const after = dash.sessions.find((s) => s.id === ACTIVE).cards.find((c) => c.id === bid);
+	const after = dash.project.cards.find((c) => c.id === bid);
 	assert.ok(!after.blocks || after.blocks.length === 0, `孤児 blocks が残った: ${JSON.stringify(after.blocks)}`);
 });
 
@@ -285,30 +304,17 @@ await check("/api/remove: 消したカードは他の blocks からも外れる"
 	const payload = {
 		host: "test-host",
 		now: "2026-01-01T00:00:00.000Z",
-		stats: { sessions: 2, active: 1, todo: 2, doing: 0, done: 0, serve: 0, media: 0 },
-		global: { counts: { todo: 0, doing: 0, done: 0 }, cards: [] },
-		sessions: [
-			{
-				id: "01a1480c",
-				name: "active-one",
-				cwd: "/tmp",
-				isActive: true,
-				updatedAt: "2026-01-01T00:00:00.000Z",
-				modes: { session: {}, global: {} },
-				counts: { todo: 1, doing: 0, done: 0 },
-				cards: [{ id: "7", col: "todo", text: "書けるカード" }],
-			},
-			{
-				id: "01a1266c",
-				name: "readonly-one",
-				cwd: "/tmp",
-				isActive: false,
-				updatedAt: "2026-01-01T00:00:00.000Z",
-				modes: { session: {}, global: {} },
-				counts: { todo: 1, doing: 0, done: 0 },
-				cards: [{ id: "8", col: "todo", text: "読むだけのカード" }],
-			},
-		],
+		stats: { todo: 2, doing: 0, done: 0, serve: 0, media: 0 },
+		// #17: ボードは project と global の 2 板だけ。session 行は無い。
+		global: { counts: { todo: 1, doing: 0, done: 0 }, cards: [{ id: "8", col: "todo", text: "読むだけのカード" }], modes: {}, loops: 0, halted: false },
+		project: {
+			id: "alpha",
+			counts: { todo: 1, doing: 0, done: 0 },
+			cards: [{ id: "7", col: "todo", text: "書けるカード" }],
+			modes: {},
+			loops: 0,
+			halted: false,
+		},
 		serve: [],
 	};
 	const timers = [];
@@ -341,25 +347,29 @@ await check("/api/remove: 消したカードは他の blocks からも外れる"
 
 	const els = () => created;
 	const findBtn = (pred) => els().find((e) => e.tagName === undefined && pred(e));
+	// #17: 前の版は「2 セッション × 3 列」= 6。今は「project + global」の 2 板 × 3 列。
 	const addBtns = els().filter((e) => String(e.className).includes("addbtn"));
 	const delBtns = els().filter((e) => String(e.className).includes("del"));
 	const clearUrls = () => urls.splice(0, urls.length);
 
-	await check("vm: 列ごとに + ボタンが出る（3 列 × 2 ボード）", () => {
+	await check("vm: 列ごとに + ボタンが出る（3 列 × 2 板 = project と global）", () => {
 		assert.equal(addBtns.length, 6, `addbtn=${addBtns.length}`);
 		assert.ok(findBtn(() => true), "要素が作られていない");
+		assert.equal(byId["project-slug"].textContent, "alpha", "project 行が描かれていない");
 	});
 
-	// #55: ロックが無いので aria-disabled は常に false（DOM の disabled も使わない）
+	// #17: project は書き込み可、global は読み取り専用（サーバが 400 で断る）。
+	// 描画順は project → global なので先頭 3 つが project。
 	const roOf = (b) => b.attrs["aria-disabled"] === "true";
 	const activeOf = (b) => b.attrs["aria-disabled"] !== "true";
+	const projAddBtns = addBtns.slice(0, 3);
+	const globalAddBtns = addBtns.slice(3);
 
-	await check("vm: 全セッションの + が有効（aria-disabled は付かない）", () => {
-		const ro = addBtns.filter(roOf);
-		assert.equal(ro.length, 0, `aria-disabled の + が ${ro.length}`);
-		const on = addBtns.filter(activeOf);
-		assert.equal(on.length, 6, `有効な + が ${on.length}`);
-		for (const b of on) assert.equal(b.title, "この列にカードを追加");
+	await check("vm: project の + は全て有効、global の + は全て読み取り専用", () => {
+		assert.equal(projAddBtns.filter(activeOf).length, 3, `有効な project の + が ${projAddBtns.filter(activeOf).length}`);
+		for (const b of projAddBtns) assert.equal(b.title, "この列にカードを追加");
+		assert.equal(globalAddBtns.filter(roOf).length, 3, `aria-disabled の global の + が ${globalAddBtns.filter(roOf).length}`);
+		for (const b of globalAddBtns) assert.equal(b.title, "読み取り専用（プロジェクトの看板で編集する）");
 	});
 
 	// + と input は同じ列ボックスに入る。クリックした列の input だけを見る。
@@ -388,8 +398,9 @@ await check("/api/remove: 消したカードは他の blocks からも外れる"
 		assert.ok(hit, `add が飛んでいない: ${JSON.stringify(urls)}`);
 		assert.ok(hit.includes("col=todo"), hit);
 		assert.ok(hit.includes(`text=${q("vm 追加")}`), hit);
-		assert.ok(hit.includes("scope=session"), hit);
-		assert.ok(hit.includes("sid=01a1480c"), hit);
+		// #17: project ボードは cwd で解決するので scope だけを送る（sid は付けない）。
+		assert.ok(hit.includes("scope=project"), hit);
+		assert.ok(!hit.includes("sid="), `project なのに sid を送っている: ${hit}`);
 	});
 
 	await check("vm: 空文字 Enter は送らない（閉じるだけ）", async () => {
@@ -458,6 +469,8 @@ await check("/api/remove: 消したカードは他の blocks からも外れる"
 
 	await check("vm: × クリック → confirm → /api/remove?id=", async () => {
 		clearUrls();
+		// #17: カードがあるのは project 1 枚（global は読み取り専用）。
+		assert.equal(delBtns.length, 2, `del=${delBtns.length}`);
 		const del = delBtns.find(activeOf);
 		assert.ok(del, "有効な × が無い");
 		del.lis.click[0]();
@@ -465,7 +478,8 @@ await check("/api/remove: 消したカードは他の blocks からも外れる"
 		const hit = urls.find((u) => u.includes("/api/remove"));
 		assert.ok(hit, `remove が飛んでいない: ${JSON.stringify(urls)}`);
 		assert.ok(hit.includes("id=7"), hit);
-		assert.ok(hit.includes("scope=session") && hit.includes("sid=01a1480c"), hit);
+		assert.ok(hit.includes("scope=project"), hit);
+		assert.ok(!hit.includes("sid="), `project なのに sid を送っている: ${hit}`);
 	});
 
 	await check("vm: × の confirm が false なら何もしない", async () => {
@@ -477,38 +491,26 @@ await check("/api/remove: 消したカードは他の blocks からも外れる"
 		assert.ok(!urls.some((u) => u.includes("/api/remove")), `confirm 無視で飛んだ: ${JSON.stringify(urls)}`);
 	});
 
-	await check("vm: driver でないセッションの + からも /api/add が飛ぶ", async () => {
-		// 2 枚目のセッション（isActive:false）の todo 列の + を探す。
-		const other = addBtns.filter(activeOf)[3];
-		assert.ok(other, "2 枚目のセッションの + が無い");
+	await check("vm: global の + は読み取り専用で、押しても /api/add を叩かない", async () => {
+		// 2 板目の todo 列の + を探す（描画順: project 3 列 → global 3 列）。
+		const other = addBtns[3];
+		assert.ok(other, "global の + が無い");
+		assert.ok(roOf(other), "global の + が読み取り専用でない");
 		clearUrls();
 		other.lis.click[0]();
-		const input = inputOf(other);
-		assert.ok(input, "input.addin が作られていない");
-		input.value = "vm 他セッション追加";
-		input.lis.keydown[0]({ key: "Enter", preventDefault() {} });
+		// input.addin は常に DOM に作られる（表示だけ切り替わる）。開かないことを見る。
+		assert.equal(inputOf(other).style.display, "none", "読み取り専用なのに input.addin が開いた");
 		for (let i = 0; i < 4; i++) await flush();
-		const hit = urls.find((u) => u.includes("/api/add"));
-		assert.ok(hit, `add が飛んでいない: ${JSON.stringify(urls)}`);
-		assert.ok(hit.includes("sid=01a1266c"), hit);
+		assert.ok(!urls.some((u) => u.includes("/api/add")), `読み取り専用なのに飛んだ: ${JSON.stringify(urls)}`);
 	});
 
-	await check("vm: 全セッションの × が有効（aria-disabled は付かない）", () => {
-		// カードは active 1 枚 + 他セッション 1 枚（GLOBAL は空）なので × は 2 つ。
-		assert.equal(delBtns.length, 2, `del=${delBtns.length}`);
-		assert.equal(delBtns.filter(roOf).length, 0, "aria-disabled の × がある");
-	});
-
-	await check("vm: 他セッションの × クリックでも /api/remove が飛ぶ", async () => {
+	await check("vm: global の × は読み取り専用で、押しても /api/remove を叩かない", async () => {
+		assert.equal(delBtns.filter(roOf).length, 1, "global の × が読み取り専用でない");
 		clearUrls();
 		sandbox.window.confirm = () => true; // 前のテストが false にしたままなので戻す
-		const del = delBtns.filter(activeOf)[1];
-		assert.ok(del, "2 枚目の × が無い");
-		del.lis.click[0]();
+		delBtns.filter(roOf)[0].lis.click[0]();
 		for (let i = 0; i < 4; i++) await flush();
-		const hit = urls.find((u) => u.includes("/api/remove"));
-		assert.ok(hit, `remove が飛んでいない: ${JSON.stringify(urls)}`);
-		assert.ok(hit.includes("id=8") && hit.includes("sid=01a1266c"), hit);
+		assert.ok(!urls.some((u) => u.includes("/api/remove")), `読み取り専用なのに飛んだ: ${JSON.stringify(urls)}`);
 	});
 }
 

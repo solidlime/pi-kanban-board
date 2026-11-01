@@ -76,9 +76,12 @@ const checkA = (name, fn) => {
 	asyncChecks.push([name, fn]);
 };
 
-const board = (sid) => readBoardAt(`${SESSION_DIR}/${sid}.json`);
+// #17: session ボードは無い。settle/tool/API の書き込み先はすべてこの cwd の project ボード。
+const SLUG = mod.projectSlugOf(process.cwd());
+const PROJ = `${HOME}/projects/${SLUG}.json`;
+const board = (_sid) => readBoardAt(PROJ);
 const readRaw = (p) => readBoardAt(p);
-const writeSession = (sid, b) => seedBoard(`${SESSION_DIR}/${sid}.json`, b);
+const writeSession = (_sid, b) => seedBoard(PROJ, b);
 const writeGlobal = (b) => seedBoard(`${HOME}/global.json`, b);
 
 const ctxFor = (sid) => ({
@@ -175,22 +178,28 @@ check("blocked 1枚は autoPick 全体を殺さない（非 blocked は従来ど
 	assert.equal(nextTodo([TODO_PLAIN, TODO_BLOCKED], "session", "me", NOW).id, 1);
 });
 
-const DOING_HEAD = { id: 1, text: "head", col: "doing" };
-const DOING_BLOCKED = { id: 2, text: "manual blocked", col: "doing", blocked: "外部待ち" };
+// #17: tickCardFor から scope が消えた。所有権は常に movedBy === sid。
+const DOING_HEAD = { id: 1, text: "head", col: "doing", movedBy: "me" };
+const DOING_BLOCKED = { id: 2, text: "manual blocked", col: "doing", blocked: "外部待ち", movedBy: "me" };
 
 check("tickCardFor: 手で DOING に置いた blocked も沈黙する（注入しない）", () => {
-	assert.equal(tickCardFor([DOING_BLOCKED], "session", "me", NOW), undefined);
-	assert.equal(tickCardFor([DOING_HEAD, DOING_BLOCKED], "session", "me", NOW).id, 1);
+	assert.equal(tickCardFor([DOING_BLOCKED], "me", NOW), undefined);
+	assert.equal(tickCardFor([DOING_HEAD, DOING_BLOCKED], "me", NOW).id, 1);
 });
 
 check("tickCardFor: 沈黙 head は後続を飢えさせない", () => {
-	const cards = [DOING_BLOCKED, { id: 3, text: "due", col: "doing", nextFireAt: PAST }];
-	assert.equal(tickCardFor(cards, "session", "me", NOW).id, 3);
+	const cards = [DOING_BLOCKED, { id: 3, text: "due", col: "doing", nextFireAt: PAST, movedBy: "me" }];
+	assert.equal(tickCardFor(cards, "me", NOW).id, 3);
 	const cards2 = [
-		{ id: 1, text: "future", col: "doing", nextFireAt: "2026-10-17T21:00:00.000Z" },
-		{ id: 2, text: "due", col: "doing", nextFireAt: PAST },
+		{ id: 1, text: "future", col: "doing", nextFireAt: "2026-10-17T21:00:00.000Z", movedBy: "me" },
+		{ id: 2, text: "due", col: "doing", nextFireAt: PAST, movedBy: "me" },
 	];
-	assert.equal(tickCardFor(cards2, "session", "me", NOW).id, 2);
+	assert.equal(tickCardFor(cards2, "me", NOW).id, 2);
+});
+
+check("tickCardFor: movedBy が他人の DOING は拾わない（#17 の所有権）", () => {
+	const cards = [{ id: 1, text: "theirs", col: "doing", movedBy: "other" }];
+	assert.equal(tickCardFor(cards, "me", NOW), undefined);
 });
 
 // ---------------------------------------------------------------------------
@@ -200,7 +209,7 @@ const PICK = "fire-pick";
 writeFileSync(MODES, JSON.stringify({ SESSION: {}, GLOBAL: {} }, null, 2));
 writeSession(PICK, { cards: [TODO_BLOCKED, TODO_PLAIN], nextId: 9 });
 check("pickFirstTodo: blocked を飛ばして次の TODO を DOING に上げる", () => {
-	const picked = pickFirstTodo(PICK, "session");
+	const picked = pickFirstTodo(SLUG, "project");
 	assert.equal(picked && picked.id, 1);
 	const b = board(PICK);
 	assert.equal(b.cards.find((c) => c.id === 1).col, "doing");
@@ -209,7 +218,7 @@ check("pickFirstTodo: blocked を飛ばして次の TODO を DOING に上げる"
 
 writeSession(PICK, { cards: [TODO_BLOCKED], nextId: 9 });
 check("pickFirstTodo: blocked しか無ければ null（上げない）", () => {
-	assert.equal(pickFirstTodo(PICK, "session"), null);
+	assert.equal(pickFirstTodo(SLUG, "project"), null);
 	assert.equal(board(PICK).cards[0].col, "todo");
 });
 
@@ -234,10 +243,13 @@ const quiet = (sid) => {
 	handlers.get("session_start")({}, ctxFor(sid));
 };
 
-const modesWith = (sid, m) => writeFileSync(MODES, JSON.stringify({ SESSION: { [sid]: m }, GLOBAL: {} }));
+// #17: project の switch はボード（slug）に付く。GLOBAL 側は空のまま。
+const modesWith = (_sid, m) => writeFileSync(MODES, JSON.stringify({ PROJECT: { [SLUG]: m }, GLOBAL: {} }));
 const settle = (sid, cards, opts = {}, contextMessages = undefined) => {
 	modesWith(sid, { doingLoop: true, autoPick: true, intervalMin: 1, ...opts });
-	writeSession(sid, { cards, nextId: 20 });
+	// #17: 所有権は movedBy === sid。ここが無い DOING は誰も拾わない。
+	const owned = cards.map((c) => (c.col === "doing" && c.movedBy === undefined ? { ...c, movedBy: sid } : c));
+	writeSession(sid, { cards: owned, nextId: 20 });
 	return handlers.get("agent_before_settle")({ context: { contextMessages } }, ctxFor(sid));
 };
 
@@ -303,9 +315,13 @@ checkA("settle: 次の settle では2枚目が鳴る（1枚目が連続で鳴ら
 
 checkA("settle: nextFireAt を再設定すると再び鳴る（再点火）", async () => {
 	const SID = "fire-sched";
-	resetLoop();
 	// #1 を別の due 値に再設定 -> firedFor と不一致 -> 再発火。
+	// (resetLoop() は project ボードを空にするので、ボードは先に読む)
 	const b = board(SID);
+	resetLoop();
+	// resetLoop（= quiet）はボードを空にし project のスイッチも落とすので、両方戻す。
+	modesWith(SID, { doingLoop: true, autoPick: true, intervalMin: 1 });
+	writeSession(SID, b);
 	const rearmed = new Date(Date.now() - 30_000).toISOString(); // 過去だが旧 firedFor と別値
 	b.cards.find((c) => c.id === 1).nextFireAt = rearmed;
 	writeSession(SID, b);
@@ -337,7 +353,7 @@ const tool = () => {
 
 checkA("kanban ツール add: blocked / 相対 nextFireAt を絶対時刻で保存", async () => {
 	const before = Date.now();
-	const r = await tool().execute("c1", { action: "add", text: "sched", blocked: "外部待ち", nextFireAt: "+90m", scope: "session" }, undefined, undefined, ctxFor("fire-tool"));
+	const r = await tool().execute("c1", { action: "add", text: "sched", blocked: "外部待ち", nextFireAt: "+90m", scope: "project" }, undefined, undefined, ctxFor("fire-tool"));
 	assert.ok(!r.isError, r.content[0].text);
 	const c = board("fire-tool").cards.find((x) => x.text === "sched");
 	assert.equal(c.blocked, "外部待ち");
@@ -348,7 +364,7 @@ checkA("kanban ツール add: blocked / 相対 nextFireAt を絶対時刻で保�
 });
 
 checkA("kanban ツール move: blocked 解除 / nextFireAt 解除", async () => {
-	const r = await tool().execute("c2", { action: "move", id: 1, col: "doing", blocked: "", nextFireAt: "", scope: "session" }, undefined, undefined, ctxFor("fire-tool"));
+	const r = await tool().execute("c2", { action: "move", id: 1, col: "doing", blocked: "", nextFireAt: "", scope: "project" }, undefined, undefined, ctxFor("fire-tool"));
 	assert.ok(!r.isError, r.content[0].text);
 	const c = board("fire-tool").cards.find((x) => x.id === 1);
 	assert.equal(c.col, "doing");
@@ -357,15 +373,15 @@ checkA("kanban ツール move: blocked 解除 / nextFireAt 解除", async () => 
 });
 
 checkA("kanban ツール add: 不正な nextFireAt は保存せずエラー", async () => {
-	const r = await tool().execute("c3", { action: "add", text: "bad", nextFireAt: "garbage", scope: "session" }, undefined, undefined, ctxFor("fire-tool"));
+	const r = await tool().execute("c3", { action: "add", text: "bad", nextFireAt: "garbage", scope: "project" }, undefined, undefined, ctxFor("fire-tool"));
 	assert.ok(r.isError, "エラーになる");
 	assert.equal(board("fire-tool").cards.some((x) => x.text === "bad"), false, "カードは追加されない");
 });
 
 // add は params.col を尊重する（未指定のみ todo にフォールバック）。
-// scope は session を明示する（既定は project ボードなので、下の board(sid) 読みと一致させる）。
+// scope は project を明示する（既定と同じ。下の board() 読みと一致させる）。
 const addCol = async (text, params, sid) => {
-	const r = await tool().execute(`c-${text}`, { action: "add", text, scope: "session", ...params }, undefined, undefined, ctxFor(sid));
+	const r = await tool().execute(`c-${text}`, { action: "add", text, scope: "project", ...params }, undefined, undefined, ctxFor(sid));
 	assert.ok(!r.isError, r.content[0].text);
 	return { card: board(sid).cards.find((x) => x.text === text), message: r.content[0].text };
 };
@@ -373,26 +389,29 @@ const addCol = async (text, params, sid) => {
 checkA("kanban ツール add: col 未指定 -> todo（後方互換）", async () => {
 	const { card, message } = await addCol("col-default", {}, "fire-add-col");
 	assert.equal(card.col, "todo");
-	assert.match(message, /to todo \(session\)/);
+	assert.match(message, /to todo \(project\)/);
 });
 
 checkA('kanban ツール add: col "doing" を尊重', async () => {
 	const { card, message } = await addCol("col-doing", { col: "doing" }, "fire-add-col");
 	assert.equal(card.col, "doing");
-	assert.match(message, /to doing \(session\)/, message);
+	assert.match(message, /to doing \(project\)/, message);
 });
 
 checkA('kanban ツール add: col "done" を尊重', async () => {
 	const { card, message } = await addCol("col-done", { col: "done" }, "fire-add-col");
 	assert.equal(card.col, "done");
-	assert.match(message, /to done \(session\)/, message);
+	assert.match(message, /to done \(project\)/, message);
 });
 
 // ---------------------------------------------------------------------------
 // 6: /api/schedule（既存の GET+query 規約 / sid 必須）
 // ---------------------------------------------------------------------------
 const api = async (path, sid) => {
-	const res = await tf(`${API_BASE}${path}${path.includes("?") ? "&" : "?"}sid=${sid}`);
+	// #17: project ボードは cwd で決まる。テストの偽 sid は session-info に無いので
+	// 送ると 400 "unknown sid" になる。project は sid 無しで叩く。
+	const q = path.includes("scope=project") ? "" : `${path.includes("?") ? "&" : "?"}sid=${sid}`;
+	const res = await tf(`${API_BASE}${path}${q}`);
 	return { status: res.status, body: await res.json() };
 };
 const API_BASE = (() => {
@@ -400,16 +419,20 @@ const API_BASE = (() => {
 	return `http://127.0.0.1:${port}`;
 })();
 
-const sessionsJson = async () => (await tf(`${API_BASE}/api/sessions`)).json();
+const kanbanJson = async () => (await tf(`${API_BASE}/api/kanban`)).json();
 
-checkA("session_shutdown は driver の pin を解放する（#55）", async () => {
-	// ここまでで pin されているのは fire-quiet（プロセス最初の session_start）。
-	const before = await sessionsJson();
-	assert.equal(before.activeSessionId, "fire-quiet", JSON.stringify(before.activeSessionId));
+checkA("session_shutdown は driver の pin を解放する（#17: /api/kanban の modes.global で見る）", async () => {
+	// /api/sessions は削除された。pin はまだ生きていて、sid 省略の GLOBAL スイッチが
+	// pin されたセッション（ここでは fire-quiet）のものになる、という形で観測できる。
+	const base = (await kanbanJson()).modes.global.autoPick;
+	const target = !base;
+	const w = await api(`/api/modes?scope=global&key=autoPick&value=${target ? "on" : "off"}`, "fire-quiet");
+	assert.equal(w.status, 200, JSON.stringify(w.body));
+	const pinned = await kanbanJson();
+	assert.equal(pinned.modes.global.autoPick, target, "pin されたセッションの GLOBAL スイッチが読めていない");
 	handlers.get("session_shutdown")();
-	const after = await sessionsJson();
-	assert.equal(after.activeSessionId, null, "shutdown 後も pin が残っている");
-	assert.equal(after.sessions.filter((s) => s.isActive).length, 0, "ACTIVE の看板が残っている");
+	const after = await kanbanJson();
+	assert.equal(after.modes.global.autoPick, base, "shutdown 後も pin が残っている");
 });
 
 checkA("/api/schedule: blocked 設定（GET+query）-> 保存される", async () => {
@@ -418,23 +441,23 @@ checkA("/api/schedule: blocked 設定（GET+query）-> 保存される", async (
 	// fire-api is the driver for this block.
 	quiet("fire-api");
 	writeSession("fire-api", { cards: [{ id: 1, text: "g", col: "todo" }], nextId: 2 });
-	const { status, body } = await api("/api/schedule?id=1&blocked=%E5%A4%96%E9%83%A8%E5%BE%85%E3%81%A1&scope=session", "fire-api");
+	const { status, body } = await api("/api/schedule?id=1&blocked=%E5%A4%96%E9%83%A8%E5%BE%85%E3%81%A1&scope=project", "fire-api");
 	assert.equal(status, 200, JSON.stringify(body));
 	assert.equal(board("fire-api").cards[0].blocked, "外部待ち");
-	const r2 = await api("/api/schedule?id=1&at=%2B3h&scope=session", "fire-api");
+	const r2 = await api("/api/schedule?id=1&at=%2B3h&scope=project", "fire-api");
 	assert.equal(r2.status, 200);
 	assert.match(board("fire-api").cards[0].nextFireAt, /^\d{4}-\d{2}-\d{2}T.*Z$/);
-	const r3 = await api("/api/schedule?id=1&at=&blocked=&scope=session", "fire-api");
+	const r3 = await api("/api/schedule?id=1&at=&blocked=&scope=project", "fire-api");
 	assert.equal(r3.status, 200);
 	assert.equal(board("fire-api").cards[0].nextFireAt, undefined, '"" で解除');
 	assert.equal(board("fire-api").cards[0].blocked, undefined);
 	// at も blocked も無い = 呼び出し側のミス。黙って書き込み成功にしない。
-	const r4 = await api("/api/schedule?id=1&scope=session", "fire-api");
+	const r4 = await api("/api/schedule?id=1&scope=project", "fire-api");
 	assert.equal(r4.status, 400, JSON.stringify(r4.body));
 });
 
 checkA("/api/schedule: 不正な at は 400（黙って解除しない）", async () => {
-	const { status } = await api("/api/schedule?id=1&at=garbage&scope=session", "fire-api");
+	const { status } = await api("/api/schedule?id=1&at=garbage&scope=project", "fire-api");
 	assert.equal(status, 400);
 });
 
@@ -462,8 +485,8 @@ async function liveFire() {
 	handlers2.get("session_start")({}, ctxFor(SID));
 
 	const modesPath = `${HOME}/modes.json`;
-	const boardPath2 = `${SESSION_DIR}/${SID}.json`;
-	const writeModes = (m) => writeFileSync(modesPath, JSON.stringify({ SESSION: { [SID]: m }, GLOBAL: {} }));
+	const boardPath2 = PROJ;
+	const writeModes = (m) => writeFileSync(modesPath, JSON.stringify({ PROJECT: { [SLUG]: m }, GLOBAL: {} }));
 	const writeBoard2 = (cards) => seedBoard(boardPath2, { cards, nextId: 9 });
 	const due = new Date(Date.now() - 5 * 60_000).toISOString();
 	const later = new Date(Date.now() + 6 * 24 * 3600 * 1000).toISOString();
@@ -471,12 +494,12 @@ async function liveFire() {
 	writeModes({ doingLoop: true, autoPick: false, intervalMin: 0.02 });
 
 	// (A) 未来 -> 鳴らない。
-	writeBoard2([{ id: 1, text: "fire me", col: "doing", nextFireAt: later }]);
+	writeBoard2([{ id: 1, text: "fire me", col: "doing", movedBy: SID, nextFireAt: later }]);
 	await sleep(1800);
 	assert.equal(sent.length, 0, `未来は鳴らない (got ${sent.length})`);
 
 	// (B) due -> 1回だけ鳴り、firedFor が disk に載る。
-	writeBoard2([{ id: 1, text: "fire me", col: "doing", nextFireAt: due }]);
+	writeBoard2([{ id: 1, text: "fire me", col: "doing", movedBy: SID, nextFireAt: due }]);
 	await sleep(1800);
 	assert.equal(sent.length, 1, `due で1回注入 (got ${sent.length})`);
 	assert.match(sent[0], /#1 "fire me"/);
@@ -488,13 +511,13 @@ async function liveFire() {
 	assert.equal(sent.length, 1, `同じ schedule では再発火しない (got ${sent.length})`);
 
 	// (D) blocked を立てる -> 鳴らない（blocked が時間軸より先）。
-	writeBoard2([{ id: 1, text: "fire me", col: "doing", nextFireAt: due, blocked: "x", firedFor: undefined }]);
+	writeBoard2([{ id: 1, text: "fire me", col: "doing", movedBy: SID, nextFireAt: due, blocked: "x", firedFor: undefined }]);
 	await sleep(1800);
 	assert.equal(sent.length, 1, `blocked は鳴らない (got ${sent.length})`);
 
 	// (E) 再設定（別の due 値 + blocked 解除）-> 再び鳴る。
 	const due2 = new Date(Date.now() - 60_000).toISOString();
-	writeBoard2([{ id: 1, text: "fire me", col: "doing", nextFireAt: due2, firedFor: due }]);
+	writeBoard2([{ id: 1, text: "fire me", col: "doing", movedBy: SID, nextFireAt: due2, firedFor: due }]);
 	await sleep(2400);
 	assert.equal(sent.length, 2, `再設定で再発火 (got ${sent.length})`);
 }
