@@ -153,7 +153,7 @@ const COLS: Col[] = ["todo", "doing", "done"];
 // #18: the TUI move menu labels, index-aligned with COLS so the mapping cannot drift.
 const MOVE_LABELS = COLS.map((c) => `${c.toUpperCase()} へ移動`);
 // 7-char labels so the card bodies line up.
-const LABELS: Record<Col, string> = { todo: "TODO   ", doing: "DOING  ", done: "DONE   " };
+const COL_LABELS: Record<Col, string> = { todo: "TODO   ", doing: "DOING  ", done: "DONE   " };
 const WIDGET_KEY = "kanban";
 const MAX_SHOWN = 4; // a column over this many cards shows 3 + "…ほかN件"
 const INJECT_DONE = 3; // injected DONE keeps only the newest N (long sessions would grow otherwise)
@@ -750,6 +750,28 @@ export function parseBlocks(raw: string | null): number[] | null {
 	return [...new Set(ids)];
 }
 
+/** #22: the whole vocabulary. Internal value = the word the human reads, so no map. */
+export const LABELS = ["bug", "feature", "chore", "調査"] as const;
+export type Label = (typeof LABELS)[number];
+const LABEL_SET = new Set<string>(LABELS);
+
+/**
+ * #22: "bug,調査" -> ["bug","調査"]. null = reject (an unknown label, or blank without being empty),
+ * [] = nothing given (null / ""). Elements are trimmed, so `?labels=%20bug%20` is `bug` - but `?labels=%20`
+ * names nothing and is a typo, not a clear (#20 shipped `?commit=%20%20` being silently ignored).
+ */
+export function parseLabels(raw: string | null): string[] | null {
+	if (raw === null || raw === "") return [];
+	if (raw.trim() === "") return null;
+	const out: string[] = [];
+	for (const part of raw.split(",")) {
+		const s = part.trim();
+		if (!LABEL_SET.has(s)) return null;
+		if (!out.includes(s)) out.push(s);
+	}
+	return out;
+}
+
 /**
  * card -> blocks の連鎖を自分に戻るまで辿る。自己参照（自分を blocks する）もここで落ちる。
  * 新しいカードはまだ誰からも指されていないが、既存カードは未採番の id を blocks に
@@ -917,7 +939,7 @@ function cardsIn(b: Board, col: Col): Card[] {
 function formatCard(c: Card & { sid?: string }): string {
 	// #57: `c.img` is already the media/ filename, so show it as-is (no path, no basename).
 	// #16: aggregate rows carry the board they came from, and ids collide across boards.
-	return `#${c.id} ${c.sid ? `[${c.sid}] ` : ""}${c.project ? `📁${c.project} ` : ""}${c.commit ? `${c.commit.slice(0, 7)} ` : ""}${c.text ?? ""}${c.img ? `🖼${c.img}` : ""}`;
+	return `#${c.id} ${c.sid ? `[${c.sid}] ` : ""}${c.project ? `📁${c.project} ` : ""}${c.commit ? `${c.commit.slice(0, 7)} ` : ""}${c.labels && c.labels.length > 0 ? `${c.labels.join(",")} ` : ""}${c.text ?? ""}${c.img ? `🖼${c.img}` : ""}`;
 }
 
 /** Short "[⛔理由 ⏰ISO]" suffix so a tool result shows a gated card's state. */
@@ -939,7 +961,7 @@ function renderColumn(b: Board, col: Col): string {
 	if (list.length === 0) body = "(なし)";
 	else if (list.length > MAX_SHOWN) body = `${list.slice(0, 3).join(" / ")} …ほか${list.length - 3}件`;
 	else body = list.join(" / ");
-	return `■ ${LABELS[col]}${body}`;
+	return `■ ${COL_LABELS[col]}${body}`;
 }
 
 function renderLines(b: Board): string[] {
@@ -1146,10 +1168,10 @@ export function renderInjectionText(b: Board): string | null {
 		const list = cardsIn(b, col).map((c) => `${formatCard(c)}${col === "doing" ? doingAge(c) : ""}`);
 		if (col === "done") {
 			const total = list.length;
-			if (total === 0) return `${LABELS[col]}(none)`;
-			return `${LABELS[col]}(計${total}件) ${list.slice(-INJECT_DONE).join(" / ")}`;
+			if (total === 0) return `${COL_LABELS[col]}(none)`;
+			return `${COL_LABELS[col]}(計${total}件) ${list.slice(-INJECT_DONE).join(" / ")}`;
 		}
-		return `${LABELS[col]}${list.length === 0 ? "(none)" : list.join(" / ")}`;
+		return `${COL_LABELS[col]}${list.length === 0 ? "(none)" : list.join(" / ")}`;
 	};
 	const inbox = inboxNudgeLine(); // null when nothing is unread: no empty line
 	return [
@@ -3602,6 +3624,7 @@ const CARD_FIELDS = [
 	// #20: the conversation/commit tags. Missing here = `?fields=` callers never see them.
 	"sessionId",
 	"commit",
+	"labels",
 	// #16: the aggregate stamps each card with the project board it came from.
 	"sid",
 ] as const;
@@ -4017,6 +4040,12 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 				sendJson(res, 400, { ok: false, error: "blocks must be a comma-separated list of card ids" });
 				return;
 			}
+			// #22: no labels param at all is the old payload; a bad one is a typo, not a clear.
+			const labels = parseLabels(q.get("labels"));
+			if (labels === null) {
+				sendJson(res, 400, { ok: false, error: `labels must be a comma-separated list of: ${LABELS.join(", ")}` });
+				return;
+			}
 			if (blocks.length > 0 && wouldCycle(b.cards, card.id, blocks)) {
 				sendJson(res, 400, { ok: false, error: "blocks must not form a cycle" });
 				return;
@@ -4026,6 +4055,7 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 			if (sessionId !== "") card.sessionId = sessionId;
 			if (commit !== "") card.commit = commit;
 			if (blocks.length > 0) card.blocks = blocks;
+			if (labels.length > 0) card.labels = labels;
 			b.cards.push(card);
 			writeBoard(path, b);
 			sendJson(res, 200, { ok: true, cards: b.cards });
@@ -4186,8 +4216,8 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 		case "/api/schedule": {
 			// Same GET+query write path (and sid rule) as every other card edit.
 			// Nothing to set = a caller typo; 400 instead of a silent no-op write.
-			if (q.get("at") === null && q.get("blocked") === null && q.get("project") === null && q.get("session") === null && q.get("commit") === null) {
-				sendJson(res, 400, { ok: false, error: "at, blocked, project, session or commit is required" });
+			if (q.get("at") === null && q.get("blocked") === null && q.get("project") === null && q.get("session") === null && q.get("commit") === null && q.get("labels") === null) {
+				sendJson(res, 400, { ok: false, error: "at, blocked, project, session, commit or labels is required" });
 				return;
 			}
 			const card = b.cards.find((c) => c.id === Number(idParam));
@@ -4223,6 +4253,15 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 				sendJson(res, 400, { ok: false, error: "commit must be 7-40 hex characters" });
 				return;
 			}
+			// #22: whole-set replacement, like project/session/commit - labels=bug clears 調査.
+			// undefined = 未指定（触らない）, null = 不正な値。ここを null 一つで兼ねると
+			// labels を渡さない全呼び出しが 400 になる。
+			const labelsParam = q.get("labels");
+			const labs = labelsParam === null ? undefined : parseLabels(labelsParam);
+			if (labs === null) {
+				sendJson(res, 400, { ok: false, error: `labels must be a comma-separated list of: ${LABELS.join(", ")}` });
+				return;
+			}
 			if (at !== null) {
 				if (atIso === null) {
 					delete card.nextFireAt;
@@ -4245,6 +4284,10 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 			if (sha !== null) {
 				if (sha.length === 0) delete card.commit;
 				else card.commit = sha;
+			}
+			if (labs !== undefined) {
+				if (labs.length === 0) delete card.labels;
+				else card.labels = labs;
 			}
 			writeBoard(path, b);
 			sendJson(res, 200, { ok: true, cards: b.cards });
@@ -5218,7 +5261,7 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 			return withMenuGuard(uiGuard, async () => {
 			for (;;) {
 				const current = drillBoard();
-				const colOptions = COLS.map((c) => `${LABELS[c].trim()} (${cardsIn(current, c).length})`);
+				const colOptions = COLS.map((c) => `${COL_LABELS[c].trim()} (${cardsIn(current, c).length})`);
 				// #16: global owns no cards - say so on the row instead of offering a dead click.
 				const colRows = scope === "global" ? colOptions.map((o) => `${o}（読取専用）`) : colOptions;
 				const switchOption = scope === "project" ? "🌐 グローバル看板へ" : "📂 プロジェクト看板へ";
@@ -5312,7 +5355,7 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 					// Re-read every iteration so GUI edits show up mid-drilldown.
 					const b = drillBoard();
 					const inCol = cardsIn(b, col);
-					const choice = await ctx.ui.select(`${LABELS[col].trim()} (${inCol.length})`, [
+					const choice = await ctx.ui.select(`${COL_LABELS[col].trim()} (${inCol.length})`, [
 						...inCol.map(formatCard),
 						"＋ 新規カード",
 						"← 列選択に戻る",
@@ -5399,6 +5442,8 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 			// #20: conversation tags. "" clears either one; commit must be 7-40 hex.
 			session: Type.Optional(Type.String()),
 			commit: Type.Optional(Type.String()),
+			// #22: comma-separated. Allowed: bug, feature, chore, 調査. "" clears.
+			labels: Type.Optional(Type.String()),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			// Phase 0: the HTTP gate cannot see an in-process write, so the tool waits for the
@@ -5463,6 +5508,8 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 					if (sessionId === "" && (params.session ?? "") !== "") return fail("session must match [A-Za-z0-9._:@-]");
 					const commit = normalizeCommit(params.commit);
 					if (commit === "" && (params.commit ?? "") !== "") return fail("commit must be 7-40 hex characters");
+					const labels = parseLabels(params.labels ?? null);
+					if (labels === null) return fail(`labels must be a comma-separated list of: ${LABELS.join(", ")}`);
 					const card: Card = { id: b.nextId++, text, col };
 					stampMove(card, sessionSid);
 					const gateError = applyGate(card);
@@ -5470,6 +5517,7 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 					if (project !== "") card.project = project;
 					if (sessionId !== "") card.sessionId = sessionId;
 					if (commit !== "") card.commit = commit;
+					if (labels.length > 0) card.labels = labels;
 					b.cards.push(card);
 					persistError = writeBoard(path, b);
 					message = `added ${formatCard(card)} to ${card.col} (${scope})${gateNote(card)}`;
@@ -5493,8 +5541,8 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 					if (params.id === undefined) return fail("edit requires id");
 					const text = (params.text ?? "").trim();
 					// project/session/commit alone is a valid edit (relabeling a card without touching its text).
-					if (text.length === 0 && params.project === undefined && params.session === undefined && params.commit === undefined)
-						return fail("edit requires text, project, session or commit");
+					if (text.length === 0 && params.project === undefined && params.session === undefined && params.commit === undefined && params.labels === undefined)
+						return fail("edit requires text, project, session, commit or labels");
 					const proj = params.project === undefined ? undefined : normalizeProject(params.project);
 					// Validate before mutating: a failed edit must not report text that was never saved.
 					if (proj === "" && params.project !== undefined && params.project !== "") return fail("project must match [a-z0-9._-]");
@@ -5502,6 +5550,10 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 					if (sess === "" && params.session !== undefined && params.session !== "") return fail("session must match [A-Za-z0-9._:@-]");
 					const sha = params.commit === undefined ? undefined : normalizeCommit(params.commit);
 					if (sha === "" && params.commit !== undefined && params.commit !== "") return fail("commit must be 7-40 hex characters");
+					// #22: undefined = leave labels alone, "" = clear them. A blank-but-not-empty
+					// value (" ") is a typo, not a clear - #20 shipped that bug for ?commit=%20%20.
+					const labs = params.labels === undefined ? undefined : parseLabels(params.labels);
+					if (labs === null) return fail(`labels must be a comma-separated list of: ${LABELS.join(", ")}`);
 					const card = b.cards.find((c) => c.id === params.id);
 					if (card === undefined) return fail(`no card with id ${params.id} in the ${scope} board`);
 					if (text.length > 0) card.text = text;
@@ -5516,6 +5568,10 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 					if (sha !== undefined) {
 						if (sha === "") delete card.commit;
 						else card.commit = sha;
+					}
+					if (labs !== undefined) {
+						if (labs.length === 0) delete card.labels;
+						else card.labels = labs;
 					}
 					persistError = writeBoard(path, b);
 					message = `edited #${card.id} (${scope})`;
