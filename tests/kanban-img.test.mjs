@@ -80,11 +80,14 @@ check("parse: img abc は reject", () => eq(parseKanbanArgs(["img", "abc", "/tmp
 
 // --- サーバ起動（このテスト専用ポート） ---------------------------------------
 const commands = new Map();
+const tools = new Map();
 const pi = {
 	registerCommand(name, def) {
 		commands.set(name, def);
 	},
-	registerTool() {},
+	registerTool(def) {
+		tools.set(def.name, def);
+	},
 	appendEntry() {},
 	on() {},
 	sendUserMessage() {},
@@ -182,6 +185,57 @@ writeFileSync(SRC_IMG, PNG);
 	check("置き換え: 成功 notify", () => assert.match(out, /#3 に画像を添付/));
 	check("置き換え: 旧 media は removeMedia で消える", () => assert.equal(existsSync(`${MEDIA}/${before}`), false));
 	check("置き換え: 新 media は残る", () => assert.equal(existsSync(`${MEDIA}/${imgOf(3)}`), true));
+}
+
+// --- 8: `kanban` ツールの img アクション (runImgCommand と同じ attachImage) ------
+// エージェントがスクショを貼るための口。検証も保存先も CLI と同じ。
+const tool = tools.get("kanban");
+assert.ok(tool, "kanban ツールが登録されている");
+const ctx = {
+	hasUI: false,
+	isIdle: () => true,
+	ui: { notify() {}, setWidget() {} },
+	sessionManager: { getSessionId: () => SID, getEntries: () => [] },
+};
+const runTool = (params) => tool.execute("c", { scope: "project", ...params }, undefined, undefined, ctx);
+{
+	const before = imgOf(3);
+	const r = await runTool({ action: "img", id: 3, image: SRC_IMG });
+	check("tool img: attached <id>-<8hex>.png を返す", () => assert.match(r.content[0].text, /^attached 3-[0-9a-f]{8}\.png to #3$/));
+	check("tool img: card.img が置き換わり実体がある", () => {
+		assert.notEqual(imgOf(3), before);
+		assert.equal(existsSync(`${MEDIA}/${imgOf(3)}`), true);
+	});
+}
+{
+	const r = await runTool({ action: "img", id: 3 });
+	check("tool img: image 無しは isError", () => {
+		assert.equal(r.isError, true);
+		assert.match(r.content[0].text, /img requires image/);
+	});
+}
+{
+	const r = await runTool({ action: "img", image: SRC_IMG });
+	check("tool img: id 無しは isError", () => {
+		assert.equal(r.isError, true);
+		assert.match(r.content[0].text, /img requires id/);
+	});
+}
+{
+	const before = imgOf(3);
+	const r = await runTool({ action: "img", id: 3, image: "/tmp/kb-img-does-not-exist.png" });
+	check("tool img: ファイル不在は isError かつボード不変", () => {
+		assert.equal(r.isError, true);
+		assert.equal(imgOf(3), before);
+	});
+}
+{
+	// global は read-only 集約: 書き込み系と同じく img も拒否する。
+	const r = await runTool({ action: "img", id: 3, image: SRC_IMG, scope: "global" });
+	check("tool img: global は read-only", () => {
+		assert.equal(r.isError, true);
+		assert.match(r.content[0].text, /global board is read-only/);
+	});
 }
 
 for (const f of failures) console.log(`FAIL ${f}`);

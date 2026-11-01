@@ -5077,60 +5077,68 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 		refresh(ctx, sid);
 	};
 
+	/** A local image into media/ and onto a card. Validates everything before the first write. */
+	type AttachImageResult =
+		| { ok: true; card: Card; name: string; basename: string }
+		| { ok: false; error: string };
+
 	/**
-	 * `/kanban img <id> <path>`: copy a local image into media/ and point the card at
-	 * it, the same shape /api/upload writes (basename in `img`, bytes under MEDIA_DIR).
-	 * Every validation runs before the first write: missing / unreadable / not an image /
-	 * over 8MB only notifies, so the board can never gain a broken image path.
+	 * The copy local image -> media/ -> `card.img` path, the same shape /api/upload writes
+	 * (basename in `img`, bytes under MEDIA_DIR). Shared by `/kanban img` and the tool's
+	 * `img` action, so both validate identically. Every validation runs before the first
+	 * write: missing / unreadable / not an image / over 8MB only return, so the board can
+	 * never gain a broken image path. writeBoard is the caller's job.
 	 */
-	const runImgCommand = (ctx: ExtensionContext, sid: string, id: number, input: string): void => {
-		// #17: the card lives on this cwd's project board.
-		const path = boardPath("project", boardKeyFor(ctx, sid, "project"));
-		const b = readBoard(path);
+	const attachImage = (b: Board, id: number, input: string): AttachImageResult => {
 		const card = b.cards.find((c) => c.id === id);
-		if (card === undefined) {
-			ctx.ui.notify(`その id は無い: #${id}（project）`);
-			return;
-		}
+		if (card === undefined) return { ok: false, error: `その id は無い: #${id}` };
 		const sized = input.startsWith("~/") ? join(homedir(), input.slice(2)) : input;
 		const abs = resolve(sized === "~" ? homedir() : sized);
 		const dot = abs.lastIndexOf(".");
 		const ext = dot < 0 ? "" : abs.slice(dot + 1).toLowerCase();
 		if (!(MIME_BY_EXT[ext] ?? "").startsWith("image/")) {
-			ctx.ui.notify(`画像ではない（${ext === "" ? "拡張子無し" : `.${ext}`}）: ${abs}`);
-			return;
+			return { ok: false, error: `画像ではない（${ext === "" ? "拡張子無し" : `.${ext}`}）: ${abs}` };
 		}
 		let st: Stats;
 		try {
 			st = statSync(abs);
 		} catch {
-			ctx.ui.notify(`ファイルが無い / 読めない: ${abs}`);
-			return;
+			return { ok: false, error: `ファイルが無い / 読めない: ${abs}` };
 		}
 		if (!st.isFile()) {
-			ctx.ui.notify(`ファイルが無い / 読めない（通常ファイルではない）: ${abs}`);
-			return;
+			return { ok: false, error: `ファイルが無い / 読めない（通常ファイルではない）: ${abs}` };
 		}
 		if (st.size > MAX_UPLOAD) {
-			ctx.ui.notify(`大きすぎる（上限 ${fmtMB(MAX_UPLOAD)}）: ${abs}`);
-			return;
+			return { ok: false, error: `大きすぎる（上限 ${fmtMB(MAX_UPLOAD)}）: ${abs}` };
 		}
 		let bytes: Buffer;
 		try {
 			bytes = readFileSync(abs);
 		} catch {
-			ctx.ui.notify(`ファイルが無い / 読めない: ${abs}`);
-			return;
+			return { ok: false, error: `ファイルが無い / 読めない: ${abs}` };
 		}
 		removeMedia(card); // replacing media drops the old file
 		const name = writeMedia(card.id, ext, bytes);
-		if (name === null) {
-			ctx.ui.notify("media への書き込みに失敗");
+		if (name === null) return { ok: false, error: "media への書き込みに失敗" };
+		card.img = name;
+		return { ok: true, card, name, basename: basename(abs) };
+	};
+
+	/**
+	 * `/kanban img <id> <path>`: attachImage on this cwd's project board, then save.
+	 * A failed attach notifies the same message the tool reports, and writes nothing.
+	 */
+	const runImgCommand = (ctx: ExtensionContext, sid: string, id: number, input: string): void => {
+		// #17: the card lives on this cwd's project board.
+		const path = boardPath("project", boardKeyFor(ctx, sid, "project"));
+		const b = readBoard(path);
+		const r = attachImage(b, id, input);
+		if (!r.ok) {
+			ctx.ui.notify(r.error);
 			return;
 		}
-		card.img = name;
 		writeBoard(path, b);
-		ctx.ui.notify(`#${card.id} に画像を添付: ${basename(abs)}（session）`);
+		ctx.ui.notify(`#${r.card.id} に画像を添付: ${r.basename}（session）`);
 		refresh(ctx, sid);
 	};
 
@@ -5655,7 +5663,7 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 		name: "kanban",
 		label: "Kanban board",
 		description:
-			"Manage a 3-column kanban board (todo/doing/done). action=list shows the board, add creates a card, move changes its column, remove deletes it, edit rewrites a card's text (column and ownership stay), check runs the board/serve/media/modes self-test and returns its JSON, resume clears a doing-loop halt (same reset as /kanban loop on: budget back to 10, doingLoop ON in all three scopes — session, global and this project) — the GUI's loop switch cannot clear it, because the halt lives in the extension process, not in modes.json. scope selects the board: 'project' (default, the board of this working directory's git root - every session in the same repo shares it), 'session' (this conversation's own board) or 'global' (a read-only aggregate of every project's cards; writes there are rejected). Card IDs are unique only within one board — global #7 and project #7 are different cards, so an id seen in a global listing cannot be passed to move/remove/edit: those always act on the selected scope's own board (default: this project's). url returns the token-bearing dashboard URL to open in a browser. The board is shared with the user's GUI and persisted under ~/.pi/kanban/. project is an optional slug (lowercase [a-z0-9._-], max 24 chars) naming the project a card belongs to; add and edit set it, an empty value clears it, an unnormalizable value is an error, and it never affects the loop or auto-pick. session and commit are optional conversation tags: add and edit set them, an empty value clears them, and commit must be 7-40 hex characters (it is stored lowercase).",
+			"Manage a 3-column kanban board (todo/doing/done). action=list shows the board, add creates a card, move changes its column, remove deletes it, edit rewrites a card's text (column and ownership stay), check runs the board/serve/media/modes self-test and returns its JSON, resume clears a doing-loop halt (same reset as /kanban loop on: budget back to 10, doingLoop ON in all three scopes — session, global and this project) — the GUI's loop switch cannot clear it, because the halt lives in the extension process, not in modes.json. scope selects the board: 'project' (default, the board of this working directory's git root - every session in the same repo shares it), 'session' (this conversation's own board) or 'global' (a read-only aggregate of every project's cards; writes there are rejected). Card IDs are unique only within one board — global #7 and project #7 are different cards, so an id seen in a global listing cannot be passed to move/remove/edit: those always act on the selected scope's own board (default: this project's). url returns the token-bearing dashboard URL to open in a browser. img copies a local image into media/ and attaches it to the card named by id (pass its path in `image`; ~/ works). The board is shared with the user's GUI and persisted under ~/.pi/kanban/. project is an optional slug (lowercase [a-z0-9._-], max 24 chars) naming the project a card belongs to; add and edit set it, an empty value clears it, an unnormalizable value is an error, and it never affects the loop or auto-pick. session and commit are optional conversation tags: add and edit set them, an empty value clears them, and commit must be 7-40 hex characters (it is stored lowercase).",
 		parameters: Type.Object({
 			action: Type.Union([
 				Type.Literal("list"),
@@ -5670,6 +5678,9 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 				// edit rewrites a card's text only. Same rules as /api/rename: no stampMove,
 				// movedAt/movedBy stay (a rename does not transfer ownership), empty text is an error.
 				Type.Literal("edit"),
+				// The tool had no way to attach an image; /kanban img was the only door.
+				// Same validation and same media/ layout through attachImage.
+				Type.Literal("img"),
 			]),
 			scope: Type.Optional(
 				Type.Union([Type.Literal("global"), Type.Literal("project")]),
@@ -5691,6 +5702,8 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 			commit: Type.Optional(Type.String()),
 			// #22: comma-separated. Allowed: bug, feature, chore, 調査. "" clears.
 			labels: Type.Optional(Type.String()),
+			// img: a local image path. Absolute, or ~/ prefixed. Copied, not referenced.
+			image: Type.Optional(Type.String()),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			// Phase 0: the HTTP gate cannot see an in-process write, so the tool waits for the
@@ -5718,7 +5731,7 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 			const fail = (text: string) => ({ ...done(text), isError: true });
 			// Phase 0 D5: global is a read-only aggregate. The HTTP routes already 400 it
 			// (writeBoardPath); without this the in-process tool is the one back door.
-			if (scope === "global" && (["add", "move", "remove", "edit"] as readonly string[]).includes(params.action)) {
+			if (scope === "global" && (["add", "move", "remove", "edit", "img"] as readonly string[]).includes(params.action)) {
 				return fail("global board is read-only");
 			}
 
@@ -5851,6 +5864,18 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 					// #26: the cap in force is the project board's - global has no switch and no budget.
 					const capNow = maxLoopsOf(modesFor(readModesFile(), boardKeyFor(ctx, sessionSid, "project"), "project"));
 					message = `resumed: ${was} / count ${oldCount} → 0 / doingLoop ON (project) / ${loopBudgetText(capNow, 0)}`;
+					break;
+				}
+				case "img": {
+					const id = params.id;
+					if (id === undefined || !Number.isInteger(id) || id < 1) return fail("img requires id (an integer 1 or more)");
+					const input = (params.image ?? "").trim();
+					if (input === "") return fail("img requires image (a local file path)");
+					// attachImage validates everything before removeMedia, so a bad path writes nothing.
+					const r = attachImage(b, id, input);
+					if (!r.ok) return fail(r.error);
+					persistError = writeBoard(path, b);
+					message = `attached ${r.name} to #${r.card.id}`;
 					break;
 				}
 				case "url": {
