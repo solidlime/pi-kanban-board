@@ -159,12 +159,13 @@ const writeButtons = (root) =>
 	all(root, (n) => n._lis.click && n._lis.click.length && (n.className.includes("mini") || n.className.includes("sw")));
 
 // --- 行の並び ---------------------------------------------------------------
-test("#11: 設定ペインに GLOBAL 先頭で GLOBAL とこのプロジェクトの 2 行が並ぶ", async () => {
+// #26: スイッチとしての global を廃止したので、設定行はこのプロジェクトの 1 行だけ。
+test("#11: 設定ペインにはこのプロジェクトの 1 行だけが並ぶ", async () => {
 	const { byId } = await boot();
-	assert.deepEqual(rowLabels(byId), ["GLOBAL（全プロジェクト共有）", "このプロジェクト（alpha）"]);
-	// 各ボードに ctl（ループ/ピック/間隔/上限/DOING 全停止）が 1 つずつ
+	assert.deepEqual(rowLabels(byId), ["このプロジェクト（alpha）"]);
+	// ctl（ループ/ピック/間隔/上限/DOING 全停止）は 1 つだけ
 	const ctls = all(byId["settings-loops"], (e) => e.className === "ctl");
-	assert.equal(ctls.length, 2);
+	assert.equal(ctls.length, 1);
 });
 
 test("#11: ボード本体（global / project）からは ctl が消えている", async () => {
@@ -176,12 +177,9 @@ test("#11: ボード本体（global / project）からは ctl が消えている
 // --- 書き込み先のボード ------------------------------------------------------
 test("#11: 設定行の書き込みはそのボードの scope= を載せる（#17: sid は送らない）", async () => {
 	const { byId, urls } = await boot();
-	const want = [
-		null, // GLOBAL 行は読み取り専用（boardCtx の active=false）。書き込みが出ないのが正しい
-		"scope=project",
-	];
+	const want = ["scope=project"];
 	const list = rows(byId);
-	assert.equal(list.length, 2);
+	assert.equal(list.length, 1);
 	for (let i = 0; i < list.length; i++) {
 		const start = urls.length;
 		for (const b of writeButtons(list[i])) {
@@ -189,10 +187,6 @@ test("#11: 設定行の書き込みはそのボードの scope= を載せる（#
 			await flush();
 		}
 		const wrote = urls.slice(start).filter((u) => !u.startsWith("/api/dashboard"));
-		if (want[i] === null) {
-			assert.equal(wrote.length, 0, `GLOBAL 行で書き込みが出た: ${wrote.slice(0, 2)}`);
-			continue;
-		}
 		assert.ok(wrote.length >= 5, `行 ${i} の書き込みが少なすぎる: ${wrote.length}`);
 		const scope = want[i];
 		for (const u of wrote) {
@@ -204,8 +198,7 @@ test("#11: 設定行の書き込みはそのボードの scope= を載せる（#
 
 test("#11: 停止中の行には理由を添える（スイッチだけ見て効くと思わせない）", async () => {
 	const { byId } = await boot();
-	const [global, project] = rows(byId);
-	assert.equal(all(global, (e) => e.className === "halt").length, 0, "GLOBAL に halt がある");
+	const [project] = rows(byId);
 	const halt = all(project, (e) => e.className === "halt");
 	assert.equal(halt.length, 1, "停止中の project 行に halt が無い");
 	// #17: 停止の理由（文字列）は session 行と一緒に消えた。bool だけを見て「止まっている」
@@ -277,7 +270,7 @@ test("#11: 実行中に再描画されても診断の再送は起きない", asy
 
 	// 5 秒ポーリング相当の再描画（render → renderSettings → renderSelfTest）
 	state.dash = { ...DASH, stats: { ...DASH.stats, todo: 99 } };
-	writeButtons(rows(byId)[1])[0]._lis.click[0]();
+	writeButtons(rows(byId)[0])[0]._lis.click[0]();
 	for (let i = 0; i < 6; i++) await flush();
 
 	// モック DOM は box.innerHTML = "" を再現しないので、最新のノード（末尾）が今のボタン。
@@ -304,7 +297,7 @@ test("#11: 診断結果は再描画でも残る", async () => {
 	for (let i = 0; i < 6; i++) await flush();
 	// 中身が変わったデータで再描画させる（書き込み → reload → render）
 	state.dash = { ...DASH, stats: { ...DASH.stats, todo: 99 } };
-	writeButtons(rows(byId)[1])[0]._lis.click[0]();
+	writeButtons(rows(byId)[0])[0]._lis.click[0]();
 	for (let i = 0; i < 6; i++) await flush();
 	const shown = texts(byId["settings-selftest"]);
 	assert.ok(shown.some((t) => t === "OK（1 件）"), `再描画で消えた: ${shown.join(" / ")}`);
@@ -360,7 +353,7 @@ test("#13: 実行中に再描画されても診断の再送は起きない", asy
 
 	// 5 秒ポーリング相当の再描画（render → renderSettings → renderDb）
 	state.dash = { ...DASH, stats: { ...DASH.stats, todo: 99 } };
-	writeButtons(rows(byId)[1])[0]._lis.click[0]();
+	writeButtons(rows(byId)[0])[0]._lis.click[0]();
 	for (let i = 0; i < 6; i++) await flush();
 
 	// モック DOM は box.innerHTML = "" を再現しないので、最新のノード（末尾）が今のボタン。

@@ -336,10 +336,10 @@ check("B 空ボードは null のまま（既存挙動）", () => assert.equal(m
 	await checkAsync("contract GET /api/kanban は ok:true + boards", async () => {
 		assert.equal(api.status, 200);
 		assert.equal(j.ok, true);
-		// #17: session ボードは無い。project / global の 2 枚 + スイッチ。
+		// #17: session ボードは無い。project / global の 2 枚は読めるが、スイッチは project のものだけ（#26）。
 		assert.equal(typeof j.projectId, "string");
 		assert.ok(Array.isArray(j.project.cards) && Array.isArray(j.global.cards));
-		assert.deepEqual(Object.keys(j.modes).sort(), ["global", "project"]);
+		assert.deepEqual(Object.keys(j.modes).sort(), ["project"]);
 	});
 	// #17: 旧 ?scope=session は黙って project に落とさず 400 で断る。
 	await checkAsync("contract GET /api/kanban?scope=session は 400", async () => {

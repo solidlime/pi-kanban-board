@@ -1,6 +1,7 @@
 // kanban 認可フォールバックの自己検証。`node tests/kanban-auth.test.mjs`。
 // 書き込み端点は sid 必須: 省略/空 -> 400、どのセッションの sid でも 200（#55 でセッション
-// 単位の書き込みロックを撤去した）。scope=global の逃げ道（sid 省略で 200）も現状維持。
+// 単位の書き込みロックを撤去した）。#26: scope=global は集約ビューなのでスイッチを持たず、
+// 設定系の 5 端点はどこでも 400 を返す。
 // HOME と KANBAN_PORT を差し替えるので、本番の ~/.pi/kanban と 8789 には触れない。
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
@@ -139,23 +140,27 @@ await check("scope 省略は project 扱い（既定）", async () => {
 await check("未知の sid + scope=project は 400（黙って cwd のボードに書かない）", async () =>
 	assert.equal(await status(`/api/modes?scope=project&sid=no-such-session&key=autoPick&value=off`), 400));
 
-// --- scope=global は driver にフォールバックする（#67/#78） -------------------
-await check("scope=global sid 省略 -> 200（driver に落ちる）", async () =>
-	assert.equal(await status(`/api/stuck?scope=global&n=7`), 200));
-await check("scope=global の書き込み先は GLOBAL[sid]", () =>
-	assert.equal(readJson(modesFile).GLOBAL[SID].stuckLimit, 7));
+// --- #26: scope=global はスイッチを持たない（集約ビュー） --------------------
+await check("scope=global sid 省略 -> 400（集約ビューにスイッチは無い）", async () =>
+	assert.equal(await status(`/api/stuck?scope=global&n=7`), 400));
+await check("scope=global の書き込みは GLOBAL[sid] を作らない", () =>
+	assert.equal(readJson(modesFile).GLOBAL?.[SID], undefined));
 
-// --- shutdown 後の 400 は global を名指しする ---------------------------------
+// --- shutdown 後も同じ 400（global は sid の有無に関係なく断る） ------------------
 handlers.get("session_shutdown")();
 await check("shutdown 後の scope=global sid 省略 -> 400", async () =>
 	assert.equal(await status(`/api/modes?scope=global&key=autoPick&value=on`), 400));
-await check("その 400 は global を名指しする（session ではない）", async () => {
+await check("その 400 は集約ビューを名指しする（session ではない）", async () => {
 	const body = await bodyOf(`/api/modes?scope=global&key=autoPick&value=on`);
-	assert.equal(body.error, "scope=global requires sid (no active session to fall back to)");
+	assert.equal(body.error, "global は集約ビューでスイッチを持たない（scope=project を使う）");
 });
 await check("/api/interval も同じ文言（#78 の設定系5端点で共通）", async () => {
 	const body = await bodyOf(`/api/interval?scope=global&min=5`);
-	assert.equal(body.error, "scope=global requires sid (no active session to fall back to)");
+	assert.equal(body.error, "global は集約ビューでスイッチを持たない（scope=project を使う）");
+});
+await check("sid を付けても scope=global は 400（逃げ道なし）", async () => {
+	assert.equal(await status(`/api/modes?scope=global&sid=${SID}&key=autoPick&value=on`), 400);
+	assert.equal(readJson(modesFile).GLOBAL?.[SID], undefined);
 });
 
 console.log(`${passed} passed, ${failures.length} failed`);

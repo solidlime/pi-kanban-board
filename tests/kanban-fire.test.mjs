@@ -419,20 +419,19 @@ const API_BASE = (() => {
 	return `http://127.0.0.1:${port}`;
 })();
 
-const kanbanJson = async () => (await tf(`${API_BASE}/api/kanban`)).json();
-
-checkA("session_shutdown は driver の pin を解放する（#17: /api/kanban の modes.global で見る）", async () => {
-	// /api/sessions は削除された。pin はまだ生きていて、sid 省略の GLOBAL スイッチが
-	// pin されたセッション（ここでは fire-quiet）のものになる、という形で観測できる。
-	const base = (await kanbanJson()).modes.global.autoPick;
-	const target = !base;
-	const w = await api(`/api/modes?scope=global&key=autoPick&value=${target ? "on" : "off"}`, "fire-quiet");
-	assert.equal(w.status, 200, JSON.stringify(w.body));
-	const pinned = await kanbanJson();
-	assert.equal(pinned.modes.global.autoPick, target, "pin されたセッションの GLOBAL スイッチが読めていない");
+checkA("session_shutdown は driver の pin を解放する（#17/#26: sid 省略の書き込みの movedBy で見る）", async () => {
+	// /api/sessions も GLOBAL スイッチも消えた。pin はまだ生きていて、sid 省略の project
+	// 書き込みの帰属（actorOf -> activeSessionId）に pin されたセッション（ここでは
+	// fire-quiet）が載る、という形で観測できる。
+	const probe = async () => {
+		const text = `pin-probe-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+		const { status, body } = await api(`/api/add?scope=project&text=${text}`);
+		assert.equal(status, 200, JSON.stringify(body));
+		return body.cards.find((c) => c.text === text).movedBy;
+	};
+	assert.equal(await probe(), "fire-quiet", "pin されたセッションが帰属になっていない");
 	handlers.get("session_shutdown")();
-	const after = await kanbanJson();
-	assert.equal(after.modes.global.autoPick, base, "shutdown 後も pin が残っている");
+	assert.equal(await probe(), "", "shutdown 後も pin が残っている");
 });
 
 checkA("/api/schedule: blocked 設定（GET+query）-> 保存される", async () => {

@@ -220,29 +220,29 @@ for (const bad of ["0", "21", "abc"]) {
 	});
 }
 {
+	// #26: global は集約ビューなのでスイッチを持たない（sid を省略しても 400、書かない）。
 	const res = await api(`scope=global&n=7`);
-	await res.text();
-	check("GET /api/stuck?scope=global&n=7 -> 200 かつ GLOBAL に 7", () => {
-		assert.equal(res.status, 200);
-		assert.equal(readJson(modesFile).GLOBAL[SID].stuckLimit, 7);
+	const body = await res.json();
+	check("GET /api/stuck?scope=global&n=7 -> 400 かつ GLOBAL に書かない", () => {
+		assert.equal(res.status, 400);
+		assert.equal(body.error, "global は集約ビューでスイッチを持たない（scope=project を使う）");
+		assert.equal(readJson(modesFile).GLOBAL?.[SID], undefined);
 	});
 }
 {
-	// #17: the per-session switch that is left is GLOBAL[sid]. No write lock: any sid works.
+	// #26: sid を変えても同じ 400。GLOBAL 行はもう作られない。
 	const otherRes = await api(`sid=other-session&scope=global&n=3`);
 	const otherBody = await otherRes.json();
 	const intervalRes = await tf(
 		`http://127.0.0.1:${PORT}/api/interval?scope=global&sid=other-session&min=3`,
 	);
 	const intervalBody = await intervalRes.json();
-	check("GET /api/stuck 他セッションの GLOBAL 行 -> 200 かつ書かれる", () => {
-		// #55: セッション単位の書き込みロックは無い。
-		assert.equal(otherRes.status, 200);
-		assert.equal(otherBody.ok, true);
-		assert.equal(readJson(modesFile).GLOBAL["other-session"].stuckLimit, 3);
-		// 同じゲートを持っていた interval も同じく書ける
-		assert.equal(intervalRes.status, 200);
-		assert.equal(intervalBody.ok, true);
+	check("GET /api/stuck / interval 他セッションの scope=global -> 400 かつ書かない", () => {
+		assert.equal(otherRes.status, 400);
+		assert.equal(otherBody.error, "global は集約ビューでスイッチを持たない（scope=project を使う）");
+		assert.equal(intervalRes.status, 400);
+		assert.equal(intervalBody.error, "global は集約ビューでスイッチを持たない（scope=project を使う）");
+		assert.equal(readJson(modesFile).GLOBAL?.["other-session"], undefined);
 	});
 }
 {

@@ -1,7 +1,8 @@
 // kanban Phase 11 の自己検証。フレームワーク無しで `node tests/kanban-phase11.test.mjs`。
-// 対象: GLOBAL TODO の所有判定。DOING は headOwnedDoing で movedBy===sid に絞っているが、
-// TODO は「まだ誰も着手していない」ので movedBy 無しも拾える。他セッションが /api/move で
-// 宣言済みの GLOBAL TODO は奪わない。poll の wake と pickFirstTodo は同じカードを選ぶ。
+// 対象: TODO の所有判定。DOING は headOwnedDoing で movedBy===sid に絞っているが、
+// TODO は「まだ誰も着手していない」ので movedBy 無しも、他者のスタンプも拾える。
+// #26: 駆動するのは cwd の project ボード 1 枚。global は読み取り専用の集約ビューなので、
+// global.json に何を置いても poll も settle も動かない（それをここで固定する）。
 // HOME と KANBAN_PORT を差し替えるので、本番の ~/.pi/kanban と 8789 には触れない。
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
@@ -39,7 +40,7 @@ useKanban(mod);
 // ボードが起動直後の移行に食われる（旧レイアウトを seed するテストの前提）。
 useMigrate(mod);
 await settleMigration();
-const { nextTodo, continuationPrompt, tickCardFor, pickFirstTodo } = mod;
+const { nextTodo, tickCardFor } = mod;
 
 const failures = [];
 let passed = 0;
@@ -59,18 +60,18 @@ const GLOBAL = `${HOME_DIR}/.pi/kanban/global.json`;
 const SLUG = mod.projectSlugOf(process.cwd());
 const boardFile = () => `${HOME_DIR}/.pi/kanban/projects/${SLUG}.json`;
 const writeBoardFile = (_sid, cards) => seedBoard(boardFile(), { cards, nextId: 90 });
+// global は駆動しないことを見るためだけに direct seed する（UI からは書けない）。
 const writeGlobalFile = (cards) => seedBoard(GLOBAL, { cards, nextId: 90 });
 const readCards = (_sid) => readBoardAt(boardFile()).cards;
 const readGlobal = () => readBoardAt(GLOBAL).cards;
 const readModes = () => JSON.parse(readFileSync(MODES, "utf8"));
 
 // 全セッション分を毎回書き戻す: poll は 1.5s ごとに modes.json を読み直す。
-const modesState = { PROJECT: {}, GLOBAL: {} };
+// #26: スイッチを持つボードは project（slug キー）だけ。
+const modesState = { PROJECT: {} };
 const writeModes = () => writeFileSync(MODES, JSON.stringify(modesState, null, 2));
-// #17: project のスイッチは slug、global は sid で引く（modesBucket と同じ読み方）。
-const setModes = (sid, scope, doingLoop, autoPick) => {
-	if (scope === "project" || scope === "SESSION") modesState.PROJECT[SLUG] = { doingLoop, autoPick };
-	else modesState.GLOBAL[sid] = { doingLoop, autoPick };
+const setModes = (_sid, _scope, doingLoop, autoPick) => {
+	modesState.PROJECT[SLUG] = { doingLoop, autoPick };
 	writeModes();
 };
 
@@ -154,66 +155,61 @@ const settle = (sess) =>
 	sess.handlers.get("agent_before_settle")({ context: { contextMessages: [{ role: "assistant" }] } }, sess.ctx);
 
 try {
-	// --- (A) 6: GLOBAL の wake カード = pickFirstTodo の結果（#87: 他者スタンプも拾う） ---
+	// --- (A) 6: #26 global は駆動しない — global.json に拾える TODO を積んでも wake しない --
 	const A = "phase11-a";
 	const sessA = startSession(A);
 	setModes(A, "project", true, true);
-	setModes(A, "GLOBAL", true, true);
-	writeBoardFile(A, []); // SESSION は空 -> GLOBAL を見る
+	writeBoardFile(A, []); // project ボードは空
 	writeGlobalFile([
 		{ id: 1, text: "mine", col: "todo" },
 		{ id: 2, text: "theirs", col: "todo", movedBy: OTHER, priority: 9 },
 	]);
 	await sleep(2000);
-	assert.equal(sessA.sent.length, 1, `GLOBAL の拾える TODO で 1 回 wake するはず: ${JSON.stringify(sessA.sent)}`);
-	const want = { id: 2, text: "theirs", col: "todo", movedBy: OTHER, priority: 9 };
-	assert.equal(sessA.sent[0], continuationPrompt(want, "global"), "wake は priority 9 の #2");
-	assert.match(sessA.sent[0], /^GLOBAL TODO #2 "theirs" を着手しろ。/);
-	assert.equal(readGlobal().find((c) => c.id === 2).col, "todo", "poll は盤面を書かない");
-	const picked = pickFirstTodo(A, "global");
-	assert.ok(picked, "pickFirstTodo は GLOBAL の拾える TODO を返す");
-	assert.equal(picked.id, 2, "poll の wake と pickFirstTodo は同じカード");
-	assert.equal(readGlobal().find((c) => c.id === 2).col, "doing", "pickFirstTodo は実際に DOING へ移す");
-	assert.equal(readGlobal().find((c) => c.id === 2).movedBy, A, "着手した A が所有を取る");
-	assert.equal(readGlobal().find((c) => c.id === 1).col, "todo", "選ばれなかった #1 は動かない");
+	assert.equal(
+		sessA.sent.length,
+		0,
+		`global の TODO で wake した（#26: global は駆動しない）: ${JSON.stringify(sessA.sent)}`,
+	);
+	assert.equal(readGlobal().find((c) => c.id === 2).col, "todo", "poll は global を書かない");
+	// 網の穴 #1: (A) は poll しか叩いておらず、settle 側に global 分岐が戻っても落ちなかった。
+	const resA = settle(sessA);
+	assert.equal(resA, undefined, `global の TODO で settle が続行した（#26: global は駆動しない）: ${JSON.stringify(resA)}`);
+	assert.equal(readGlobal().find((c) => c.id === 2).col, "todo", "settle は global を書かない");
 	passed += 1;
 
-	// --- (B) 7: #87 settle は GLOBAL の他者スタンプ TODO も拾って DOING にする ---
+	// --- (B) 7: project ボードの他者スタンプ TODO も settle が拾って DOING にする --------
 	const B = "phase11-b";
 	const sessB = startSession(B);
 	setModes(B, "project", true, true);
-	setModes(B, "GLOBAL", true, true);
-	writeBoardFile(B, []); // SESSION に拾う TODO なし
-	writeGlobalFile([{ id: 5, text: "theirs", col: "todo", movedBy: OTHER, priority: 9 }]);
+	writeBoardFile(B, [{ id: 5, text: "theirs", col: "todo", movedBy: OTHER, priority: 9 }]);
 	const resB = settle(sessB);
-	assert.equal(readGlobal().find((c) => c.id === 5).col, "doing", `settle が他者スタンプ GLOBAL TODO を拾わなかった: ${JSON.stringify(readGlobal())}`);
-	assert.equal(readGlobal().find((c) => c.id === 5).movedBy, B, "拾った B が所有を取る");
+	assert.equal(readCards(B).find((c) => c.id === 5).col, "doing", `settle が他者スタンプ TODO を拾わなかった: ${JSON.stringify(readCards(B))}`);
+	assert.equal(readCards(B).find((c) => c.id === 5).movedBy, B, "拾った B が所有を取る");
 	assert.ok(resB && resB.continue === true, "拾った以上 settle は続行する");
 	passed += 1;
 
-	// --- (C) 陽性対照: 同じ経路で movedBy 無し GLOBAL TODO は settle が拾う ---------
-	writeGlobalFile([{ id: 6, text: "free", col: "todo" }]);
+	// --- (C) 陽性対照: 同じ経路で movedBy 無し TODO は settle が拾う ---------------
+	writeBoardFile(B, [{ id: 6, text: "free", col: "todo" }]);
 	settle(sessB);
-	const movedC = readGlobal().find((c) => c.id === 6);
-	assert.equal(movedC.col, "doing", `movedBy 無し GLOBAL TODO は settle が拾うはず: ${JSON.stringify(readGlobal())}`);
+	const movedC = readCards(B).find((c) => c.id === 6);
+	assert.equal(movedC.col, "doing", `movedBy 無し TODO は settle が拾うはず: ${JSON.stringify(readCards(B))}`);
 	assert.equal(movedC.movedBy, B, "pickFirstTodo が movedBy を自分の sid でスタンプする");
 	passed += 1;
 
-	// --- (D) 陽性対照: movedBy === 自分 の GLOBAL TODO も拾う ---------------------
-	writeGlobalFile([{ id: 7, text: "mine", col: "todo", movedBy: B }]);
+	// --- (D) 陽性対照: movedBy === 自分 の TODO も拾う ---------------------------
+	writeBoardFile(B, [{ id: 7, text: "mine", col: "todo", movedBy: B }]);
 	settle(sessB);
-	assert.equal(readGlobal().find((c) => c.id === 7).col, "doing", "movedBy===sid は拾える");
+	assert.equal(readCards(B).find((c) => c.id === 7).col, "doing", "movedBy===sid は拾える");
 	passed += 1;
 
-	// --- (E) project も TODO の所有フィルタを持たない（#17: 看板は project/global の 2 枚） --
+	// --- (E) project は TODO の所有フィルタを持たない（#26: 駆動するのは project 1 枚） --
 	const E = "phase11-e";
 	const sessE = startSession(E);
 	setModes(E, "project", true, true);
 	writeBoardFile(E, [{ id: 3, text: "theirs-in-project", col: "todo", movedBy: OTHER, priority: 9 }]);
-	writeGlobalFile([]);
 	const resE = settle(sessE);
 	assert.equal(readCards(E).find((c) => c.id === 3).col, "doing", "project 看板は movedBy に関係なく拾う");
-	assert.ok(resE && resE.continue === true, "SESSION TODO 経由の settle は続行する");
+	assert.ok(resE && resE.continue === true, "project TODO 経由の settle は続行する");
 	passed += 1;
 
 	// --- (F) 純関数の poll と同じ式の一致（TODO に所有フィルタは無い） -------------
@@ -227,6 +223,40 @@ try {
 		eq(pollPick(cards, S, "global")?.id, nextTodo(cards, "global", S)?.id);
 		eq(pollPick(cards, S, "global")?.id, 2); // #87: priority 9 の他者スタンプが先頭
 	});
+
+	// --- (G) 8: 旧 global エントリの予算を project に付け替えない ----------------------
+	// #17 以前は global にも書けたので、scope:"global" のまま count が上限に達した
+	// kanban-loop エントリが実在し得る。restoreLoop が scope だけを null にしていたため
+	// paintLoop がそれを project として読み、最初の settle が即 HALTED:limit になって
+	// project の doingLoop を OFF にしていた（原因不明の停止）。
+	const G = "phase11-g";
+	const sessG = startSession(G, [
+		{
+			type: "custom",
+			customType: "kanban-loop",
+			data: { scope: "global", count: 9, halted: "limit", stuckId: 41, stuckCount: 2, lastActivityAt: 0 },
+		},
+	]);
+	const CAP_G = 3;
+	modesState.PROJECT[SLUG] = { doingLoop: true, autoPick: true, maxLoops: CAP_G };
+	writeModes();
+	writeBoardFile(G, [{ id: 41, text: "g", col: "doing", movedBy: G }]);
+	const resG = settle(sessG);
+	// 最後に永続化された kanban-loop エントリ = paintLoop が公開した値（件数と halt）。
+	const loopG = sessG.entries.filter((e) => e.customType === "kanban-loop").at(-1)?.data;
+	assert.equal(
+		resG && resG.continue,
+		true,
+		`旧 global の count(9) を project の予算として読んだ（上限 ${CAP_G} で即停止）: ${JSON.stringify(loopG)}`,
+	);
+	assert.equal(loopG?.halted ?? null, null, `旧 global エントリの halt が復元された: ${JSON.stringify(loopG)}`);
+	assert.equal(loopG?.count, 1, `残量が 0 から始まっていない（旧 global の count を引き継いだ）: ${JSON.stringify(loopG)}`);
+	assert.equal(
+		readModes().PROJECT[SLUG].doingLoop,
+		true,
+		`project の doingLoop が OFF に書き換えられた: ${JSON.stringify(readModes())}`,
+	);
+	passed += 1;
 } catch (err) {
 	failures.push(`live: ${err.message}`);
 }

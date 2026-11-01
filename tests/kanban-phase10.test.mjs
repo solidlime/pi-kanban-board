@@ -163,16 +163,16 @@ const ARGS_TABLE = [
 	[["loop", "status"], { kind: "modeStatus", key: "doingLoop" }],
 	[["pick", "off"], { kind: "mode", key: "autoPick", value: false }],
 	[["pick", "on", "global"], { kind: "mode", key: "autoPick", value: true, scope: "global" }],
-	[["loop", "maybe"], { kind: "reject", reason: "使い方: /kanban loop on|off|status [project|global] / /kanban pick on|off" }],
+	[["loop", "maybe"], { kind: "reject", reason: "使い方: /kanban loop on|off|status / /kanban pick on|off" }],
 	[["interval", "3"], { kind: "interval", scope: "project", minutes: 3 }],
 	[["interval", "global", "7"], { kind: "interval", scope: "global", minutes: 7 }],
 	[["interval"], { kind: "intervalStatus", scope: "project" }],
 	[["interval", "global"], { kind: "intervalStatus", scope: "global" }],
-	[["interval", "off"], { kind: "reject", reason: "使い方: /kanban interval [global] <分>（0より大きい数値）: off" }],
+	[["interval", "off"], { kind: "reject", reason: "使い方: /kanban interval <分>（0より大きい数値）: off" }],
 	[["stuck", "5"], { kind: "stuck", scope: "project", count: 5 }],
 	[["stuck", "global", "2"], { kind: "stuck", scope: "global", count: 2 }],
 	[["stuck"], { kind: "stuckStatus", scope: "project" }],
-	[["stuck", "0"], { kind: "reject", reason: "使い方: /kanban stuck [global] <回>（1〜20の整数）: 0" }],
+	[["stuck", "0"], { kind: "reject", reason: "使い方: /kanban stuck <回>（1〜20の整数）: 0" }],
 	[["priority"], { kind: "priority", id: undefined, value: undefined }],
 	[["priority", "3"], { kind: "priority", id: 3, value: undefined }],
 	[["priority", "3", "5"], { kind: "priority", id: 3, value: 5 }],
@@ -333,9 +333,9 @@ try {
 	assert.equal(resG, undefined, "上限では continue しない");
 	assert.equal(readCards(G).find((c) => c.id === 1).col, "doing", "TODO は拾われたうえで halt する");
 	const fg = readModes();
-	// #17: project のスイッチは slug、global は sid で引く。
-	assert.equal(fg.PROJECT[SLUG].doingLoop, false, "halt は両 scope の doingLoop を落とす");
-	assert.equal(fg.GLOBAL[G].doingLoop, false);
+	// #26: 停止するのは project ボードの doingLoop だけで、global にスイッチは無い。
+	assert.equal(fg.PROJECT[SLUG].doingLoop, false, "halt は project の doingLoop を落とす");
+	assert.equal(fg.GLOBAL?.[G], undefined, "global にスイッチ行を作らない");
 	passed += 1;
 } catch (err) {
 	failures.push(`live: ${err.message}`);

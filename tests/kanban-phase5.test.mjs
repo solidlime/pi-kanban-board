@@ -297,14 +297,15 @@ const kanbanCmd = () => commands.get("kanban").handler;
 		assert.equal(badRes.status, 400);
 		assert.equal(readJson(modesFile).PROJECT[PROJ].intervalMin, 9);
 	});
-	// #17: project keys its switches by slug, so a bare session id is not a board - and
-	// GLOBAL still keys by session, which is where a second sid can be written.
+	// #26: global は集約ビューなのでスイッチを持たない。別セッションの sid を付けても 400 で、
+	// 書き込みはどこにも起きない（GLOBAL バケツは読まれない）。
 	const otherRes = await api(`scope=global&sid=other-session&min=3`);
 	const otherBody = await otherRes.json();
-	check("GET /api/interval scope=global 他セッション -> 200 かつ GLOBAL 側にだけ書かれる", () => {
-		assert.equal(otherRes.status, 200);
-		assert.equal(otherBody.ok, true);
-		assert.equal(readJson(modesFile).GLOBAL["other-session"].intervalMin, 3);
+	check("GET /api/interval scope=global 他セッション -> 400 かつどこにも書かない", () => {
+		assert.equal(otherRes.status, 400);
+		assert.equal(otherBody.ok, false);
+		assert.equal(otherBody.error, "global は集約ビューでスイッチを持たない（scope=project を使う）");
+		assert.equal(readJson(modesFile).GLOBAL?.["other-session"], undefined);
 		assert.equal(readJson(modesFile).PROJECT[PROJ].intervalMin, 9);
 	});
 	const unknownRes = await api(`sid=no-such-session&min=4`);

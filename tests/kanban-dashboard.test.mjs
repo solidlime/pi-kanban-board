@@ -160,21 +160,30 @@ check("global は counts と cards（GLOBAL 残行 + 全 project ボードの集
 	assert.deepEqual(data.global.counts, { todo: 3, doing: 2, done: 3 });
 	assert.equal(data.global.cards.length, 8);
 });
-check("project / global が必要キーを持ち、session 系のキーは無い", () => {
+check("project はモードを持ち、global はモードを持たない（集約ビュー）", () => {
 	assert.equal("sessions" in data, false, "sessions が残っている");
 	assert.equal("sessionId" in data, false, "sessionId が残っている");
 	for (const [name, board] of [["project", data.project], ["global", data.global]]) {
-		for (const k of ["counts", "cards", "modes", "loops", "halted"]) {
+		// #26: global はボードではないので modes を返さない。loops/halted は「駆動しない盤面の
+		// 実測値」として形だけ残す（常に 0 / false）。
+		const keys = name === "project" ? ["counts", "cards", "modes", "loops", "halted"] : ["counts", "cards", "loops", "halted"];
+		for (const k of keys) {
 			assert.ok(k in board, `${name} に ${k} が無い`);
 		}
+		assert.equal("modes" in board, name === "project", `${name}.modes の有無`);
 		assert.equal(typeof board.loops, "number", `${name}.loops`);
 		assert.equal(typeof board.halted, "boolean", `${name}.halted`);
 		assert.deepEqual(Object.keys(board.counts).sort(), ["doing", "done", "todo"]);
 		assert.ok(Array.isArray(board.cards));
+	}
+	assert.equal(data.global.loops, 0, "global.loops は常に 0");
+	assert.equal(data.global.halted, false, "global.halted は常に false");
+	{
+		const board = data.project;
 		// #17: modes はボード 1 枚分のフラットな ModePair（入れ子の session/global は無い）。
-		for (const k of ["doingLoop", "autoPick"]) assert.ok(k in board.modes, `${name}.modes.${k}`);
+		for (const k of ["doingLoop", "autoPick"]) assert.ok(k in board.modes, `project.modes.${k}`);
 		for (const k of ["session", "global", "project"]) {
-			assert.equal(k in board.modes, false, `${name}.modes.${k} が残っている`);
+			assert.equal(k in board.modes, false, `project.modes.${k} が残っている`);
 		}
 	}
 	assert.equal(data.project.id, "pi-kanban-board");

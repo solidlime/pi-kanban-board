@@ -295,22 +295,19 @@ await check("CSS は既存トークンのみ（新色を発明していない）
 		assert.equal(chip && chip.title, "既に停止", "blocked の理由が title に出ていない");
 	});
 
-	await check("#11: ボードに ctl が無く、設定タブに GLOBAL と project の 2 行だけ出る", () => {
+	await check("#11: ボードに ctl が無く、設定タブに project の 1 行だけ出る", () => {
 		const ctls = walk(byId["project"]).filter((n) => n.className.includes("ctl"));
 		assert.equal(ctls.length, 0, `project ボードに ctl が残っている: ${ctls.length}`);
 		assert.equal(walk(byId["global"]).filter((n) => n.className.includes("ctl")).length, 0, "GLOBAL ボードに ctl が残っている");
-		// #17: session 行は廃止。GLOBAL + このプロジェクト の 2 行。
+		// #26: スイッチとしての global は廃止。設定行はこのプロジェクトの 1 行だけ。
 		const rows = walk(byId["settings-loops"]).filter((n) => n.className.includes("ctl"));
-		assert.equal(rows.length, 2, `設定の ctl 行=${rows.length}`);
+		assert.equal(rows.length, 1, `設定の ctl 行=${rows.length}`);
 	});
 
-	await check("vm: 設定タブの project 行の操作ボタンは enabled、GLOBAL 行は無効", () => {
+	await check("vm: 設定タブの project 行の操作ボタンは enabled", () => {
 		const ctls = walk(byId["settings-loops"]).filter((n) => n.className.includes("ctl"));
-		// 0 行目が GLOBAL（読み取り専用）、1 行目がこのプロジェクト。
-		const g = walk(ctls[0]).filter((n) => n.className.includes("sw"));
-		assert.equal(g.length, 2, `GLOBAL 行のトグル=${g.length}`);
-		for (const b of g) assert.equal(b.disabled, true, "GLOBAL のトグルが有効になっている");
-		const sw = walk(ctls[1]).find((n) => n.className.includes("sw"));
+		assert.equal(ctls.length, 1, `設定の ctl 行=${ctls.length}`);
+		const sw = walk(ctls[0]).find((n) => n.className.includes("sw"));
 		assert.ok(sw, "project のトグルが無い");
 		assert.equal(sw.disabled, false, "project のトグルが無効のまま");
 		assert.ok(sw._lis.click && sw._lis.click.length, "project のトグルにハンドラが無い");

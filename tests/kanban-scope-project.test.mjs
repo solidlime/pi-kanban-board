@@ -155,7 +155,8 @@ await check("/api/kanban は project 面と global 面を返す（session は無
 	assert.ok(body.global, "global キーが消えている");
 	assert.equal("session" in body, false, "session キーが残っている");
 	assert.equal("sessionId" in body, false, "sessionId が残っている");
-	assert.deepEqual(Object.keys(body.modes).sort(), ["global", "project"]);
+	// #26: global は集約ビューなのでスイッチを持たない。
+	assert.deepEqual(Object.keys(body.modes).sort(), ["project"]);
 });
 
 await check("/api/kanban?scope=session は 400（廃止された scope）", async () => {

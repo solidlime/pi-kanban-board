@@ -260,19 +260,20 @@ await check("#71 btn は flightGate 経由で disabled を立てる（配線の�
 // ---------------------------------------------------------------------------
 const SID = "maxloops-target";
 const req = (q) => mod.maxLoopsRequest(q);
+// #26: 設定系の 5 端点が scope=global に返す文言（HTTP / CLI で共通）。
+const GLOBAL_NO_SWITCH = "global は集約ビューでスイッチを持たない（scope=project を使う）";
 
-await check("#71 maxLoopsRequest: scope=global は sid 無しでも通る（active で補う）", () => {
+await check("#71 maxLoopsRequest: scope=global はスイッチを持たない（400）", () => {
+	// #26: global は集約ビュー。sid を補う先も、GLOBAL バケツに書く先も無い。
 	const p = req({ scope: "global", sid: null, n: "7" });
-	assert.equal(p.kind, "ok", JSON.stringify(p));
-	assert.equal(p.scope, "global");
-	assert.equal(p.sid, ACTIVE, "アクティブセッションで補っていない");
-	assert.equal(p.n, 7);
+	assert.equal(p.kind, "error", JSON.stringify(p));
+	assert.equal(p.error, GLOBAL_NO_SWITCH);
 });
 
-await check("#71 maxLoopsRequest: scope=global + sid 明示はそのまま使う", () => {
+await check("#71 maxLoopsRequest: scope=global + sid 明示も 400（逃げ道なし）", () => {
 	const p = req({ scope: "global", sid: SID, n: "7" });
-	assert.equal(p.kind, "ok");
-	assert.equal(p.sid, SID);
+	assert.equal(p.kind, "error", JSON.stringify(p));
+	assert.equal(p.error, GLOBAL_NO_SWITCH);
 });
 
 // #17: session ボードは無い。scope=session は 400 で断る（黙って project に落とさない）。
@@ -313,7 +314,7 @@ await check("#71 maxLoopsRequest: scope 省略 / 空は project 扱い（cwd の
 {
 	const real = "maxloops-real-session";
 	const cases = [
-		["?scope=global&n=7", 200, "global は sid 無しで通る"],
+		["?scope=global&n=7", 400, "global は集約ビューでスイッチを持たない"],
 		["?scope=session&n=5", 400, "session は廃止（400 で断る）"],
 		[`?scope=session&sid=${real}&n=6`, 400, "sid を付けても session は廃止"],
 		["?scope=foo&n=5", 400, "不正な scope は 400"],
@@ -326,9 +327,9 @@ await check("#71 maxLoopsRequest: scope 省略 / 空は project 扱い（cwd の
 			return r;
 		});
 	}
-	await check("#71 scope=global は GLOBAL 層に active セッションで書く", () => {
+	await check("#71 scope=global は GLOBAL 層を作らない（読まれないバケツ）", () => {
 		const raw = readModesRaw();
-		assert.equal(raw.GLOBAL[ACTIVE]?.maxLoops, 7, JSON.stringify(raw.GLOBAL));
+		assert.equal(raw.GLOBAL?.[ACTIVE], undefined, JSON.stringify(raw.GLOBAL));
 	});
 	await check("#71 不正 scope の文言は project/global 用", async () => {
 		const r = await get("/api/maxloops?scope=foo&n=5");

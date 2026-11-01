@@ -109,12 +109,13 @@ await check("dashboard に sessions / driver / stats.active は無い", async ()
 	}
 });
 
-await check("/api/kanban は project/global とモードだけを返す", async () => {
+await check("/api/kanban は project/global と project のモードだけを返す", async () => {
 	const j = await kanbanJson();
 	assert.equal(j.ok, true);
 	assert.equal(j.sessionId, undefined, "sessionId が残っている");
 	assert.equal(j.session, undefined, "session が残っている");
-	assert.deepEqual(Object.keys(j.modes).sort(), ["global", "project"]);
+	// #26: global は集約ビューなのでスイッチを持たない。
+	assert.deepEqual(Object.keys(j.modes).sort(), ["project"]);
 	assert.equal(j.projectId, SLUG);
 });
 

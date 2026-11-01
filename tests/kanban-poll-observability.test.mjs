@@ -51,18 +51,18 @@ function check(name, fn) {
 }
 const eq = (a, b) => assert.deepEqual(a, b);
 
-// #17: session boards are gone. The poll drives GLOBAL first, then this cwd's PROJECT board.
+// #26: the only board that can drive is this cwd's PROJECT board (global is a read-only
+// aggregate, never polled).
 const SLUG = mod.projectSlugOf(process.cwd());
 const PROJECT_FILE = `${HOME_DIR}/.pi/kanban/projects/${SLUG}.json`;
 const MODES = `${HOME_DIR}/.pi/kanban/modes.json`;
 const writeBoardFile = (sid) =>
 	seedBoard(PROJECT_FILE, { cards: [{ id: 7, text: "t", col: "todo", movedBy: sid }], nextId: 8 });
-const writeModes = (sid) =>
+const writeModes = () =>
 	writeFileSync(
 		MODES,
 		JSON.stringify({
 			PROJECT: { [SLUG]: { doingLoop: true, autoPick: true, intervalMin: 3 } },
-			GLOBAL: { [sid]: { doingLoop: true, autoPick: true, intervalMin: 3 } },
 		}),
 	);
 
@@ -91,7 +91,7 @@ check("listen は状態ガードで再試行でき、apiStarting は finally で
 // --- 4: poll を直接叩いてトレース出力を数える ----------------------------------
 const SID = "sid-pollobs";
 writeBoardFile(SID);
-writeModes(SID);
+writeModes();
 
 const pollLines = [];
 const origWrite = process.stderr.write.bind(process.stderr);
@@ -162,16 +162,16 @@ function mkCtx(sid) {
 	restore();
 	delete process.env.KANBAN_DEBUG;
 
-	check("KANBAN_DEBUG=1 で poll 行が 1 tick 1 板 1 行（global + project）", () =>
-		assert.equal(afterFirst.length, 2, afterFirst.join("|")));
-	check("project 板の行は発火", () => assert.match(afterFirst[1], /=> fire$/));
+	check("KANBAN_DEBUG=1 で poll 行が 1 tick 1 板 1 行（project のみ）", () =>
+		assert.equal(afterFirst.length, 1, afterFirst.join("|")));
+	check("project 板の行は発火", () => assert.match(afterFirst[0], /=> fire$/));
 	check("トレースに sid/idle/doingLoop/card/halted/sinceLastTick/quiet が入る", () => {
-		const line = afterFirst[1];
+		const line = afterFirst[0];
 		assert.match(line, new RegExp(`kanban: poll sid=${SID} idle=true doingLoop=true card=7 halted=null sinceLastTick=\\d+ quiet=true => fire`));
 	});
 	check("発火したので wake は 1 件", () => assert.equal(sent.length, 1, `sent=${sent.length}`));
-	// 1 tick = 2 行（global → project）なので、2 tick 目の project 行は 3 行目。
-	check("2 tick 目の project 行は skip:interval", () => assert.match(pollLines[3] ?? "", /=> skip:interval$/));
+	// 1 tick = 1 行（project １枚）なので、2 tick 目の行は 2 行目。
+	check("2 tick 目の project 行は skip:interval", () => assert.match(pollLines[1] ?? "", /=> skip:interval$/));
 }
 
 // 4c: TODO が無ければ skip:no-card（ゲートの理由が読める）。
@@ -186,8 +186,8 @@ function mkCtx(sid) {
 	t.poll();
 	restore();
 	delete process.env.KANBAN_DEBUG;
-	check("カード無しはどちらの板も skip:no-card で idle は n/a", () => {
-		assert.equal(pollLines.length, 2, pollLines.join("|"));
+	check("カード無しは project 板も skip:no-card で idle は n/a", () => {
+		assert.equal(pollLines.length, 1, pollLines.join("|"));
 		for (const line of pollLines) assert.match(line, /card=null .*=> skip:no-card$/);
 	});
 	check("カードが無い tick は isIdle を呼ばない（トレースが idle=n/a）", () => {
@@ -220,7 +220,7 @@ function mkCtx(sid) {
 	check("session_start で pollTimer が立つ", () => assert.equal(timerArmed, true));
 	check("session_start 自体は tick しない（初回は interval 待ち）", () => assert.equal(beforeTick, 0));
 	check("再起動（count=9 復元）後の初回 tick で project 板が発火する", () =>
-		assert.match(pollLines[1] ?? "", /card=46 .*=> fire$/),
+		assert.match(pollLines[0] ?? "", /card=46 .*=> fire$/),
 	);
 	check("再起動後の初回 tick が wake を 1 件出す", () => assert.equal(sent.length, 1, `sent=${sent.length}`));
 }

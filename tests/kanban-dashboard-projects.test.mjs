@@ -335,7 +335,11 @@ test("#8 横断ログは slug 空の決定で、プロジェクトが 0 件で�
 	const txt = allText(d.box);
 	assert.ok(txt.includes("全部 LF"), "横断の決定が無い");
 	assert.ok(txt.includes("プロジェクト横断"), "横断の見出しが無い");
-	assert.ok(find(d.box, (e) => e.className === "empty" && e.innerHTML.includes("プロジェクトはまだ無い")), "空状態が無い");
+	// #26: empty() は innerHTML を組まず、<b> 見出しと本文を子ノードで置く。
+	assert.ok(
+		find(d.box, (e) => e.className === "empty" && allText(e).includes("プロジェクトはまだ無い")),
+		"空状態が無い",
+	);
 	assert.equal(buttons(d.box, "追記").length, 1, "0 件でもフォームは 1 つ残る");
 });
 

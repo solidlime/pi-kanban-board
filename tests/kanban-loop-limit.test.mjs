@@ -65,7 +65,8 @@ const MODES = `${HOME_DIR}/.pi/kanban/modes.json`;
 const readModesRaw = () => JSON.parse(readFileSync(MODES, "utf8"));
 const writeModesRaw = (obj) => writeFileSync(MODES, JSON.stringify(obj, null, 2));
 // #17: session boards are gone. Everything below works on this cwd's PROJECT board;
-// the sid stays the ACTOR (movedBy, halt maps and global switches are keyed by it).
+// the sid stays the ACTOR (movedBy, halt maps). #26: switches live in PROJECT[slug] only,
+// global is a read-only view so no global switch is ever written or read.
 const PROJ_KEY = mod.projectSlugOf(process.cwd());
 const PROJ_FILE = `${HOME_DIR}/.pi/kanban/projects/${PROJ_KEY}.json`;
 const boardPath = (_sid) => PROJ_FILE;
@@ -170,11 +171,13 @@ first.handlers.get("session_start")({ type: "session_start" }, ctx);
 		assert.equal(e.doingLoop, true, JSON.stringify(e));
 	});
 
+	// #26: global は集約ビューなのでスイッチを持たない（sid を付けても 400、GLOBAL バケツは作らない）。
 	const glob = await get(`/api/maxloops?scope=global&sid=${SID}&n=7`);
-	check("GLOBAL スコープにも保存できる", () => {
-		assert.equal(glob.status, 200, JSON.stringify(glob.body));
-		assert.equal(readModesRaw().GLOBAL[SID].maxLoops, 7);
-		assert.equal(glob.body.modes.global.maxLoops, 7);
+	check("GLOBAL スコープには保存できない（400）", () => {
+		assert.equal(glob.status, 400, JSON.stringify(glob.body));
+		assert.equal(glob.body.error, "global は集約ビューでスイッチを持たない（scope=project を使う）");
+		assert.equal(readModesRaw().GLOBAL?.[SID]?.maxLoops, undefined);
+		assert.equal(readModesRaw().PROJECT[PROJ_KEY].maxLoops, 6);
 	});
 
 	const bad = await get("/api/maxloops?scope=project&n=1001");
@@ -228,7 +231,7 @@ const SID_LIMIT = "sid-halt";
 writeBoardFile(SID_LIMIT);
 {
 	const m = readModesRaw();
-	// #17: the cap lives in PROJECT[slug]; the global switch stays keyed by the actor.
+	// #26: the cap and the switch live in PROJECT[slug]; the global bucket is no longer read.
 	m.PROJECT = { [PROJ_KEY]: { doingLoop: true, autoPick: false, maxLoops: 2 } };
 	m.GLOBAL = { [SID_LIMIT]: { doingLoop: true, autoPick: false } };
 	writeModesRaw(m);
@@ -248,10 +251,10 @@ lim.handlers.get("agent_before_settle")({ context: { contextMessages: undefined 
 		assert.equal(row.halted, true, JSON.stringify(row));
 	});
 	check("project 行は使った回数（2）を出す", () => assert.equal(row.loops, 2, JSON.stringify(row)));
-	check("上限停止は doingLoop を両スコープで OFF にする", () => {
+	check("上限停止は project の doingLoop を OFF にする（#26: スイッチは project だけ）", () => {
 		const m = readModesRaw();
 		assert.equal(m.PROJECT[PROJ_KEY].doingLoop, false, JSON.stringify(m.PROJECT[PROJ_KEY]));
-		assert.equal(m.GLOBAL[SID_LIMIT].doingLoop, false, JSON.stringify(m.GLOBAL[SID_LIMIT]));
+		assert.equal(m.GLOBAL?.[SID_LIMIT]?.doingLoop, true, "global バケツは触られない");
 	});
 }
 
@@ -281,9 +284,9 @@ const SID_RESUME = "sid-resume";
 writeBoardFile(SID_RESUME);
 {
 	const m = readModesRaw();
-	// The tool's resume text reads the cap from the GLOBAL bucket (keyed by the actor).
-	m.GLOBAL = { [SID_RESUME]: { doingLoop: false, autoPick: false, maxLoops: 1 } };
-	m.PROJECT = { [PROJ_KEY]: { doingLoop: false, autoPick: false } };
+	// #26: 上限もスイッチも project ボードのもの。global バケツは読まれない。
+	m.GLOBAL = {};
+	m.PROJECT = { [PROJ_KEY]: { doingLoop: false, autoPick: false, maxLoops: 1 } };
 	writeModesRaw(m);
 }
 const rp = mkPi();
@@ -300,13 +303,14 @@ rp.handlers.get("session_start")({ type: "session_start" }, ctxRp);
 }
 
 {
-	// #67 の非破壊固定: scope=global はスイッチをセッション単位で持つので、キーは sid のまま。
+	// #26: global はスイッチを持たないので、再開要求のキューには何も積まれない（pid フォールバックの廃止）。
 	const g = await get(`/api/resume?scope=global&sid=${SID_RESUME}`);
-	check("/api/resume?scope=global&sid= も 202 で受け付ける", () =>
-		assert.equal(g.status, 202, JSON.stringify(g.body)));
-	check("scope=global の要求は sid をキーに積まれる", () =>
-		assert.equal(tRp.resumeRequests.get(SID_RESUME), 1, `keys=${[...tRp.resumeRequests.keys()]}`));
-	tRp.resumeRequests.delete(SID_RESUME); // 先に消費させない（本題は下の project 経路）
+	check("/api/resume?scope=global&sid= は 400（集約ビューにスイッチは無い）", () => {
+		assert.equal(g.status, 400, JSON.stringify(g.body));
+		assert.equal(g.body.error, "global は集約ビューでスイッチを持たない（scope=project を使う）");
+	});
+	check("scope=global の要求はキューに積まれない", () =>
+		assert.equal(tRp.resumeRequests.size, 0, `keys=${[...tRp.resumeRequests.keys()]}`));
 }
 // #17 回帰: ダッシュボードの project 行の「再開」は scope=project だけを送る（act() は
 // ctx.sid がある時しか sid を付けない）。settingsSidOf はそれを slug に解決するので、
@@ -331,12 +335,11 @@ check("poll が再開要求を消費する", () => assert.equal(tRp.resumeReques
 	const row = await rowOf(SID_RESUME);
 	check("再開後の dashboard 行は halted:false", () => assert.equal(row.halted, false, JSON.stringify(row)));
 }
-// 上限 halt は三スコープすべてを OFF にするので、再開も三つとも戻さないと
-// project（既定ボード）のループが二度と回らない。
-check("再開は global と project の doingLoop を ON に戻す（#17: session 行は無い）", () => {
+// 上限 halt は project の doingLoop を落とすので、再開もそれを戻さないと
+// project（唯一の駆動ボード）のループが二度と回らない。
+check("再開は project の doingLoop を ON に戻す（#26: スイッチは project だけ）", () => {
 	const m = readModesRaw();
 	assert.equal(m.SESSION, undefined, `SESSION バケツが残っている: ${JSON.stringify(m.SESSION)}`);
-	assert.equal(m.GLOBAL[SID_RESUME].doingLoop, true);
 	assert.ok(m.PROJECT && m.PROJECT[PROJ_KEY], `PROJECT[${PROJ_KEY}] が無い: ${JSON.stringify(m.PROJECT)}`);
 	assert.equal(m.PROJECT[PROJ_KEY].doingLoop, true, JSON.stringify(m.PROJECT[PROJ_KEY]));
 });
@@ -346,7 +349,7 @@ check("再開は JSONL に count:0 / halted:null を書く", () => {
 	assert.equal(last.data.count, 0);
 	assert.equal(last.data.halted, null);
 });
-check("再開は上限値そのものを書き換えない", () => assert.equal(readModesRaw().GLOBAL[SID_RESUME].maxLoops, 1));
+check("再開は上限値そのものを書き換えない", () => assert.equal(readModesRaw().PROJECT[PROJ_KEY].maxLoops, 1));
 
 // 既存の kanban ツール resume も従来どおり動く（非破壊の固定）。
 const kanbanRp = rp.tools.get("kanban");
@@ -355,7 +358,7 @@ check("kanban ツールの resume は従来どおり成功する", () => assert.
 check("kanban ツールの resume は可変の上限を反映した残量を返す", () =>
 	assert.match(res.content[0].text, /残り 1\/1/, res.content[0].text));
 check("kanban ツールの resume は ON にしたスコープを報告する", () =>
-	assert.match(res.content[0].text, /session\+global\+project/, res.content[0].text));
+	assert.match(res.content[0].text, /doingLoop ON \(project\)/, res.content[0].text));
 
 // --- 6b. project scope の loop entry は再起動をまたいで残る -------------------
 // 復元で scope が落ちると settle は session ボードを見て、project の halted:stuck を

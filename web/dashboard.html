@@ -544,11 +544,12 @@
     clearTimeout(noteTimer);
     if (msg) noteTimer = setTimeout(function(){ n.hidden = true; }, 4000);
   }
-  function empty(parent, icon, html){
+  // 見出しの 1 行だけ太字にする。html を組み立てないので innerHTML が要らない。
+  function empty(parent, icon, bold, rest){
     var d = el("div", "empty");
     d.appendChild(el("span", "big", icon));
-    // html here is a fixed template with <b> only — never contains server data
-    d.innerHTML = d.innerHTML + html;
+    d.appendChild(el("b", null, bold));
+    d.appendChild(el("span", null, rest));
     parent.appendChild(d);
   }
   function ago(iso, nowMs){
@@ -1389,7 +1390,7 @@
       var hb = haltBox(p, ctx);
       if (hb) box.appendChild(hb);
     } else {
-      empty(box, "\u25A1", "<b>プロジェクト看板なし</b> — サーバが古いと出ないよ");
+      empty(box, "\u25A1", "プロジェクト看板なし", " — サーバが古いと出ないよ");
     }
     if (!p) return;
     if (!cards.length && filtered) { box.appendChild(el("div", "sess-empty", "該当なし")); return; }
@@ -1402,7 +1403,7 @@
     box.innerHTML = "";
     var all = (g && g.cards) || [];
     var c = (g && g.counts) || {todo:0, doing:0, done:0};
-    // 読み取り専用の ctx（サーバが書き込みを 400 で断る）。「残り N / M」と 再開 もこの行に出す。
+    // 読み取り専用の ctx（サーバが書き込みを 400 で断る。集約ビューなので 再開 も出さない）。
     var ctx = boardCtx("global", "", false);
     // #49: GLOBAL も検索で絞る。絞らないとボード側だけ減って GLOBAL が残り、
     // ヒットしていないカードが検索結果に混ざる（実ブラウザ検証で発見）。
@@ -1419,7 +1420,8 @@
     head.setAttribute("tabindex", "0");
     head.setAttribute("aria-expanded", gexpanded ? "true" : "false");
     head.appendChild(el("span", "caret", gexpanded ? "▾" : "▸"));
-    head.appendChild(el("span", "sess-cwd", countsText(c, cards, filtered) + " ・ 計 " + cards.length + " 枚" + staleText(cards) + " ・ " + loopRestLine(maxLoopsOf(g && g.modes), loopCountOf("global"))));
+    // GLOBAL は駆動しない集約ビューなので「残り N / M」は出さない。
+    head.appendChild(el("span", "sess-cwd", countsText(c, cards, filtered) + " ・ 計 " + cards.length + " 枚" + staleText(cards)));
     box.appendChild(head);
     // GLOBAL の halt は読み取り専用なので 再開 は出さない（haltBox が ctx.active で無効化する）。
     var hb = haltBox(g, ctx);
@@ -1445,7 +1447,7 @@
     // 操作系は従来どおり絞り込み前の全カード（サーバの件数）を見る。
     if (!cards.length) {
       if (filtered) box.appendChild(el("div", "sess-empty", "該当なし"));
-      else empty(box, "\u25A1", "<b>GLOBAL 看板は空</b> — プロジェクトのカードが1枚も無いよ");
+      else empty(box, "\u25A1", "GLOBAL 看板は空", " — プロジェクトのカードが1枚も無いよ");
       return;
     }
     box.appendChild(board(cards, nowMs, ctx));
@@ -1472,7 +1474,7 @@
     if (!box) return; // ペイン組み替えで container が消えても render() を凍らせない
     box.innerHTML = "";
     if (!list.length) {
-      empty(box, "\u2192", "<b>serve なし</b> — エージェントが /serve でサーバーを立てると、URL がここに並ぶよ");
+      empty(box, "\u2192", "serve なし", " — エージェントが /serve でサーバーを立てると、URL がここに並ぶよ");
       return;
     }
     list.forEach(function(v){
@@ -1531,18 +1533,15 @@
     return gone ? "消失した登録を一覧から消す" : "配信を止める（/serve/<id>/ が 404 になる）";
   }
 
-  // #11: 設定タブ。ボードごとのループ設定を 1 列に並べる（従来の boardCtl をそのまま使う）。
-  // 並びは GLOBAL が先頭、その後にこのプロジェクト（#17: session 行は無くなった）。
+  // #11: 設定タブ。ループのスイッチはこのプロジェクトのボード 1 枚だけが持つ
+  // （GLOBAL は読み取り専用の集約ビューで、settle も poll も駆動しないので設定が無い）。
   function renderSettings(d){
     var box = document.getElementById("settings-loops");
     if (!box) return;
     box.innerHTML = "";
-    var g = d.global || {};
     var p = d.project || {};
-    // global は読み取り専用（/api/schedule?scope=global は 400）なので、行の操作は非活性にする。
-    var rows = [{ label: "GLOBAL（全プロジェクト共有）", ctx: boardCtx("global", "", false), b: g }];
-    rows.push({ label: p.id ? "このプロジェクト（" + p.id + "）" : "このプロジェクト",
-      ctx: boardCtx("project", "", true), b: p });
+    var rows = [{ label: p.id ? "このプロジェクト（" + p.id + "）" : "このプロジェクト",
+      ctx: boardCtx("project", "", true), b: p }];
     rows.forEach(function(r){
       var row = el("div", "srow");
       row.appendChild(el("div", "rowlabel", r.label));
@@ -1828,7 +1827,7 @@
     box.innerHTML = "";
     var list = (projectData && projectData.projects) || [];
     if (!list.length) {
-      empty(box, "\u25A1", "<b>プロジェクトはまだ無い</b> — カードに project:&lt;slug&gt; を付けると、ここに現れるよ");
+      empty(box, "\u25A1", "プロジェクトはまだ無い", " — カードに project:<slug> を付けると、ここに現れるよ");
     } else {
       list.forEach(function(p){ box.appendChild(projectBlock(p)); });
     }
@@ -1917,7 +1916,7 @@
     if (weekPick && weekSaved === undefined) return; // 保存分を取得中
     if (!s) {
       // 週変わりを観測する前に落ちたなど、その週の行が作られていない場合
-      empty(box, "\u25A1", "<b>この週の保存は無い</b> — 週変わりを観測した時に作られるよ");
+      empty(box, "\u25A1", "この週の保存は無い", " — 週変わりを観測した時に作られるよ");
       return;
     }
     var shown = 0;
@@ -1952,7 +1951,7 @@
       }
       box.appendChild(art);
     });
-    if (!shown) empty(box, "\u25A1", "<b>この週に動いたカードは無い</b>");
+    if (!shown) empty(box, "\u25A1", "この週に動いたカードは無い", "");
   }
 
   function render(d, nowMs){
