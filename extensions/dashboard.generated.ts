@@ -271,7 +271,7 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
           <button class="sw" type="button" id="f-overdue" aria-pressed="false">期限超過</button>
           <button class="sw" type="button" id="f-blocked" aria-pressed="false">ブロック中</button>
           <!-- #17: session 行が消えたので、検索とプロジェクト絞り込みは絞り込みバーへ移した -->
-          <input id="q" class="q" type="search" placeholder="検索: 本文・#番号・project・commit（/ でフォーカス, Esc でクリア）" autocomplete="off">
+          <input id="q" class="q" type="search" placeholder="検索: 本文・#番号・project・sid・session・commit・blocked・label（/ でフォーカス, Esc でクリア）" autocomplete="off">
           <select id="proj" class="q" aria-label="プロジェクトで絞り込み"></select>
           <!-- #22: ラベル絞り込み。cardFilter（単一選択のボタン群）とは独立した直交軸。 -->
           <select id="lab" class="q" aria-label="ラベルで絞り込み">
