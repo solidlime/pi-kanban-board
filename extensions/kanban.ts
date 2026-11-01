@@ -115,6 +115,8 @@ type Card = {
 	due?: string;
 	estimate?: number;
 	blocks?: number[];
+	/** #22: whole-set replacement, always a non-empty subset of LABELS. Absent = no labels. */
+	labels?: string[];
 };
 type Board = { cards: Card[]; nextId: number };
 // Automatic loop modes, keyed by (scope, session). The legacy flat doingLoop/autoPick
