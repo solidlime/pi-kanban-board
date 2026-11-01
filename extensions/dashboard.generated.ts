@@ -269,7 +269,7 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
           <button class="sw" type="button" id="f-overdue" aria-pressed="false">期限超過</button>
           <button class="sw" type="button" id="f-blocked" aria-pressed="false">ブロック中</button>
           <!-- #17: session 行が消えたので、検索とプロジェクト絞り込みは絞り込みバーへ移した -->
-          <input id="q" class="q" type="search" placeholder="検索（/ でフォーカス, Esc でクリア）" autocomplete="off">
+          <input id="q" class="q" type="search" placeholder="検索: 本文・#番号・project・commit（/ でフォーカス, Esc でクリア）" autocomplete="off">
           <select id="proj" class="q" aria-label="プロジェクトで絞り込み"></select>
         </div>
         <!-- phase0: project が既定のボード。作業ディレクトリ（git ルート）単位で共有する -->
@@ -1165,7 +1165,7 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
             card.appendChild(im);
           }
           if (prioOf(c)) card.appendChild(el("span", "prio", "P" + prioOf(c)));
-          if (c.blocked) card.appendChild(el("span", "blocked", "停止中"));
+          if (c.blocked) { var bs = el("span", "blocked", "停止中"); bs.title = String(c.blocked); card.appendChild(bs); }
           if (ctx) card.appendChild(cardOps(c, ctx));
           deck.appendChild(card);
         });
@@ -1405,6 +1405,21 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
     return "TODO " + n("todo") + " / DOING " + n("doing") + " / DONE " + n("done");
   }
 
+  // #21: 全ボード横断の検索。GLOBAL は全プロジェクトの集約なので、ここを通せば横断になる。
+  // 対象は人間がカードを思い出す語彙だけ（img / estimate / blocks / col などの内部値は入れない）。
+  // query は呼び出し側で trim + toLowerCase 済み。
+  function cardHit(c, q){
+    if (q === "") return true;
+    // 番号は完全一致だけ。部分一致にすると "7" が 17 や 27 に当たって使えなくなる。
+    var id = String(c.id);
+    if (q === id || q === "#" + id) return true;
+    var fields = [c.text, c.project, c.sid, c.sessionId, c.commit, c.blocked];
+    for (var i = 0; i < fields.length; i += 1) {
+      if (fields[i] && String(fields[i]).toLowerCase().indexOf(q) >= 0) return true;
+    }
+    return false;
+  }
+
   // phase0: このプロセス（＝この cwd の git ルート）のボード。
   // #17: 中身の描画は renderGlobal と同じ板（board()）を使い回す。
   // 古いサーバは project を返さない: その場合は空の見出しだけ出して落ちない。
@@ -1423,7 +1438,7 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
     var search = query !== "";
     var filtered = search || projPick !== "" || cardFilter !== "";
     var cards = all.filter(function(x){
-      return projOk(x) && cardFilterOk(x, all) && (!search || String(x.text || "").toLowerCase().indexOf(query) >= 0);
+      return projOk(x) && cardFilterOk(x, all) && (!search || cardHit(x, query));
     });
     if (p) {
       var head = el("div", "sess-hd");
@@ -1452,7 +1467,7 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
     var search = query !== "";
     var filtered = search || projPick !== "" || cardFilter !== "";
     var cards = all.filter(function(x){
-      return projOk(x) && cardFilterOk(x, all) && (!search || String(x.text || "").toLowerCase().indexOf(query) >= 0);
+      return projOk(x) && cardFilterOk(x, all) && (!search || cardHit(x, query));
     });
     // #62: GLOBAL も同じ操作感で畳める（既定は開。検索中は強制展開）。
     var gexpanded = gOpen || filtered;

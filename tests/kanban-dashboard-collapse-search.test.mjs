@@ -100,7 +100,7 @@ check("検索中は強制展開（query !== \"\"）", () => {
 
 check("検索欄は絞り込みバーの中、#project の手前", () => {
 	assert.ok(html.includes('id="q" class="q" type="search"'), "検索 input が無い");
-	assert.ok(html.includes('placeholder="検索（/ でフォーカス, Esc でクリア）"'));
+	assert.ok(html.includes('placeholder="検索: 本文・#番号・project・commit（/ でフォーカス, Esc でクリア）"'));
 	assert.ok(html.includes('autocomplete="off"'));
 	// #17: session 行が消えたので検索欄は絞り込みバー（#filters）へ移った。
 	const pane = html.slice(html.indexOf('id="filters"'), html.indexOf('id="h-project"'));
@@ -110,7 +110,10 @@ check("検索欄は絞り込みバーの中、#project の手前", () => {
 });
 
 check("カードのフィルタとキーボード操作がある", () => {
-	assert.match(html, /String\(x\.text \|\| ""\)\.toLowerCase\(\)\.indexOf\(query\)/);
+	// #21: 検索の述語は cardHit() に集約した（2 箇所から呼ぶ）。
+	assert.equal((html.match(/cardHit\(x, query\)/g) || []).length, 2, "cardHit(x, query) が 2 箇所に無い");
+	assert.match(html, /function cardHit\(c, q\)\{/);
+	assert.doesNotMatch(html, /String\(x\.text \|\| ""\)\.toLowerCase\(\)/);
 	assert.match(html, /e\.key === "\/"/);
 	assert.match(html, /e\.key === "Escape" && document\.activeElement === qe/);
 	assert.match(html, /qEl\.addEventListener\("input"/);
@@ -127,13 +130,12 @@ check("件数は検索中だけヒット/総数（meta の乖離を潰す）", (
 check("renderGlobal が query を見てカードを絞る", () => {
 	const at = html.indexOf("function renderGlobal(");
 	assert.ok(at >= 0, "renderGlobal が無い");
-	const body = html.slice(at, html.indexOf("function serveLeft(", at));
+	// センチネル未検査だと slice(at, -1) が末尾 1 文字を落とすだけで静かに全文へ広がる。
+	const bodyEnd = html.indexOf("function serveLeft(", at);
+	assert.ok(bodyEnd > at, "serveLeft のセンチネルが無い");
+	const body = html.slice(at, bodyEnd);
 	assert.match(body, /var search = query !== ""/, "renderGlobal に search 判定が無い");
-	assert.match(
-		body,
-		/String\(x?\.?text \|\| ""\)\.toLowerCase\(\)\.indexOf\(query\)/,
-		"renderGlobal に query フィルタが無い",
-	);
+	assert.match(body, /cardHit\(x, query\)/, "renderGlobal に query フィルタが無い");
 	assert.match(body, /countsText\(c, cards, filtered\)/, "GLOBAL の件数が検索中 n/m にならない");
 	assert.match(body, /el\("div", "sess-empty", "該当なし"\)/, "GLOBAL の該当なしが無い");
 });

@@ -291,6 +291,8 @@ await check("CSS は既存トークンのみ（新色を発明していない）
 		);
 		assert.ok(textOf(byId["project"], "発火 —"), "未設定が — になっていない");
 		assert.ok(textOf(byId["global"], "停止中"), "blocked の表示が無い");
+		const chip = walk(byId["global"]).find((n) => String(n.className).includes("blocked"));
+		assert.equal(chip && chip.title, "既に停止", "blocked の理由が title に出ていない");
 	});
 
 	await check("#11: ボードに ctl が無く、設定タブに GLOBAL と project の 2 行だけ出る", () => {
