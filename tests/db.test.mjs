@@ -135,6 +135,70 @@ test("importBoard keeps sessionId/commit (its own insertCard.run)", async () => 
 	db.close();
 });
 
+// #22: labels は JSON 列 1 本。writeBoard と importBoard に insertCard.run が 1 つずつある
+// （バイト同一の双子）ので、両方を固定しないと importBoard 経由だけ無音で消える。
+test("labels round-trip through writeBoard, and an empty array is just absent", async () => {
+	const { db, key } = await fresh();
+	db.writeBoard(key, { cards: [{ id: 1, text: "a", col: "todo", labels: ["bug", "調査"] }], nextId: 2 });
+	assert.deepEqual(db.readBoard(key).cards[0].labels, ["bug", "調査"], "labels が読み戻せない");
+	// 空配列と「無い」は区別しない（blocks と同じ）。列は NULL に戻る。
+	db.writeBoard(key, { cards: [{ id: 1, text: "a", col: "todo", labels: [] }], nextId: 2 });
+	assert.deepEqual(db.readBoard(key).cards[0], { id: 1, text: "a", col: "todo" });
+	db.close();
+});
+
+test("importBoard keeps labels (its own insertCard.run)", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "kbdb-imglab-"));
+	const db = await openKanbanDb(join(dir, "board.sqlite"));
+	const key = { scope: "project", sid: "gl" };
+	const card = { id: 1, text: "imported labels", col: "todo", labels: ["feature"] };
+	assert.equal(db.importBoard(key, { cards: [card], nextId: 2 }), true);
+	assert.deepEqual(db.readBoard(key).cards, [card]);
+	db.close();
+});
+
+test("a torn labels column reads as no labels instead of throwing", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "kbdb-tornlab-"));
+	const file = join(dir, "board.sqlite");
+	const key = { scope: "project", sid: "t1" };
+	const db = await openKanbanDb(file);
+	db.writeBoard(key, { cards: [{ id: 1, text: "a", col: "todo" }], nextId: 2 });
+	db.close();
+	// A hand-edited/regexed row: reading must stay lenient (the vocabulary is kanban.ts' job).
+	const { createRequire } = await import("node:module");
+	const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite");
+	const raw = new DatabaseSync(file);
+	raw.exec("UPDATE card SET labels = 'not json' WHERE id = 1");
+	raw.close();
+	const again = await openKanbanDb(file);
+	assert.deepEqual(again.readBoard(key).cards, [{ id: 1, text: "a", col: "todo" }]);
+	again.close();
+});
+
+test("a card table predating labels is migrated (no such column)", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "kbdb-labcol-"));
+	const file = join(dir, "old.sqlite");
+	const { createRequire } = await import("node:module");
+	const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite");
+	const oldDb = new DatabaseSync(file);
+	oldDb.exec(
+		"CREATE TABLE board (scope TEXT NOT NULL, sid TEXT NOT NULL, next_id INTEGER NOT NULL, rev INTEGER NOT NULL DEFAULT 0, touched_at INTEGER NOT NULL, PRIMARY KEY (scope, sid))",
+	);
+	oldDb.exec(
+		"CREATE TABLE card (scope TEXT NOT NULL, sid TEXT NOT NULL, id INTEGER NOT NULL, ord INTEGER NOT NULL, text TEXT NOT NULL, col TEXT NOT NULL, img TEXT, moved_at INTEGER, moved_by TEXT, priority INTEGER, next_fire_at TEXT, blocked TEXT, fired_for TEXT, project TEXT, due TEXT, estimate INTEGER, session_id TEXT, commit_sha TEXT, PRIMARY KEY (scope, sid, id))",
+	);
+	oldDb.exec("INSERT INTO board (scope, sid, next_id, rev, touched_at) VALUES ('project','s1',2,1,0)");
+	oldDb.exec("INSERT INTO card (scope, sid, id, ord, text, col) VALUES ('project','s1',1,0,'old','todo')");
+	oldDb.close();
+
+	const db = await openKanbanDb(file);
+	const key = { scope: "project", sid: "s1" };
+	// The ALTER guard: an older file must accept a label write, not die on no such column.
+	db.writeBoard(key, { cards: [{ id: 1, text: "old", col: "todo", labels: ["chore"] }], nextId: 2 });
+	assert.deepEqual(db.readBoard(key).cards[0].labels, ["chore"]);
+	db.close();
+});
+
 test("a v0 database missing due/estimate is repaired on open, not on a version bump", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "kbdb-v0-"));
 	const file = join(dir, "v0.sqlite");

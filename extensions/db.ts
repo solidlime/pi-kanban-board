@@ -36,6 +36,12 @@ export type Card = {
 	sessionId?: string;
 	/** #20: 7-40 lowercase hex: the commit this card is about. */
 	commit?: string;
+	/**
+	 * #22: labels (bug / feature / chore / 調査) as a JSON array. This module does not know
+	 * the allowed set - kanban.ts validates on write. Reading stays lenient: a broken or
+	 * unknown value is dropped, never thrown (same rule as priorityOf).
+	 */
+	labels?: string[];
 	/** YYYY-MM-DD only: a deadline is a date, not an instant. */
 	due?: string;
 	/** Points, integer >= 0. */
@@ -138,7 +144,7 @@ const SCHEMA = [
 	"  img TEXT, moved_at INTEGER, moved_by TEXT, priority INTEGER,",
 	"  next_fire_at TEXT, blocked TEXT, fired_for TEXT, project TEXT,",
 	"  due TEXT, estimate INTEGER,",
-	"  session_id TEXT, commit_sha TEXT,",
+	"  session_id TEXT, commit_sha TEXT, labels TEXT,",
 	"  PRIMARY KEY (scope, sid, id)",
 	");",
 	// Dependencies live outside card: they are a relation, and rewriting one card's
@@ -177,6 +183,29 @@ function optionalNumber(v: unknown): number | undefined {
 	return typeof v === "number" && Number.isFinite(v) ? v : undefined;
 }
 
+/**
+ * #22: the label column is JSON text. Only an array of strings is adopted; anything else
+ * (NULL, a torn value, a hand-edited row) comes back as "no labels" - a read must never
+ * throw over one bad cell. The allowed vocabulary is checked in kanban.ts, not here.
+ */
+function optionalLabels(v: unknown): string[] | undefined {
+	if (typeof v !== "string" || v.length === 0) return undefined;
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(v);
+	} catch {
+		return undefined;
+	}
+	if (!Array.isArray(parsed)) return undefined;
+	const out = parsed.filter((x): x is string => typeof x === "string");
+	return out.length === 0 ? undefined : out;
+}
+
+/** #22: absent and empty are the same thing, exactly like blocks. */
+function labelColumn(c: Card): string | null {
+	return c.labels !== undefined && c.labels.length > 0 ? JSON.stringify(c.labels) : null;
+}
+
 function rowToCard(r: Row): Card {
 	const card: Card = { id: Number(r.id), text: String(r.text), col: String(r.col) as Col };
 	const img = optionalText(r.img);
@@ -199,6 +228,8 @@ function rowToCard(r: Row): Card {
 	if (sessionId !== undefined) card.sessionId = sessionId;
 	const commit = optionalText(r.commit_sha);
 	if (commit !== undefined) card.commit = commit;
+	const labels = optionalLabels(r.labels);
+	if (labels !== undefined) card.labels = labels;
 	const due = optionalText(r.due);
 	if (due !== undefined) card.due = due;
 	const estimate = optionalNumber(r.estimate);
@@ -258,12 +289,13 @@ export function openKanbanDb(file: string): KanbanDb {
 	if (!cols.has("estimate")) db.exec("ALTER TABLE card ADD COLUMN estimate INTEGER");
 	if (!cols.has("session_id")) db.exec("ALTER TABLE card ADD COLUMN session_id TEXT");
 	if (!cols.has("commit_sha")) db.exec("ALTER TABLE card ADD COLUMN commit_sha TEXT");
+	if (!cols.has("labels")) db.exec("ALTER TABLE card ADD COLUMN labels TEXT");
 	// shortcut: ALTER は列名で判定する。型変更が必要になったらテーブル再作成に切り替える。
 	db.exec("PRAGMA user_version = 2");
 
 	const selectBoard = db.prepare("SELECT next_id FROM board WHERE scope = ? AND sid = ?");
 	const selectCards = db.prepare(
-		"SELECT id, text, col, img, moved_at, moved_by, priority, next_fire_at, blocked, fired_for, project, due, estimate, session_id, commit_sha FROM card WHERE scope = ? AND sid = ? ORDER BY ord",
+		"SELECT id, text, col, img, moved_at, moved_by, priority, next_fire_at, blocked, fired_for, project, due, estimate, session_id, commit_sha, labels FROM card WHERE scope = ? AND sid = ? ORDER BY ord",
 	);
 	const selectRev = db.prepare("SELECT rev FROM board WHERE scope = ? AND sid = ?");
 	// #16: the global aggregate reads every project board on every tick; two statements for
@@ -286,7 +318,7 @@ export function openKanbanDb(file: string): KanbanDb {
 		"DELETE FROM card WHERE scope = ? AND sid = ? AND id NOT IN (SELECT value FROM json_each(?))",
 	);
 	const insertCard = db.prepare(
-		"INSERT OR REPLACE INTO card (scope, sid, id, ord, text, col, img, moved_at, moved_by, priority, next_fire_at, blocked, fired_for, project, due, estimate, session_id, commit_sha) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+		"INSERT OR REPLACE INTO card (scope, sid, id, ord, text, col, img, moved_at, moved_by, priority, next_fire_at, blocked, fired_for, project, due, estimate, session_id, commit_sha, labels) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 	);
 	const selectDeps = db.prepare(
 		"SELECT card_id, blocks_id FROM card_dep WHERE scope = ? AND sid = ? ORDER BY card_id, blocks_id",
@@ -390,6 +422,7 @@ export function openKanbanDb(file: string): KanbanDb {
 						c.estimate ?? null,
 						c.sessionId ?? null,
 						c.commit ?? null,
+						labelColumn(c),
 					);
 				}
 				writeDeps(key.scope, key.sid, b.cards);
@@ -433,6 +466,7 @@ export function openKanbanDb(file: string): KanbanDb {
 						c.estimate ?? null,
 						c.sessionId ?? null,
 						c.commit ?? null,
+						labelColumn(c),
 					);
 				}
 				writeDeps(key.scope, key.sid, b.cards);
