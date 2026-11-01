@@ -164,6 +164,14 @@ await check("/api/schedule?labels=BOGUS → 400 かつ labels が変わらない
 	assert.deepEqual(cardNamed("replaced").labels, ["chore"], "400 なのに書き換わった");
 });
 
+await check("/api/schedule?labels=%20 → 400（空白のみはクリアではない）", async () => {
+	const id = cardNamed("replaced").id;
+	await tf(`${BASE}/api/schedule?scope=project&id=${id}&labels=chore`);
+	const r = await tf(`${BASE}/api/schedule?scope=project&id=${id}&labels=%20`);
+	assert.equal(r.status, 400, `status ${r.status}`);
+	assert.deepEqual(cardNamed("replaced").labels, ["chore"], "400 なのに書き換わった");
+});
+
 await check("/api/schedule: labels も他も無し → 400（必須の言い回しに labels が入る）", async () => {
 	const id = cardNamed("replaced").id;
 	const before = cardNamed("replaced").labels;

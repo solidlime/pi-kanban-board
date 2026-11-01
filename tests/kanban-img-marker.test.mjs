@@ -48,7 +48,7 @@ function check(name, fn) {
 }
 
 const IMG = "1-b87bb83d.png";
-// 注入文は `LABELS[col]` + formatCard の並び。1 枚だけの列から
+// 注入文は `COL_LABELS[col]` + formatCard の並び。1 枚だけの列から
 // formatCard の出力そのもの（ラベルを剥がした部分）を取り出す。
 function injected(cards) {
 	const out = renderInjectionText({ cards, nextId: cards.length + 1 });

@@ -126,7 +126,7 @@ check("id は \"7\" と \"#7\" の完全一致のみ", () => {
 });
 
 // --- 4. text 以外の語彙で引ける ---------------------------------------------
-check("project / sid / sessionId / commit / blocked で引ける", () => {
+check("project / sid / sessionId / commit / blocked / labels で引ける", () => {
 	const c = {
 		id: 3,
 		col: "todo",
@@ -136,12 +136,15 @@ check("project / sid / sessionId / commit / blocked で引ける", () => {
 		sessionId: "sess-xyz",
 		commit: "a1b2c3d",
 		blocked: "認証トークン待ち",
+		labels: ["bug", "調査"],
 	};
 	assert.equal(hit(c, "kanban"), true);
 	assert.equal(hit(c, "cwd:abc"), true);
 	assert.equal(hit(c, "sess-xy"), true);
 	assert.equal(hit(c, "a1b2c3d"), true);
 	assert.equal(hit(c, "認証トークン"), true);
+	assert.equal(hit(c, "bug"), true, "labels で引けない");
+	assert.equal(hit(c, "調査"), true, "日本語ラベルで引けない");
 	assert.equal(hit(c, "nope"), false);
 });
 
