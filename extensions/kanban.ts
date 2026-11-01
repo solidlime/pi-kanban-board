@@ -1082,7 +1082,7 @@ export function weekRange(week: string): { from: number; to: number } | null {
 }
 
 /**
- * 一週間のサマリ。`boards` は listProjectBoards() の形（slug は正規化済みの真実）で、
+ * 一週間のサマリ。`boards` は projectBoardsOf() の形（slug は正規化済みの真実）で、
  * `card.project` は見ない — ボードの slug と食い違う行が混ざる余地を残さないため。
  *
  * 近似（仕様として受け入れる）: movedAt は上書きされるので、done -> doing -> done と
@@ -2086,7 +2086,7 @@ function weeklyIndex(db: KanbanDb): string[] {
 function storeWeekly(week: string, now: number): void {
 	try {
 		const db = kanbanDb();
-		db.setMeta(WEEKLY_KEY + week, JSON.stringify(weeklySummary(db.listProjectBoards(), week, now)));
+		db.setMeta(WEEKLY_KEY + week, JSON.stringify(weeklySummary(projectBoardsOf(allRollupCards()), week, now)));
 		const idx = weeklyIndex(db);
 		if (!idx.includes(week)) {
 			idx.push(week);
@@ -3351,22 +3351,39 @@ export function projectRollup(
 	});
 }
 
+/** #28: 「この機械の全カード」の唯一の式。 */
+type RollupEntry = { scope: Scope; sid: string; card: Card };
+
+function allRollupCards(): RollupEntry[] {
+	return [
+		...readBoard(GLOBAL_JSON).cards.map((card) => ({ scope: "global" as const, sid: "", card })),
+		// Fixed order: slug ascending, id ascending inside a board (listProjectBoards).
+		...kanbanDb()
+			.listProjectBoards()
+			.flatMap(({ slug, cards }) => cards.map((card) => ({ scope: "project" as const, sid: slug, card }))),
+	];
+}
+
+/** allRollupCards() からプロジェクトボードだけを slug ごとに畳む（週次は GLOBAL 残骸を数えない）。 */
+function projectBoardsOf(entries: RollupEntry[]): { slug: string; cards: Card[] }[] {
+	const by = new Map<string, Card[]>();
+	for (const { scope, sid, card } of entries) {
+		if (scope !== "project") continue;
+		const list = by.get(sid);
+		if (list === undefined) by.set(sid, [card]);
+		else list.push(card);
+	}
+	return [...by].map(([slug, cards]) => ({ slug, cards }));
+}
+
 /**
  * #16: global is a READ-ONLY VIEW over every project board — it holds no cards of its own.
  * `sid` on each card is the project slug it came from, so the dashboard can label it.
  * GLOBAL_JSON cards stay in the sum for pre-migration rows and for tests that seed it.
+ * #28: the sum itself is allRollupCards() — one expression, so the four supply paths cannot drift.
  */
 function aggregateGlobal(): { cards: (Card & { sid: string })[]; nextId: number } {
-	return {
-		cards: [
-			...readBoard(GLOBAL_JSON).cards.map((card) => ({ ...card, sid: "" })),
-			// Fixed order: slug ascending, id ascending inside a board (listProjectBoards).
-			...kanbanDb()
-				.listProjectBoards()
-				.flatMap(({ slug, cards }) => cards.map((card) => ({ ...card, sid: slug }))),
-		],
-		nextId: 1,
-	};
+	return { cards: allRollupCards().map(({ sid, card }) => ({ ...card, sid })), nextId: 1 };
 }
 
 /**
@@ -3394,7 +3411,7 @@ function weeklyPayload(week: string | null): unknown {
 	const weeks = [...new Set([...weeklyIndex(db), ...(last !== null && weekRange(last) !== null ? [last] : []), cur])];
 	return {
 		ok: true,
-		current: weeklySummary(db.listProjectBoards(), cur, now),
+		current: weeklySummary(projectBoardsOf(allRollupCards()), cur, now),
 		// 現週は計算で出るので、tick がまだ書いていなくても選択肢に出す。新しい順。
 		weeks: weeks.sort().reverse(),
 	};
@@ -3402,15 +3419,9 @@ function weeklyPayload(week: string | null): unknown {
 
 /** GET /api/projects: the project tab's whole payload. */
 async function projectsPayload(): Promise<unknown> {
-	const gb = readBoard(GLOBAL_JSON);
-	const cards = [
-		...gb.cards.map((card) => ({ scope: "global", sid: "", card })),
-		// #17/#25: 供給は aggregateGlobal() / weekly と同じ、この機械の全プロジェクトボード。
-		// 自 cwd の 1 枚だけだと他リポのカードが黙って欠ける（件数だけ 0 に見える）。
-		...kanbanDb()
-			.listProjectBoards()
-			.flatMap(({ slug, cards }) => cards.map((card) => ({ scope: "project", sid: slug, card }))),
-	];
+	// #17/#25: 供給は aggregateGlobal() / weekly と同じ、この機械の全プロジェクトボード。
+	// 自 cwd の 1 枚だけだと他リポのカードが黙って欠ける（件数だけ 0 に見える）。
+	const cards = allRollupCards();
 	const db = kanbanDb();
 	return {
 		ok: true,
