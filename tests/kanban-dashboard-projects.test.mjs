@@ -81,12 +81,32 @@ const DASH = {
 	serve: [],
 };
 
+// 週次（#24）。renderWeekly が読むのは d.current（.week / .totals / .projects）と d.weeks だけ
+// （web/dashboard.html:1885-1916）。空でも描ける最小形を既定値にする。
+const WEEKLY = {
+	ok: true,
+	current: {
+		week: "2026-W30",
+		from: 0,
+		to: 0,
+		generatedAt: 0,
+		projects: [],
+		totals: { done: 0, stale: 0, blocked: 0 },
+	},
+	weeks: ["2026-W30"],
+};
+// 2 本目の応答にしか無い文字列を作るための別データ（完了 7）
+const WEEKLY_7 = {
+	...WEEKLY,
+	current: { ...WEEKLY.current, totals: { done: 7, stale: 0, blocked: 0 } },
+};
+
 /** ブラウザ側 JS を 1 回起動する。/api/projects は data を返す。 */
 async function boot(data) {
 	const byId = {};
 	const calls = [];
-	// /api/projects の応答だけ外から差し替える（失敗経路と取得中の多重要求を作るため）
-	const ctl = { projectsFetch: null, projectsCalls: 0 };
+	// /api/projects と /api/weekly の応答を外から差し替える（失敗経路と取得中の多重要求を作るため）
+	const ctl = { projectsFetch: null, projectsCalls: 0, weeklyFetch: null, weeklyCalls: 0 };
 	const timers = [];
 	let nextId = 1;
 	const el = (t) => makeEl(t);
@@ -111,6 +131,11 @@ async function boot(data) {
 				ctl.projectsCalls++;
 				if (ctl.projectsFetch) return ctl.projectsFetch();
 				return Promise.resolve(reply(data));
+			}
+			if (url.startsWith("/api/weekly")) {
+				ctl.weeklyCalls++;
+				if (ctl.weeklyFetch) return ctl.weeklyFetch();
+				return Promise.resolve(reply(WEEKLY));
 			}
 			if (url.startsWith("/api/decision")) return Promise.resolve(reply({ ok: true }));
 			return Promise.resolve(reply(DASH));
@@ -422,26 +447,109 @@ test("#10 取得に失敗しても前回の表示を消さない（「空」と�
 	assert.ok(allText(d.box).includes("ベータ"), "失敗後に復帰して描けていない");
 });
 
-test("#10 取得中に再要求しても積み増さない（古い応答で新しい表示を塗り替えない）", async () => {
+// #24: busy 中の要求を「捨てずに 1 本だけ控えて取り直す」（coalesce）。
+// 控えが立っている間の応答は要求時点より古い状態なので描かない。
+// fake DOM は innerHTML="" で子を消さないので、「描いていない」は
+// 「新しいデータが出ていない（＝古い応答で塗っていない）」で見る。
+test("#24 取得中に来た要求は捨てずに 1 本だけ控えて取り直す（古い応答で新しい表示を塗り替えない）", async () => {
 	const d = await boot(FULL);
-	let resolve1;
-	d.ctl.projectsFetch = () => new Promise((r) => (resolve1 = r));
-	// 1 回目を宙吊りにしてから、もう 2 回タブを押す
+	// 1 本目と 2 本目を別々に解決したいので、resolve を発行順に控える
+	const pending = [];
+	d.ctl.projectsFetch = () => new Promise((r) => pending.push(r));
+	// 1 回目を宙吊りにしてから、もう 2 回タブを押す（控えは 1 本に丸める）
 	d.byId["tab-projects"]._lis.click[0]();
 	await flush();
 	d.byId["tab-projects"]._lis.click[0]();
 	d.byId["tab-projects"]._lis.click[0]();
 	for (let i = 0; i < 4; i++) await flush();
 	assert.equal(d.ctl.projectsCalls, 1, "取得中の多重 fetch");
-	// 1 回目が返れば描ける（busy フラグが立ちっぱなしにならない）
-	resolve1({ ok: true, status: 200, json: () => Promise.resolve(FULL) });
+	// 1 本目の応答では描かず、控えの分を投げる
+	pending[0]({ ok: true, status: 200, json: () => Promise.resolve(FULL) });
 	for (let i = 0; i < 4; i++) await flush();
-	assert.ok(allText(d.byId.projects).includes("アルファ"), "応答が返っても描いていない");
+	assert.equal(d.ctl.projectsCalls, 2, "控えが取り直されていない（要求を捨てている）");
+	assert.equal(pending.length, 2, "2 本目が発行されていない");
+	// 描いていれば #projects が作られている（renderProjects が初めて getElementById する）
+	assert.ok(!allText(d.byId.projects || makeEl("div")).includes("アルファ"), "古い応答で新しい表示を塗り替えている");
+	// 2 本目の応答で描く（busy が立ちっぱなしにならない）
+	pending[1]({ ok: true, status: 200, json: () => Promise.resolve(BARE) });
+	for (let i = 0; i < 4; i++) await flush();
+	assert.ok(allText(d.byId.projects).includes("ベータ"), "取り直した応答で描いていない");
 	// 次は普通に取りに行ける
 	d.ctl.projectsFetch = null;
 	d.byId["tab-projects"]._lis.click[0]();
 	for (let i = 0; i < 4; i++) await flush();
-	assert.equal(d.ctl.projectsCalls, 2, "完了後に busy が解けていない");
+	assert.equal(d.ctl.projectsCalls, 3, "完了後に busy が解けていない");
+});
+
+// #24: 症状そのもの（削除直後の再取得が in-flight のポーリングに握り潰される）。
+// 決定行の数を数える: fake DOM は子を消さないので、古い応答で描き直すと行が二重になる
+const countRows = (n, text) =>
+	all(n, (e) => e.className === "prow" && e.children.some((c) => c.className === "t" && c.textContent === text)).length;
+
+test("#24 削除直後の再取得が in-flight のポーリングに握り潰されない", async () => {
+	const d = await open(FULL);
+	const row = rowOf(d, "袖は付けない");
+	assert.ok(row, "前提: 削除対象の行が出ている");
+	assert.equal(countRows(d.box, "袖は付けない"), 1, "前提: 行は 1 本");
+	const pending = [];
+	d.ctl.projectsFetch = () => new Promise((r) => pending.push(r));
+	// ポーリングが in-flight（削除前の状態を読みに行っている最中）
+	d.byId["tab-projects"]._lis.click[0]();
+	for (let i = 0; i < 4; i++) await flush();
+	assert.equal(pending.length, 1, "前提: 1 本目が宙吊り");
+	const base = d.ctl.projectsCalls; // open() の初回分を含む累計。増分だけを見る
+	// 削除 → 成功時の then(loadProjects) が busy 中に来る
+	delBtn(row)._lis.click[0]();
+	for (let i = 0; i < 4; i++) await flush();
+	assert.equal(d.ctl.projectsCalls, base, "削除直後に fetch を増やしている（busy 中は投げない）");
+	// 1 本目は削除前の payload。控えがあるので描かずに取り直す
+	pending[0]({ ok: true, status: 200, json: () => Promise.resolve(FULL) });
+	for (let i = 0; i < 4; i++) await flush();
+	assert.equal(d.ctl.projectsCalls, base + 1, "削除後の再取得が握り潰された（busy 中は投げないだけで控えていない）");
+	assert.equal(countRows(d.box, "袖は付けない"), 1, "削除前の応答で描き直している（行が二重になる）");
+	// 2 本目（削除後の payload = 決定 0 件）で描き直す
+	const after = { ok: true, projects: [{ ...FULL.projects[0], decisions: [] }], decisions: [] };
+	pending[1]({ ok: true, status: 200, json: () => Promise.resolve(after) });
+	for (let i = 0; i < 4; i++) await flush();
+	assert.ok(allText(d.box).includes("決定 0 件"), "削除後の応答で描き直していない");
+	assert.equal(countRows(d.box, "袖は付けない"), 1, "削除前の応答で行が増えている");
+});
+
+// #24: 週次側も同型（<code>loadWeekly</code>）。loadProjects と違い、
+// renderWeekly が一度も呼ばれていないことは「#weekly 要素が未生成」で見る
+// （getElementById("weekly") を呼ぶのは renderWeekly だけ = web/dashboard.html:1886）。
+test("#24 週次も取得中に来た要求を 1 本だけ控えて取り直す", async () => {
+	const d = await boot(FULL); // タブは開かない（weeklyCalls を 0 から見る）
+	const pending = [];
+	d.ctl.weeklyFetch = () => new Promise((r) => pending.push(r));
+	// 1 回目を宙吊りにしてから、もう 2 回タブを押す（控えは 1 本に丸める）
+	d.byId["tab-weekly"]._lis.click[0]();
+	for (let i = 0; i < 4; i++) await flush();
+	assert.equal(pending.length, 1, "前提: 1 本目が宙吊り");
+	d.byId["tab-weekly"]._lis.click[0]();
+	d.byId["tab-weekly"]._lis.click[0]();
+	for (let i = 0; i < 4; i++) await flush();
+	assert.equal(d.ctl.weeklyCalls, 1, "取得中の多重 fetch");
+	// 1 本目の応答では描かず、控えの分を投げる
+	pending[0]({ ok: true, status: 200, json: () => Promise.resolve(WEEKLY) });
+	for (let i = 0; i < 4; i++) await flush();
+	assert.equal(d.ctl.weeklyCalls, 2, "控えが取り直されていない（要求を捨てている）");
+	assert.equal(pending.length, 2, "2 本目が発行されていない");
+	// renderWeekly を呼んでいれば #weekly が作られている（古い応答で塗っていない）
+	assert.equal(d.byId.weekly, undefined, "古い応答で描いている（#weekly が作られている）");
+	// 2 本目の応答で描く
+	pending[1]({ ok: true, status: 200, json: () => Promise.resolve(WEEKLY_7) });
+	for (let i = 0; i < 4; i++) await flush();
+	// weeklyAgain を false にせず再帰すると、ここで 3 本目が走る（無限再取得）
+	assert.equal(d.ctl.weeklyCalls, 2, "再取得が止まらない（無限ループ）");
+	assert.ok(allText(d.byId.weekly).includes("完了 7"), "2 本目の応答で描いていない");
+	// 要約行だけでは renderWeekly の途中で throw しても通るので、最後まで走ったことを別に見る
+	assert.ok(find(d.byId.weekly, (e) => e.className === "empty"), "renderWeekly が最後まで走っていない");
+	// 次は普通に取りに行ける
+	d.ctl.weeklyFetch = null;
+	d.byId["tab-weekly"]._lis.click[0]();
+	for (let i = 0; i < 4; i++) await flush();
+	assert.equal(d.ctl.weeklyCalls, 3, "完了後に busy が解けていない");
 });
 
 // 決定の本文を打っている最中にポーリングが来たら、データだけ差し替えて描画は次に回す

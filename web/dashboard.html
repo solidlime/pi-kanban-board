@@ -1671,18 +1671,24 @@
   // #8: プロジェクトタブ。ボードとは別エンドポイントなので、専用のタイマーは作らずに
   // reload() の末尾（とタブのクリック）からのみ取りに行く。
   var projectData = null;
-  var projectsBusy = false;     // 多重 fetch 防止。古い応答で新しい表示を塗り替えない
+  // #24: 取得中の要求を捨てない。捨てると削除直後の再取得が in-flight の応答に
+  // 握り潰され、消した行が次のポーリング（最大 5 秒）まで残る。
+  var projectsBusy = false;
+  var projectsAgain = false;    // 取得中に来た要求を 1 本だけ控える
   function loadProjects(){
-    if (projectsBusy) return;
+    if (projectsBusy) { projectsAgain = true; return; }
     projectsBusy = true;
     api("/api/projects").then(function(d){
       projectsBusy = false;
+      // 控えがある＝この応答は要求時点より前の状態。描かずに取り直す
+      if (projectsAgain) { projectsAgain = false; loadProjects(); return; }
       projectData = d;
       // 決定を打っている最中に描き直すと入力が消えるので、描くのは次の取得（5 秒ポーリングか、
       // タブを開き直した時）まで待つ。その時には新しい応答で projectData は置き換わっている
       if (!isEditing()) renderProjects();
     }, function(){
       projectsBusy = false;
+      projectsAgain = false;
       // 前回の表示は消さない（空と「取れなかった」を取り違えないため）
       note("プロジェクトを取得できません");
     });
@@ -1838,14 +1844,18 @@
   // #23: 週次タブ。完走・停滞・ブロックの一覧をプロジェクト別に出す（決定論的、LLM は呼ばへない）。
   // プロジェクトと同じ流儀で、タブを開いた時と 5 秒ポーリングの相乗りだけで取る（専用タイマー無し）。
   var weeklyData = null;
+  // #24: loadProjects と同じく、取得中の要求は捨てずに 1 本だけ控える
   var weeklyBusy = false;
+  var weeklyAgain = false;
   var weekPick = ""; // "" = 現週（サーバがその場で計算した current）
   var weekSaved;     // 選んだ週の保存分。undefined = 取得中、null = 保存が無い
   function loadWeekly(){
-    if (weeklyBusy) return;
+    if (weeklyBusy) { weeklyAgain = true; return; }
     weeklyBusy = true;
     api("/api/weekly").then(function(d){
       weeklyBusy = false;
+      // 控えがある＝この応答は要求時点より前の状態。描かずに取り直す
+      if (weeklyAgain) { weeklyAgain = false; loadWeekly(); return; }
       weeklyData = d;
       // 一覧から消えた週を選び続けない（現週に戻す）
       if (weekPick && (d.weeks || []).indexOf(weekPick) < 0) { weekPick = ""; weekSaved = undefined; }
@@ -1853,6 +1863,7 @@
       else renderWeekly();
     }, function(){
       weeklyBusy = false;
+      weeklyAgain = false;
       note("週次サマリを取得できません"); // 前回の表示は消さない
     });
   }
