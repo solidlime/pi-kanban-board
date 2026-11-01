@@ -395,11 +395,14 @@ export function projectSlugOf(cwd: string): string {
  * The cwd behind a sid, for the HTTP routes (which are sync). sessionInfoById() is the
  * only filler of that cache and the dashboard poll calls it, so it is warm in practice;
  * a cold cache reads as this process's cwd rather than adding a second async door.
+ * A header without cwd reads as "" here (session-manager.js:541 - old sessions), and ""
+ * must mean absent: `??` would pass it on to projectSlugOf("") -> "inbox" while cwdOfCtx
+ * answers process.cwd(), so the same missing input named two boards. Same test as cwdOfCtx.
  */
 function cwdOfSidSync(sid: string | null): string {
 	const id = sid === null || sid === "" ? activeSessionId : sid;
-	const info = id === null || id === "" ? undefined : sessionInfoCache?.byId.get(id);
-	return info?.cwd ?? process.cwd();
+	const cwd = id === null || id === "" ? undefined : sessionInfoCache?.byId.get(id)?.cwd;
+	return typeof cwd === "string" && cwd !== "" ? cwd : process.cwd();
 }
 
 /** The tool's cwd. A context without getCwd (an older host, a test double) reads as ours. */
@@ -3496,7 +3499,19 @@ async function dashboardPayload(): Promise<unknown> {
 	const totals = countCols(aggBoard);
 	// Phase 0: project is where cards live now. Its counts are already inside `totals`
 	// (they are part of the aggregate), so they are reported, never added again.
-	const slug = projectSlugOf(process.cwd());
+	// #27: what this reads is the session FILE's header cwd (`sessionInfoById()` above fills that
+	// cache), not this process's cwd - and not ctx's either. dashboardPayload is module level and
+	// the route calls it with no arguments, while the only cwd the ctx route knows (ownCtx) lives
+	// in the default export's closure, so cwdOfCtx cannot be handed in here. Residual: when pi
+	// re-opens a session with a cwdOverride (dist/main.js:563-566 - the recorded cwd was gone and
+	// the user picked another), the header keeps the OLD cwd while ctx.getCwd() answers the picked
+	// one, so this panel names the board the session was recorded against. Closing that needs a
+	// module-level driver cwd published by sync/poll; until then no closer source exists for a
+	// request without a ctx. cwdOfSidSync still falls back to process.cwd() per request: when
+	// activeSessionId is null (server outlives shutdown), when the cache does not hold the sid
+	// (not scanned yet, or its header cwd is empty - session-manager.js:541), or when a rescan
+	// failed and byId is empty.
+	const slug = projectSlugOf(cwdOfSidSync(null));
 	const pb = readBoard(boardPath("project", slug));
 	const projectCounts = countCols(pb);
 	// Dead registrations stay listed; `exists` is the flag that tells the UI.
@@ -3544,8 +3559,8 @@ async function dashboardPayload(): Promise<unknown> {
 			loops: loopCountOf(sidActor, "global"),
 			halted: haltedBySid.get(sidActor)?.scope === "global",
 		},
-		// Phase 0: the board of THIS process's cwd (one server = one cwd). global stays
-		// above for the un-migrated rows the tests and the UI still read.
+		// Phase 0: the board of the active session's cwd (#27: one server can host several cwds).
+		// global stays above for the un-migrated rows the tests and the UI still read.
 		project: {
 			id: slug,
 			counts: projectCounts,
@@ -5361,7 +5376,10 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 		handler: async (args, ctx) => {
 		const sid = sidOf(ctx);
 		// #17: project boards are keyed by their cwd slug; the pi session id stays the actor.
-		const projKey = projectKeyOfWrite(sid) ?? projectSlugOf(cwdOfSidSync(sid));
+		// #27: same source as poll/refresh/settle (cwdOfCtx). Reading the HTTP cache's cwd here
+		// made /kanban take write the repo this process STARTED in while the loop drove the
+		// resumed session's repo: taken, and never woken.
+		const projKey = boardKeyFor(ctx, sid, "project");
 			const parsed = parseKanbanArgs((args ?? "").trim().split(/\s+/).filter((w) => w.length > 0));
 			if (parsed.kind === "help") {
 				ctx.ui.notify(KANBAN_HELP);
@@ -5480,7 +5498,10 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 				// One row in the BOARD menu; the two toggles live one level down so the
 				// column list below keeps its shape. sid is always this session, scope is
 				// the board the user is looking at.
-				const cur = modesFor(readModesFile(), sid, scope);
+				// #27: the writer (runModeCommand) stores under boardKeyFor, so reading `sid` here
+				// hit no key at all and fell back to "absent = ON": a loop switched OFF still drew ON.
+				// And `scope` flips to global below, where the key is the sid - boardKeyFor answers both.
+				const cur = modesFor(readModesFile(), boardKeyFor(ctx, sid, scope), scope);
 				const modeOption = `⚙ loop: ${cur.doingLoop ? "ON" : "OFF"} / pick: ${cur.autoPick ? "ON" : "OFF"}`;
 				const intervalOption = `⏱ 間隔: ${intervalMinOf(cur)}分`;
 				const stuckOption = `🚧 スタック判定: ${stuckLimitOf(cur)}回`;
@@ -5506,7 +5527,7 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 				}
 				if (picked === modeOption) {
 					for (;;) {
-						const m = modesFor(readModesFile(), sid, scope);
+						const m = modesFor(readModesFile(), boardKeyFor(ctx, sid, scope), scope); // #27: the writer's key
 						const choice = await ctx.ui.select(`モード (${scope}): どれを切り替える？`, [
 							`loop: ${m.doingLoop ? "ON" : "OFF"}`,
 							`pick: ${m.autoPick ? "ON" : "OFF"}`,

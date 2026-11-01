@@ -69,9 +69,29 @@ check("writeBoard(boardPath(scope, projKey)) はすべてガードの直後か�
 check("globalReadOnly() の呼び出しは 2 か所（優先度 + 列ループ）だけ", () => {
 	// 列ごとの個別ガード（＋新規カード / 移動・削除）はループ先頭の 1 本に畳んである。
 	const calls = occurrences(DRILL, "globalReadOnly()");
+	// 意図的なトレードオフ: 正確な数を pin しているので、将来「正しい 3 か所目」を足してもここで落ちる。
+	// 増やす時はこの数字と下のガードの match を同時に直す（「ガードが増えた」を見逃さない方に倒した）。
 	assert.equal(calls.length, 2, `globalReadOnly() の呼び出しが ${calls.length} か所ある`);
 	assert.match(DRILL, /if \(globalReadOnly\(\)\) continue;/, "優先度のガードが無い");
 	assert.match(DRILL, /if \(globalReadOnly\(\)\) break;/, "列ループ先頭のガードが無い");
+});
+
+// --- 3: modes の読み手キーは書き手（runModeCommand）と同じ ----------------------------------
+// 書き手は boardKeyFor(ctx, sid, scope)（project は slug、global は sid）に書く。読み手が生の
+// sid だと存在しないキーを読み、「不在キー = ON」の既定に落ちる（loop を OFF にしても ON と描く）。
+check("ドリルダウンの modes 読みは書き手と同じ boardKeyFor(ctx, sid, scope) をキーにする", () => {
+	const reads = occurrences(DRILL, "modesFor(readModesFile(), ");
+	assert.equal(reads.length, 2, `modesFor(readModesFile(), ...) が ${reads.length} か所ある`);
+	assert.match(
+		DRILL,
+		/modesFor\(readModesFile\(\), boardKeyFor\(ctx, sid, scope\), scope\)/,
+		"読み手が書き手のキー（boardKeyFor）を使っていない",
+	);
+	assert.doesNotMatch(
+		DRILL,
+		/modesFor\(readModesFile\(\), sid, /,
+		"読み手が生の sid をキーにしている（書き手の boardKeyFor と食い違う）",
+	);
 });
 
 console.log(`${passed} passed, ${failures.length} failed`);

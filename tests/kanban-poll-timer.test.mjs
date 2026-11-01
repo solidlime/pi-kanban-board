@@ -8,7 +8,9 @@
 // HOME と KANBAN_PORT を差し替えるので、本番の ~/.pi/kanban と 8789 には触れない。
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
 import { useKanban, seedBoard } from "./helpers/board.mjs";
@@ -201,6 +203,72 @@ function mkCtx(sid, idle = true) {
 	// take は ownCtx を入れてから ensure するので、ここで初めてタイマーが立つ。
 	await commands.get("kanban").handler("take", ctx);
 	check("ownCtx 無しで take された場合は take が立てる", () => assert.equal(t.hasTimer(), true));
+}
+
+// --- 5: poll / refresh は ctx の cwd を見る（process.cwd() ではない） --------------
+// #27: cwdOfCtx と cwdOfSidSync は別の源泉。resume したセッションはヘッダの cwd と
+// 起動ディレクトリが違いうるので、実行 cwd にボードを置いて旧実装（process.cwd）なら 0 件で落ちる。
+{
+	const { pi, handlers, sent } = mkPi();
+	const t = mod.default(pi).__test;
+	const SID = "sid-other-cwd";
+	const otherDir = mkdtempSync(join(tmpdir(), "kb27-other-"));
+	const OTHER = mod.projectSlugOf(otherDir);
+	const OTHER_BOARD = `${HOME_DIR}/.pi/kanban/projects/${OTHER}.json`;
+	const widgets = [];
+	// mkCtx は getCwd を持たない（cwdOfCtx が process.cwd() に落ちる前提）。ここは ctx cwd を
+	// 明示するので、footer を読むために hasUI と setWidget の捕獲だけ足りない。
+	const ctx = {
+		hasUI: true,
+		isIdle: () => true,
+		ui: {
+			notify() {},
+			setWidget(_key, lines) {
+				widgets.push(lines);
+			},
+		},
+		sessionManager: {
+			getSessionId: () => SID,
+			getSessionName: () => undefined,
+			getEntries: () => [],
+			getCwd: () => otherDir,
+		},
+	};
+
+	check("前提: 別ディレクトリの slug は実行 cwd の slug と違う", () =>
+		assert.notEqual(OTHER, SLUG, `OTHER=${OTHER} SLUG=${SLUG}（同じならこのテストは空振り）`),
+	);
+	// 実行 cwd のボードは空。旧実装はこれを読んで「DOING 無し」になる。
+	seedBoard(PROJECT_BOARD, { cards: [], nextId: 1 });
+	handlers.get("session_start")({ type: "session_start" }, ctx);
+	// session_start の後で置く: poll の snapshot 短絡に入らず、footer まで描かせる。
+	seedBoard(OTHER_BOARD, {
+		cards: [{ id: 7, text: "elsewhere", col: "doing", movedBy: SID }],
+		nextId: 8,
+	});
+	// モードは書き手と同じキー（slug）に置く。sid に置くと「不在 = ON」の既定頼みになる。
+	writeFileSync(MODES, JSON.stringify({ PROJECT: { [OTHER]: { doingLoop: true, autoPick: false } }, GLOBAL: {} }));
+
+	t.poll();
+	check("ctx の cwd のボードから wake が 1 件（process.cwd を見ると 0 件）", () =>
+		assert.equal(sent.length, 1, `sent=${sent.length}（実行 cwd の空ボードを読んでいる）`),
+	);
+	check("wake は ctx cwd のボードの DOING カード", () =>
+		assert.match(sent[0] ?? "", /DOING #7 "elsewhere"/),
+	);
+	const footer = widgets.at(-1) ?? [];
+	check("footer 2行目が ctx cwd のボードを名乗る", () =>
+		assert.equal(
+			footer[1]?.startsWith(`PROJECT: ${OTHER}:`),
+			true,
+			`footer=${JSON.stringify(footer)}`,
+		),
+	);
+	// 件数もキーで変わる（旧実装は空ボードを読んで "0 todo / 0 doing" と描いた）。
+	check("footer 2行目が ctx cwd のボードの件数を出す", () =>
+		assert.ok(footer[1]?.includes("0 todo / 1 doing"), `footer=${JSON.stringify(footer)}`),
+	);
+	rmSync(otherDir, { recursive: true, force: true });
 }
 
 console.log(`${passed} passed, ${failures.length} failed`);

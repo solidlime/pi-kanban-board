@@ -3,10 +3,12 @@
 // HOME と KANBAN_PORT を差し替えるので、本番の ~/.pi/kanban と 8789 には触れない。
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
-import { useKanban } from "./helpers/board.mjs";
+import { readBoardAt, useKanban } from "./helpers/board.mjs";
 
 const HOME_DIR = "/tmp/kb-cli-global-home";
 rmSync(HOME_DIR, { recursive: true, force: true });
@@ -129,6 +131,36 @@ await check("/kanban help に [global] が無い", async () => {
 	assert.ok(msg.includes("/kanban interval <分>"), msg);
 	assert.ok(!msg.includes("[global]"), msg);
 });
+
+// --- #27: `/kanban add` は ctx の cwd のボードに入る（HTTP キャッシュの cwd ではない） --
+// 旧実装は projectKeyOfWrite(sid) ?? projectSlugOf(cwdOfSidSync(sid))。セッションファイルが
+// 無いここではどちらも process.cwd() に落ちるので、実行 cwd のボードに入って落ちる。
+{
+	const otherDir = mkdtempSync(join(tmpdir(), "kb-cli-cwd-"));
+	const OTHER = mod.projectSlugOf(otherDir);
+	const SLUG = mod.projectSlugOf(process.cwd());
+	const otherPath = `${HOME_DIR}/.pi/kanban/projects/${OTHER}.json`;
+	const slugPath = `${HOME_DIR}/.pi/kanban/projects/${SLUG}.json`;
+	const ctxOther = {
+		hasUI: false,
+		isIdle: () => false,
+		ui: { notify() {}, setWidget() {} },
+		sessionManager: { getSessionId: () => SID, getEntries: () => [], getCwd: () => otherDir },
+	};
+	await check("前提: 別ディレクトリの slug は実行 cwd の slug と違う", () =>
+		assert.notEqual(OTHER, SLUG, `OTHER=${OTHER} SLUG=${SLUG}（同じならこのテストは空振り）`),
+	);
+	await check("/kanban add は ctx の cwd のボードに入る", async () => {
+		await commands.get("kanban").handler("add cwdcard", ctxOther);
+		const cards = readBoardAt(otherPath).cards.map((c) => c.text);
+		assert.ok(cards.includes("cwdcard"), `OTHER board=${JSON.stringify(cards)}`);
+	});
+	await check("実行 cwd のボードには入らない", () => {
+		const cards = readBoardAt(slugPath).cards.map((c) => c.text);
+		assert.ok(!cards.includes("cwdcard"), `SLUG board=${JSON.stringify(cards)}`);
+	});
+	rmSync(otherDir, { recursive: true, force: true });
+}
 
 console.log(`${passed} passed, ${failures.length} failed`);
 for (const failure of failures) console.log(`  FAIL ${failure}`);
