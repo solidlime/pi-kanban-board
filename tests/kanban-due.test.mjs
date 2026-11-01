@@ -148,12 +148,30 @@ await check("/api/add: 自己参照は 400", async () => {
 await check("/api/add: 循環する blocks は 400", async () => {
 	const a = await add(`text=${q("循環A")}&col=todo`);
 	const aid = a.body.cards.at(-1).id;
-	const b = await add(`text=${q("循環B")}&col=todo&blocks=${aid}`);
+	// A は「次の次の id」を待つ（前方参照は許可される）。その id で採番されるカードが
+	// A を待つと A → … → A の循環になる。
+	const b = await add(`text=${q("循環B")}&col=todo&blocks=${aid + 2}`);
 	const bid = b.body.cards.at(-1).id;
-	// aid は bid を待つ → 相互依存で循環
-	const res = await tf(`${BASE}/api/add?scope=project&text=${q("循環C")}&col=todo&blocks=${aid}`);
-	void bid;
-	void res;
+	assert.equal(bid, aid + 1, "採番の前提が崩れた");
+	const res = await tf(`${BASE}/api/add?scope=project&text=${q("循環C")}&col=todo&blocks=${bid}`);
+	assert.equal(res.status, 400, "循環が 400 にならない");
+	assert.match((await res.json()).error, /cycle/, "エラーが cycle でない");
+});
+
+// #18 drive-by: 同一列への move は停滞時計をリセットしない（DOING の movedAt を保つ）。
+await check("/api/move: 同じ列への move では movedAt を刻まない", async () => {
+	const r = await add(`text=${q("動かない")}&col=todo`);
+	const id = r.body.cards.at(-1).id;
+	await tf(`${BASE}/api/move?scope=project&id=${id}&col=doing`);
+	const first = (await cardOf(id)).movedAt;
+	assert.equal(typeof first, "number", "doing への move で movedAt が無い");
+	await new Promise((r2) => setTimeout(r2, 30)); // coarse clocks: keep the gap visible
+	const same = await tf(`${BASE}/api/move?scope=project&id=${id}&col=doing`);
+	assert.equal(same.status, 200, "同一列の move が 200 でない");
+	assert.equal((await cardOf(id)).movedAt, first, "同一列の move が movedAt を刻み直した");
+	await new Promise((r2) => setTimeout(r2, 30));
+	await tf(`${BASE}/api/move?scope=project&id=${id}&col=todo`);
+	assert.notEqual((await cardOf(id)).movedAt, first, "列が変わった move で movedAt が更新されない");
 });
 
 await check("depState: 依存先が done になるまでブロック中、done で解除", async () => {
