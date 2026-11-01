@@ -653,6 +653,9 @@ export function loopBudgetText(cap: number, count: number): string {
 /** #26: the one wording every switch route answers scope=global with. */
 const GLOBAL_NO_SWITCH = "global は集約ビューでスイッチを持たない（scope=project を使う）";
 
+/** #17/#29: the one wording every route answers a stale scope=session with. */
+const SESSION_SCOPE_GONE = "scope=session is gone; boards are project-scoped";
+
 type MaxLoopsInput = { scope?: string | null; sid?: string | null; n?: string | null };
 
 /**
@@ -1517,6 +1520,9 @@ export function parseKanbanArgs(argv: string[]): KanbanArgs {
 		if (sub !== undefined && sub !== "on" && sub !== "off" && sub !== "status") {
 			return { kind: "reject", reason: "使い方: /kanban loop on|off|status / /kanban pick on|off" };
 		}
+		// #29: scope=session は #17 で消えた語で、HTTP は 400 SESSION_SCOPE_GONE で弾く。
+		// scope 無指定と同じに読むと、誰も名指ししていない project ボードのスイッチを書く。
+		if (argv.slice(2).includes("session")) return { kind: "reject", reason: SESSION_SCOPE_GONE };
 		const scope: Scope | undefined = argv.slice(2).includes("global") ? "global" : undefined;
 		if (sub === "on" || sub === "off") {
 			return { kind: "mode", key, value: sub === "on", ...(scope === undefined ? {} : { scope }) };
@@ -3623,9 +3629,6 @@ function writeBoardPath(q: URLSearchParams): WriteTarget {
 	if (key === null) return { ok: false, error: "unknown sid" };
 	return { ok: true, path: boardPath("project", key) };
 }
-
-/** #17: the one wording every write gate answers a stale scope=session with. */
-const SESSION_SCOPE_GONE = "scope=session is gone; boards are project-scoped";
 
 /** #17: parseScope reads scope=session as project, so a write gate has to see the raw value. */
 const isLegacySessionScope = (q: URLSearchParams): boolean => q.get("scope") === "session";

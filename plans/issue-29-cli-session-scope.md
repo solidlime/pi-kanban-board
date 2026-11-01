@@ -1,9 +1,8 @@
 # #29 CLI パーサが `session` を project として黙って受理する
 
-> 状態: **未実装**。この文書は実装案とテスト案で、コードは入っていない。
-> 経緯: #28 の作業中に一度だけ実装されたが #28 のスコープ外だったため巻き戻した
-> （そのときの RED/GREEN 記録は下の「検証記録」に残してある）。カード #29 は todo に戻した。
-> 実装するときは 1 コミットで。差分は単一 hunk（`:1518-1524` 付近）で他の変更と重ならない。
+> 状態: **実装済み**。`extensions/kanban.ts` の 3 行 + 定数の移動、`tests/kanban-cli-session-reject.test.mjs`（8 checks）。
+> 経緯: #28 の作業中に一度実装されてスコープ外として巻き戻され、この計画書に退避された。
+> その後 #29 として独立に実装し直したもの（1 コミット）。
 
 ## 症状
 
@@ -205,7 +204,13 @@ $ node --test tests/kanban-cli-session-reject.test.mjs
   FAIL session 拒否は modes.json に doingLoop=false を書かない
 ```
 
-GREEN（実装後）: `8 passed, 0 failed`、`npm test` は 199 tests / 199 pass。
+GREEN（実装後）: `8 passed, 0 failed`。
+
+`npm test` について: このスイートは**直列実行でも既存のフレークがある**（`--test-concurrency=1` で
+`kanban-dashboard-empty-cwd` / `kanban-dashboard-ops38` / `kanban-dashboard-tabs` / `kanban-dashboard-img`
+のどれかが 5-6 秒台でランダムに落ちる）。**変更を stash したベースラインでも 199 tests / 2 fail を再現した**
+ので、#29 の差分とは無関係。`git stash push --include-untracked` → テスト → `git stash pop` で確認済み。
+#29 を入れたツリーでは `200 tests / 200 pass`（直列）も観測している。
 
 ## 注意
 
