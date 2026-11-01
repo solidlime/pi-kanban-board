@@ -1025,6 +1025,101 @@ export function staleTag(b: Board, now = Date.now()): string {
 	return since === null ? "" : ` ${since}`;
 }
 
+// --- #23: 週次サマリ ---------------------------------------------------------
+// 完走・停滞・ブロックの一覧をプロジェクト別に出す。LLM は呼ばない。
+// 集計はここ（純関数）だけが持ち、tick と HTTP と GUI はそれを呼ぶだけにする。
+
+export type WeeklyBuckets = {
+	done: { id: number; text: string; at: number }[];
+	stale: { id: number; text: string; days: number }[];
+	blocked: { id: number; text: string; blocked: string }[];
+};
+export type WeeklySummary = {
+	week: string; // "2026-W35"
+	from: number; // ISO 週の月曜 00:00 UTC (epoch ms)
+	to: number; // 翌週月曜 00:00 UTC
+	generatedAt: number;
+	projects: ({ slug: string } & WeeklyBuckets)[];
+	totals: { done: number; stale: number; blocked: number };
+};
+
+/**
+ * ISO 8601 の週 ("2026-W35"). UTC だけで計算する: ブラウザもサーバも無い純関数なので、
+ * ローカル時刻を混ぜると同じ日付が実行環境で別の週になる。
+ * 週は「その週の木曜が属する年」で決まる（1/1 が木曜までの年は前年の第 53 週に入る）。
+ */
+export function isoWeek(d: Date): string {
+	const t = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+	const day = t.getUTCDay() || 7; // Sunday は 7（ISO では週の最後）
+	t.setUTCDate(t.getUTCDate() + 4 - day); // その週の木曜
+	const year = t.getUTCFullYear();
+	const week = Math.ceil(((t.getTime() - Date.UTC(year, 0, 1)) / 86_400_000 + 1) / 7);
+	return `${year}-W${String(week).padStart(2, "0")}`;
+}
+
+/**
+ * "2026-W35" -> 月曜 00:00 UTC からの 7 日間。存在しない週は null。
+ * 往復（isoWeek(from) === 引数）を通せない週は存在しないので、そこだけが検証になる:
+ * "2026-W54" のような形だけ正しい週を弾くために週数の表を持たない。
+ */
+export function weekRange(week: string): { from: number; to: number } | null {
+	const m = /^(\d{4})-W(\d{2})$/.exec(week);
+	if (m === null) return null;
+	const year = Number(m[1]);
+	const num = Number(m[2]);
+	if (num < 1 || num > 53) return null;
+	// 1/4 は必ず第 1 週に入る。その週の月曜が第 1 週の月曜。
+	const jan4 = Date.UTC(year, 0, 4);
+	const day = new Date(jan4).getUTCDay() || 7;
+	const from = jan4 - (day - 1) * 86_400_000 + (num - 1) * 7 * 86_400_000;
+	if (isoWeek(new Date(from)) !== week) return null;
+	return { from, to: from + 7 * 86_400_000 };
+}
+
+/**
+ * 一週間のサマリ。`boards` は listProjectBoards() の形（slug は正規化済みの真実）で、
+ * `card.project` は見ない — ボードの slug と食い違う行が混ざる余地を残さないため。
+ *
+ * 近似（仕様として受け入れる）: movedAt は上書きされるので、done -> doing -> done と
+ * 往復したカードの完了時刻は最後の移動になる。card に作成時刻が無いので「今週追加された
+ * カード」は数えない。
+ */
+export function weeklySummary(boards: { slug: string; cards: Card[] }[], week: string, now: number): WeeklySummary {
+	const r = weekRange(week);
+	const from = r === null ? 0 : r.from;
+	const to = r === null ? 0 : r.to;
+	const projects = boards.map(({ slug, cards }) => {
+		const done: WeeklyBuckets["done"] = [];
+		const stale: WeeklyBuckets["stale"] = [];
+		const blocked: WeeklyBuckets["blocked"] = [];
+		for (const c of cards) {
+			// movedAt が無いカードの時刻は不明。at: 0 を捏造すると 1970 年の完了になる。
+			if (typeof c.movedAt === "number") {
+				if (c.col === "done" && c.movedAt >= from && c.movedAt < to) {
+					done.push({ id: c.id, text: c.text, at: c.movedAt });
+				}
+				// 停滞の閾値は GUI の ⚠Nd と同じ STALE_DAY_MS を使う（数字が食い違うと嘘になる）。
+				if (c.col === "doing" && now - c.movedAt >= STALE_DAY_MS) {
+					stale.push({ id: c.id, text: c.text, days: Math.floor((now - c.movedAt) / STALE_DAY_MS) });
+				}
+			}
+			if (typeof c.blocked === "string" && c.blocked !== "") {
+				blocked.push({ id: c.id, text: c.text, blocked: c.blocked });
+			}
+		}
+		return { slug, done, stale, blocked };
+	});
+	const sum = (k: keyof WeeklyBuckets) => projects.reduce((n, p) => n + p[k].length, 0);
+	return {
+		week,
+		from,
+		to,
+		generatedAt: now,
+		projects,
+		totals: { done: sum("done"), stale: sum("stale"), blocked: sum("blocked") },
+	};
+}
+
 /**
  * The board key for a scope: project is keyed by the cwd's slug, everything else by the
  * session. paintLoop, refresh and settle all read it from here — the three copies it
@@ -1953,6 +2048,71 @@ function sweepServeThrottled(): void {
 	if (now - lastServeSweep < SERVE_SWEEP_MS) return;
 	lastServeSweep = now;
 	sweepServe();
+}
+
+// --- #23: 週次サマリの自動生成 -----------------------------------------------
+// 専用の setInterval は作らない（ensurePollTimer が唯一のタイマー生成箇所という
+// 不変条件を壊さない）。poll() に相乗りし、中で時刻で間引く点は sweep と同じ。
+const WEEKLY_MS = 60 * 60 * 1000;
+const WEEKLY_LAST = "weekly:lastWeek"; // 直近に観測した ISO 週
+const WEEKLY_KEY = "weekly:"; // weekly:<week> -> WeeklySummary の JSON
+const WEEKLY_INDEX = "weekly:index"; // 保存済みの週（?week= で引ける一覧）
+let lastWeeklyAt = 0;
+
+/** 保存済みの週。壊れた値は空で読み直す（索引は導出物でしかない）。 */
+function weeklyIndex(db: KanbanDb): string[] {
+	const raw = db.getMeta(WEEKLY_INDEX);
+	if (raw === null) return [];
+	try {
+		const v = JSON.parse(raw) as unknown;
+		return Array.isArray(v) ? v.filter((w): w is string => typeof w === "string") : [];
+	} catch {
+		return [];
+	}
+}
+
+/**
+ * その週の行を meta に書く。例外は握る: tick の中で投げると poll の deadCtx 判定に
+ * 巻き込まれ、セッションが死んでいないのに poll が止まる。週次は導出物なので、
+ * 失敗してもボードは正しいまま。
+ */
+function storeWeekly(week: string, now: number): void {
+	try {
+		const db = kanbanDb();
+		db.setMeta(WEEKLY_KEY + week, JSON.stringify(weeklySummary(db.listProjectBoards(), week, now)));
+		const idx = weeklyIndex(db);
+		if (!idx.includes(week)) {
+			idx.push(week);
+			idx.sort();
+			db.setMeta(WEEKLY_INDEX, JSON.stringify(idx));
+		}
+	} catch (err) {
+		process.stderr.write(`kanban: weekly summary failed: ${(err as Error).message}\n`);
+	}
+}
+
+/**
+ * 毎 tick 呼ばれるが、実際に動くのは 1 時間に 1 回だけ。
+ * 週が変わったら先週の行をもう一度作ってから今週を作る: 週末の最終 tick 以降の移動を
+ * 先週の側に拾い直すため（movedAt は上書きされるので、放っておくと先週の事実が消える）。
+ *
+ * 本体は丸ごと握る: 呼び元は setInterval のコールバックなので、ここを抜けた throw は
+ * uncaughtException に達し、deadCtx 経路と違って pi プロセスごと落ちる。
+ * `now` はテストが時刻を注入するため（実時計に依存させない）。
+ */
+export function weeklyTickThrottled(now: number = Date.now()): void {
+	if (now - lastWeeklyAt < WEEKLY_MS) return;
+	lastWeeklyAt = now; // 失敗しても 1 時間は再試行しない（毎 tick 叩き続けない）
+	try {
+		const db = kanbanDb();
+		const cur = isoWeek(new Date(now));
+		const last = db.getMeta(WEEKLY_LAST);
+		if (last !== null && last !== cur && weekRange(last) !== null) storeWeekly(last, now);
+		storeWeekly(cur, now);
+		if (last !== cur) db.setMeta(WEEKLY_LAST, cur);
+	} catch (err) {
+		process.stderr.write(`kanban: weekly tick failed: ${(err as Error).message}\n`);
+	}
 }
 
 /** Realpath when it exists, else the input. Used to compare symlinks honestly. */
@@ -3211,6 +3371,37 @@ function aggregateGlobal(): { cards: (Card & { sid: string })[]; nextId: number 
 	};
 }
 
+/**
+ * GET /api/weekly: 週次タブの payload。`week` を渡すと保存済みのその週だけを返し、
+ * 省くと現週をその場で計算する（tick を待たない: 開いた瞬間の状態を見せる）。
+ */
+function weeklyPayload(week: string | null): unknown {
+	const db = kanbanDb();
+	if (week !== null) {
+		const raw = db.getMeta(WEEKLY_KEY + week);
+		if (raw === null) return { ok: true, summary: null };
+		try {
+			return { ok: true, summary: JSON.parse(raw) as WeeklySummary };
+		} catch {
+			// 壊れた行は「保存が無い」と同じに見せる（描けない JSON を GUI に渡さない）
+			return { ok: true, summary: null };
+		}
+	}
+	const now = Date.now();
+	const cur = isoWeek(new Date(now));
+	const last = db.getMeta(WEEKLY_LAST);
+	// 索引と lastWeek の両方から作る: setMeta(WEEKLY_KEY+week) と setMeta(WEEKLY_INDEX) の
+	// 間で落ちると「行は在るのに一覧に出ない週」が残り、過去週は永久にセレクトへ出ない。
+	// lastWeek も検証する: 壊れた値は選択肢に出すと選んだ瞬間 400 になるだけ。
+	const weeks = [...new Set([...weeklyIndex(db), ...(last !== null && weekRange(last) !== null ? [last] : []), cur])];
+	return {
+		ok: true,
+		current: weeklySummary(db.listProjectBoards(), cur, now),
+		// 現週は計算で出るので、tick がまだ書いていなくても選択肢に出す。新しい順。
+		weeks: weeks.sort().reverse(),
+	};
+}
+
 /** GET /api/projects: the project tab's whole payload. */
 async function projectsPayload(): Promise<unknown> {
 	const gb = readBoard(GLOBAL_JSON);
@@ -3863,6 +4054,24 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 				project: modesFor(f, projectSid, "project"),
 			},
 		});
+		return;
+	}
+	if (url.pathname === "/api/weekly") {
+		const week = q.get("week");
+		// ?week= は ISO 週の往復検証を通らないと 400（"2026-W54" のような存在しない週を弾く）。
+		// 空文字もここで落ちる: weekRange("") === null。
+		if (week !== null && weekRange(week) === null) {
+			sendJson(res, 400, { ok: false, error: "bad week" });
+			return;
+		}
+		let body: unknown;
+		try {
+			body = weeklyPayload(week);
+		} catch {
+			sendJson(res, 500, { ok: false, error: "weekly failed" });
+			return;
+		}
+		sendEtagJson(req, res, JSON.stringify(body));
 		return;
 	}
 	if (url.pathname === "/api/projects") {
@@ -5023,6 +5232,7 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 		// whole interval, and the fold is over in a microtask.
 		const folding = migrationPending !== null;
 		sweepServeThrottled(); // 1 時間に 1 回だけ実際に走る
+		weeklyTickThrottled(); // 週が変わっていたら週次サマリを確定させる（同じ間引き方）
 		// #46: a restart that never delivers session_start leaves ownCtx null and this
 		// tick returns silently. That is the one case the trace below cannot show.
 		if (ownCtx === null) {

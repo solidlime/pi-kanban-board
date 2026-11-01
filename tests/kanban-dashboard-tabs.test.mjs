@@ -75,10 +75,11 @@ const html = await (await tf(`${BASE}/`)).text();
 const HOST = hostname();
 
 // --- 1. 文字列レベル: 3 タブ + 3 ペイン（#36: エージェントタブ廃止 / #11: 設定タブ / #12: 配信サーバーは設定へ） ----
-check("#12/#17: タブは3つ（ボード/プロジェクト/設定）でエージェント・配信サーバー・セッションのタブは無い", () => {
+check("#12/#17/#23: タブは4つ（ボード/プロジェクト/週次/設定）でエージェント・配信サーバー・セッションのタブは無い", () => {
 	for (const [id, label] of [
 		["tab-board", "ボード"],
 		["tab-projects", "プロジェクト"],
+		["tab-weekly", "週次"],
 		["tab-settings", "設定"],
 	]) {
 		assert.ok(html.includes(`id="${id}"`), `${id} が無い`);
@@ -91,13 +92,13 @@ check("#12/#17: タブは3つ（ボード/プロジェクト/設定）でエー�
 	assert.ok(!html.includes("pane-agents"), "pane-agents が残っている");
 	assert.ok(!html.includes('id="tab-serve"'), "tab-serve が残っている");
 	assert.ok(!html.includes('id="pane-serve"'), "pane-serve が残っている");
-	assert.equal((html.match(/role="tab"/g) || []).length, 3);
+	assert.equal((html.match(/role="tab"/g) || []).length, 4);
 	// タブの並びを id の列挙で固定する（数だけでなく順も見る）。
 	assert.deepEqual(
 		[...html.matchAll(/<button class="tab[^"]*" id="tab-([a-z]+)"/g)].map((m) => m[1]),
-		["board", "projects", "settings"],
+		["board", "projects", "weekly", "settings"],
 	);
-	assert.ok(html.includes('var TABS = ["board", "projects", "settings"]'), "TABS が 3 つでない");
+	assert.ok(html.includes('var TABS = ["board", "projects", "weekly", "settings"]'), "TABS が 4 つでない");
 	assert.ok(html.includes('role="tablist"'));
 });
 
@@ -109,8 +110,8 @@ check("タイトルは KANBAN - <マシン名>（title と h1 両方）", () => 
 });
 
 check("タブは button で、ペインを hidden で切り替える（遷移しない）", () => {
-	assert.equal((html.match(/<button class="tab/g) || []).length, 3);
-	for (const id of ["pane-board", "pane-projects", "pane-settings"]) {
+	assert.equal((html.match(/<button class="tab/g) || []).length, 4);
+	for (const id of ["pane-board", "pane-projects", "pane-weekly", "pane-settings"]) {
 		assert.ok(html.includes(`id="${id}"`), `${id} が無い`);
 	}
 	// 初期表示はボードだけ。他は hidden。
@@ -312,9 +313,10 @@ check("tf( は 1 箇所のみ（+ #11 の自己診断と #13 の DB メンテだ
 	// 初回 reload() の fetch を解決させる
 	for (let i = 0; i < 4; i++) await flush();
 
-	check("初期表示はボードタブ（projects/settings は hidden）", () => {
+	check("初期表示はボードタブ（projects/weekly/settings は hidden）", () => {
 		assert.equal(byId["pane-board"].hidden, false);
 		assert.equal(byId["pane-projects"].hidden, true);
+		assert.equal(byId["pane-weekly"].hidden, true);
 		assert.equal(byId["pane-settings"].hidden, true);
 		assert.equal(byId["tab-board"].className, "tab active");
 		assert.equal(byId["tab-board"].getAttribute("aria-selected"), "true");
@@ -384,7 +386,16 @@ check("tf( は 1 箇所のみ（+ #11 の自己診断と #13 の DB メンテだ
 	check("writeBoardHtml の dashboard.html にタブと既存領域が同居する", () => {
 		assert.ok(existsSync(out), `${out} が無い`);
 		const disk = readFileSync(out, "utf8");
-		for (const id of ["tab-board", "tab-projects", "tab-settings", "pane-board", "pane-projects", "pane-settings"]) {
+		for (const id of [
+			"tab-board",
+			"tab-projects",
+			"tab-weekly",
+			"tab-settings",
+			"pane-board",
+			"pane-projects",
+			"pane-weekly",
+			"pane-settings",
+		]) {
 			assert.ok(disk.includes(`id="${id}"`), `${id} が実ファイルに無い`);
 		}
 		// #12: 配信サーバーのタブ・ペインは実ファイルにも残っていない。

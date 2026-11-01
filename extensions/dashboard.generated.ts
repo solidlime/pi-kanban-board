@@ -251,6 +251,7 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
     <nav class="tabs" role="tablist" aria-label="ダッシュボード">
       <button class="tab active" id="tab-board" type="button" role="tab" aria-selected="true" aria-controls="pane-board">ボード</button>
       <button class="tab" id="tab-projects" type="button" role="tab" aria-selected="false" aria-controls="pane-projects">プロジェクト</button>
+      <button class="tab" id="tab-weekly" type="button" role="tab" aria-selected="false" aria-controls="pane-weekly">週次</button>
       <button class="tab" id="tab-settings" type="button" role="tab" aria-selected="false" aria-controls="pane-settings">設定</button>
     </nav>
     <div class="panes">
@@ -294,6 +295,10 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
       </div>
       <div class="pane" id="pane-projects" role="tabpanel" aria-labelledby="tab-projects" hidden>
         <div id="projects"></div>
+      </div>
+      <!-- #23: 週次サマリ。サーバが週変わりを観測して作った決定論的な集計を出す -->
+      <div class="pane" id="pane-weekly" role="tabpanel" aria-labelledby="tab-weekly" hidden>
+        <div id="weekly"></div>
       </div>
       <!-- #11: ボードごとの設定はここに集約する。ボード側は状態（halt と 再開）だけ。 -->
       <div class="pane" id="pane-settings" role="tabpanel" aria-labelledby="tab-settings" hidden>
@@ -572,7 +577,7 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
 
   // #29 tabs: the sidebar only toggles the hidden attribute — no navigation.
   // activeTab survives the 5s re-render because render() re-applies it.
-  var TABS = ["board", "projects", "settings"]; // #17: session 撤廃。ボード / プロジェクト / 設定の 3 つ。 #8: プロジェクトは真ん中
+  var TABS = ["board", "projects", "weekly", "settings"]; // #17: session 撤廃。 #8: プロジェクトは真ん中。 #23: 週次をその隣
   var activeTab = "board";
   function selectTab(name){
     if (TABS.indexOf(name) < 0) name = "board";
@@ -592,6 +597,7 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
     if (b && b.addEventListener) b.addEventListener("click", function(){
       selectTab(n);
       if (n === "projects") loadProjects();
+      else if (n === "weekly") loadWeekly();
     });
   });
   selectTab(activeTab);
@@ -1910,6 +1916,115 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
     box.appendChild(cross);
   }
 
+  // #23: 週次タブ。完走・停滞・ブロックの一覧をプロジェクト別に出す（決定論的、LLM は呼ばへない）。
+  // プロジェクトと同じ流儀で、タブを開いた時と 5 秒ポーリングの相乗りだけで取る（専用タイマー無し）。
+  var weeklyData = null;
+  var weeklyBusy = false;
+  var weekPick = ""; // "" = 現週（サーバがその場で計算した current）
+  var weekSaved;     // 選んだ週の保存分。undefined = 取得中、null = 保存が無い
+  function loadWeekly(){
+    if (weeklyBusy) return;
+    weeklyBusy = true;
+    api("/api/weekly").then(function(d){
+      weeklyBusy = false;
+      weeklyData = d;
+      // 一覧から消えた週を選び続けない（現週に戻す）
+      if (weekPick && (d.weeks || []).indexOf(weekPick) < 0) { weekPick = ""; weekSaved = undefined; }
+      if (weekPick) loadWeekSaved(weekPick);
+      else renderWeekly();
+    }, function(){
+      weeklyBusy = false;
+      note("週次サマリを取得できません"); // 前回の表示は消さない
+    });
+  }
+  function loadWeekSaved(w){
+    api("/api/weekly", { week: w }).then(function(d){
+      weekSaved = d.summary || null;
+      renderWeekly();
+    }, function(){ note("週次サマリを取得できません"); });
+  }
+  // 行の形はどのグループも同じ（#id / 本文 / 右端の一言）。本文は textContent で入れる
+  // （カードの本文は Markdown ではないので md() は使わない）。
+  function weeklyRow(art, id, text, right, cls){
+    var row = el("div", "prow");
+    row.appendChild(el("span", "d", "#" + id));
+    row.appendChild(el("span", "t", text));
+    row.appendChild(el("span", cls, right));
+    art.appendChild(row);
+  }
+  function renderWeekly(){
+    var box = document.getElementById("weekly");
+    if (!box) return;
+    var d = weeklyData;
+    if (!d) return; // 一度も取れていない: 何も描かない（空と「取れなかった」を混ぜない）
+    var cur = d.current || null;
+    var curWeek = cur ? cur.week : "";
+    var weeks = (d.weeks || []).slice();
+    box.innerHTML = "";
+    var head = el("div", "ctl");
+    if (weeks.length) {
+      var pick = el("select", "q");
+      pick.setAttribute("aria-label", "表示する週");
+      weeks.forEach(function(w){
+        var o = el("option", null, w === curWeek ? w + "（今週）" : w);
+        o.value = w;
+        pick.appendChild(o);
+      });
+      pick.value = weekPick || curWeek;
+      pick.addEventListener("change", function(){
+        var w = pick.value;
+        weekPick = w === curWeek ? "" : w;
+        weekSaved = undefined;
+        if (weekPick) loadWeekSaved(weekPick);
+        else renderWeekly();
+      });
+      head.appendChild(pick);
+    }
+    var s = weekPick ? weekSaved : cur;
+    if (s) head.appendChild(el("span", null,
+      "完了 " + s.totals.done + " / 停滞 " + s.totals.stale + " / ブロック " + s.totals.blocked));
+    box.appendChild(head);
+    if (weekPick && weekSaved === undefined) return; // 保存分を取得中
+    if (!s) {
+      // 週変わりを観測する前に落ちたなど、その週の行が作られていない場合
+      empty(box, "\\u25A1", "<b>この週の保存は無い</b> — 週変わりを観測した時に作られるよ");
+      return;
+    }
+    var shown = 0;
+    (s.projects || []).forEach(function(p){
+      var dn = p.done || [], st = p.stale || [], bl = p.blocked || [];
+      if (!dn.length && !st.length && !bl.length) return; // 0 件のプロジェクトは見出しごと出さない
+      shown += 1;
+      var art = el("article", "pj");
+      var hd = el("div", "sess-hd");
+      hd.appendChild(el("span", "sess-t", p.slug));
+      var meta = el("span", "pmeta");
+      if (dn.length) meta.appendChild(el("span", null, "完了 " + dn.length));
+      if (st.length) meta.appendChild(el("span", "warn", "停滞 " + st.length));
+      if (bl.length) meta.appendChild(el("span", "bad", "ブロック " + bl.length));
+      hd.appendChild(meta);
+      art.appendChild(hd);
+      if (dn.length) {
+        art.appendChild(el("div", "hd", "完了 " + dn.length));
+        dn.forEach(function(c){
+          // at が数値でない保存行で toISOString が RangeError を投げると、描画ごと止まる
+          weeklyRow(art, c.id, c.text, typeof c.at === "number" ? full(new Date(c.at).toISOString()) : "", "x");
+        });
+      }
+      if (st.length) {
+        art.appendChild(el("div", "hd", "停滞 " + st.length));
+        // 日数は集計側（STALE_DAY_MS）の数字をそのまま出す。GUI で割り直さない
+        st.forEach(function(c){ weeklyRow(art, c.id, c.text, "\\u26A0" + c.days + "d", "bad"); });
+      }
+      if (bl.length) {
+        art.appendChild(el("div", "hd", "ブロック " + bl.length));
+        bl.forEach(function(c){ weeklyRow(art, c.id, c.text, c.blocked, "w"); });
+      }
+      box.appendChild(art);
+    });
+    if (!shown) empty(box, "\\u25A1", "<b>この週に動いたカードは無い</b>");
+  }
+
   function render(d, nowMs){
     if (isEditing()) return; // #65: 編集中は描画しない（sig を進める判断は呼び出し元）
     nowBase = nowMs;
@@ -2094,6 +2209,7 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
     }).then(function(){
       // プロジェクトは別エンドポイントなので、タブを開いている時だけ相乗りで取る（専用タイマーは作らない）
       if (activeTab === "projects") loadProjects();
+      else if (activeTab === "weekly") loadWeekly();
       schedule();
     });
   }
