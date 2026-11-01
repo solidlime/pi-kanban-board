@@ -78,7 +78,8 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
   .card .id{color:var(--accent);flex:none}
   .card .proj{flex:none;font-size:10px;color:var(--muted);border:1px solid var(--border-strong);border-radius:999px;padding:0 5px}
   /* #20: 会話リンクは ID の小片。pi-web の origin は分からないのでリンクにはしない。 */
-  .card .sess,.card .commit{flex:none;font-size:10px;color:var(--muted);border:1px solid var(--border-strong);border-radius:999px;padding:0 5px;font-variant-numeric:tabular-nums}
+  /* #22: ラベルも同じ小片（宣言を共有して 1 行で済ませる）。 */
+  .card .sess,.card .commit,.card .lab{flex:none;font-size:10px;color:var(--muted);border:1px solid var(--border-strong);border-radius:999px;padding:0 5px;font-variant-numeric:tabular-nums}
   .card .t{flex:1;min-width:0;overflow-wrap:anywhere;white-space:pre-wrap}
   /* #38-5: 60 字超は 3 行で切ってクリック展開 */
   .card .t.clampable:not(.open){display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;cursor:pointer}
@@ -271,6 +272,14 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
           <!-- #17: session 行が消えたので、検索とプロジェクト絞り込みは絞り込みバーへ移した -->
           <input id="q" class="q" type="search" placeholder="検索: 本文・#番号・project・commit（/ でフォーカス, Esc でクリア）" autocomplete="off">
           <select id="proj" class="q" aria-label="プロジェクトで絞り込み"></select>
+          <!-- #22: ラベル絞り込み。cardFilter（単一選択のボタン群）とは独立した直交軸。 -->
+          <select id="lab" class="q" aria-label="ラベルで絞り込み">
+            <option value="">ラベル: 全部</option>
+            <option value="bug">bug</option>
+            <option value="feature">feature</option>
+            <option value="chore">chore</option>
+            <option value="調査">調査</option>
+          </select>
         </div>
         <!-- phase0: project が既定のボード。作業ディレクトリ（git ルート）単位で共有する -->
         <section aria-labelledby="h-project">
@@ -328,6 +337,9 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
   // 1-4: カードの絞り込み（"" = 全部 / "ok" 着手可能 / "overdue" 期限超過 / "blocked" ブロック中）。
   // 再描画のたびに DOM を作り直すので、選択状態はここに持つ（query / projPick と同じ流儀）。
   var cardFilter = "";
+  // #22: ラベル絞り込み（"" = 全部）。cardFilter と共存する直交軸なので別の持ち物にする。
+  // uiSig には載せない: 静的な <select> なので復元が要らず、載せると選択のたびに描画が走る。
+  var labFilter = "";
   // #38-7/#38-11: どちらもクライアントだけの状態（サーバには保存しない）。
   // #62: 列のキーは "project.:col" / "global:col"（#17: project ボードは sid を持たない）。
   var collapsed = {};    // ckey -> true while a column is folded
@@ -1109,6 +1121,10 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
             cc.title = sha;
             card.appendChild(cc);
           }
+          // #22: ラベル。固定 4 種なので検証はサーバ側。ここは出すだけ。
+          if (c.labels && c.labels.length) {
+            for (var li = 0; li < c.labels.length; li += 1) card.appendChild(el("span", "lab", String(c.labels[li])));
+          }
           // #16: GLOBAL 看板のカードは各 project ボードから来る。由来はツール側の [slug] と同じ語彙で出す。
           if (c.sid) card.appendChild(el("span", "proj", "[" + c.sid + "]"));
           var t = el("span", "t");
@@ -1343,6 +1359,7 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
   }
   // pool は絞り込み前の看板のカード（検索やプロジェクトで依存先が画面から消えても判定できる）。
   function cardFilterOk(c, pool){
+    if (labFilter !== "" && (c.labels || []).indexOf(labFilter) < 0) return false;
     if (cardFilter === "ok") return depState(c, pool) === "ok";
     if (cardFilter === "blocked") return depState(c, pool) === "blocked";
     if (cardFilter === "overdue") { var d = dueOf(c); return !!d && d < todayISO() && c.col !== "done"; }
@@ -1413,7 +1430,7 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
     // 番号は完全一致だけ。部分一致にすると "7" が 17 や 27 に当たって使えなくなる。
     var id = String(c.id);
     if (q === id || q === "#" + id) return true;
-    var fields = [c.text, c.project, c.sid, c.sessionId, c.commit, c.blocked];
+    var fields = [c.text, c.project, c.sid, c.sessionId, c.commit, c.blocked, (c.labels || []).join(" ")];
     for (var i = 0; i < fields.length; i += 1) {
       if (fields[i] && String(fields[i]).toLowerCase().indexOf(q) >= 0) return true;
     }
@@ -1436,7 +1453,7 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
     var all = (p && p.cards) || [];
     // 絞り込みは GLOBAL と同じ規則（上部の絞り込みバーは両方の看板に効く）。
     var search = query !== "";
-    var filtered = search || projPick !== "" || cardFilter !== "";
+    var filtered = search || projPick !== "" || cardFilter !== "" || labFilter !== "";
     var cards = all.filter(function(x){
       return projOk(x) && cardFilterOk(x, all) && (!search || cardHit(x, query));
     });
@@ -1465,7 +1482,7 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
     // #49: GLOBAL も検索で絞る。絞らないとボード側だけ減って GLOBAL が残り、
     // ヒットしていないカードが検索結果に混ざる（実ブラウザ検証で発見）。
     var search = query !== "";
-    var filtered = search || projPick !== "" || cardFilter !== "";
+    var filtered = search || projPick !== "" || cardFilter !== "" || labFilter !== "";
     var cards = all.filter(function(x){
       return projOk(x) && cardFilterOk(x, all) && (!search || cardHit(x, query));
     });
@@ -2089,6 +2106,12 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
   var projEl = document.getElementById("proj");
   if (projEl) projEl.addEventListener("change", function(){
     projPick = projEl.value || "";
+    redraw();
+  });
+  // #22: ラベル絞り込み。projPick と同じ配線（値は固定 4 種＋"" なので検証は要らない）。
+  var labEl = document.getElementById("lab");
+  if (labEl) labEl.addEventListener("change", function(){
+    labFilter = labEl.value || "";
     redraw();
   });
   // 1-4: フィルタバー。静的なボタンなので、押された時だけ aria-pressed と見た目を揃える。
