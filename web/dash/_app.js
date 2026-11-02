@@ -90,15 +90,19 @@
     });
   }
   function fail(e) { toast("接続失敗: " + (e && e.message ? e.message : e)); }
+  function apiDone() { try { authOk(); } catch (e) { void e; } }
 
   // 401 は「トークンが無い/失効」= 何も見えないのに理由が見えない状態。常報する。
-  var authShown = false;
   function authFail() {
     var b = $("#banner");
-    if (!b || authShown) return;
-    authShown = true;
+    if (!b) return;
     b.hidden = false;
     b.textContent = "トークンが無効です。/kanban url でリンクを取り、もう一度開いて。";
+  }
+  function authOk() {
+    var b = $("#banner");
+    if (!b || b.hidden) return;
+    b.hidden = true; // 401 から復帰したら消す
   }
 
   // ---- derived data ----
@@ -180,7 +184,9 @@
     a.appendChild(el("span", "id", "#" + c.id));
     var tEl = el("span", "t");
     // md() は web/md.js の 1 実装（インライン HTML は web/md.js がエスケープする）。
-    if (typeof md === "function") tEl.innerHTML = md(c.text); else tEl.textContent = c.text || "";
+    // 文字列を innerHTML に代入せず、escape 済みの断片として DOM 化する（XSS 面は md() 側で閉じている）。
+    if (typeof md === "function") tEl.append(document.createRange().createContextualFragment(md(c.text)));
+    else tEl.textContent = c.text || "";
     a.appendChild(tEl);
     if (c.col === "doing") {
       var sr = el("div", "spinrow");
@@ -553,6 +559,7 @@
     }
     return Promise.all(jobs).then(function () {
       state.offline = false;
+      apiDone();
       if (state.allview) { state.allview = true; }
       // 起動直後は state.cur が dashboard の応答で決まるので、板だけが未取得になる。
       // ここで取り直さないと次の poll（数分後）まで列が空のまま。
@@ -865,6 +872,13 @@
     try { localStorage.setItem("kb-density", c ? "normal" : "compact"); } catch (err) { void err; }
   };
 
+  // プロジェクトタブ列を縦ホイールで横スクロール (shift 不要)
+  document.addEventListener("wheel", function (e) {
+    var t = e.target.closest ? e.target.closest(".ptabs") : null;
+    if (!t || Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
+    t.scrollLeft += e.deltaY;
+    e.preventDefault();
+  }, { passive: false });
   document.addEventListener("keydown", function (e) {
     // Ctrl/Cmd+K は検索欄からでも開く（入力中の打鍵は下で捨てる）
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); openPal(); return; }
