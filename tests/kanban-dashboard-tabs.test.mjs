@@ -145,11 +145,10 @@ check("#12: 配信サーバーの入れ物 #serve は設定ペインの中だけ
 	assert.ok(!html.includes("pane-serve"), "pane-serve が残っている");
 });
 
-check("プロジェクト看板が先、GLOBAL はその下（session 行は無い）", () => {
+check("ボードペインは project 看板だけを持つ（GLOBAL 欄は削除済み）", () => {
 	const pane = html.slice(html.indexOf('id="pane-board"'), html.indexOf('id="pane-projects"'));
 	assert.ok(pane.includes('id="project"'), "pane-board に project が無い");
-	assert.ok(pane.includes('id="global"'), "pane-board に global が無い");
-	assert.ok(pane.indexOf('id="project"') < pane.indexOf('id="global"'), "project が GLOBAL より上に無い");
+	assert.ok(!pane.includes('id="global"'), "pane-board に GLOBAL 欄が残っている");
 	assert.ok(!pane.includes('id="sessions"'), "pane-board に session 行が残っている");
 });
 
@@ -165,7 +164,6 @@ check("既存要素は消えていない（stats/serve/conn/banner/theme）", ()
 		'id="stats"',
 		'id="serve"',
 		'id="project"',
-		'id="global"',
 		'id="conn"',
 		'id="banner"',
 		'id="theme"',
@@ -258,7 +256,7 @@ check("tf( は 1 箇所のみ（+ #11 の自己診断と #13 の DB メンテだ
 			loops: 0,
 			halted: false,
 		},
-		// #17: session 行は無い。ボードペインに project と global が並ぶ。
+		// session 行は無い。ボードペインは project 看板だけ。
 		project: {
 			id: "alpha",
 			counts: { todo, doing: 0, done: 0 },
@@ -336,8 +334,7 @@ check("tf( は 1 箇所のみ（+ #11 の自己診断と #13 の DB メンテだ
 		assert.equal(byId["statsec"].hidden, true);
 	});
 
-	check("project 行はボードペインの #project に描画される（slug が出る）", () => {
-		assert.equal(byId["project-slug"].textContent, "alpha");
+	check("project 行はボードペインの #project に描画される", () => {
 		assert.ok(hasText(byId["project"], "TODO"), "project 看板が描かれていない");
 	});
 

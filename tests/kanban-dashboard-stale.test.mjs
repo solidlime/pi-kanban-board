@@ -208,10 +208,10 @@ test("1日未満の DOING と、TODO/DONE には停滞チップを出さない",
 });
 
 // --- ヘッダ集計 --------------------------------------------------------------
-test("ヘッダに絞り込み後の停滞件数を出す（project 2 / global 3）", async () => {
+// #17: GLOBAL 欄は削除したので、件数を出す見出しは project ボードの 1 つだけ。
+test("ヘッダに絞り込み後の停滞件数を出す（project 2）", async () => {
 	const d = await boot();
 	assert.match(headText(d.byId.project), /停滞 2( |$)/, `project の件数が無い: ${headText(d.byId.project)}`);
-	assert.match(headText(d.byId.global), /停滞 3( |$)/, `global の件数が無い: ${headText(d.byId.global)}`);
 });
 
 test("検索で絞るとヘッダの件数も減る（見えているチップと一致）", async () => {
@@ -231,7 +231,6 @@ test("停滞 0 件ならヘッダに何も出さない", async () => {
 		project: { id: "me", counts: { todo: 0, doing: 1, done: 0 }, cards: [fresh] },
 	});
 	assert.ok(!headText(d.byId.project).includes("停滞"), `project に 0 件の停滞が出ている: ${headText(d.byId.project)}`);
-	assert.ok(!headText(d.byId.global).includes("停滞"), `global に 0 件の停滞が出ている: ${headText(d.byId.global)}`);
 });
 
 // --- #74: 1 分ごとのポーリングの tick で日数に切り替わる -----------------------

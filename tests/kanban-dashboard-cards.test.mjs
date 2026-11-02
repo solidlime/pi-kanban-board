@@ -82,7 +82,7 @@ await check("#30 発火予定を表示し、相対ボタンで /api/schedule を
 	assert.ok(html.includes("d.toISOString()"), "ISO 変換が無い");
 });
 
-await check("#30 D&D は 1 つの board() にあり、PROJECT と GLOBAL の両方に効く", () => {
+await check("#30 D&D は 1 つの board() にあり、project 看板に効く", () => {
 	assert.ok(html.includes('card.setAttribute("draggable", "true")'), "draggable が無い");
 	assert.ok(html.includes('addEventListener("dragstart"'), "dragstart が無い");
 	assert.ok(html.includes('addEventListener("dragover"'), "dragover が無い");
@@ -90,9 +90,9 @@ await check("#30 D&D は 1 つの board() にあり、PROJECT と GLOBAL の両�
 	assert.ok(html.includes('act("/api/move", { id: d.id, col: key }, ctx)'), "move の呼び出しが無い");
 	// 別ボードへのドロップを弾く（scope+sid 一致必須）
 	assert.ok(html.includes("d.scope !== ctx.scope || d.sid !== ctx.sid"), "ボード間ドロップのガードが無い");
-	// 同じ board() が PROJECT と GLOBAL の両方から呼ばれる（#17: session 板は無い）
+	// board() を呼ぶのは project の 1 箇所だけ（GLOBAL 欄は削除済み）
 	const calls = [...html.matchAll(/\w+\.appendChild\(board\(cards, nowMs, ctx\)\)/g)];
-	assert.equal(calls.length, 2, `board() の呼び出しが ${calls.length} 箇所`);
+	assert.equal(calls.length, 1, `board() の呼び出しが ${calls.length} 箇所`);
 });
 
 await check("#30 優先度は表示・変更でき、大きいほど先（降順）が維持される", () => {
@@ -119,11 +119,12 @@ await check("#31 ループ/ピックは /api/modes、間隔は /api/interval を
 	assert.ok(html.includes("return (typeof v === \"number\" && isFinite(v) && v > 0) ? v : 5"), "間隔の既定値が無い");
 });
 
-await check("#31 project は書き込み可で sid を送らず、GLOBAL は読み取り専用", () => {
-	// #17: ボードは project / global の 2 つ。session 板は存在しない。
-	assert.ok(html.includes('boardCtx("project", "", true)'), "project の書き込み ctx が無い");
-	// global は読み取り専用の集約ビュー: 書き込み可フラグは false（サーバも 400）。
-	assert.ok(html.includes('boardCtx("global", "", false)'), "GLOBAL の ctx が無い（読み取り専用でない）");
+await check("#31 project は書き込み可で sid を送らず、GLOBAL 欄は無い", () => {
+	// #17: ボードは project だけ。session 板も GLOBAL の読み取り専用板も存在しない。
+	assert.match(html, /boardCtx\("project", "", true, projPick/, "project の書き込み ctx が無い");
+	// GLOBAL 欄（読み取り専用の集約ビュー）は削除済み。serve の scope=global は別物。
+	assert.ok(!html.includes('id="global"'), "GLOBAL 欄がまだ残っている");
+	assert.ok(!html.includes("renderGlobal("), "renderGlobal がまだ残っている");
 	assert.ok(!html.includes('boardCtx("session"'), "session ボードの ctx がまだ残っている");
 	assert.ok(!html.includes("s.isActive"), "isActive をまだ渡している");
 	// project は cwd で解決するので sid を載せない（sid を付けるとサーバが unknown sid で断る）
@@ -232,6 +233,8 @@ await check("CSS は既存トークンのみ（新色を発明していない）
 			cards: [
 				{ id: 1, text: "a", col: "todo", priority: 5 },
 				{ id: 4, text: "d", col: "doing" },
+				{ id: 11, text: "p3", col: "todo", priority: 3, nextFireAt: "2026-01-01T00:05:00.000Z" },
+				{ id: 12, text: "pb", col: "doing", blocked: "既に停止" },
 			],
 		},
 		serve: [
@@ -282,16 +285,16 @@ await check("CSS は既存トークンのみ（新色を発明していない）
 		walk(byId[id]).filter((n) => n.getAttribute && n.getAttribute("data-col") === "doing");
 
 	await check("vm: カードに発火予定と優先度が出る（無いカードは —）", () => {
-		assert.ok(textOf(byId["global"], "P3"), "GLOBAL に P3 が無い");
+		assert.ok(textOf(byId["project"], "P3"), "project に P3 が無い");
 		assert.ok(textOf(byId["project"], "P5"), "project に P5 が無い");
 		// 短い書式 (MM/DD HH:MM) 固定幅列に入るようにした。TZ 非依存の形で見る。
 		assert.ok(
-			walk(byId["global"]).some((n) => n.textContent && /^発火 \d{2}\/\d{2} \d{2}:\d{2}$/.test(n.textContent)),
+			walk(byId["project"]).some((n) => n.textContent && /^発火 \d{2}\/\d{2} \d{2}:\d{2}$/.test(n.textContent)),
 			"発火時刻（短書式）が無い",
 		);
 		assert.ok(textOf(byId["project"], "発火 —"), "未設定が — になっていない");
-		assert.ok(textOf(byId["global"], "停止中"), "blocked の表示が無い");
-		const chip = walk(byId["global"]).find((n) => String(n.className).includes("blocked"));
+		assert.ok(textOf(byId["project"], "停止中"), "blocked の表示が無い");
+		const chip = walk(byId["project"]).find((n) => String(n.className).includes("blocked"));
 		assert.equal(chip && chip.title, "既に停止", "blocked の理由が title に出ていない");
 	});
 
@@ -364,14 +367,13 @@ await check("CSS は既存トークンのみ（新色を発明していない）
 		assert.ok(!writes.some((u) => u.includes("del=1")), "del=1 を飛ばす操作が残っている");
 	});
 
-	await check("vm: 既に blocked の DOING は全停止の対象から外れ、GLOBAL は書き込まない", () => {
-		// project の DOING は id=4 の 1 枚だけ（GLOBAL の 2 枚は読み取り専用なので対象外）。
+	await check("vm: 既に blocked の DOING は全停止の対象から外れる", () => {
+		// project の DOING は id=4 と id=12 の 2 枚だが、12 は既に blocked なので対象は 1 枚。
 		const stopUrls = writes.filter((u) => u.includes("blocked="));
 		assert.equal(stopUrls.length, 1, `停止対象は 1 枚のはず: ${stopUrls.join(", ")}`);
 		assert.ok(stopUrls[0].includes("id=4"), "停止したのが別のカード");
 		assert.ok(stopUrls[0].includes("scope=project"), stopUrls[0]);
 		assert.ok(doingCards("project").length > 0, "project の doing 列が描画されていない（D&D 先が無い）");
-		assert.ok(doingCards("global").length > 0, "GLOBAL の doing 列が描画されていない");
 	});
 }
 

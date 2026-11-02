@@ -234,7 +234,9 @@ const EXPECT_DASH = `/api/media/${encodeURIComponent(PNG)}`;
 			host: "test-host",
 			now: "2026-01-01T00:00:00.000Z",
 			stats: { sessions: 1, active: 1, todo: 4, doing: 0, done: 0, serve: 0, media: 1 },
-			global: {
+			// GLOBAL 欄は削除したので、看板は project（このボード）に描かれる。
+			project: {
+				id: "alpha",
 				counts: { todo: 4, doing: 0, done: 0 },
 				modes: { doingLoop: true, autoPick: false, intervalMin: 5 },
 				cards,
@@ -243,7 +245,7 @@ const EXPECT_DASH = `/api/media/${encodeURIComponent(PNG)}`;
 			serve: [],
 		};
 	});
-	const root = byId["global"];
+	const root = byId["project"];
 	const cs = cardById(root);
 
 	await check("dashboard: 画像付きカードは実サムネを持つ（🖼 の目印だけではない）", () => {

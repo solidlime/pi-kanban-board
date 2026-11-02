@@ -67,7 +67,8 @@ const DASH = {
 	host: "t",
 	now: new Date().toISOString(),
 	stats: { sessions: 0, active: 0, todo: 4, doing: 0, done: 0, serve: 0, media: 0 },
-	global: {
+	project: {
+		id: "pi-kanban-board",
 		counts: { todo: 4, doing: 0, done: 0 },
 		cards: [
 			{ id: 1, text: "長い会話", col: "todo", sessionId: LONG, commit: FULL_SHA },
@@ -118,14 +119,14 @@ async function boot(dash = DASH) {
 // --- sessionId は 8 文字 + …、全文は title ------------------------------------
 test("長い sessionId は 8 文字 + … で出て、全文は title に残る", async () => {
 	const d = await boot();
-	const chip = sess(d.byId.global).find((c) => c.title === LONG);
+	const chip = sess(d.byId.project).find((c) => c.title === LONG);
 	assert.ok(chip, "sessionId の小片が無い");
 	assert.equal(chip.textContent, "abcdefgh\u2026", "短縮が 8 文字 + … でない");
 });
 
 test("8 文字以内の sessionId は切らない（… を付けない）", async () => {
 	const d = await boot();
-	const chip = sess(d.byId.global).find((c) => c.title === SHORT);
+	const chip = sess(d.byId.project).find((c) => c.title === SHORT);
 	assert.ok(chip, "短い sessionId の小片が無い");
 	assert.equal(chip.textContent, SHORT);
 });
@@ -133,7 +134,7 @@ test("8 文字以内の sessionId は切らない（… を付けない）", asy
 // --- commit は 7 桁、全文は title ---------------------------------------------
 test("commit は 7 桁で出て、全文は title に残る", async () => {
 	const d = await boot();
-	const chips = commits(d.byId.global);
+	const chips = commits(d.byId.project);
 	assert.equal(chips.length, 2, `commit の小片が 2 枚でない: ${chips.length}`);
 	assert.equal(chips[0].textContent, "0123456", "7 桁でない");
 	assert.equal(chips[0].title, FULL_SHA, "title に全文が無い");
@@ -142,11 +143,11 @@ test("commit は 7 桁で出て、全文は title に残る", async () => {
 // --- 無いときは何も出さない（project と同じ） ---------------------------------
 test("sessionId も commit も無いカードは小片を出さない", async () => {
 	const d = await boot();
-	assert.equal(sess(d.byId.global).length, 2, "sessionId の無いカードに小片が出た");
-	assert.equal(commits(d.byId.global).length, 2, "commit の無いカードに小片が出た");
+	assert.equal(sess(d.byId.project).length, 2, "sessionId の無いカードに小片が出た");
+	assert.equal(commits(d.byId.project).length, 2, "commit の無いカードに小片が出た");
 	// タグなしカードは 1 枚だけで、その行には sess/commit が付いていない
 	const rows = all(
-		d.byId.global,
+		d.byId.project,
 		(e) => e.className === "card" && e.children.some((c) => String(c.innerHTML || c.textContent || "").includes("タグなし")),
 	);
 	assert.equal(rows.length, 1, "タグなしカードの行が引けない");
@@ -156,9 +157,9 @@ test("sessionId も commit も無いカードは小片を出さない", async ()
 // --- リンクにしない（決定 1） --------------------------------------------------
 test("小片はリンクではない（href も a タグも作らない）", async () => {
 	const d = await boot();
-	for (const chip of [...sess(d.byId.global), ...commits(d.byId.global)]) {
+	for (const chip of [...sess(d.byId.project), ...commits(d.byId.project)]) {
 		assert.equal(chip.tagName, "SPAN", "タグが span でない");
 		assert.ok(!chip._attrs.href, "href が付いている");
 	}
-	assert.equal(all(d.byId.global, (e) => e.tagName === "A").length, 0, "a タグが作られている");
+	assert.equal(all(d.byId.project, (e) => e.tagName === "A").length, 0, "a タグが作られている");
 });

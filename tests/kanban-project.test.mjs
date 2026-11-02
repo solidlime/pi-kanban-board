@@ -378,12 +378,14 @@ await check("ダッシュボード: #proj セレクト / .proj バッジ / projP
 		assert.equal(byId["proj"].value, "", "初期選択が全部でない");
 	});
 
-	await check("vm: slug を選ぶとそのプロジェクトのカードだけ残る", () => {
+	await check("vm: slug を選ぶとタグの違うカードだけ落ちる（ボードのカードはタグ無しでも残る）", () => {
 		pick("alpha");
 		assert.equal(byId["proj"].value, "alpha", "選択値が失われた");
 		assert.ok(textOf(byId["project"], "alpha card"), "alpha card が出ていない");
 		assert.ok(!textOf(byId["project"], "beta card"), "beta card が残っている");
-		assert.ok(!textOf(byId["project"], "orphan card"), "無所属カードが残っている");
+		// ボードを見ているとき、カードの sid は付かない（sid は全ボード集約の印）。
+		// 印の無いカードは見ているボードのもの: ここで落とすと選んだ看板が空になる。
+		assert.ok(textOf(byId["project"], "orphan card"), "ボードのカードが消えている");
 	});
 
 	await check("vm: (無所属) は project を持たないカードだけ残る", () => {
@@ -418,26 +420,10 @@ await check("ダッシュボード: #proj セレクト / .proj バッジ / projP
 	});
 
 
-	await check("vm: project 絞り込みは畳んだ GLOBAL を強制展開する（旧実装では空のまま）", () => {
-		pick("");
-		const gh = walk(byId["global"]).find((n) => n.className === "sess-hd" && n._lis && n._lis.click.length > 0);
-		assert.ok(gh, "GLOBAL ヘッダの click ハンドラが見つからない");
-		gh._lis.click[0]({});
-		assert.ok(!textOf(byId["global"], "g alpha"), "畳んだのにカードが見えている");
-		pick("alpha");
-		assert.ok(textOf(byId["global"], "g alpha"), "project 絞り込みで強制展開されていない");
-		assert.ok(!textOf(byId["global"], "g beta"), "GLOBAL に beta カードが残っている");
-	});
-
 	// #17: 件数表示（TODO n/m）は GLOBAL 行の担当になった。project 行にはループ残数の行がある。
 	await check("vm: project 行にループ残数（残り 7 / 10）が出る", () => {
 		pick("");
 		assert.ok(textIncludes(byId["project"], "残り 7 / 10"), "project 行にループ残数が無い");
-	});
-
-	await check("vm: 絞り込み中の GLOBAL 件数が「表示/全体」になる", () => {
-		pick("alpha");
-		assert.ok(textIncludes(byId["global"], "TODO 1/2"), "GLOBAL の件数が絞り込み後の値になっていない");
 	});
 
 	await check("vm: 消えた slug を選んでいたら全部に戻る", () => {

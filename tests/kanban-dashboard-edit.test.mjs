@@ -94,15 +94,15 @@ check("DASHBOARD_HTML: dblclick はカード本体に付く（1 本だけ）", (
 	assert.ok(!SRC.includes('t.addEventListener("dblclick"'), ".t 側の登録が残っている（二重発火）");
 });
 
-check("DASHBOARD_HTML: RO 分岐が残り、project は active / global は読み取り専用（#17）", () => {
+check("DASHBOARD_HTML: RO 分岐が残り、project は active（#17）", () => {
 	const at = SRC.indexOf('card.addEventListener("dblclick"');
 	assert.ok(at > 0, "リスナが無い");
 	assert.ok(/if \(!ctx \|\| !ctx\.active\) \{ note\(RO_MSG\); return; \}/.test(SRC.slice(at, at + 900)), "分岐が無い");
 	assert.ok(/RO_MSG = "この看板は読み取り専用/.test(SRC), "文言が違う");
 	assert.match(SRC, /function board\(cards, nowMs, ctx\)/);
-	// #17: ボードは 2 板だけ。project = 書き込み可、global = 読み取り専用。
-	assert.ok(SRC.includes('boardCtx("project", "", true)'), "project が書き込み可になっていない");
-	assert.ok(SRC.includes('boardCtx("global", "", false)'), "global が読み取り専用になっていない");
+	// #17: ボードは project の 1 板だけ。GLOBAL 欄は削除した（読み取り専用の板はもう無い）。
+	assert.match(SRC, /boardCtx\("project", "", true, projPick/, "project が書き込み可になっていない");
+	assert.ok(!SRC.includes('id="global"'), "GLOBAL 欄が残っている");
 	assert.ok(!SRC.includes('boardCtx("session"'), "session ボードの ctx が残っている");
 });
 
@@ -247,8 +247,8 @@ check("dashboard の <script> は構文として妥当", () => {
 
 	// カードは dblclick を登録した要素 = 1 枚につき 1 つ
 	const cards = created.filter((e) => e.className === "card");
-	check("カード 2 枚とも dblclick を登録している（project / global 両方）", () => {
-		assert.equal(cards.length, 2, `cards=${cards.length}`);
+	check("カード 1 枚が dblclick を登録している（project 板）", () => {
+		assert.equal(cards.length, 1, `cards=${cards.length}`);
 		for (const c of cards) assert.ok(c.lis.dblclick && c.lis.dblclick.length === 1, "dblclick が 1 本でない");
 	});
 	check("カード 1 枚につき .t スパンも 1 つ（二重登録なし）", () => {
@@ -265,22 +265,7 @@ check("dashboard の <script> は構文として妥当", () => {
 	const idle = { target: { closest: () => null } };
 	// dblclick は .t を textarea に置き換えるので、カードの同定は先に済ませる。
 	const cardOf = (text) => cards.find((c) => c.children.some((x) => String(x.innerHTML).includes(text)));
-	const otherCard = cardOf("読むだけのカード"); // global（読み取り専用）
 	const activeCard = cardOf("書けるカード"); // project（書き込み可）
-	check("global のカードにだけ RO_TITLE が付く", () => {
-		assert.equal(cards.filter((c) => c.title === RO_TITLE).length, 1, "読み取り専用の title が 1 枚でない");
-		assert.equal(otherCard.title, RO_TITLE);
-		assert.notEqual(activeCard.title, RO_TITLE);
-	});
-	check("global のカードは dblclick で note(RO_MSG) を出し、textarea にしない", () => {
-		assert.ok(otherCard, "global のカードが無い");
-		noteEl.hidden = true;
-		noteEl.textContent = "";
-		otherCard.lis.dblclick[0](idle);
-		assert.equal(noteEl.hidden, false, "note が出ていない");
-		assert.match(noteEl.textContent, /読み取り専用/);
-		assert.ok(!otherCard.children.some((x) => x.className === "ted"), "読み取り専用なのに textarea になった");
-	});
 	check(".ops 内のダブルクリックは無視する", () => {
 		assert.ok(activeCard, "active カードが無い");
 		noteEl.hidden = true;

@@ -75,27 +75,10 @@ const html = await res.text();
 check("GET / は 200", () => assert.equal(res.status, 200));
 
 // --- 2. 文字列レベル ---------------------------------------------------------
-check("折りたたみの状態変数とマーカーがある（#17: 開閉するのは GLOBAL 行だけ）", () => {
-	assert.ok(html.includes("var gOpen = true"), "gOpen が無い");
-	assert.ok(html.includes('"caret"'), "caret が無い");
-	assert.ok(html.includes('"\u25BE"'), "開マーカー（▾）が無い");
-	assert.ok(html.includes('"\u25B8"'), "閉マーカー（▸）が無い");
-	assert.ok(
-		html.includes('.sess-hd[role="button"]{cursor:pointer'),
-		"ヘッダがクリック可能に見えない",
-	);
-	assert.ok(html.includes('head.title = "クリックで折りたたみ"'), "title が無い");
-	assert.match(html, /head\.addEventListener\("click", toggleGlobal\)/);
-	assert.match(html, /closest\("\.ops"\)/, "ヘッダ内操作の除外が無い");
-});
-
-check("既定は全開（gOpen の既定 true）", () => {
-	assert.ok(html.includes("var gOpen = true"), "既定全開の判定が無い");
-});
-
-check("検索中は強制展開（query !== \"\"）", () => {
-	assert.match(html, /var search = query !== ""/);
-	assert.match(html, /var gexpanded = gOpen \|\| filtered;/);
+// #17: GLOBAL 欄（読み取り専用の集約ビュー）は削除した。開閉するヘッダごと無い。
+check("GLOBAL 欄と renderGlobal は撤去されている", () => {
+	assert.ok(!html.includes("renderGlobal("), "renderGlobal が残っている");
+	assert.ok(!html.includes('id="global"'), "GLOBAL 欄が残っている");
 });
 
 check("検索欄は絞り込みバーの中、#project の手前", () => {
@@ -110,8 +93,8 @@ check("検索欄は絞り込みバーの中、#project の手前", () => {
 });
 
 check("カードのフィルタとキーボード操作がある", () => {
-	// #21: 検索の述語は cardHit() に集約した（2 箇所から呼ぶ）。
-	assert.equal((html.match(/cardHit\(x, query\)/g) || []).length, 2, "cardHit(x, query) が 2 箇所に無い");
+	// #21: 検索の述語は cardHit() に集約した（GLOBAL 欄の削除で呼び元は project の 1 箇所）。
+	assert.equal((html.match(/cardHit\(x, query\)/g) || []).length, 1, "cardHit(x, query) の呼び元が 1 箇所でない");
 	assert.match(html, /function cardHit\(c, q\)\{/);
 	assert.doesNotMatch(html, /String\(x\.text \|\| ""\)\.toLowerCase\(\)/);
 	assert.match(html, /e\.key === "\/"/);
@@ -124,20 +107,6 @@ check("カードのフィルタとキーボード操作がある", () => {
 check("件数は検索中だけヒット/総数（meta の乖離を潰す）", () => {
 	assert.match(html, /function countsText\(counts, cards, search\)/);
 	assert.match(html, /return cards\.filter\(function\(c\)\{ return c\.col === k; \}\)\.length \+ "\/" \+ total;/);
-});
-
-// --- #49 欠陥1: GLOBAL も検索で絞る（renderGlobal が query を見ていなかった） ---
-check("renderGlobal が query を見てカードを絞る", () => {
-	const at = html.indexOf("function renderGlobal(");
-	assert.ok(at >= 0, "renderGlobal が無い");
-	// センチネル未検査だと slice(at, -1) が末尾 1 文字を落とすだけで静かに全文へ広がる。
-	const bodyEnd = html.indexOf("function serveLeft(", at);
-	assert.ok(bodyEnd > at, "serveLeft のセンチネルが無い");
-	const body = html.slice(at, bodyEnd);
-	assert.match(body, /var search = query !== ""/, "renderGlobal に search 判定が無い");
-	assert.match(body, /cardHit\(x, query\)/, "renderGlobal に query フィルタが無い");
-	assert.match(body, /countsText\(c, cards, filtered\)/, "GLOBAL の件数が検索中 n/m にならない");
-	assert.match(body, /el\("div", "sess-empty", "該当なし"\)/, "GLOBAL の該当なしが無い");
 });
 
 // --- #49 欠陥2: caret の視認性（10px/var(--muted) では見えなかった） ---
@@ -154,36 +123,6 @@ check("caret は 13px 以上で濃い色（opacity を使わない）", () => {
 	assert.match(css, /text-align:center/);
 	assert.match(css, /margin-right:4px/);
 	assert.match(css, /flex:none/);
-});
-
-check("ヘッダは hover で背景が付き、テキスト選択されない（#62 で GLOBAL も対象）", () => {
-	const SEL = '.sess-hd[role="button"]';
-	const rule = (suffix) => {
-		const at = html.indexOf(SEL + suffix + "{");
-		return at < 0 ? null : html.slice(html.indexOf("{", at) + 1, html.indexOf("}", at));
-	};
-	const base = rule("");
-	assert.ok(base, "interactive な .sess-hd の CSS が無い");
-	assert.match(base, /user-select:none/, "user-select:none が無い");
-	assert.match(base, /border-radius:6px/, "border-radius が .sess と揃っていない");
-	assert.match(base, /cursor:pointer/);
-	const hover = rule(":hover");
-	assert.ok(hover, ".sess-hd[role=button]:hover が無い");
-	assert.match(hover, /background:var\(--/, "hover の背景が既存トークンでない");
-	// #62 で GLOBAL も押せるようになったため反転: GLOBAL のヘッダにも hover 背景を付ける。
-	// （「押せないのに押せそうに見せない」という元の意図は、押せるようにする側で解消した）
-	assert.ok(html.includes(".sess-hd:hover") || hover, "GLOBAL のヘッダに hover が付いていない");
-	// 反転の本体: GLOBAL ヘッダが実際に操作可能なボタンになっている（旧: role が付かない前提）
-	assert.match(html, /head\.setAttribute\("role", "button"\)/);
-	assert.match(html, /head\.setAttribute\("aria-expanded", gexpanded \? "true" : "false"\)/);
-});
-
-check("ヘッダは a11y 的にもボタン（aria-expanded / role / tabindex）", () => {
-	assert.match(html, /head\.setAttribute\("role", "button"\)/);
-	assert.match(html, /head\.setAttribute\("tabindex", "0"\)/);
-	assert.match(html, /head\.setAttribute\("aria-expanded", gexpanded \? "true" : "false"\)/);
-	assert.match(html, /head\.addEventListener\("keydown"/);
-	assert.match(html, /k !== "Enter" && k !== " "/);
 });
 
 // --- 3. ブラウザ側 JS を vm で走らせて挙動を確認 -----------------------------
@@ -494,80 +433,38 @@ check("ヘッダは a11y 的にもボタン（aria-expanded / role / tabindex）
 	vm.runInContext(apiScript, sandbox);
 	for (let i = 0; i < 4; i++) await flush();
 
-	// #17: role=button で開閉するヘッダは GLOBAL 行にだけある。
-	const ghd = () => findAll(byId["global"], byClass("sess-hd"))[0];
 	const projCards = () => findAll(byId["project"], byClass("card")).length;
-
-	check("vm: セッションヘッダは role=button / tabindex=0 / aria-expanded=true", () => {
-		const h = ghd();
-		assert.equal(h.getAttribute("role"), "button");
-		assert.equal(h.getAttribute("tabindex"), "0");
-		assert.equal(h.getAttribute("aria-expanded"), "true");
-	});
-
-	// Enter で畳む（click と同じ経路）
-	const h0 = ghd();
-	check("vm: ヘッダは keydown リスナを持つ", () => assert.ok(h0._lis.keydown && h0._lis.keydown.length));
-	const key = (k) => {
-		const h = ghd();
-		assert.ok(h._lis.keydown && h._lis.keydown[0], "keydown リスナが無い");
-		h._lis.keydown[0]({ key: k, target: null, preventDefault() {} });
+	const pEmpty = () => findAll(byId["project"], byClass("sess-empty"));
+	const pollNow = async () => {
+		const poll = timers.shift();
+		if (poll) poll.fn();
+		for (let i = 0; i < 4; i++) await flush();
 	};
-	check("vm: Enter で畳める（aria-expanded=false）", () => {
-		key("Enter");
-		assert.equal(ghd().getAttribute("aria-expanded"), "false");
-		assert.equal(findAll(byId["global"], byClass("cols")).length, 0, "畳めていない");
-	});
-	// Space で開く
-	check("vm: Space で開ける（aria-expanded=true）", () => {
-		key(" ");
-		assert.equal(ghd().getAttribute("aria-expanded"), "true");
-		assert.equal(findAll(byId["global"], byClass("cols")).length, 1, "開けていない");
-	});
-	// 矢印キーでは畳まない（誤爆防止）
-	check("vm: Enter/Space 以外では畳まない", () => {
-		key("ArrowDown");
-		assert.equal(ghd().getAttribute("aria-expanded"), "true");
-	});
 
-	// 検索前は GLOBAL に 3 枚
-	check("vm: 検索前の GLOBAL は 3 枚", () => assert.equal(gcards(), 3, "GLOBAL のカード数が違う"));
-	check("vm: 検索前の GLOBAL 件数は従来の形（計 3 枚）", () => {
-		assert.ok(gheadText().includes("TODO 1 / DOING 1 / DONE 1 ・ 計 3 枚"), gheadText());
-	});
+	check("vm: 検索前は project ボードのカードが全部出る", () => assert.equal(projCards(), 1));
 
-	// 検索「りんご」: GLOBAL は 0 件（ヘッダは残す）、SESSION 側は 1 件
+	// 検索「りんご」: project ボードは 1 件ヒット
 	const qEl2 = byId["q"];
 	qEl2.value = "りんご";
 	qEl2._lis.input[0]();
-	check("vm: GLOBAL も検索で絞られる（欠陥1の再現条件）", () => {
-		assert.equal(gcards(), 0, "GLOBAL が絞られていない");
-	});
-	check("vm: GLOBAL 0 件のとき該当なしを出す（ヘッダは残す）", () => {
-		assert.equal(gempty().length, 1, "GLOBAL の該当なしが無い");
-		assert.equal(gempty()[0].textContent, "該当なし");
-		assert.ok(ghead(), "GLOBAL のヘッダが消えている");
-	});
-	check("vm: 検索中の GLOBAL 件数は n/m", () => {
-		assert.ok(gheadText().includes("TODO 0/1 / DOING 0/1 / DONE 0/1"), gheadText());
-	});
-	check("vm: project 側は 1 件ヒット", () => {
-		assert.equal(projCards(), 1);
+	check("vm: 検索で project ボードが絞られる", () => assert.equal(projCards(), 1));
+
+	// ヒットしないカードだけに差し替えると 0 件 + 該当なし
+	payload.project.cards = [{ id: 5, col: "todo", text: "パッケージ化" }];
+	await pollNow();
+	check("vm: 0 件のときは「該当なし」を出す", () => {
+		assert.equal(projCards(), 0, "絞り込みが効いていない");
+		assert.equal(pEmpty().length, 1, "該当なしが無い");
+		assert.equal(pEmpty()[0].textContent, "該当なし");
 	});
 
-	// ヒットする GLOBAL カードなら 1 枚出る
-	payload.global.cards = [
-		{ id: 4, col: "todo", text: "りんごの生産計画" },
-		{ id: 5, col: "todo", text: "パッケージ化" },
-	];
-	payload.global.counts = { todo: 2, doing: 0, done: 0 };
-	const poll = timers.shift();
-	if (poll) poll.fn();
-	for (let i = 0; i < 4; i++) await flush();
-	check("vm: ヒットする GLOBAL カードは 1 枚だけ出る", () => {
-		assert.equal(gcards(), 1, "GLOBAL の絞り込みが効いていない");
-		assert.equal(gempty().length, 0, "該当なしが残っている");
-		assert.ok(gheadText().includes("TODO 1/2"), gheadText());
+	// 検索語を消せば全部戻る
+	qEl2.value = "";
+	qEl2._lis.input[0]();
+	await pollNow();
+	check("vm: 検索語を消すと全部戻る", () => {
+		assert.equal(projCards(), 1);
+		assert.equal(pEmpty().length, 0, "該当なしが残っている");
 	});
 }
 

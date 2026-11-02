@@ -72,6 +72,8 @@ const DASH = {
 	// counts は実カードと一致させる（todo 2 = TODO + FAR）。矛盾したフィクスチャは assert を空にする
 	stats: { sessions: 0, active: 0, todo: 2, doing: 1, done: 1, serve: 0, media: 0 },
 	global: { counts: { todo: 2, doing: 1, done: 1 }, cards: [TODO, SOON, FAR, DONE] },
+	// GLOBAL 欄は無くなったので、看板の描画は project 側で見る
+	project: { id: "pi-kanban-board", counts: { todo: 2, doing: 1, done: 1 }, cards: [TODO, SOON, FAR, DONE] },
 	sessions: [],
 	serve: [],
 };
@@ -116,7 +118,7 @@ const md = (d) => d.slice(5, 10).replace("-", "/");
 // --- 未完了の期限超過は赤く「期限切れ」と言う --------------------------------
 test("期限超過の未完了カードは bad + 「期限切れ」", async () => {
 	const d = await boot();
-	const chip = chips(d.byId.global).find((c) => c.title === "2 日超過");
+	const chip = chips(d.byId.project).find((c) => c.title === "2 日超過");
 	assert.ok(chip, "期限チップが無い（due が描かれていない）");
 	assert.equal(chip.className, "sched bad", "未完了の期限超過が赤くない");
 	assert.equal(chip.textContent, "期限切れ " + md(day(-2)), "「期限切れ」と言っていない");
@@ -124,10 +126,10 @@ test("期限超過の未完了カードは bad + 「期限切れ」", async () =
 
 test("3日以内は warn、4日以上先は色なし", async () => {
 	const d = await boot();
-	const soon = chips(d.byId.global).find((c) => c.textContent === "期限 " + md(day(3)));
+	const soon = chips(d.byId.project).find((c) => c.textContent === "期限 " + md(day(3)));
 	assert.ok(soon, "ちょうど3日後のチップが無い");
 	assert.equal(soon.className, "sched warn", "3日後が warn でない（境界がずれている）");
-	const far = chips(d.byId.global).find((c) => c.textContent === "期限 " + md(day(4)));
+	const far = chips(d.byId.project).find((c) => c.textContent === "期限 " + md(day(4)));
 	assert.ok(far, "先のチップが無い");
 	assert.equal(far.className, "sched", "4日以上先に色が付いている");
 });
@@ -136,7 +138,7 @@ test("3日以内は warn、4日以上先は色なし", async () => {
 test("期限超過でも完了済みは色なし・「期限切れ」と言わない", async () => {
 	const d = await boot();
 	// 文言で引いてから title を別に assert する（title で引くと後段の assert が同語反復になる）
-	const chip = chips(d.byId.global).find((c) => c.textContent === "期限 " + md(day(-5)));
+	const chip = chips(d.byId.project).find((c) => c.textContent === "期限 " + md(day(-5)));
 	assert.ok(chip, "完了カードに期限チップが無い（事実は消さない）");
 	assert.equal(chip.className, "sched", "完了済みが赤い");
 	assert.ok(!chip.textContent.startsWith("期限切れ"), "完了済みに「期限切れ」と言っている");
@@ -147,7 +149,7 @@ test("期限超過でも完了済みは色なし・「期限切れ」と言わ�
 // --- 集計と色が同じ規則であること --------------------------------------------
 test("ヘッダの期限超過件数は未完了だけを数える（赤い行と一致）", async () => {
 	const d = await boot();
-	const bad = chips(d.byId.global).filter((c) => c.className === "sched bad");
+	const bad = chips(d.byId.project).filter((c) => c.className === "sched bad");
 	assert.equal(bad.length, 1, "赤い期限チップが 1 本ではない（フィクスチャが壊れている）");
 	// stat は textContent では引けない（doing:1 や done:1 も "1" になる）。aria-label で特定する
 	const stats = all(d.byId.stats, (e) => /^期限超過 /.test(e.getAttribute("aria-label") || ""));
@@ -175,15 +177,15 @@ test("着手可能タイルは d.project を足さない（global は既に自�
 
 // --- #16: GLOBAL の由来はツール側の `[slug]` と同じ語彙で出す ----------------------
 // ダッシュボードは 📁slug、ツールは [slug] で、同じ「project」タグと見分けが付かなかった。
-test("GLOBAL のカードは由来ボードを [slug] で出す", async () => {
+test("ボードのカードは由来ボードを [slug] で出す", async () => {
 	const one = { id: 1, text: "由来あり", col: "todo", sid: "alpha" };
 	const d = await boot({
 		...DASH,
-		global: { counts: { todo: 1, doing: 0, done: 0 }, cards: [one] },
+		project: { id: "alpha", counts: { todo: 1, doing: 0, done: 0 }, cards: [one] },
 	});
-	const tags = all(d.byId.global, (e) => e.className === "proj" && e.textContent === "[alpha]");
+	const tags = all(d.byId.project, (e) => e.className === "proj" && e.textContent === "[alpha]");
 	assert.equal(tags.length, 1, `由来の表示が [alpha] でない: ${JSON.stringify(
-		all(d.byId.global, (e) => e.className === "proj").map((e) => e.textContent),
+		all(d.byId.project, (e) => e.className === "proj").map((e) => e.textContent),
 	)}`);
 });
 

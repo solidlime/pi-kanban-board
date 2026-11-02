@@ -177,7 +177,7 @@ test("#8 決定を打っている間はポーリングが描き直さない", ()
 	// #11: ループ設定の入力欄は #settings-loops に移ったので、そこも編集中の対象に含める。
 	// phase0: project 看板の入力欄も再描画で消してはいけないので #project が加わった。
 	// #17: #sessions は無くなった（タブは board / projects / settings の 3 つ）。
-	assert.match(html, /closest\("#stats, #project, #global, #serve, #projects, #settings-loops"\)/);
+	assert.match(html, /closest\("#stats, #project, #serve, #projects, #settings-loops"\)/);
 	assert.ok(html.includes("if (!isEditing()) renderProjects()"), "取得後も編集中は描かない");
 });
 
@@ -337,7 +337,7 @@ test("#8 横断ログは slug 空の決定で、プロジェクトが 0 件で�
 	assert.ok(txt.includes("プロジェクト横断"), "横断の見出しが無い");
 	// #26: empty() は innerHTML を組まず、<b> 見出しと本文を子ノードで置く。
 	assert.ok(
-		find(d.box, (e) => e.className === "empty" && allText(e).includes("プロジェクトはまだ無い")),
+		find(d.box, (e) => e.className === "empty" && allText(e).includes("ボードがまだ無い")),
 		"空状態が無い",
 	);
 	assert.equal(buttons(d.box, "追記").length, 1, "0 件でもフォームは 1 つ残る");

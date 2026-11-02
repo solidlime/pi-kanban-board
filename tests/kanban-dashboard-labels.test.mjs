@@ -119,10 +119,10 @@ test("ラベル絞り込みは cardFilter と共存する（ok かつ bug だけ
 	assert.equal(run(c, { labFilter: "chore", cardFilter: "ok", dep: "ok" }), false);
 });
 
-// --- 2. filtered の 2 箇所（renderProject / renderGlobal） ----------------------
-test("filtered の判定 2 箇所が labFilter を見る（該当なし表示と GLOBAL 強制展開）", () => {
+// --- 2. filtered の判定（renderProject。GLOBAL 欄の削除で 1 箇所になった） ------
+test("filtered の判定が labFilter を見る（該当なし表示）", () => {
 	const hits = JS.match(/var filtered = search \|\| projPick !== "" \|\| cardFilter !== ""[^\n]*/g) || [];
-	assert.equal(hits.length, 2, `filtered の判定が 2 箇所でない: ${hits.length}`);
+	assert.equal(hits.length, 1, `filtered の判定が 1 箇所でない: ${hits.length}`);
 	for (const line of hits) assert.match(line, /labFilter !== ""/, `labFilter を見ていない: ${line}`);
 });
 
@@ -131,7 +131,8 @@ const DASH = {
 	host: "t",
 	now: new Date().toISOString(),
 	stats: { sessions: 0, active: 0, todo: 2, doing: 0, done: 0, serve: 0, media: 0 },
-	global: {
+	project: {
+		id: "pi-kanban-board",
 		counts: { todo: 2, doing: 0, done: 0 },
 		cards: [
 			{ id: 1, text: "バグ修正", col: "todo", labels: ["bug", "調査"] },
@@ -168,17 +169,17 @@ async function boot(dash = DASH) {
 	return { byId, sandbox };
 }
 
-test("カード行に .lab が順序どおり出る（GLOBAL）", async () => {
+test("カード行に .lab が順序どおり出る（ボード）", async () => {
 	const d = await boot();
-	const chips = labs(d.byId.global);
+	const chips = labs(d.byId.project);
 	assert.deepEqual(chips.map((c) => c.textContent), ["bug", "調査"], "ラベルの小片が順序どおり出ていない");
 	for (const c of chips) assert.equal(c.tagName, "SPAN");
 });
 
 test("ラベル無しのカードには小片を出さないし、ラベルは本文を壊さない", async () => {
 	const d = await boot();
-	assert.equal(labs(d.byId.global).length, 2, "ラベル無しのカードに小片が付いた");
-	const rows = all(d.byId.global, (e) => e.className === "card" && textOf(e).includes("ラベル無し"));
+	assert.equal(labs(d.byId.project).length, 2, "ラベル無しのカードに小片が付いた");
+	const rows = all(d.byId.project, (e) => e.className === "card" && textOf(e).includes("ラベル無し"));
 	assert.equal(rows.length, 1, "ラベル無しのカード行が引けない");
 	assert.equal(labs(rows[0]).length, 0, "ラベル無しの行に .lab が付いた");
 });

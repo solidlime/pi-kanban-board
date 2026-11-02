@@ -1,10 +1,8 @@
-// #62 アコーディオンの開閉状態の維持 + GLOBAL の折りたたみ の自己検証 (#011)。
-//   (a) ダッシュボード: セッションを畳む -> kb-collapse に書かれる -> vm を立て直すと畳まれたまま
-//   (b) #84: 統合後は名前空間が dash だけであること（kanban 側は消えた）
-//   (c) GLOBAL ボードが role/tabindex/aria-expanded を持ち、クリックで閉じて中身が消える
-//   (d) キーボード（Enter / Space）でも GLOBAL が畳める
-//   (e) GLOBAL の列折りたたみのキーに active sid が混ざらない（"global:todo" 形式）
-//   (f) localStorage が例外を投げるスタブでも描画が壊れない
+// #62 アコーディオンの開閉状態の維持の自己検証 (#011)。
+//   (a) project ボードの列を畳む -> kb-collapse に書かれる -> vm を立て直すと畳まれたまま
+//   (b) 列の折りたたみキーはボード + 列ごと（別の列を巻き込まない）
+//   (c) localStorage が例外を投げるスタブでも描画が壊れない
+// #17/#62 の GLOBAL 欄（読み取り専用の集約ビュー）は削除したので、見出しの開閉は無い。
 // フレームワーク無しで `node tests/kanban-accordion-persist.test.mjs`。
 // HOME と KANBAN_PORT を差し替えるので本番の ~/.pi/kanban と 8789 には触れない。
 import { fileURLToPath } from "node:url";
@@ -349,213 +347,54 @@ await check("#62 GLOBAL の ckey は active sid を含まない", () => {
 }
 
 // ===========================================================================
-// (c) GLOBAL は a11y 付きのボタンで、クリックで閉じ中身が消える
+// (b) 列折りたたみのキーはボード + 列（GLOBAL 欄の削除で板は project だけ）
 // ===========================================================================
 {
 	const storage = makeStorage();
 	const d = await runDashboard(storage);
-	const gHead = () => walk(d.byId["global"]).filter(byClass("sess-hd"))[0];
-	const gCols = () => walk(d.byId["global"]).filter(byClass("cols")).length;
-	const gCards = () => walk(d.byId["global"]).filter(byClass("card")).length;
+	const pCols = () => walk(d.byId["project"]).filter(byClass("col"));
 
-	await check("#62(c) GLOBAL 見出しは role=button / tabindex=0 / aria-expanded=true", () => {
-		const h = gHead();
-		assert.ok(h, "GLOBAL の見出しが無い");
-		assert.equal(h.getAttribute("role"), "button", "role=button が無い");
-		assert.equal(h.getAttribute("tabindex"), "0", "tabindex=0 が無い");
-		assert.equal(h.getAttribute("aria-expanded"), "true", "aria-expanded が true でない");
-		assert.ok(gCols() === 1, "既定で GLOBAL の列が出ていない");
-		assert.equal(gCards(), 3, "GLOBAL のカードが 3 枚でない");
+	await check("#62(b) project の todo と doing を別々に畳める（キーは列ごと）", () => {
+		assert.equal(pCols().length, 3, "project の列が 3 つない");
+		pCols()[0].children[0]._lis.click[0]({ target: null });
+		pCols()[1].children[0]._lis.click[0]({ target: null });
+		const keys = Object.keys(storage.read("kb-collapse").dash.cols).sort();
+		assert.deepEqual(keys, ["project.:doing", "project.:todo"], `キーが想定と違う: ${JSON.stringify(keys)}`);
+		assert.ok(pCols()[0].classList.contains("collapsed"), "todo が畳まれていない");
+		assert.ok(!pCols()[2].classList.contains("collapsed"), "done まで畳まれている");
 	});
 
-	await check("#62(c) クリックで aria-expanded が true->false、中身が消える", () => {
-		const h = gHead();
-		assert.ok(h._lis.click && h._lis.click.length, "GLOBAL に click リスナが無い");
-		h._lis.click[0]({ target: null });
-		assert.equal(gHead().getAttribute("aria-expanded"), "false", "aria-expanded が false にならない");
-		assert.equal(gCols(), 0, "畳んだのに列が DOM にある");
-		assert.equal(gCards(), 0, "畳んだのにカードが DOM にある");
-		assert.equal(gHead().children[0].textContent, "\u25BE".replace("\u25BE", "\u25B8"), "caret が ▸ でない");
-		// 保存もされる
-		assert.equal(storage.read("kb-collapse").dash.g, false, "GLOBAL の閉が保存されていない");
-	});
-
-	await check("#62(c) 立て直しても GLOBAL は畳まれたまま", async () => {
+	await check("#62(b) 立て直しても畳んだ 2 列だけが残る", async () => {
 		const d2 = await runDashboard(storage);
-		const h2 = walk(d2.byId["global"]).filter(byClass("sess-hd"))[0];
-		assert.equal(h2.getAttribute("aria-expanded"), "false", "GLOBAL の閉が復元されていない");
-		assert.equal(walk(d2.byId["global"]).filter(byClass("cols")).length, 0, "中身が復元されている");
+		const cols = walk(d2.byId["project"]).filter(byClass("col"));
+		assert.equal(cols.length, 3, "再訪で列が壊れた");
+		assert.ok(cols[0].classList.contains("collapsed"), "todo 列が開いた");
+		assert.ok(cols[1].classList.contains("collapsed"), "doing 列が開いた");
+		assert.ok(!cols[2].classList.contains("collapsed"), "done 列まで畳まれている");
 	});
 }
 
 // ===========================================================================
-// (d) キーボードでも GLOBAL が畳める（Enter / Space）
+// (c) localStorage が例外を投げるスタブでも描画が壊れない
 // ===========================================================================
 {
-	const d = await runDashboard(makeStorage());
-	const gHead = () => walk(d.byId["global"]).filter(byClass("sess-hd"))[0];
-	const key = (k) => {
-		const h = gHead();
-		assert.ok(h._lis.keydown && h._lis.keydown.length, "GLOBAL に keydown リスナが無い");
-		h._lis.keydown[0]({ key: k, target: null, preventDefault() {} });
-	};
-
-	await check("#62(d) Enter で畳める", () => {
-		key("Enter");
-		assert.equal(gHead().getAttribute("aria-expanded"), "false", "Enter で畳めていない");
-		assert.equal(walk(d.byId["global"]).filter(byClass("cols")).length, 0, "Enter で中身が消えていない");
-	});
-	await check("#62(d) Space で開ける", () => {
-		key(" ");
-		assert.equal(gHead().getAttribute("aria-expanded"), "true", "Space で開けない");
-		assert.equal(walk(d.byId["global"]).filter(byClass("cols")).length, 1, "Space で中身が戻らない");
-	});
-	await check("#62(d) Enter/Space 以外では畳まない", () => {
-		key("ArrowDown");
-		assert.equal(gHead().getAttribute("aria-expanded"), "true", "矢印キーで畳まれた");
-	});
-
-}
-
-// ===========================================================================
-// (e) GLOBAL の列折りたたみのキーに active sid が混ざらない
-// ===========================================================================
-{
-	const storage = makeStorage();
-	const d = await runDashboard(storage);
-	const gCols = () => walk(d.byId["global"]).filter(byClass("col"));
-	const h3Of = (c) => c.children[0];
-
-	await check("#62(e) GLOBAL の DOING を畳むと cols のキーは global:doing（sid 無し）", () => {
-		assert.equal(gCols().length, 3, "GLOBAL の列が 3 つない");
-		const doing = gCols()[1];
-		assert.ok(Array.isArray(h3Of(doing)._lis.click), "列見出しに click ハンドラが無い");
-		h3Of(doing)._lis.click[0]();
-		assert.ok(doing.classList.contains("collapsed"), "列が畳まれていない");
-		const saved = storage.read("kb-collapse");
-		const keys = Object.keys(saved.dash.cols);
-		assert.ok(keys.includes("global:doing"), `global:doing が無い: ${JSON.stringify(keys)}`);
-		assert.ok(
-			!keys.some((k) => k.indexOf("global.") === 0 || k.indexOf("s1") >= 0 || k.indexOf("s2") >= 0),
-			`GLOBAL のキーに sid が混ざっている: ${JSON.stringify(keys)}`,
-		);
-	});
-
-	await check("#62(e) 立て直しても GLOBAL の列は畳まれたまま", async () => {
-		const d2 = await runDashboard(storage);
-		const cols2 = walk(d2.byId["global"]).filter(byClass("col"));
-		assert.equal(cols2.length, 3, "再訪で列が壊れた");
-		assert.ok(cols2[1].classList.contains("collapsed"), "再訪で GLOBAL の列が開いた");
-		assert.ok(!cols2[0].classList.contains("collapsed"), "別の列まで畳まれている");
-	});
-
-}
-
-// ===========================================================================
-// (f) localStorage が例外を投げるスタブでも描画が壊れない
-// ===========================================================================
-{
-	await check("#62(f) ダッシュボード: getItem/setItem が throw しても描画が壊れない", async () => {
+	await check("#62(c) ダッシュボード: getItem/setItem が throw しても描画が壊れない", async () => {
 		const broken = makeStorage();
 		broken.throwOnEverything();
 		const d = await runDashboard(broken);
 		assert.equal(walk(d.byId["project"]).filter(byClass("sess-hd")).length, 1, "project 行が描画されていない");
 		assert.equal(walk(d.byId["project"]).filter(byClass("cols")).length, 1, "既定（開）が壊れている");
-		assert.equal(walk(d.byId["global"]).filter(byClass("cols")).length, 1, "GLOBAL が描画されていない");
 		// 畳む操作も落ちない（persist の throw は握りつぶされる）
-		const gh = walk(d.byId["global"]).filter(byClass("sess-hd"))[0];
-		gh._lis.click[0]({ target: null });
-		assert.equal(walk(d.byId["global"]).filter(byClass("cols")).length, 0, "壊れた storage で畳めない");
+		const todo = walk(d.byId["project"]).filter(byClass("col"))[0];
+		todo.children[0]._lis.click[0]({ target: null });
+		assert.ok(todo.classList.contains("collapsed"), "壊れた storage で畳めない");
 	});
 
-	await check("#62(f) 破損した保存値（JSON.parse 失敗）でも前提の既定に戻るだけ", async () => {
+	await check("#62(c) 破損した保存値（JSON.parse 失敗）でも既定に戻るだけ", async () => {
 		const broken = makeStorage({ "kb-collapse": "{not json" });
 		const d = await runDashboard(broken);
 		assert.equal(walk(d.byId["project"]).filter(byClass("cols")).length, 1, "既定が壊れている");
-		assert.equal(walk(d.byId["global"]).filter(byClass("cols")).length, 1, "GLOBAL の既定が壊れている");
 	});
-
-}
-
-// ===========================================================================
-// (#62) 検索中もトグルは「保存値」を反転する（検索の強制展開を保存値に混ぜない）
-//   検索中は expanded = 保存値 || search で強制展開される。トグルがその表示値を
-//   反転すると「画面は変わらないのに保存値だけが反転」し、検索を消すと勝手に畳まれる。
-//   区別できるのは保存値が false（畳み済み）で検索中に開いている場面だけ。
-// ===========================================================================
-{
-	const headsOf = (d, box) => walk(d.byId[box]).filter(byClass("sess-hd"));
-	const bodiesOf = (d, box) => walk(d.byId[box]).filter(byClass("cols")).length;
-	// 検索欄は q.value を読む（e.target ではない）。input を発火する。
-	const type = (d, text) => {
-		d.byId.q.value = text;
-		d.byId.q._lis.input[0]({ target: d.byId.q });
-	};
-
-	// ---- (a)(b) GLOBAL ----
-	{
-		const storage = makeStorage();
-		const d = await runDashboard(storage);
-		const gHead = () => headsOf(d, "global")[0];
-
-		await check("#62(a) 前提: GLOBAL を素で畳んでおく（保存値 g=false）", () => {
-			gHead()._lis.click[0]({ target: null });
-			assert.equal(storage.read("kb-collapse").dash.g, false, "GLOBAL を畳めていない");
-			assert.equal(bodiesOf(d, "global"), 0, "畳んだのに中身が残っている");
-		});
-
-		await check("#62(a) 前提: 検索中は強制展開（g=false でも中身が出る）", () => {
-			type(d, "\u914d\u8272"); // GLOBAL は 1 枚だけヒット
-			assert.equal(gHead().getAttribute("aria-expanded"), "true", "検索中に畳まれている");
-			assert.equal(bodiesOf(d, "global"), 1, "検索中に中身が出ていない");
-		});
-
-		await check("#62(a) GLOBAL: 検索中のクリックで保存値 g が false->true になる", () => {
-			gHead()._lis.click[0]({ target: null });
-			assert.equal(storage.read("kb-collapse").dash.g, true, "検索中にクリックしても保存値が反転しない");
-			// 検索中の表示は強制展開のまま（見た目は変わらない）
-			assert.equal(gHead().getAttribute("aria-expanded"), "true", "検索中の表示が変わってしまった");
-			assert.equal(bodiesOf(d, "global"), 1, "検索中に中身が消えてしまった");
-		});
-
-		await check("#62(b) GLOBAL: 検索を消すと保存値どおり開いている", () => {
-			type(d, "");
-			assert.equal(gHead().getAttribute("aria-expanded"), "true", "検索解除後に開いていない");
-			assert.equal(bodiesOf(d, "global"), 1, "検索解除後に中身が出ていない");
-		});
-
-		await check("#62(b) GLOBAL: もう一度クリックすると畳まれる (true->false)", () => {
-			gHead()._lis.click[0]({ target: null });
-			assert.equal(storage.read("kb-collapse").dash.g, false, "true->false に戻っていない");
-			assert.equal(bodiesOf(d, "global"), 0, "畳んだのに中身が残っている");
-		});
-	}
-
-	// ---- (c) project と GLOBAL の同名列は別キーで畳める（#17 / #62） ----
-	{
-		const storage = makeStorage();
-		const d = await runDashboard(storage);
-
-		await check("#62(c) project の todo 列を畳んでも GLOBAL の todo 列は開いたまま", () => {
-			const pTodo = walk(d.byId["project"]).filter(byClass("col"))[0];
-			pTodo.children[0]._lis.click[0]({ target: null });
-			const keys = Object.keys(storage.read("kb-collapse").dash.cols);
-			assert.deepEqual(keys, ["project.:todo"], `キーが想定と違う: ${JSON.stringify(keys)}`);
-			assert.ok(!walk(d.byId["global"]).filter(byClass("col"))[0].classList.contains("collapsed"), "GLOBAL の todo まで畳まれた");
-		});
-
-		await check("#62(c) 立て直しても project の畳みだけが残る", async () => {
-			const d2 = await runDashboard(storage);
-			assert.ok(
-				!walk(d2.byId["global"]).filter(byClass("col"))[0].classList.contains("collapsed"),
-				"GLOBAL の todo が畳まれている",
-			);
-			assert.ok(
-				walk(d2.byId["project"]).filter(byClass("col"))[0].classList.contains("collapsed"),
-				"project の todo が開いている",
-			);
-		});
-	}
 }
 
 for (const f of failures) console.error("FAIL", f);

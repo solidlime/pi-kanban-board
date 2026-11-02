@@ -175,19 +175,15 @@ check("img / estimate / col / blocks / priority / movedBy では引けない", (
 	assert.equal(hit(c, "agent-0"), false, "movedBy（UI に出ない内部値）で引けている");
 });
 
-// --- 7. 2 箇所（renderProject / renderGlobal）が cardHit を通る -------------
-check("cardHit(x, query) は renderProject と renderGlobal の 2 箇所から呼ばれる", () => {
-	assert.equal((html.match(/cardHit\(x, query\)/g) || []).length, 2);
-	const at = html.indexOf("function renderGlobal(");
-	assert.ok(at >= 0, "renderGlobal が無い");
-	// センチネル未検査だと slice(at, -1) が末尾 1 文字を落とすだけで静かに全文へ広がる。
-	const gEnd = html.indexOf("function serveLeft(", at);
-	assert.ok(gEnd > at, "serveLeft のセンチネルが無い");
-	const g = html.slice(at, gEnd);
-	assert.match(g, /cardFilterOk\(x, all\) && \(!search \|\| cardHit\(x, query\)\)/);
+// --- 7. カードを描く板（renderProject）が cardHit を通る -------------------
+check("cardHit(x, query) は renderProject から呼ばれる", () => {
+	assert.equal((html.match(/cardHit\(x, query\)/g) || []).length, 1);
 	const pAt = html.indexOf("function renderProject(");
 	assert.ok(pAt >= 0, "renderProject が無い");
-	const p = html.slice(pAt, at);
+	// センチネル未検査だと slice(pAt, -1) が末尾 1 文字を落とすだけで静かに全文へ広がる。
+	const pEnd = html.indexOf("function serveLeft(", pAt);
+	assert.ok(pEnd > pAt, "serveLeft のセンチネルが無い");
+	const p = html.slice(pAt, pEnd);
 	assert.match(p, /cardFilterOk\(x, all\) && \(!search \|\| cardHit\(x, query\)\)/);
 	// 旧述語（text だけ見る実装）が残っていないこと。
 	assert.doesNotMatch(html, /String\(x\.text \|\| ""\)\.toLowerCase\(\)/);

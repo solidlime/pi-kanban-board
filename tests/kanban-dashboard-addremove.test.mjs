@@ -132,12 +132,12 @@ await check("DASHBOARD_HTML: 削除は confirm() で確認し、false なら何�
 	assert.ok(h.includes('act("/api/remove", { id: c.id }, ctx)'), "remove が confirm の後に無い");
 });
 
-await check("DASHBOARD_HTML: RO 分岐は残る（project は書き込み可、global は読み取り専用）", () => {
+await check("DASHBOARD_HTML: RO 分岐は残る（project は書き込み可、GLOBAL 欄は無い）", () => {
 	// boardCtx の既定は active:true。非活性は呼び出し側が明示する。
-	assert.ok(/function boardCtx\(scope, sid, active\)\{ return \{ scope: scope, sid: sid \|\| "", active: active !== false \}; \}/.test(SRC), "boardCtx の既定 active:true が崩れている");
-	// #17: session ボードは無い。project 行は書き込み可、global 行は読み取り専用。
-	assert.ok(SRC.includes('boardCtx("project", "", true)'), "project 行の ctx が無い");
-	assert.ok(SRC.includes('boardCtx("global", "", false)'), "global 行の ctx が読み取り専用でない");
+	assert.ok(/function boardCtx\(scope, sid, active, board\)\{ return \{ scope: scope, sid: sid \|\| "", active: active !== false, board: board \|\| "" \}; \}/.test(SRC), "boardCtx の既定 active:true が崩れている");
+	// #17: session ボードは無い。project 行は書き込み可。GLOBAL 欄は削除済み。
+	assert.match(SRC, /boardCtx\("project", "", true, projPick/, "project 行の ctx が無い");
+	assert.ok(!SRC.includes('id="global"'), "GLOBAL 欄が残っている");
 	assert.ok(!SRC.includes('boardCtx("session"'), "session ボードの ctx が残っている");
 	// 分岐コードと文言の定義自体は残す（他用途で参照されうる）。
 	assert.ok(/RO_MSG = "この看板は読み取り専用/.test(SRC), "RO_MSG が消えている");
@@ -347,29 +347,23 @@ await check("/api/remove: 消したカードは他の blocks からも外れる"
 
 	const els = () => created;
 	const findBtn = (pred) => els().find((e) => e.tagName === undefined && pred(e));
-	// #17: 前の版は「2 セッション × 3 列」= 6。今は「project + global」の 2 板 × 3 列。
+	// #17: 前の版は「2 セッション × 3 列」= 6。今は project 1 板 × 3 列（GLOBAL 欄は削除済み）。
 	const addBtns = els().filter((e) => String(e.className).includes("addbtn"));
 	const delBtns = els().filter((e) => String(e.className).includes("del"));
 	const clearUrls = () => urls.splice(0, urls.length);
 
-	await check("vm: 列ごとに + ボタンが出る（3 列 × 2 板 = project と global）", () => {
-		assert.equal(addBtns.length, 6, `addbtn=${addBtns.length}`);
+	await check("vm: 列ごとに + ボタンが出る（3 列 × project の 1 板）", () => {
+		assert.equal(addBtns.length, 3, `addbtn=${addBtns.length}`);
 		assert.ok(findBtn(() => true), "要素が作られていない");
-		assert.equal(byId["project-slug"].textContent, "alpha", "project 行が描かれていない");
 	});
 
-	// #17: project は書き込み可、global は読み取り専用（サーバが 400 で断る）。
-	// 描画順は project → global なので先頭 3 つが project。
+	// #17: project は書き込み可（GLOBAL 欄は削除したので読み取り専用の板はもう無い）。
 	const roOf = (b) => b.attrs["aria-disabled"] === "true";
 	const activeOf = (b) => b.attrs["aria-disabled"] !== "true";
-	const projAddBtns = addBtns.slice(0, 3);
-	const globalAddBtns = addBtns.slice(3);
 
-	await check("vm: project の + は全て有効、global の + は全て読み取り専用", () => {
-		assert.equal(projAddBtns.filter(activeOf).length, 3, `有効な project の + が ${projAddBtns.filter(activeOf).length}`);
-		for (const b of projAddBtns) assert.equal(b.title, "この列にカードを追加");
-		assert.equal(globalAddBtns.filter(roOf).length, 3, `aria-disabled の global の + が ${globalAddBtns.filter(roOf).length}`);
-		for (const b of globalAddBtns) assert.equal(b.title, "読み取り専用（プロジェクトの看板で編集する）");
+	await check("vm: project の + は全て有効", () => {
+		assert.equal(addBtns.filter(activeOf).length, 3, `有効な project の + が ${addBtns.filter(activeOf).length}`);
+		for (const b of addBtns) assert.equal(b.title, "この列にカードを追加");
 	});
 
 	// + と input は同じ列ボックスに入る。クリックした列の input だけを見る。
@@ -469,8 +463,8 @@ await check("/api/remove: 消したカードは他の blocks からも外れる"
 
 	await check("vm: × クリック → confirm → /api/remove?id=", async () => {
 		clearUrls();
-		// #17: カードがあるのは project 1 枚（global は読み取り専用）。
-		assert.equal(delBtns.length, 2, `del=${delBtns.length}`);
+		// #17: × が出るのは project のカードだけ（GLOBAL 欄は削除済み）。
+		assert.equal(delBtns.length, 1, `del=${delBtns.length}`);
 		const del = delBtns.find(activeOf);
 		assert.ok(del, "有効な × が無い");
 		del.lis.click[0]();
@@ -491,27 +485,6 @@ await check("/api/remove: 消したカードは他の blocks からも外れる"
 		assert.ok(!urls.some((u) => u.includes("/api/remove")), `confirm 無視で飛んだ: ${JSON.stringify(urls)}`);
 	});
 
-	await check("vm: global の + は読み取り専用で、押しても /api/add を叩かない", async () => {
-		// 2 板目の todo 列の + を探す（描画順: project 3 列 → global 3 列）。
-		const other = addBtns[3];
-		assert.ok(other, "global の + が無い");
-		assert.ok(roOf(other), "global の + が読み取り専用でない");
-		clearUrls();
-		other.lis.click[0]();
-		// input.addin は常に DOM に作られる（表示だけ切り替わる）。開かないことを見る。
-		assert.equal(inputOf(other).style.display, "none", "読み取り専用なのに input.addin が開いた");
-		for (let i = 0; i < 4; i++) await flush();
-		assert.ok(!urls.some((u) => u.includes("/api/add")), `読み取り専用なのに飛んだ: ${JSON.stringify(urls)}`);
-	});
-
-	await check("vm: global の × は読み取り専用で、押しても /api/remove を叩かない", async () => {
-		assert.equal(delBtns.filter(roOf).length, 1, "global の × が読み取り専用でない");
-		clearUrls();
-		sandbox.window.confirm = () => true; // 前のテストが false にしたままなので戻す
-		delBtns.filter(roOf)[0].lis.click[0]();
-		for (let i = 0; i < 4; i++) await flush();
-		assert.ok(!urls.some((u) => u.includes("/api/remove")), `読み取り専用なのに飛んだ: ${JSON.stringify(urls)}`);
-	});
 }
 
 // --- 5. 集計 -----------------------------------------------------------------

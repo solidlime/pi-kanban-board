@@ -284,15 +284,8 @@
           </select>
         </div>
         <!-- phase0: project が既定のボード。作業ディレクトリ（git ルート）単位で共有する -->
-        <section aria-labelledby="h-project">
-          <div class="hd" id="h-project">このプロジェクト（<span id="project-slug">—</span>）</div>
-          <div id="project"></div>
-        </section>
-        <!-- global への書き込みは 400 になった（読み取り専用の集約ビュー） -->
-        <section aria-labelledby="h-global">
-          <div class="hd" id="h-global">GLOBAL（全プロジェクト・読み取り専用）</div>
-          <div id="global"></div>
-        </section>
+        <!-- 見出しは #proj の選択（全部／ボード名）が兼ねる -->
+        <div id="project"></div>
       </div>
       <div class="pane" id="pane-projects" role="tabpanel" aria-labelledby="tab-projects" hidden>
         <div id="projects"></div>
@@ -429,7 +422,7 @@
     var typing = tg === "TEXTAREA" || a.isContentEditable === true ||
       (tg === "INPUT" && !NO_TYPE_INPUT.test(a.type || "text"));
     if (!typing) return false;
-    return !!(a.closest && a.closest("#stats, #project, #global, #serve, #projects, #settings-loops"));
+    return !!(a.closest && a.closest("#stats, #project, #serve, #projects, #settings-loops"));
   }
   // sig は「今 DOM に描かれている状態」を記述する（query を落とすと検索語の変化を取り逃す）。
   // cardFilter はクリック時に redraw() が sig を揃えるので、ここには載せない（既存テストの形を保つ）。
@@ -602,11 +595,13 @@
       return r.json();
     });
   }
-  // One board write. ctx = {scope, sid, active}; sid rides along whenever we have one.
+  // One board write. ctx = {scope, sid, active, board}; sid rides along whenever we have one.
+  // board (?p=) says which board to write: the dashboard may be showing one that is not the cwd's.
   function act(path, p, ctx){
     var params = { scope: ctx.scope }, k;
     for (k in p) if (Object.prototype.hasOwnProperty.call(p, k)) params[k] = p[k];
     if (ctx.sid) params.sid = ctx.sid;
+    if (ctx.board) params.p = ctx.board;
     // a failed write is not a connection failure: the next poll shows the truth
     return api(path, params).then(function(){ reload(); }, function(){});
   }
@@ -645,7 +640,7 @@
     });
     return b;
   }
-  function boardCtx(scope, sid, active){ return { scope: scope, sid: sid || "", active: active !== false }; }
+  function boardCtx(scope, sid, active, board){ return { scope: scope, sid: sid || "", active: active !== false, board: board || "" }; }
   // #52: ファイルを列（id 無し = 新規カード）かカード（id あり = そのカードに添付）へ送る。
   // サーバは ext クエリ必須で OK_EXTS 以外は 415 なので、送る前に同じ集合で弾いて知らせる。
   var OK_EXTS = ["png", "jpg", "gif", "webp", "avif", "mp4", "webm"]; // mirrors server OK_EXTS
@@ -670,6 +665,7 @@
     }
     var params = { scope: ctx.scope, ext: ext, col: col };
     if (ctx.sid) params.sid = ctx.sid;
+    if (ctx.board) params.p = ctx.board;
     if (id !== undefined) params.id = id;
     // 絞り込み中の新規カードはそのプロジェクトに入れる（\u0000 と "" は無所属）。
     if (id === undefined && projPick !== "" && projPick !== "\u0000") params.project = projPick;
@@ -1256,6 +1252,9 @@
     // 「該当なし」になる（card.project はカード単位の所属で通常 null）。
     var p = c && typeof c.project === "string" && c.project !== "" ? c.project
           : (c && typeof c.sid === "string" ? c.sid : "");
+    // 選んだボードは ?p= で取り直しているので、そのカードには sid が付かない（sid は
+    // 全ボード集約の印）。印無しは「見えているボードのもの」と見ないと全部消える。
+    if (p === "" && projPick !== "\u0000") return true;
     return projPick === "\u0000" ? p === "" : p === projPick;
   }
   // 1-3/1-4: 期限と依存はクライアントで計算する（API を増やさない）。due は "YYYY-MM-DD"
@@ -1323,16 +1322,18 @@
     var sel = document.getElementById("proj");
     if (!sel) return;
     var seen = {}, slugs = [];
-    function add(list){
-      for (var i = 0; i < (list || []).length; i++) {
-        // #34: ボード名は sid に入る（card.project はカード単位の所属で基本 null）。
-        // sid を見ないと選択肢が「全部/(無所属)」だけになり、?p= に渡す slug を選べない。
-        var p = list[i] && (list[i].project || list[i].sid);
-        if (typeof p === "string" && p !== "" && p !== "\u0000" && !seen[p]) { seen[p] = true; slugs.push(p); }
-      }
+    function add(p){
+      if (typeof p === "string" && p !== "" && p !== "\u0000" && !seen[p]) { seen[p] = true; slugs.push(p); }
     }
-    add(((d && d.global) || {}).cards);
-    add(((d && d.project) || {}).cards);
+    // 選択肢はボードそのもの（d.boards）から作る。古いサーバは boards を送らないので、
+    // 従来どおり見えているカードの sid / project から作る（card.project はカード単位の所属）。
+    if (d && d.boards && d.boards.length) {
+      d.boards.forEach(add);
+    } else {
+      [].concat(((d && d.global) || {}).cards || [], ((d && d.project) || {}).cards || []).forEach(function(c){
+        add(c && (c.project || c.sid));
+      });
+    }
     slugs.sort();
     if (projPick !== "" && projPick !== "\u0000" && !seen[projPick]) projPick = "";
     var opts = [["", "全部"], ["\u0000", "(無所属)"]];
@@ -1372,18 +1373,14 @@
   }
 
   // phase0: このプロセス（＝この cwd の git ルート）のボード。
-  // #17: 中身の描画は renderGlobal と同じ板（board()）を使い回す。
   // 古いサーバは project を返さない: その場合は空の見出しだけ出して落ちない。
   // 「残り N / M」と 再開 ボタンは session 行のものだったので、この行に移した（#17）。
   function renderProject(p, nowMs){
     var box = document.getElementById("project");
     if (!box) return;
     box.innerHTML = "";
-    var slug = document.getElementById("project-slug");
-    // #35: 選んだ slug を優先する（cwd 解決の結果ではなく、見ているボードの名前を出す）。
-    if (slug) slug.textContent = (projPick !== "" && projPick !== "\u0000" ? projPick : (p && p.id)) || "—";
-    var ctx = boardCtx("project", "", true);
-    // cwd で解決されるので sid は送らない。ここに slug を載せると act() が sid=<slug> を送る。
+    var ctx = boardCtx("project", "", true, projPick === "\u0000" ? "" : projPick);
+    // cwd で解決されるので sid は送らない。p（選んだボードの slug）は act() が ?p= として送る。
     // #18: 見出しの停滞件数は絞り込み後の cards を数えるので、DOM を組む前に確定させる。
     var all = (p && p.cards) || [];
     // 絞り込みは GLOBAL と同じ規則（上部の絞り込みバーは両方の看板に効く）。
@@ -1404,61 +1401,6 @@
     if (!p) return;
     if (!cards.length && filtered) { box.appendChild(el("div", "sess-empty", "該当なし")); return; }
     // 空でも board() を描く（project は既定のボードなので、空のときこそ + が要る）。
-    box.appendChild(board(cards, nowMs, ctx));
-  }
-
-  function renderGlobal(g, nowMs){
-    var box = document.getElementById("global");
-    box.innerHTML = "";
-    var all = (g && g.cards) || [];
-    var c = (g && g.counts) || {todo:0, doing:0, done:0};
-    // 読み取り専用の ctx（サーバが書き込みを 400 で断る。集約ビューなので 再開 も出さない）。
-    var ctx = boardCtx("global", "", false);
-    // #49: GLOBAL も検索で絞る。絞らないとボード側だけ減って GLOBAL が残り、
-    // ヒットしていないカードが検索結果に混ざる（実ブラウザ検証で発見）。
-    var search = query !== "";
-    var filtered = search || projPick !== "" || cardFilter !== "" || labFilter !== "";
-    var cards = all.filter(function(x){
-      return projOk(x) && cardFilterOk(x, all) && (!search || cardHit(x, query));
-    });
-    // #62: GLOBAL も同じ操作感で畳める（既定は開。検索中は強制展開）。
-    var gexpanded = gOpen || filtered;
-    var head = el("div", "sess-hd");
-    head.title = "クリックで折りたたみ";
-    head.setAttribute("role", "button");
-    head.setAttribute("tabindex", "0");
-    head.setAttribute("aria-expanded", gexpanded ? "true" : "false");
-    head.appendChild(el("span", "caret", gexpanded ? "▾" : "▸"));
-    // GLOBAL は駆動しない集約ビューなので「残り N / M」は出さない。
-    head.appendChild(el("span", "sess-cwd", countsText(c, cards, filtered) + " ・ 計 " + cards.length + " 枚" + staleText(cards)));
-    box.appendChild(head);
-    // GLOBAL の halt は読み取り専用なので 再開 は出さない（haltBox が ctx.active で無効化する）。
-    var hb = haltBox(g, ctx);
-    if (hb) box.appendChild(hb);
-    // ヘッダ内の操作は畳まない。
-    function toggleGlobal(e){
-      var tgt = e && e.target;
-      if (tgt && tgt.closest && (tgt.closest(".ops") || tgt.closest("button") || tgt.closest("a") || tgt.closest("input"))) return;
-      gOpen = !gOpen;
-      persist();
-      redraw();
-    }
-    head.addEventListener("click", toggleGlobal);
-    head.addEventListener("keydown", function(e){
-      var k = e && e.key;
-      if (k !== "Enter" && k !== " " && k !== "Spacebar") return;
-      if (e.preventDefault) e.preventDefault();
-      toggleGlobal(e);
-    });
-    if (!gexpanded) return;
-    // GLOBAL への書き込みはサーバが 400 で断るので、読み取り専用の ctx で描く
-    // （追加・ドラッグ・削除・添付の導線が aria-disabled + 理由表示になる）。
-    // 操作系は従来どおり絞り込み前の全カード（サーバの件数）を見る。
-    if (!cards.length) {
-      if (filtered) box.appendChild(el("div", "sess-empty", "該当なし"));
-      else empty(box, "\u25A1", "GLOBAL 看板は空", " — プロジェクトのカードが1枚も無いよ");
-      return;
-    }
     box.appendChild(board(cards, nowMs, ctx));
   }
 
@@ -1550,7 +1492,7 @@
     box.innerHTML = "";
     var p = d.project || {};
     var rows = [{ label: p.id ? "このプロジェクト（" + p.id + "）" : "このプロジェクト",
-      ctx: boardCtx("project", "", true), b: p }];
+      ctx: boardCtx("project", "", true, projPick === "\u0000" ? "" : projPick), b: p }];
     rows.forEach(function(r){
       var row = el("div", "srow");
       row.appendChild(el("div", "rowlabel", r.label));
@@ -1836,7 +1778,7 @@
     box.innerHTML = "";
     var list = (projectData && projectData.projects) || [];
     if (!list.length) {
-      empty(box, "\u25A1", "プロジェクトはまだ無い", " — カードに project:<slug> を付けると、ここに現れるよ");
+      empty(box, "\u25A1", "ボードがまだ無い", " — どのディレクトリでも kanban を使えばここに並ぶよ");
     } else {
       list.forEach(function(p){ box.appendChild(projectBlock(p)); });
     }
@@ -1974,7 +1916,6 @@
     renderNext(d); // #19
     renderStats(d.stats);
     renderProject(d.project, nowMs);
-    renderGlobal(d.global, nowMs);
     renderServe(d.serve || [], nowMs);
     renderSettings(d); // #11
     selectTab(activeTab); // a poll re-render must keep the tab the user picked
@@ -2152,7 +2093,7 @@
       setConn(false, !document.getElementById("banner").classList.contains("on"));
       if (!lastData) {
         // never got any data: draw the empty states instead of blank sections
-        renderStats(null); renderProject(null, null); renderGlobal(null, null); renderServe([], null);
+        renderStats(null); renderProject(null, null); renderServe([], null);
       }
     }).then(function(){
       // プロジェクトは別エンドポイントなので、タブを開いている時だけ相乗りで取る（専用タイマーは作らない）
