@@ -546,6 +546,7 @@ html.halt .swline .sw[data-sw="pause"]{ border-color:var(--bad); }
   display:flex; gap:12px; align-items:baseline;
 }
 .banner a{color:#fff; text-decoration:underline}
+.banner[hidden]{display:none} /* display:flex が hidden 属性に勝つのを防ぐ */
 .vthumb{max-width:100%; border-radius:var(--radius); display:block; margin-top:6px}
 </style>
 </head>
