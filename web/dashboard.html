@@ -2052,9 +2052,11 @@
   // #35: cwd を解決できないと /api/dashboard の project は process.cwd() のボード（pi-web）になる。
   // プロジェクトを選んでいる間は ?p=<slug> の看板で上書きし、未選択なら従来どおり dashboard の
   // project をそのまま使う。
-  function boardOf(d){
-    if (projPick === "" || projPick === "\u0000") return Promise.resolve(d);
-    return api("/api/kanban", { p: projPick }).then(function(k){
+  // #35: 応答が返った時点で projPick を読み直すと、A の応答に B のボードを載せて別ボードの
+  // カード id で書き込むことになる（カード id はボードローカル）。選んだ slug を引数で受け取る。
+  function boardOf(d, pick){
+    if (pick === "" || pick === "\u0000") return Promise.resolve(d);
+    return api("/api/kanban", { p: pick }).then(function(k){
       // 取れなかったら「前のボード」ではなく「看板なし」を描く。誤ったボードは、
       // そこから書き込めるぶん空より危ない。
       d.project = k && k.ok && k.project ? k.project : null;
@@ -2062,8 +2064,13 @@
     }, function(){ d.project = null; return d; });
   }
   function reload(){
-    api(API).then(boardOf).then(function(d){
+    // #35: この往復の宛先を先に固定する。完了時に選び直されていたら、古い応答は捨てる。
+    var pick = projPick;
+    api(API).then(function(d){ return boardOf(d, pick); }).then(function(d){
       if (!d || typeof d !== "object") throw new Error("bad payload");
+      // #35: A を選んで往復中に B へ切り替え、B が先に描いた後に A が返る競合。
+      // lastData ごと捨てる（描画もしない）。次の reload() は既に予約済み。
+      if (pick !== projPick) return;
       lastData = d;
       setConn(true);
       fails = 0;
