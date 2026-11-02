@@ -21,10 +21,27 @@ const GEN = join(root, "extensions", "dashboard.generated.ts");
 export const normalise = (s) => s.replace(/\r\n?/g, "\n");
 const read = (f) => normalise(readFileSync(join(root, "web", f), "utf8"));
 
+// web/dash/ は 1 枚の HTML の断片。ここで差し込んで web/dashboard.html を作る（後方互換:
+// dash/ が無ければ既存の dashboard.html をそのまま使う）。
+const PARTS = [
+	["/*CSS_A*/", "dash/_a.css"],
+	["/*CSS_B*/", "dash/_b.css"],
+	["/*CSS_C*/", "dash/_c.css"],
+	["/*APP*/", "dash/_app.js"],
+];
+
+export function assemble() {
+	let html = read("dash/_head.html");
+	for (const [marker, file] of PARTS) html = html.replace(marker, () => read(file).trim());
+	const left = html.match(/\/\*(CSS_[ABC]|APP)\*\//g);
+	if (left) throw new Error("build-web: placeholder left in the page: " + left.join(", "));
+	return html;
+}
+
 export function buildWeb() {
 	// Inline the two shared scripts. The function replacer keeps "$&" and friends in
 	// the payload from being read as substitution patterns.
-	const html = read("dashboard.html")
+	const html = assemble()
 		.replace("__KB_MD_JS__", () => read("md.js").trim())
 		.replace("__KB_MEMORY_JS__", () => read("memory.js").trim());
 	const left = html.match(/__KB_(MD_JS|MEMORY_JS)__/g);
@@ -47,12 +64,19 @@ export function buildWeb() {
 if (basename(process.argv[1] ?? "") === "build-web.mjs") {
 	const want = buildWeb();
 	if (process.argv.includes("--check")) {
+		const dashNow = normalise(read("dashboard.html"));
+		if (dashNow !== normalise(assemble())) {
+			console.error("build-web: web/dashboard.html is stale - run `npm run build`");
+			process.exit(1);
+		}
 		if (normalise(readFileSync(GEN, "utf8")) !== want) {
 			console.error("build-web: extensions/dashboard.generated.ts is stale - run `npm run build`");
 			process.exit(1);
 		}
 		console.log("build-web: up to date");
 	} else {
+		// web/dashboard.html は dash/ の組み立て結果（テストと差分確認はこの 1 枚を読む）。
+		writeFileSync(join(root, "web", "dashboard.html"), assemble().replace(/\n+$/, "") + "\n", "utf8");
 		writeFileSync(GEN, want, "utf8");
 		console.log("build-web: " + want.length + " chars -> extensions/dashboard.generated.ts");
 	}

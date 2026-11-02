@@ -3,7 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>kanban — dashboard</title>
+<!-- dashboard v2.5 (#42) -->
+<title>KANBAN - __KB_HOST__</title>
 <style>
 /*CSS_A*/
 
@@ -20,19 +21,27 @@
   border:1px dashed var(--accent); border-radius:var(--radius); padding:6px 8px;
 }
 .addrow .addin:focus{outline:1px solid var(--accent); outline-offset:0}
+/* 401（トークン無し/失効）の常報。沈黙させない */
+.banner{
+  background:#7f1d1d; color:#fff; padding:8px 14px; font-size:13px;
+  display:flex; gap:12px; align-items:baseline;
+}
+.banner a{color:#fff; text-decoration:underline}
+.vthumb{max-width:100%; border-radius:var(--radius); display:block; margin-top:6px}
 </style>
 </head>
 <body>
+<div id="banner" class="banner" hidden></div>
 
 <header class="topbar">
   <div class="toprow">
-    <span class="wordmark">KANBAN</span>
+    <h1 class="wordmark">KANBAN - __KB_HOST__ <span id="conn" aria-hidden="true"></span></h1>
     <button class="ghost" id="palBtn" title="Ctrl+K">⌘ パレット</button>
     <button class="ghost" id="densityBtn">密度: 標準</button>
     <button class="ghost" id="themeBtn">テーマ: 暗</button>
     <label class="search">
       <span aria-hidden="true">⌕</span>
-      <input type="search" id="q" placeholder="本文・#番号・label・プロジェクト名で絞り込み（横断）">
+      <input type="search" id="q" placeholder="本文・#番号・label・project・sid・session・commit・blocked で絞り込み（横断）">
       <kbd>/</kbd>
     </label>
   </div>
@@ -58,7 +67,18 @@
   <div class="sw" role="switch" aria-pressed="false" tabindex="0" data-sw="pause" title="loop / 自動 pick を止める">
     <span class="lab">一時停止</span><span class="track" aria-hidden="true"></span><span class="haltchip">STOP</span>
   </div>
+  <!-- v2.5 で消えていた上限設定。0 = 無制限 -->
+  <label class="mlwrap" title="上限（無制限）">上限
+    <input id="ml" type="number" min="0" max="1000" step="1" aria-label="loop の上限（0 = 無制限）">
+  </label>
+  <label class="mlwrap" title="loop の間隔（分）">間隔
+    <input id="iv" type="number" min="1" max="240" step="1" aria-label="loop の間隔（分）">
+  </label>
 </section>
+<p class="haltnote" id="haltnote" hidden>
+  ループ停止中 — 上限に達したか、手で止めた。解除は「一時停止」スイッチか <code>/kanban resume</code>。
+  loop スイッチを ON にしても再開しない（残数が 0 のまま）。残数を戻すなら <code>/kanban loop on</code> で上限を入れ直す。
+</p>
 
 <main class="layout">
   <section class="cols" aria-label="ボード" id="board"></section>
@@ -131,6 +151,9 @@
   <div class="cap" id="lbcap"></div>
 </div>
 
+<script>
+__KB_MD_JS__
+</script>
 <script>
 /*APP*/
 </script>

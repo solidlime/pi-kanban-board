@@ -3,9 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>kanban — dashboard</title>
+<!-- dashboard v2.5 (#42) -->
+<title>KANBAN - __KB_HOST__</title>
 <style>
-
 :root{
   --bg0:#0a0c10; --bg1:#10131a; --bg2:#161a23; --line:#232936;
   --text:#e8ebf2; --muted:#8a92a6;
@@ -131,7 +131,6 @@ a{color:inherit;text-decoration:none}
 .stat.bad .v{color:var(--bad)}
 .stat.warn .v{color:var(--warn)}
 .stat.check .v{color:var(--ok); font-size:14px; padding-top:4px}
-
 
 /* ── 本体グリッド ───────────────────────── */
 .layout{
@@ -363,7 +362,6 @@ html.allview .layout{grid-template-columns:1fr}
   .lb img{max-height:70vh}
 }
 
-
 /* ── v2.4: スイッチ with 説明 / WIP / 未読 / foldbar ── */
 .sw{flex-wrap:wrap}
 .haltchip{
@@ -450,6 +448,16 @@ html.halt .stat .v{ filter:saturate(.35); }
 .swline .sw:hover{border-color:var(--accent)}
 html.halt .swline .sw[data-sw="pause"]{ border-color:var(--bad); }
 @media (pointer:coarse){ .swline .sw{min-height:44px} }
+.swline .mlwrap{
+  display:inline-flex; align-items:center; gap:6px; padding:5px 12px;
+  border:1px solid var(--line); border-radius:100px; background:var(--bg1);
+  font-family:var(--font-mono); font-size:11px; color:var(--muted);
+}
+.swline .mlwrap input{
+  width:56px; background:var(--bg2); border:1px solid var(--line);
+  border-radius:4px; color:var(--text); font:inherit; font-size:11px; padding:2px 4px;
+}
+.swline .mlwrap input:focus{outline:1px solid var(--accent)}
 
 /* ══ #45: カードモーダル。面・箱・入力はパレットと同じ見た目を使う ══ */
 .modal{
@@ -524,19 +532,27 @@ html.halt .swline .sw[data-sw="pause"]{ border-color:var(--bad); }
   border:1px dashed var(--accent); border-radius:var(--radius); padding:6px 8px;
 }
 .addrow .addin:focus{outline:1px solid var(--accent); outline-offset:0}
+/* 401（トークン無し/失効）の常報。沈黙させない */
+.banner{
+  background:#7f1d1d; color:#fff; padding:8px 14px; font-size:13px;
+  display:flex; gap:12px; align-items:baseline;
+}
+.banner a{color:#fff; text-decoration:underline}
+.vthumb{max-width:100%; border-radius:var(--radius); display:block; margin-top:6px}
 </style>
 </head>
 <body>
+<div id="banner" class="banner" hidden></div>
 
 <header class="topbar">
   <div class="toprow">
-    <span class="wordmark">KANBAN</span>
+    <h1 class="wordmark">KANBAN - __KB_HOST__ <span id="conn" aria-hidden="true"></span></h1>
     <button class="ghost" id="palBtn" title="Ctrl+K">⌘ パレット</button>
     <button class="ghost" id="densityBtn">密度: 標準</button>
     <button class="ghost" id="themeBtn">テーマ: 暗</button>
     <label class="search">
       <span aria-hidden="true">⌕</span>
-      <input type="search" id="q" placeholder="本文・#番号・label・プロジェクト名で絞り込み（横断）">
+      <input type="search" id="q" placeholder="本文・#番号・label・project・sid・session・commit・blocked で絞り込み（横断）">
       <kbd>/</kbd>
     </label>
   </div>
@@ -562,7 +578,18 @@ html.halt .swline .sw[data-sw="pause"]{ border-color:var(--bad); }
   <div class="sw" role="switch" aria-pressed="false" tabindex="0" data-sw="pause" title="loop / 自動 pick を止める">
     <span class="lab">一時停止</span><span class="track" aria-hidden="true"></span><span class="haltchip">STOP</span>
   </div>
+  <!-- v2.5 で消えていた上限設定。0 = 無制限 -->
+  <label class="mlwrap" title="上限（無制限）">上限
+    <input id="ml" type="number" min="0" max="1000" step="1" aria-label="loop の上限（0 = 無制限）">
+  </label>
+  <label class="mlwrap" title="loop の間隔（分）">間隔
+    <input id="iv" type="number" min="1" max="240" step="1" aria-label="loop の間隔（分）">
+  </label>
 </section>
+<p class="haltnote" id="haltnote" hidden>
+  ループ停止中 — 上限に達したか、手で止めた。解除は「一時停止」スイッチか <code>/kanban resume</code>。
+  loop スイッチを ON にしても再開しない（残数が 0 のまま）。残数を戻すなら <code>/kanban loop on</code> で上限を入れ直す。
+</p>
 
 <main class="layout">
   <section class="cols" aria-label="ボード" id="board"></section>
@@ -636,10 +663,14 @@ html.halt .swline .sw[data-sw="pause"]{ border-color:var(--bad); }
 </div>
 
 <script>
+__KB_MD_JS__
+</script>
+<script>
 (function () {
   "use strict";
   var MEDIA = "/api/media/";
-  var POLL = 3000;
+  var API = "/api/dashboard";
+  var POLL = 5000;
   var DAY = 86400000;
   var STALE = 7 * DAY;
 
@@ -654,6 +685,44 @@ html.halt .swline .sw[data-sw="pause"]{ border-color:var(--bad); }
   function el(t, c, x) { var n = document.createElement(t); if (c) n.className = c; if (x != null) n.textContent = String(x); return n; }
   function $(s) { return document.querySelector(s); }
   function clear(n) { while (n.firstChild) n.removeChild(n.firstChild); return n; }
+
+  // #71: 押下中の二重送信を防ぐ。同期ハンドラ（reload など）は null を返して busy にしない。
+  function flightGate(fn) {
+    var busy = false;
+    function release() { busy = false; }
+    function run() {
+      if (busy) return null;
+      var p = fn();
+      if (!p || typeof p.then !== "function") return null;
+      busy = true;
+      p.then(release, release);
+      return p;
+    }
+    run.isBusy = function () { return busy; };
+    return run;
+  }
+  // 操作ボタンの共通形。押下中は disabled、成功・失敗のどちらでも戻す。
+  function btn(label, title, fn, off) {
+    var b = el("button", "act", label);
+    if (title) b.title = title;
+    b.disabled = !!off;
+    var run = flightGate(fn);
+    b.onclick = function () {
+      b.disabled = true;
+      var p = run();
+      if (p) p.then(release, release);
+      else b.disabled = !!off;
+    };
+    function release() { b.disabled = !!off; }
+    return b;
+  }
+  // #71: loop の残数表示。0 は無制限、壊れた入力は無制限に落ちる（モードファイルは手で編集されうる）。
+  function loopRestLine(cap, used) {
+    var c = typeof cap === "number" && Number.isFinite(cap) && cap > 0 ? Math.floor(cap) : 0;
+    var u = typeof used === "number" && Number.isFinite(used) && used > 0 ? Math.floor(used) : 0;
+    if (c > 0) return "残り " + Math.max(0, c - u) + " / " + c;
+    return "残り " + u + " / 無制限";
+  }
   function pad(n) { return (n < 10 ? "0" : "") + n; }
   function todayISO() { var d = new Date(); return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()); }
   function qsOf(params) {
@@ -668,6 +737,7 @@ html.halt .swline .sw[data-sw="pause"]{ border-color:var(--bad); }
     var u = path + qsOf(params), h = {};
     if (etags[u]) h["If-None-Match"] = etags[u];
     return fetch(u, { headers: h }).then(function (r) {
+      if (r.status === 401) { authFail(); throw new Error("http 401"); }
       if (r.status === 304) return null;
       if (!r.ok) throw new Error("http " + r.status);
       var et = r.headers.get("ETag");
@@ -681,12 +751,23 @@ html.halt .swline .sw[data-sw="pause"]{ border-color:var(--bad); }
     for (k in params) if (Object.prototype.hasOwnProperty.call(params, k)) ps[k] = params[k];
     if (state.cur && state.cur !== "__all__") ps.p = state.cur;
     return fetch(path + qsOf(ps)).then(function (r) {
+      if (r.status === 401) authFail();
       if (!r.ok) throw new Error("http " + r.status);
       etags = {}; // 書き込み後は 304 で古い対面を掴まない
       return r.json();
     });
   }
   function fail(e) { toast("接続失敗: " + (e && e.message ? e.message : e)); }
+
+  // 401 は「トークンが無い/失効」= 何も見えないのに理由が見えない状態。常報する。
+  var authShown = false;
+  function authFail() {
+    var b = $("#banner");
+    if (!b || authShown) return;
+    authShown = true;
+    b.hidden = false;
+    b.textContent = "トークンが無効です。/kanban url でリンクを取り、もう一度開いて。";
+  }
 
   // ---- derived data ----
   function projReport() { return state.board && state.board.project ? state.board.project : null; }
@@ -696,17 +777,18 @@ html.halt .swline .sw[data-sw="pause"]{ border-color:var(--bad); }
     if (state.board && state.board.modes && state.board.modes.project) return state.board.modes.project;
     return {};
   }
-  function halted() { var p = projReport(); return !!(p && p.halted); }
+  // 停止はサーバが true を返した時だけ。b.halted !== true（欠落 / false）は稼働中扱い。
+  function halted() { var p = projReport(); return !!p && p.halted === true; }
   function summaryOf(slug) {
     var ps = (state.projects && state.projects.projects) || [], i;
     for (i = 0; i < ps.length; i++) if (ps[i].slug === slug) return ps[i];
     return null;
   }
   function boards() { return (state.payload && state.payload.boards) || []; }
-  function matches(c) {
+  function cardHit(c) {
     var q = state.query.trim().toLowerCase();
     if (!q) return true;
-    var hay = [c.text, "#" + c.id, c.project, c.sid, c.commit, c.blocked, (c.labels || []).join(" ")]
+    var hay = [c.text, "#" + c.id, c.project, c.sid, c.sessionId, c.commit, c.blocked, (c.labels || []).join(" ")]
       .filter(Boolean).join(" ").toLowerCase();
     return hay.indexOf(q) >= 0;
   }
@@ -733,7 +815,7 @@ html.halt .swline .sw[data-sw="pause"]{ border-color:var(--bad); }
     else a.sort(function (x, y) { return (y.movedAt || 0) - (x.movedAt || 0); });
     return a;
   }
-  function inCol(cards, col) { return sortCol(cards.filter(function (c) { return c.col === col && matches(c); }), col); }
+  function inCol(cards, col) { return sortCol(cards.filter(function (c) { return c.col === col && cardHit(c); }), col); }
 
   // ---- widgets ----
   var toastTimer;
@@ -764,7 +846,10 @@ html.halt .swline .sw[data-sw="pause"]{ border-color:var(--bad); }
       a.addEventListener("dragend", function () { a.classList.remove("dragging"); });
     }
     a.appendChild(el("span", "id", "#" + c.id));
-    a.appendChild(el("span", "t", c.text));
+    var tEl = el("span", "t");
+    // md() は web/md.js の 1 実装（インライン HTML は web/md.js がエスケープする）。
+    if (typeof md === "function") tEl.innerHTML = md(c.text); else tEl.textContent = c.text || "";
+    a.appendChild(tEl);
     if (c.col === "doing") {
       var sr = el("div", "spinrow");
       sr.appendChild(el("span", "spin"));
@@ -793,10 +878,21 @@ html.halt .swline .sw[data-sw="pause"]{ border-color:var(--bad); }
       a.appendChild(th);
     }
     vids.forEach(function (name) {
+      var mediaExt = (name.split(".").pop() || "").toLowerCase();
       var al = el("div", "attline");
-      al.appendChild(el("span", null, "▸"));
-      al.appendChild(el("span", null, name));
-      al.appendChild(el("span", null, (name.split(".").pop() || "").toLowerCase()));
+      // 動画は <video> で描画する（img では再生できない）。autoplay は付けない。
+      if (mediaExt === "mp4" || mediaExt === "webm") {
+        var im = document.createElement("video");
+        im.controls = true;
+        im.preload = "metadata";
+        im.src = MEDIA + encodeURIComponent(name);
+        im.className = "vthumb";
+        al.appendChild(im);
+      } else {
+        al.appendChild(el("span", null, "▸"));
+        al.appendChild(el("span", null, name));
+        al.appendChild(el("span", null, mediaExt));
+      }
       a.appendChild(al);
     });
     var chips = el("div", "chips");
@@ -893,7 +989,17 @@ html.halt .swline .sw[data-sw="pause"]{ border-color:var(--bad); }
     pause.removeAttribute("aria-disabled");
     pause.title = halted() ? "解除。残り回数は resume で上限へ戻る" : "loop / 自動 pick を止める";
     var max = m.maxLoops, used = (rep && rep.loops) || 0;
-    $("#loop-left").textContent = max && max > 0 ? "残り " + Math.max(0, max - used) : "∞";
+    $("#loop-left").textContent = loopRestLine(max, used);
+    // 上限の入力は poll で書き戻す。但し編集中の値は壊さない。
+    var mlw = document.querySelector(".mlwrap");
+    if (mlw) mlw.title = max && max > 0 ? "上限 " + max : "上限（無制限）";
+    var mli = $("#ml");
+    if (document.activeElement !== mli) mli.value = max && max > 0 ? String(max) : "0";
+    var iv = $("#iv");
+    if (iv && document.activeElement !== iv) iv.value = String(m.intervalMin > 0 ? m.intervalMin : 5);
+    // 停止中は理由と出口を出す（トグルだけでは戻らないことを明記）。
+    var note = $("#haltnote");
+    if (note) note.hidden = !halted();
   }
 
   // ---- render: 3 columns ----
@@ -1000,7 +1106,7 @@ html.halt .swline .sw[data-sw="pause"]{ border-color:var(--bad); }
     var cards = state.cards[p.slug];
     if (!cards) body.appendChild(el("div", "donefold", "読み込み中…"));
     else {
-      var list = cards.filter(matches);
+      var list = cards.filter(cardHit);
       if (!list.length) body.appendChild(el("div", "donefold", "該当なし"));
       sortCol(list, "todo");
       list.sort(function (x, y) { return x.col === "done" ? 1 : y.col === "done" ? -1 : 0; });
@@ -1048,6 +1154,15 @@ html.halt .swline .sw[data-sw="pause"]{ border-color:var(--bad); }
       p2.appendChild(ev);
     });
     rail.appendChild(p2);
+    // 停止中だけ出す。理由と出口（既存の resume 経路）を 1 か所に集める。
+    if (halted()) {
+      var p3 = el("div", "panel haltbox");
+      p3.appendChild(el("h3", null, "停止中"));
+      p3.appendChild(btn("解除", "resume。残り回数は上限へ戻る", function () {
+        return act("/api/resume").then(function () { refresh(); toast("解除を要求した（次のポーリングで戻る）"); }, fail);
+      }));
+      rail.appendChild(p3);
+    }
   }
 
   function renderFoot() {
@@ -1055,8 +1170,24 @@ html.halt .swline .sw[data-sw="pause"]{ border-color:var(--bad); }
     $("#footright").textContent = "API " + (p.version || "?") + " · " + (state.offline ? "接続断" : "3秒ポーリング") + " · dashboard v2.5";
   }
 
+  // #70: 打鍵を受け付ける入力にフォーカスがある間は再描画しない（3 秒 poll で入力が消える）。
+  var NO_TYPE_INPUT = /^(text|search|tel|url|email|password|number|date|datetime-local|time|month|week)$/;
+  var EDIT_ZONE = "#addbar, #swline, #board, #rail, .modal";
+  function isEditing() {
+    var a = document.activeElement;
+    if (!a || !a.tagName) return false;
+    if (!a.closest || !a.closest(EDIT_ZONE)) return false;
+    if (a.isContentEditable) return true;
+    if (a.tagName === "TEXTAREA") return true;
+    if (a.tagName !== "INPUT") return false;
+    return NO_TYPE_INPUT.test(a.type || "text");
+  }
+
   function render() {
     if (!state.payload) return;
+    // 編集中は描き直さない。抜けたら focusout 側で 1 回だけ拾う（state.dirty）。
+    if (isEditing()) { state.dirty = true; return; }
+    state.dirty = false;
     var html = document.documentElement;
     html.classList.toggle("halt", halted());
     html.classList.toggle("allview", state.allview);
@@ -1078,7 +1209,7 @@ html.halt .swline .sw[data-sw="pause"]{ border-color:var(--bad); }
   // ---- data: poll ----
   function refresh() {
     var jobs = [
-      getJSON("/api/dashboard").then(function (p) {
+      getJSON(API).then(function (p) {
         if (p) { state.payload = p; if (!state.cur) state.cur = p.project && p.project.id ? p.project.id : "__all__"; }
       }),
       getJSON("/api/projects").then(function (p) { if (p) state.projects = p; }),
@@ -1091,6 +1222,9 @@ html.halt .swline .sw[data-sw="pause"]{ border-color:var(--bad); }
     return Promise.all(jobs).then(function () {
       state.offline = false;
       if (state.allview) { state.allview = true; }
+      // 起動直後は state.cur が dashboard の応答で決まるので、板だけが未取得になる。
+      // ここで取り直さないと次の poll（数分後）まで列が空のまま。
+      if (!state.board && state.cur && state.cur !== "__all__") return pick(state.cur);
       render();
     }, function (e) {
       state.offline = true;
@@ -1111,7 +1245,9 @@ html.halt .swline .sw[data-sw="pause"]{ border-color:var(--bad); }
         if (state.open[p.slug]) jobs.push(fetchGroup(p.slug)); // 開いた時だけ取得
       });
     } else {
-      jobs.push(getJSON("/api/kanban", { p: slug }).then(function (b) { if (b) state.board = b; }));
+      // 切り替え中に古い板が返ってきたら捨てる（state.cur を後で書き換えている）。
+      var want = slug;
+      jobs.push(getJSON("/api/kanban", { p: slug }).then(function (b) { if (b && state.cur === want) state.board = b; }));
     }
     return Promise.all(jobs).then(render, function (e) { fail(e); });
   }
@@ -1128,13 +1264,21 @@ html.halt .swline .sw[data-sw="pause"]{ border-color:var(--bad); }
     var i = document.querySelector("#board .addin");
     if (i) i.focus();
   }
+  // #75: その場追加の打ちかけは再描画で消さない。閉じる（state.addCol）と破棄（draft）を分ける。
+  var addDraft = {};
   function addRow(col) {
     var f = document.createElement("form");
     f.className = "addrow";
     var inp = document.createElement("input");
     inp.className = "addin";
     inp.placeholder = "新規カード → Enter (Esc で取消)";
-    inp.onkeydown = function (e) { if (e.key === "Escape") { state.addCol = null; render(); } };
+    if (addDraft[col] != null) inp.value = addDraft[col];
+    inp.addEventListener("input", function () { addDraft[col] = inp.value; });
+    // 空で離れたら捨てる。値が入っていれば残す（打ちかけを失わない）。
+    inp.addEventListener("blur", function () { if (!inp.value.trim()) delete addDraft[col]; });
+    inp.addEventListener("keydown", function (e) {
+      if (e.key === "Escape") { state.addCol = null; delete addDraft[col]; render(); }
+    });
     f.onsubmit = function (e) { e.preventDefault(); submitAdd(col, inp.value); };
     f.appendChild(inp);
     return f;
@@ -1143,6 +1287,7 @@ html.halt .swline .sw[data-sw="pause"]{ border-color:var(--bad); }
     if (!text || !text.trim()) { state.addCol = null; render(); return; }
     act("/api/add", { text: text.trim(), col: col }).then(function () {
       state.addCol = null;
+      delete addDraft[col];
       refresh();
       toast("#" + (col === "todo" ? "TODO" : col.toUpperCase()) + " に追加");
     }, fail);
@@ -1265,6 +1410,23 @@ html.halt .swline .sw[data-sw="pause"]{ border-color:var(--bad); }
   }
 
   // ---- wiring ----
+  document.addEventListener("change", function (e) {
+    // #47 周辺: 上限の保存。v2.5 で消えていた設定をスイッチ帯に戻した。
+    if (!e.target) return;
+    if (e.target.id === "iv") {
+      if (!needProj()) return;
+      var min = Number(e.target.value);
+      if (!Number.isFinite(min) || min < 1) return;
+      getJSON("/api/interval", { min: Math.round(min) }).then(function () { refresh(); toast("間隔を " + Math.round(min) + " 分に"); }, fail);
+      return;
+    }
+    if (e.target.id !== "ml") return;
+    if (!needProj()) return;
+    var n = Number(e.target.value);
+    if (!Number.isFinite(n) || n < 0) return;
+    act("/api/maxloops", { n: Math.round(n) }).then(function () { refresh(); toast("上限を " + (n > 0 ? n : "∞") + " に"); }, fail);
+  });
+
   document.addEventListener("click", function (e) {
     var t = e.target;
     var ptab = t.closest && t.closest(".ptab");
@@ -1430,10 +1592,33 @@ html.halt .swline .sw[data-sw="pause"]{ border-color:var(--bad); }
     if (localStorage.getItem("kb-density") === "compact") { document.documentElement.setAttribute("data-density", "compact"); $("#densityBtn").textContent = "密度: コンパクト"; }
   } catch (err) { void err; }
 
-  refresh();
-  setInterval(refresh, POLL);
-})();
+  // #85: ポーリングは setTimeout 1 本。隠れているタブでは張らず、復帰で 1 回だけ取り直す。
+  var timer = null;
+  var fails = 0;
+  function nextDelay() { return fails === 0 ? POLL : Math.min(1000 * Math.pow(2, fails - 1), 30000); }
+  function schedule(){
+    if (timer !== null) { clearTimeout(timer); timer = null; }
+    if (document.visibilityState === "hidden") return;
+    timer = setTimeout(function () { timer = null; reload(); }, nextDelay());
+  }
+  function reload() {
+    return refresh().then(function () {
+      fails = state.offline ? Math.min(fails + 1, 6) : 0;
+      schedule();
+    });
+  }
+  if (typeof document.addEventListener === "function") document.addEventListener("visibilitychange", function () {
+    // 復帰時は 1 回だけ取り直す。reload の .then(schedule) が次のタイマーを張る。
+    if (document.visibilityState === "visible") { reload(); return; }
+    schedule();
+  });
+  if (typeof document.addEventListener === "function") document.addEventListener("focusout", function () {
+    // 編集を抜けたら 1 度だけ描き直す（render 側で編集を検知したら止めている）。
+    setTimeout(function () { if (state.dirty && !isEditing()) render(); }, 0);
+  });
 
+  refresh().then(function () { schedule(); });
+})();
 </script>
 </body>
 </html>

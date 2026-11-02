@@ -84,6 +84,16 @@ html.halt .stat .v{ filter:saturate(.35); }
 .swline .sw:hover{border-color:var(--accent)}
 html.halt .swline .sw[data-sw="pause"]{ border-color:var(--bad); }
 @media (pointer:coarse){ .swline .sw{min-height:44px} }
+.swline .mlwrap{
+  display:inline-flex; align-items:center; gap:6px; padding:5px 12px;
+  border:1px solid var(--line); border-radius:100px; background:var(--bg1);
+  font-family:var(--font-mono); font-size:11px; color:var(--muted);
+}
+.swline .mlwrap input{
+  width:56px; background:var(--bg2); border:1px solid var(--line);
+  border-radius:4px; color:var(--text); font:inherit; font-size:11px; padding:2px 4px;
+}
+.swline .mlwrap input:focus{outline:1px solid var(--accent)}
 
 /* ══ #45: カードモーダル。面・箱・入力はパレットと同じ見た目を使う ══ */
 .modal{
