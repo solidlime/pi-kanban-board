@@ -57,7 +57,7 @@ a{color:inherit;text-decoration:none}
 /* ── プロジェクトチップ列 (1クリック切替) ── */
 .ptabs{
   display:flex; gap:6px; padding:0 16px 10px; overflow-x:auto;
-  scrollbar-width:none;
+  scrollbar-width:thin; scrollbar-color:var(--line) transparent;
   scroll-snap-type:x proximity;
 }
 .ptabs::-webkit-scrollbar{display:none}
@@ -124,3 +124,11 @@ a{color:inherit;text-decoration:none}
 .stat.bad .v{color:var(--bad)}
 .stat.warn .v{color:var(--warn)}
 .stat.check .v{color:var(--ok); font-size:14px; padding-top:4px}
+
+/* ── ホイールで横スクロール + すべて固定 ── */
+.ptab[data-p="__all__"]{
+  position:sticky; left:0; z-index:2;
+  background:var(--bg1);
+  box-shadow:0 0 0 6px var(--bg1); /* 左端に寄せたとき下のチップが透けない */
+}
+.ptabs{ scroll-padding-left:74px; }
