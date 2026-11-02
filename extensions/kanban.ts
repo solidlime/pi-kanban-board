@@ -3632,6 +3632,21 @@ async function dashboardPayload(): Promise<unknown> {
 	};
 }
 
+const P_BAD = "p must match [A-Za-z0-9._-]";
+
+/**
+ * #35: the board ?p=<slug> names, as the spelling it is STORED under.
+ * `named: false` = the request named no board. `named: true, key: ""` = it named one that
+ * normalizes away: the caller must answer 400, never fall back to the cwd board.
+ * All three gates read this, so the read and the two writes cannot drift apart.
+ */
+function boardKeyOfP(q: URLSearchParams): { named: false } | { named: true; key: string } {
+	const pRaw = q.get("p");
+	if (pRaw === null || pRaw === "") return { named: false };
+	const slug = normalizeProject(pRaw);
+	return { named: true, key: slug === "" ? "" : storedProjectKey(slug) };
+}
+
 /** The file a write targets, or the 400 reason. Never both. */
 type WriteTarget = { ok: true; path: string } | { ok: false; error: string };
 
@@ -3663,11 +3678,10 @@ function writeBoardPath(q: URLSearchParams): WriteTarget {
 	if (scope === "global") return { ok: false, error: "global board is read-only" };
 	// p names the board the dashboard is showing: without it every write lands on the cwd's
 	// board, so dragging a card while another board is open would edit the wrong repo.
-	const pRaw = q.get("p");
-	if (pRaw !== null && pRaw !== "") {
-		const slug = normalizeProject(pRaw);
-		if (slug === "") return { ok: false, error: "p must match [A-Za-z0-9._-]" };
-		return { ok: true, path: boardPath("project", storedProjectKey(slug)) };
+	const p = boardKeyOfP(q);
+	if (p.named) {
+		if (p.key === "") return { ok: false, error: P_BAD };
+		return { ok: true, path: boardPath("project", p.key) };
 	}
 	const key = projectKeyOfWrite(q.get("sid"));
 	if (key === null) return { ok: false, error: "unknown sid" };
@@ -3694,14 +3708,13 @@ function settingsSidOf(q: URLSearchParams, res: ServerResponse): string | null {
 	if (scope === "project") {
 		// p names the board directly, exactly as writeBoardPath reads it: the panel must write
 		// the switches of the board it is showing, not of the cwd's board.
-		const pRaw = q.get("p");
-		if (pRaw !== null && pRaw !== "") {
-			const slug = normalizeProject(pRaw);
-			if (slug === "") {
-				sendJson(res, 400, { ok: false, error: "p must match [A-Za-z0-9._-]" });
+		const p = boardKeyOfP(q);
+		if (p.named) {
+			if (p.key === "") {
+				sendJson(res, 400, { ok: false, error: P_BAD });
 				return null;
 			}
-			return storedProjectKey(slug);
+			return p.key;
 		}
 		const key = projectKeyOfWrite(q.get("sid"));
 		if (key !== null) return storedProjectKey(key);
@@ -4116,15 +4129,13 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 		// #35: ?p=<slug> names the board outright. Without it, cwd resolution can fall back to
 		// process.cwd() (the pi-web install dir) and answer for a board nobody asked for. A
 		// present-but-invalid p is a 400, never a silent fallback to that cwd.
-		const pRaw = q.get("p");
-		const pSent = pRaw !== null && pRaw !== "";
-		const projectSid = pSent ? normalizeProject(pRaw) : projectSlugOf(cwdOfSidSync(sid));
-		if (pSent && projectSid === "") {
-			sendJson(res, 400, { ok: false, error: "p must match [A-Za-z0-9._-]" });
+		const p = boardKeyOfP(q);
+		if (p.named && p.key === "") {
+			sendJson(res, 400, { ok: false, error: P_BAD });
 			return;
 		}
-		// #36: `?p=` is the caller's spelling, not the board's; read the stored one and report it.
-		const storedSid = storedProjectKey(projectSid);
+		// #36: `?p=` is the caller spelling, not the board; boardKeyOfP answers the stored one.
+		const storedSid = p.named ? p.key : storedProjectKey(projectSlugOf(cwdOfSidSync(sid)));
 		const pb = readBoard(boardPath("project", storedSid));
 		sendJson(res, 200, {
 			ok: true,
