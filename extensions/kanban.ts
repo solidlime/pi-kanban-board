@@ -1165,17 +1165,15 @@ function boardKeyFor(ctx: ExtensionContext, sid: string, scope: Scope): string {
 function refresh(ctx: ExtensionContext, sessionId: string): void {
 	if (!ctx.hasUI) return;
 	lastFooter = { ctx, sid: sessionId };
-	// #16: global is the aggregate view now, so the footer counts it — GLOBAL_JSON alone
-	// is empty after the scope migration and read "0 todo / 0 doing" forever.
-	const global = aggregateGlobal();
+	// #47: GLOBAL 行は廃止。集計カウントは dashboard 側の統計帯が受け持つ。
 	const f = readModesFile();
-	// #17: the second line is this cwd's PROJECT board. Its halt tag and count ride that
+	// #17: the only line is this cwd's PROJECT board. Its halt tag and count ride that
 	// line, or a project halt stops the board with nothing on screen.
 	const projectKey = boardKeyFor(ctx, sessionId, "project");
 	const project = readBoard(boardPath("project", projectKey));
 	const ownTag = loopTagFor(sessionId, "project");
 	const ownModes = modeTags(f, projectKey, "project", sessionId);
-	// Appended to the existing GLOBAL line: still exactly two lines, no third.
+	// Appended to the (now single) PROJECT line: the API state stays visible.
 	// #64: `stale` and `fatal` are states the human must see, not just "DOWN".
 	const apiTag =
 		apiState === "down"
@@ -1185,14 +1183,12 @@ function refresh(ctx: ExtensionContext, sessionId: string): void {
 				: apiState === "fatal"
 					? " PORT BLOCKED"
 					: "";
-	// Same line again: a loop halt is a status tag, not a third row.
+	// Same line again: a loop halt is a status tag, not a second row.
 	ctx.ui.setWidget(
 		WIDGET_KEY,
 		[
-			// #26: the aggregate view has no switches, so it shows none (a loop tag here was always
-			// the legacy flat default, not a decision anyone made).
-			`GLOBAL: ${countsOf(global)}${staleTag(global)}${apiTag}`,
-			`PROJECT: ${projectKey}: ${countsOf(project)}${staleTag(project)}${ownTag}${ownModes}`,
+			// #47: one line only. The API tag rides it: a dead API must never be silent.
+			`PROJECT: ${projectKey}: ${countsOf(project)}${staleTag(project)}${ownTag}${ownModes}${apiTag}`,
 		],
 		{ placement: "aboveEditor" },
 	);
