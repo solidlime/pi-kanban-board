@@ -160,9 +160,9 @@ const writeButtons = (root) =>
 
 // --- 行の並び ---------------------------------------------------------------
 // #26: スイッチとしての global を廃止したので、設定行はこのプロジェクトの 1 行だけ。
-test("#11: 設定ペインにはこのプロジェクトの 1 行だけが並ぶ", async () => {
+test("#11: 設定ペインにはボードの 1 行だけが並ぶ", async () => {
 	const { byId } = await boot();
-	assert.deepEqual(rowLabels(byId), ["このプロジェクト（alpha）"]);
+	assert.deepEqual(rowLabels(byId), ["ボード（alpha）"]);
 	// ctl（ループ/ピック/間隔/上限/DOING 全停止）は 1 つだけ
 	const ctls = all(byId["settings-loops"], (e) => e.className === "ctl");
 	assert.equal(ctls.length, 1);

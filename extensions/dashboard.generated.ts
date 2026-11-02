@@ -1572,7 +1572,7 @@ export const DASHBOARD_TEMPLATE = `<!doctype html>
     if (!box) return;
     box.innerHTML = "";
     var p = d.project || {};
-    var rows = [{ label: p.id ? "このプロジェクト（" + p.id + "）" : "このプロジェクト",
+    var rows = [{ label: p.id ? "ボード（" + p.id + "）" : "ボード",
       ctx: boardCtx("project", "", true, projPick === "\\u0000" ? "" : projPick), b: p }];
     rows.forEach(function(r){
       var row = el("div", "srow");
