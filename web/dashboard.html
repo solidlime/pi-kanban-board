@@ -1,2232 +1,1439 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="ja">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>KANBAN - __KB_HOST__</title>
-<script>
-(function(){
-  // before any CSS: no FOUC. explicit pick wins; otherwise follow the OS scheme
-  var t = "dark";
-  try {
-    var sv = localStorage.getItem("kb-theme");
-    if (sv === "light" || sv === "dark") t = sv;
-    else if (window.matchMedia && matchMedia("(prefers-color-scheme: light)").matches) t = "light";
-  } catch (e) {}
-  if (t === "light") document.documentElement.setAttribute("data-theme", "light");
-})();
-</script>
+<title>kanban — dashboard</title>
 <style>
-  /* dark tokens = the existing palette, untouched; light tokens override the same names */
-  :root{color-scheme:dark;--bg:#18181b;--panel:#1f1f23;--card:#27272a;--border:#27272a;--border-strong:#3f3f46;--text:#e4e4e7;--muted:#a1a1aa;--accent:#a78bfa;--accent-hover:#c4b5fd;--accent-soft:#241f38;--accent-soft-2:#1e1b2e;--ok:#4ade80;--bad-dot:#f87171;--warn:#fbbf24;--bad:#f87171;--danger-bg:#7f1d1d;--danger-fg:#fee2e2;--danger-soft-fg:#fecaca;--danger-border:#7f1d1d;--empty-big:#52525b;--shadow-card:0 1px 2px rgba(0,0,0,.35);--shadow-pop:0 6px 18px rgba(0,0,0,.4)}
-  :root[data-theme="light"]{color-scheme:light;--bg:#fafafa;--panel:#ffffff;--card:#ececf1;--border:#e4e4e7;--border-strong:#d4d4d8;--text:#18181b;--muted:#62626b;--accent:#6d28d9;--accent-hover:#7c3aed;--accent-soft:#ede9fa;--accent-soft-2:#e4e0f7;--ok:#15803d;--bad-dot:#dc2626;--warn:#a16207;--bad:#dc2626;--danger-bg:#b91c1c;--danger-fg:#fef2f2;--danger-soft-fg:#b91c1c;--danger-border:#dc2626;--empty-big:#a1a1aa;--shadow-card:0 1px 2px rgba(24,24,27,.07);--shadow-pop:0 6px 16px rgba(24,24,27,.13)}
-  *{box-sizing:border-box}
-  body{margin:0;padding:14px;background:var(--bg);color:var(--text);font:13px/1.5 system-ui,-apple-system,sans-serif}
-  a{color:var(--accent)}
-  a:hover{color:var(--accent-hover)}
-  :focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
-  .wrap{max-width:1320px;margin:0 auto}
-  h1{margin:0 0 12px;font-size:16px;letter-spacing:.08em;color:var(--accent);display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-  h2{margin:0 0 8px;font-size:11px;letter-spacing:.08em;color:var(--muted);font-weight:600}
-  .hd{font-size:11px;letter-spacing:.08em;color:var(--accent);margin:18px 0 8px}
-  /* #19: 次にやる 1 枚。着手ボタンは付けない（既存のドラッグ / Enter で足りる） */
-  .next{background:linear-gradient(130deg,var(--accent-soft),var(--accent-soft-2) 70%,transparent);border-left:4px solid var(--accent);padding:10px 12px;border-radius:10px;margin-bottom:8px}
-  .next-lbl{font-size:11px;letter-spacing:.08em;color:var(--accent)}
-  .next-id{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
-  .next-t{font-size:13px;color:var(--text);overflow-wrap:anywhere}
-  .next-meta{display:flex;align-items:center;gap:6px;margin-top:6px;font-size:10px;color:var(--muted);font-variant-numeric:tabular-nums}
-  .next-meta .warn{color:var(--warn)}
-  .next-meta .bad{color:var(--bad)}
-  .next-meta .prio{color:var(--accent);border:1px solid var(--border-strong);border-radius:999px;padding:0 5px}
-  /* theme toggle: fixed set of two inline SVGs, icon shows the theme it switches TO */
-  #theme{flex:none;margin-left:auto;width:26px;height:26px;display:inline-flex;align-items:center;justify-content:center;background:transparent;border:1px solid var(--border-strong);border-radius:999px;color:var(--muted);cursor:pointer;padding:0}
-  #theme:hover{border-color:var(--accent);color:var(--accent)}
-  #theme svg{width:14px;height:14px;display:block;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
-  #theme .ic-moon{display:none}
-  :root[data-theme="light"] #theme .ic-sun{display:none}
-  :root[data-theme="light"] #theme .ic-moon{display:block}
-  /* connection status: text + dot, never color alone */
-  #conn{font-size:11px;letter-spacing:.05em;color:var(--muted);border:1px solid var(--border-strong);border-radius:999px;padding:2px 10px;display:inline-flex;align-items:center;gap:6px}
-  #conn::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--ok);flex:none}
-  #conn.ok::before{background:var(--ok)}
-  #conn.bad{color:var(--danger-soft-fg);border-color:var(--danger-border)}
-  #conn.bad::before{background:var(--bad-dot)}
-  #banner{display:none;background:var(--danger-bg);color:var(--danger-fg);padding:6px 10px;border-radius:6px;margin-bottom:10px;font-size:12px}
-  #banner.on{display:block}
-  #note{background:var(--panel);border:1px solid var(--border-strong);color:var(--text);padding:6px 10px;border-radius:6px;margin-bottom:10px;font-size:12px}
-  /* stats */
-  /* 指標は7個→11個に増えたので、幅に応じて折り返す（メディアクエリ側が下で上書きする） */
-  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(88px,1fr));gap:8px;margin-bottom:6px}
-  .stat{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:10px 12px;transition:transform .12s ease,box-shadow .12s ease}
-  @media (prefers-reduced-motion: no-preference){
-    .stat:hover{transform:translateY(-1px);box-shadow:var(--shadow-pop)}
+
+:root{
+  --bg0:#0a0c10; --bg1:#10131a; --bg2:#161a23; --line:#232936;
+  --text:#e8ebf2; --muted:#8a92a6;
+  --accent:#7aa2f7; --warn:#e0af68; --bad:#f7768e; --ok:#9ece6a;
+  --gap:8px; --radius:6px;
+  --font-body:"Segoe UI","Noto Sans JP","Hiragino Sans",sans-serif;
+  --font-mono:ui-monospace,"Cascadia Mono","SF Mono",Consolas,monospace;
+}
+html[data-theme="light"]{
+  --bg0:#f4f5f8; --bg1:#ffffff; --bg2:#f7f8fb; --line:#d8dde6;
+  --text:#1a1f2b; --muted:#5c6577;
+  --accent:#2f6bdb; --warn:#b07514; --bad:#c73e56; --ok:#3f8f4a;
+}
+html[data-density="compact"]{ --gap:5px; }
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--bg0); color:var(--text);
+  font:13px/1.5 var(--font-body);
+}
+a{color:inherit;text-decoration:none}
+.mono{font-family:var(--font-mono)}
+
+/* ── topbar ─────────────────────────────── */
+.topbar{
+  position:sticky; top:0; z-index:10;
+  background:var(--bg1); border-bottom:1px solid var(--line);
+}
+.toprow{
+  height:46px; display:flex; align-items:center; gap:12px; padding:0 16px;
+}
+.wordmark{
+  font-family:var(--font-mono); font-size:12px; letter-spacing:.35em;
+  color:var(--accent); font-weight:600;
+}
+.search{
+  flex:1; max-width:420px; margin-left:auto;
+  display:flex; align-items:center; gap:8px;
+  border:1px solid var(--line); border-radius:var(--radius);
+  background:var(--bg2); padding:5px 10px; color:var(--muted);
+}
+.search input{
+  flex:1; border:0; background:none; color:var(--text);
+  font:inherit; outline:none;
+}
+.search kbd{
+  font-family:var(--font-mono); font-size:10px; color:var(--muted);
+  border:1px solid var(--line); border-radius:4px; padding:1px 5px;
+}
+.ghost{
+  border:1px solid var(--line); background:var(--bg2); color:var(--muted);
+  border-radius:var(--radius); padding:5px 10px; font:inherit; font-size:12px;
+  cursor:pointer; white-space:nowrap;
+}
+.ghost:hover{color:var(--text); border-color:var(--accent)}
+
+/* ── プロジェクトチップ列 (1クリック切替) ── */
+.ptabs{
+  display:flex; gap:6px; padding:0 16px 10px; overflow-x:auto;
+  scrollbar-width:none;
+  scroll-snap-type:x proximity;
+}
+.ptabs::-webkit-scrollbar{display:none}
+.ptab{
+  flex:none; display:flex; align-items:center; gap:7px;
+  border:1px solid var(--line); border-radius:var(--radius);
+  background:var(--bg2); color:var(--muted);
+  padding:5px 12px; font:inherit; font-size:12px; cursor:pointer;
+  position:relative; white-space:nowrap;
+  scroll-snap-align:start;
+}
+.ptab:hover{color:var(--text); border-color:color-mix(in srgb,var(--accent) 45%,var(--line))}
+.ptab[aria-pressed="true"]{
+  color:var(--text); border-color:var(--accent);
+  background:color-mix(in srgb,var(--accent) 12%,var(--bg2));
+}
+.ptab .dot{
+  width:7px; height:7px; border-radius:50%; background:var(--line);
+  flex:none;
+}
+.ptab .dot.live{background:var(--warn)}   /* doing 有り → スピン化は CSS */
+.ptab .dot.done{background:var(--ok)}
+.ptab.doing .dot{
+  background:var(--warn);
+  border-radius:50%;
+}
+.ptab.doing .dot{ animation:spin 1.6s linear infinite;
+  clip-path: polygon(50% 0,100% 0,100% 35%,50% 35%,50% 65%,100% 65%,100% 100%,50% 100%,50% 35%,0 35%,0 65%,35% 65%,0 100%,100% 100%);
+  background: var(--warn);
+}
+@keyframes spin{ to{ transform: rotate(360deg);} }
+.ptab.doing .dot{
+  background: conic-gradient(var(--warn) 0 62%, color-mix(in srgb,var(--warn) 18%,var(--bg2)) 62% 100%);
+  animation:spin 1.4s linear infinite;
+}
+.ptab .num{font-family:var(--font-mono); font-size:10px}
+.ptab .key{
+  font-family:var(--font-mono); font-size:9px; color:var(--muted);
+  border:1px solid var(--line); border-radius:3px; padding:0 4px; opacity:.7;
+}
+.pmore{
+  flex:none; display:flex; align-items:center; gap:6px;
+  border:1px dashed var(--line); border-radius:var(--radius);
+  background:var(--bg1); color:var(--muted);
+  padding:5px 10px; font:inherit; font-size:11px; cursor:pointer;
+}
+.pmore:hover{color:var(--text); border-color:var(--accent)}
+
+/* ── 計数ストリップ ──────────────────────── */
+.strip{
+  display:flex; gap:var(--gap); padding:12px 16px 4px;
+  max-width:1440px; margin:0 auto;
+}
+.stat{
+  flex:1; background:var(--bg1); border:1px solid var(--line);
+  border-radius:var(--radius); padding:8px 12px;
+  min-width:96px;
+}
+.stat .k{font-size:11px; color:var(--muted); letter-spacing:.06em}
+.stat .v{
+  font-family:var(--font-mono); font-size:20px; font-weight:600; line-height:1.2;
+}
+.stat .v small{font-size:11px; font-weight:400; color:var(--muted)}
+.stat.bad .v{color:var(--bad)}
+.stat.warn .v{color:var(--warn)}
+.stat.check .v{color:var(--ok); font-size:14px; padding-top:4px}
+
+
+/* ── 本体グリッド ───────────────────────── */
+.layout{
+  display:grid; grid-template-columns:minmax(0,1fr) 320px;
+  gap:12px; padding:12px 16px 24px; max-width:1440px; margin:0 auto;
+  align-items:start;
+}
+@media (max-width:980px){ .layout{grid-template-columns:1fr} }
+
+/* ── kanban 3列 ─────────────────────────── */
+.cols{display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:var(--gap)}
+@media (max-width:700px){ .cols{grid-template-columns:1fr} }
+.col{
+  background:var(--bg1); border:1px solid var(--line); border-radius:var(--radius);
+  padding:10px; min-height:320px;
+}
+.colhead{
+  display:flex; align-items:baseline; gap:8px; margin-bottom:10px;
+}
+.colhead h2{
+  margin:0; font-size:11px; font-weight:600; letter-spacing:.14em;
+  color:var(--muted);
+}
+.colhead .n{font-family:var(--font-mono); font-size:11px; color:var(--muted)}
+.colhead .add{
+  margin-left:auto; border:0; background:none; color:var(--muted);
+  font:16px/1 var(--font-mono); cursor:pointer;
+}
+.colhead .add:hover{color:var(--accent)}
+
+.card{
+  background:var(--bg2); border:1px solid var(--line); border-radius:var(--radius);
+  padding:8px 10px; margin-bottom:var(--gap); cursor:grab;
+}
+.card:hover{border-color:var(--accent)}
+.card .id{font-family:var(--font-mono); font-size:11px; color:var(--muted); margin-right:6px}
+.card .t{font-weight:500}
+.card.overdue .t{color:var(--bad)}
+.chips{display:flex; flex-wrap:wrap; gap:4px; margin-top:6px}
+.chip{
+  font-family:var(--font-mono); font-size:10px; border-radius:4px;
+  padding:1px 6px; border:1px solid var(--line); color:var(--muted);
+}
+.chip.feat{color:var(--accent); border-color:color-mix(in srgb,var(--accent) 40%,transparent)}
+.chip.bug{color:var(--bad); border-color:color-mix(in srgb,var(--bad) 40%,transparent)}
+.chip.chore{color:var(--muted)}
+.chip.due-warn{color:var(--warn); border-color:color-mix(in srgb,var(--warn) 45%,transparent)}
+.chip.due-bad{color:var(--bad); border-color:color-mix(in srgb,var(--bad) 45%,transparent)}
+.chip.dep{color:var(--warn); border-style:dashed}
+.chip.session{color:var(--ok); border-color:color-mix(in srgb,var(--ok) 40%,transparent)}
+.chip.commit{color:var(--muted); text-decoration:underline dotted}
+.meta{
+  display:flex; gap:10px; margin-top:6px;
+  font-family:var(--font-mono); font-size:10px; color:var(--muted);
+}
+html[data-density="compact"] .card{padding:5px 8px}
+html[data-density="compact"] .chips,html[data-density="compact"] .meta{display:none}
+
+/* DOING スピン: mono の回転リング。onカード見出しの横に一つ。 */
+.spinrow{display:flex; align-items:center; gap:6px; margin-top:6px}
+.spin{
+  flex:none; width:12px; height:12px; border-radius:50%;
+  border:2px solid color-mix(in srgb,var(--accent) 25%,var(--bg2));
+  border-top-color:var(--accent);
+  animation:spin .9s linear infinite;
+}
+.spinlabel{
+  font-family:var(--font-mono); font-size:10px; color:var(--accent);
+}
+@keyframes spin{ to{ transform: rotate(360deg);} }
+@media (prefers-reduced-motion:reduce){
+  .spin, .ptab.doing .dot{ animation:none; }
+  .spin{ border-top-color: color-mix(in srgb,var(--accent) 60%, var(--bg2)); }
+}
+
+/* ── 添付: サムネグリッド ───────────────── */
+.thumbs{
+  display:grid; grid-template-columns:1fr 1fr; gap:4px; margin-top:6px;
+}
+.thumb{
+  position:relative; border-radius:4px; overflow:hidden;
+  border:1px solid var(--line); cursor:zoom-in;
+  aspect-ratio:16/9; background:var(--bg0);
+}
+.thumb img{width:100%; height:100%; object-fit:cover; display:block}
+.thumb .more{
+  position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+  background:color-mix(in srgb,var(--bg0) 55%,transparent);
+  font-family:var(--font-mono); font-size:14px; color:var(--text);
+}
+.attline{
+  display:flex; align-items:center; gap:8px; margin-top:6px;
+  border:1px dashed var(--line); border-radius:4px; padding:5px 8px;
+  font-family:var(--font-mono); font-size:11px; color:var(--muted);
+}
+.attline:hover{border-color:var(--accent); color:var(--text)}
+
+/* ── lightbox ───────────────────────────── */
+.lb{
+  position:fixed; inset:0; z-index:50; display:none;
+  align-items:center; justify-content:center; flex-direction:column; gap:10px;
+  background:color-mix(in srgb,var(--bg0) 88%,transparent);
+  padding:24px;
+}
+.lb[open]{display:flex}
+.lb img{max-width:100%; max-height:80vh; border-radius:var(--radius); border:1px solid var(--line)}
+.lb .cap{font-family:var(--font-mono); font-size:11px; color:var(--muted)}
+
+/* ── switch (v2.3) ──────────────────────── */
+.sw{
+  display:inline-flex; align-items:center; gap:8px;
+  min-height:44px; padding:0 10px;
+}
+.sw .lab{
+  font-family:var(--font-mono); font-size:11px; color:var(--muted);
+  white-space:nowrap;
+}
+.sw .track{
+  position:relative; width:36px; height:20px; flex:none;
+  border:1px solid var(--line); border-radius:100px; background:var(--bg2);
+  transition: background .15s, border-color .15s; cursor:pointer;
+}
+.sw .track::after{
+  content:""; position:absolute; top:2px; left:2px;
+  width:14px; height:14px; border-radius:50%; background:var(--muted);
+  transition: left .15s, background .15s;
+}
+.sw[aria-pressed="true"] .track{ background:var(--accent); border-color:var(--accent); }
+.sw[aria-pressed="true"] .track::after{ left:18px; background:var(--bg1); }
+.sw:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
+
+/* ボードの下: ソフトな完了帯 */
+.donefold{
+  border-top:1px dashed var(--line); margin-top:6px; padding-top:6px;
+  color:var(--muted); font-size:11px; display:flex; gap:8px; align-items:center;
+  cursor:pointer;
+}
+.donefold:hover{color:var(--text)}
+.donefold .upsym{font-family:var(--font-mono)}
+
+/* v2.5: すべてタブではレールを潰して横断ビューを全幅に */
+html.allview .rail{display:none}
+html.allview .layout{grid-template-columns:1fr}
+
+/* ── 右レール ───────────────────────────── */
+.rail{display:flex; flex-direction:column; gap:12px}
+.panel{
+  background:var(--bg1); border:1px solid var(--line); border-radius:var(--radius);
+  padding:12px;
+}
+.panel h3{
+  margin:0 0 8px; font-size:11px; font-weight:600; letter-spacing:.14em;
+  color:var(--muted);
+}
+.next-item{
+  display:flex; align-items:baseline; gap:8px; padding:6px 0;
+  border-top:1px solid var(--line);
+}
+.next-item:first-of-type{border-top:0}
+.next-item .why{margin-left:auto; font-size:10px; color:var(--muted)}
+.projrow{
+  padding:7px 8px; margin:0 -8px; border-top:1px solid var(--line);
+  border-radius:var(--radius); cursor:pointer;
+}
+.projrow:first-of-type{border-top:0}
+.projrow:hover{background:var(--bg2)}
+.projrow[aria-current="true"]{background:color-mix(in srgb,var(--accent) 10%,transparent)}
+.projrow .name{display:flex; justify-content:space-between; align-items:baseline; gap:8px; font-size:12px}
+.projrow .name b{font-weight:500}
+.projrow .name .here{
+  font-family:var(--font-mono); font-size:9px; color:var(--accent);
+  border:1px solid color-mix(in srgb,var(--accent) 45%,transparent);
+  border-radius:3px; padding:0 4px;
+}
+.projrow .name span{font-family:var(--font-mono); font-size:10px; color:var(--muted)}
+.bar{
+  height:4px; border-radius:2px; background:var(--bg2);
+  border:1px solid var(--line); margin-top:5px; overflow:hidden;
+}
+.bar i{display:block; height:100%; background:var(--accent)}
+.bar i.full{background:var(--ok)}
+.ev{padding:5px 0; border-top:1px solid var(--line); font-size:12px}
+.ev:first-of-type{border-top:0}
+.ev time{
+  display:block; font-family:var(--font-mono); font-size:10px; color:var(--muted);
+}
+.ev b{font-weight:500}
+.ev .ok{color:var(--ok)} .ev .bad{color:var(--bad)} .ev .warn{color:var(--warn)}
+
+/* ── footer ─────────────────────────────── */
+.foot{
+  display:flex; gap:12px; align-items:center; white-space:nowrap;
+  max-width:1440px; margin:0 auto; padding:0 16px 20px;
+  color:var(--muted); font-size:11px;
+}
+.foot kbd{
+  font-family:var(--font-mono); font-size:10px;
+  border:1px solid var(--line); border-radius:4px; padding:1px 5px;
+  background:var(--bg2); margin-right:2px;
+}
+.foot .right{margin-left:auto; font-family:var(--font-mono)}
+
+/* ══ モバイル (v2.2~) ════════════════════ */
+@media (max-width:700px){
+  .toprow{flex-wrap:wrap; height:auto; padding:10px 12px; row-gap:8px}
+  .wordmark{order:1}
+  .toprow .ghost{order:2; margin-left:auto; padding:8px 10px}
+  .search{order:3; flex-basis:100%; max-width:none; margin-left:0; padding:9px 12px}
+  .search input{min-height:24px}
+  .ptabs{padding:0 12px 10px}
+  .ptab{padding:9px 12px}
+  .ptab .key{display:none}
+  .strip{
+    overflow-x:auto; scroll-snap-type:x mandatory; padding:10px 12px 4px;
+    scrollbar-width:none;
   }
-  .stat .n{display:block;font-size:24px;font-weight:600;line-height:1.2;color:var(--text);font-variant-numeric:tabular-nums}
-  .stat .l{display:block;font-size:10px;letter-spacing:.1em;color:var(--muted);text-transform:uppercase}
-  .stat.hot .n{color:var(--accent)}
-  /* 期限・依存の指標は色だけでなくラベルの文字でも意味が通る（色は補助） */
-  .stat.warn .n{color:var(--warn)}
-  .stat.bad .n{color:var(--bad)}
-  /* boards */
-  /* #38-13: 列の高さは揃える（グリッド既定の stretch のまま）。空の列を内容の高さに
-     縮めるとドラッグのドロップ先が細くなり、盤面も階段状に崩れる。揃っているのが普通。 */
-  .cols{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
-  .col{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:9px;min-height:52px}
-  .col h3{margin:0 0 6px;font-size:11px;letter-spacing:.08em;color:var(--muted);font-weight:600}
-  .col h3 .c{color:var(--accent);margin-left:4px}
-  .col.doingcol h3{color:var(--accent)}
-  /* #38-9: DOING 列の強調（左ボーダー＋淡い背景で「今これ」と分かる） */
-  .col.doingcol{border-left:3px solid var(--accent);background:var(--accent-soft-2)}
-  .card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:7px 9px;margin-bottom:6px;font-size:12px;display:flex;gap:4px;align-items:baseline;flex-wrap:wrap;box-shadow:var(--shadow-card);transition:transform .12s ease,box-shadow .12s ease,border-color .12s ease}
-  @media (prefers-reduced-motion: no-preference){
-    .card:hover{transform:translateY(-1px);box-shadow:var(--shadow-pop);border-color:var(--border-strong)}
-  }
-  .card .id{color:var(--accent);flex:none;font-weight:700}
-  .card .proj{flex:none;font-size:10px;color:var(--muted);border:1px solid var(--border-strong);border-radius:999px;padding:0 5px}
-  /* #20: 会話リンクは ID の小片。pi-web の origin は分からないのでリンクにはしない。 */
-  /* #22: ラベルも同じ小片（宣言を共有して 1 行で済ませる）。 */
-  .card .sess,.card .commit,.card .lab{flex:none;font-size:10px;color:var(--muted);border:1px solid var(--border-strong);border-radius:999px;padding:0 5px;font-variant-numeric:tabular-nums}
-  .card .t{flex:1;min-width:0;overflow-wrap:anywhere;white-space:pre-wrap}
-  /* #38-5: 60 字超は 3 行で切ってクリック展開 */
-  .card .t.clampable:not(.open){display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;cursor:pointer}
-  /* #38-10/#38-11: DOING の経過（「N分前から」）と 2 時間超の ⏳。色は既存トークンのみ */
-  .card .since{color:var(--muted);margin-right:4px;font-variant-numeric:tabular-nums}
-  .card .stale{color:var(--muted);margin-right:4px}
-  /* #74: ⏳ は常に DOM に置き、2 時間未満は CSS で隠す（ticker が構造を変えないため）。 */
-  /* #38-7: 見出しクリックで列ごと畳む（中身は描画したまま display だけ落とす） */
-  .col h3{cursor:pointer}
-  .col.collapsed .card,.col.collapsed .more,.col.collapsed .addbtn,.col.collapsed .addin{display:none}
-  /* 画像/動画サムネはカードの幅いっぱいの次の行。64px に抑えて 1 行の高さに収める。 */
-  .card img,.card video{flex-basis:100%;max-width:100%;max-height:64px;border-radius:4px;display:block;margin-top:4px}
-  .card .badimg{flex-basis:100%;font-size:11px;color:var(--muted);margin-top:4px}
-  /* #36 前半: 掴んでいる手応え（派手にしない）+ ドロップ先の強調 */
-  .card[draggable="true"]{cursor:grab}
-  .card.dragging{opacity:.4;box-shadow:0 10px 22px rgba(0,0,0,.4);cursor:grabbing}
-  .col.over{outline:2px dashed var(--accent);outline-offset:-2px}
-  /* #52: ファイルを掴んでカードの上に来たとき */
-  .card.fileover{outline:2px dashed var(--accent);outline-offset:-2px}
-  @media (prefers-reduced-motion: no-preference){
-    .card.dragging{transform:rotate(2.5deg) scale(.98)}
-  }
-  /* #36 カード本文のインライン編集 */
-  .card .ted{flex:1 1 100%;width:100%;min-height:3.5em;font:inherit;font-size:12px;line-height:1.5;color:var(--text);background:var(--card);border:1px solid var(--accent);border-radius:4px;resize:vertical}
-  /* #30 card ops: schedule / priority / blocked, existing tokens only */
-  .card .prio{flex:none;font-size:10px;color:var(--accent);border:1px solid var(--border-strong);border-radius:999px;padding:0 5px}
-  .card .blocked{flex:none;font-size:10px;color:var(--danger-soft-fg);border:1px solid var(--danger-border);border-radius:999px;padding:0 5px}
-  .card .sched{flex:none;font-size:10px;color:var(--muted);font-variant-numeric:tabular-nums;border:1px solid currentColor;border-radius:999px;padding:0 6px}
-  /* 期限の小片: 3日以内 = --warn / 超過 = --bad。超過は文字も「期限切れ」にするが、
-     完了済みは色も語も付けない（dueCls）—— 期限超過の集計も完了を数えないので。 */
-  .card .sched.warn{color:var(--warn)}
-  .card .sched.bad{color:var(--bad)}
-  .card .ops,.srv .ops{display:flex;gap:3px;flex-wrap:wrap;align-items:center;flex-basis:100%}
-  .srv .ops{flex-basis:auto}
-  /* ▲▼ は組で一行に保つ（折返しで片方だけ落ちない） */
-  .card .ops .pair{display:flex;gap:3px;flex:none}
-  button.mini{font:inherit;font-size:10px;line-height:1.5;color:var(--muted);background:var(--panel);border:1px solid var(--border-strong);border-radius:4px;padding:0 5px;cursor:pointer}
-  button.mini{transition:color .12s ease,background-color .12s ease,border-color .12s ease}
-  button.mini:hover{color:var(--accent);border-color:var(--accent);background:var(--accent-soft)}
-  button.mini[disabled]{opacity:.45;cursor:default}
-  /* #45 列末尾の追加 UI とカード削除（色は既存トークンのみ） */
-  /* 読み取り専用は aria-disabled: ネイティブ disabled はクリックを飲んで理由を出せない */
-  .col .addbtn{width:100%;margin-top:2px}
-  .col .addin{width:100%;font:inherit;font-size:11px;background:var(--card);color:var(--text);border:1px solid var(--accent);border-radius:4px;padding:2px 4px}
-  button.mini[aria-disabled="true"]{opacity:.45;cursor:default}
-  .card .ops button.del{color:var(--danger-soft-fg);border-color:var(--danger-border)}
-  .card .ops button.del:hover{color:var(--danger-fg);border-color:var(--danger-border)}
-  /* #36 任意時刻の発火指定（datetime-local 直入力） */
-  /* #38-13: 押せるのに 19px だった。指の大きさは好みでなく下限なので、行の高さだけ上げる */
-  .card .ops input[type=datetime-local]{font:inherit;font-size:10px;background:var(--panel);color:var(--text);border:1px solid var(--border-strong);border-radius:4px;padding:1px 3px;min-height:24px}
-  /* #31 board switches: doingLoop / autoPick / interval / DOING stop */
-  .ctl{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:2px 0 8px;font-size:11px;color:var(--muted)}
-  button.sw{font:inherit;font-size:10px;letter-spacing:.05em;border-radius:999px;padding:1px 8px;border:1px solid var(--border-strong);background:transparent;color:var(--muted);cursor:pointer;min-height:24px}
-  button.sw.on{border-color:var(--ok);color:var(--ok)}
-  button.sw[disabled]{opacity:.45;cursor:default}
-  .ctl input[type=number]{width:56px;font:inherit;font-size:11px;background:var(--panel);color:var(--text);border:1px solid var(--border-strong);border-radius:4px;padding:1px 4px}
-  /* #67: 残り N / 上限 は同じ行のまま（幅を取るので折返し単位にする） */
-  .ctl .rest{font-variant-numeric:tabular-nums;white-space:nowrap}
-  /* #66: ラベルと入力欄は 1 つの nowrap 群（幅が足りなければ行ごと折り返す） */
-  .ctl .grp{display:inline-flex;align-items:center;gap:8px;flex-wrap:nowrap;white-space:nowrap}
-  /* #68: WCAG 2.5.8 の 24×24。見た目は padding で稼ぎ、文字は 10px のまま */
-  button.mini{min-width:24px;min-height:24px;padding:3px 6px}
-  @media (max-width:479px){
-    .ctl{gap:6px}
-    .ctl .grp{gap:5px}
-    .ctl input[type=number]{width:44px}
-  }
-  .more{font-size:11px;color:var(--muted);padding:2px 4px}
-  /* 案A: 看板 3 列 + 右サマリ（320px）。狭い幅では 1 カラムに落す */
-  .bd{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:14px;align-items:start}
-  .bd-main{min-width:0}
-  .bd-side{display:flex;flex-direction:column;gap:10px;min-width:0;position:sticky;top:14px}
-  .side-sec{min-width:0}
-  .sec-note{margin:0 0 8px;font-size:11px;line-height:1.45;color:var(--muted)}
-  .bd-side .stats{grid-template-columns:repeat(2,minmax(0,1fr))}
-  .bd-side .stats .stat .n{font-size:20px}
-  .side-serve{display:flex;flex-direction:column;gap:8px}
-  .side-serve .hd{font-weight:600;font-size:12px;color:var(--text);margin:0}
-  /* 依存の状態バッジと、ブロック中の理由行（相手の #id と列） */
-  .card .dep{flex:none;font-size:10px;border:1px solid currentColor;border-radius:999px;padding:0 6px;color:var(--muted)}
-  .card .dep.ok{color:var(--ok)}
-  .card .dep.blocked{color:var(--warn)}
-  .card .why{flex-basis:100%;font-size:10px;color:var(--muted);overflow-wrap:anywhere}
-  .why .wbad{color:var(--warn)}
-  /* board rows（#17: .sess-hd / .sess-cwd は project の行が流用している） */
-  .sess-hd{display:flex;gap:6px 14px;align-items:baseline;flex-wrap:wrap;margin-bottom:8px}
-  .sess-t{font-size:13px;font-weight:600;overflow-wrap:anywhere;display:inline-flex;align-items:center;gap:6px}
-  .sess-cwd{font-size:11px;color:var(--muted);overflow-wrap:anywhere}
-  /* #48: 看板はヘッダのクリックで畳める（既定は全開） */
-  /* #49: 10px/var(--muted) の ▾ は見えなかった。本文色 + 13px + hover で「畳める」ことを示す。
-     caret は文字のまま差し替える（回転より読み上げ・コピーに強い）。
-     .sess-hd は看板の行とレイアウトを共有しているだけなので role で限定する。*/
-  .sess-hd[role="button"]{cursor:pointer;border-radius:6px;margin:-4px -6px 8px;padding:4px 6px;user-select:none;-webkit-user-select:none}
-  .sess-hd[role="button"]:hover{background:var(--accent-soft)}
-  /* #17 で .sess の箱は消えたが、この 1 行は caret の見た目の仕様として
-     tests/kanban-dashboard-collapse-search.test.mjs が固定している（tests/ は今は触らない）。
-     実際に当たるのは下の .sess-hd>.caret。*/
-  .sess .caret{flex:none;font-size:13px;line-height:1;color:var(--text);width:1em;text-align:center;margin-right:4px}
-  /* 看板のヘッダは .sess の外にあるので別セレクタで同じ caret を使う */
-  .sess-hd>.caret{flex:none;font-size:13px;line-height:1;color:var(--text);width:1em;text-align:center;margin-right:4px}
-  .sess-empty{border:1px dashed var(--border-strong);border-radius:10px;padding:14px 10px;text-align:center;color:var(--muted);background:color-mix(in srgb,var(--panel) 60%,transparent);font-size:12px}
-  /* #48: カード検索（列の絞り込み。色は既存トークンのみ） */
-  .q{width:100%;max-width:320px;font:inherit;font-size:12px;background:var(--panel);color:var(--text);border:1px solid var(--border-strong);border-radius:6px;padding:3px 6px;margin-bottom:8px}
-  .q:focus{border-color:var(--accent)}
-  .badge{font-size:10px;letter-spacing:.06em;border-radius:999px;padding:1px 8px;border:1px solid var(--border-strong);color:var(--muted);flex:none}
-  .badge.on{border-color:var(--ok);color:var(--ok)}
-  .badge.db{border-color:var(--accent);color:var(--accent);background:var(--accent-soft-2)}
-  .badge.gone{border-color:var(--danger-bg);background:var(--danger-bg);color:var(--danger-fg)}
-  /* #58: a halted loop is process memory, so the ON/OFF switches (now in the 設定 tab) are placebo
-     until it is lifted. The banner is the only place that says so. */
-  .halt{border:1px solid var(--danger-bg);background:var(--danger-bg);color:var(--danger-fg);border-radius:6px;padding:6px 10px;margin-bottom:8px;font-size:12px;line-height:1.5}
-  .halt b{font-weight:600}
-  .halt code{background:none;border:1px solid currentColor;border-radius:4px;padding:0 4px;font-size:11px}
-  /* serve */
-  .srv{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:8px 12px;margin-bottom:8px;display:flex;gap:6px 16px;align-items:baseline;flex-wrap:wrap}
-  /* #50: URL と「● 配信中」が同じインライン行でぶつかり、折返すと重なっていた。u を flex 箱にする。 */
-  .srv .u{font-size:13px;overflow-wrap:anywhere;display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0}
-  .srv .u>a{overflow-wrap:anywhere;min-width:0}
-  .srv .n{flex:1 1 100%;font-size:12px;font-weight:600;color:var(--text);overflow-wrap:anywhere}
-  .srv .p{font-size:11px;color:var(--muted);overflow-wrap:anywhere;font-family:ui-monospace,monospace}
-  .srv .t{font-size:11px;color:var(--muted);margin-left:auto;white-space:nowrap;font-variant-numeric:tabular-nums}
-  .srv .x{font-size:11px;color:var(--muted);white-space:nowrap;font-variant-numeric:tabular-nums}
-  .srv .x.ok{color:var(--ok)}
-  .srv .x.dead{color:var(--danger-fg)}
-  .srv .permx{font-size:11px;color:var(--muted);display:inline-flex;align-items:center;gap:3px;white-space:nowrap;cursor:pointer}
-  .srv.gone{opacity:.55}
-  /* #8 プロジェクト: 1 件 = 1 ブロック。器はボード行と同じ見た目、中身の並びだけ足す */
-  .pj{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:10px}
-  .pmeta{display:flex;gap:2px 10px;align-items:baseline;flex-wrap:wrap;font-size:11px;color:var(--muted);margin-left:auto;font-variant-numeric:tabular-nums}
-  .pmeta .bad{color:var(--bad)}
-  .pmeta .warn{color:var(--warn)}
-  /* 進捗バーは補助（真実は role=progressbar の aria-valuenow と隣の文字） */
-  .pbar{flex:1 1 120px;min-width:80px;height:8px;background:var(--card);border:1px solid var(--border-strong);border-radius:999px;overflow:hidden}
-  .pbar>span{display:block;height:100%;background:var(--accent)}
-  .pct{flex:none;font-size:12px;color:var(--accent);font-variant-numeric:tabular-nums}
-  /* 日付・状態・操作は潰さず、本文だけ折り返す（スマホ幅で 1 行に詰め込まない）。
-     本文は伸ばさない: 伸ばすと続く補足（なぜ・ブロック理由）が行の真ん中に宙吹きする。 */
-  .prow{display:flex;gap:2px 10px;align-items:baseline;flex-wrap:wrap;font-size:12px;padding:2px 0}
-  /* #11: 設定タブの 1 行 = ボード名 + 操作。名前は折り返さず、操作は右で折り返す。 */
-  .srow{display:flex;gap:2px 12px;align-items:center;flex-wrap:wrap;padding:6px 0;border-bottom:1px solid var(--border)}
-  .srow .ctl{margin:0}
-  .rowlabel{font-size:12px;font-weight:600;color:var(--text);min-width:8em;overflow-wrap:anywhere}
-  .srow .halt{margin:0;font-size:11px}
-  .prow .d{flex:none;font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
-  .prow .t{flex:0 1 auto;min-width:0;overflow-wrap:anywhere}
-  .prow .w{flex:0 1 auto;min-width:0;font-size:11px;color:var(--muted);overflow-wrap:anywhere}
-  .prow .x{flex:none;font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
-  .prow .x.bad{color:var(--bad)}
-  .prow .x.warn{color:var(--warn)}
-  /* 行末の列: マイルストーンの状態と削除ボタンの位置を揃える */
-  .prow .ra,.prow .mini{margin-left:auto}
-  .pform{display:flex;gap:4px;flex-wrap:wrap;align-items:center;margin-top:6px}
-  .pform input{flex:1 1 140px;min-width:0;font:inherit;font-size:11px;background:var(--card);color:var(--text);border:1px solid var(--border-strong);border-radius:4px;padding:3px 6px}
-  .pform input:focus{border-color:var(--accent)}
-  /* empty states */
-  .empty{border:1px dashed var(--border-strong);border-radius:8px;padding:18px 14px;text-align:center;color:var(--muted);font-size:12px}
-  .empty .big{display:block;font-size:20px;margin-bottom:4px;color:var(--empty-big)}
-  .empty b{color:var(--text);font-weight:600}
-  section{margin-bottom:4px}
-  /* #50: タブは上部の横並び。左の縦カラムは中身の幅を削っていた。 */
-  .dash{display:flex;flex-direction:column;gap:12px}
-  .tabs{display:flex;flex-direction:row;gap:4px;flex:0 0 auto;overflow-x:auto}
-  .tab{font:inherit;font-size:12px;letter-spacing:.04em;text-align:center;color:var(--muted);background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:8px 14px;cursor:pointer;white-space:nowrap;flex:0 0 auto}
-  .tab:hover{color:var(--text);border-color:var(--border-strong)}
-  .tab.active{color:var(--accent);border-color:var(--accent);background:var(--accent-soft)}
-  .panes{flex:1;min-width:0}
-  .pane[hidden]{display:none}
-  @media (max-width:899px){
-    .stats{grid-template-columns:repeat(4,1fr)}
-    .cols{grid-template-columns:1fr}
-    .bd{grid-template-columns:1fr}
-    .bd-side{position:static}
-  }
-  @media (max-width:640px){
-    .tabs{flex-direction:row;width:100%}
-    .tab{flex:1 1 auto}
-  }
-  @media (max-width:479px){ .stats{grid-template-columns:repeat(2,1fr)} }
-  @media (prefers-reduced-motion: reduce){ *{transition:none!important;animation:none!important} }
-  *{scrollbar-width:thin;scrollbar-color:var(--border-strong) transparent}
-  ::-webkit-scrollbar{width:10px;height:10px}
-  ::-webkit-scrollbar-thumb{background:var(--border-strong);border-radius:999px;border:3px solid transparent;background-clip:content-box}
-  ::-webkit-scrollbar-thumb:hover{background:var(--muted);background-clip:content-box}
-  ::-webkit-scrollbar-track{background:transparent}
+  .strip::-webkit-scrollbar{display:none}
+  .stat{flex:0 0 118px; scroll-snap-align:start}
+  .layout{padding:10px 12px 20px}
+  .col{min-height:0; padding:8px}
+  .colhead{position:sticky; top:56px; background:var(--bg1); z-index:2; padding:4px 0}
+  .card{padding:12px}
+  .card:active{border-color:var(--accent)}
+  .donefold{padding:10px 4px; font-size:12px}
+  .rail{gap:10px}
+  .projrow{padding:11px 8px; margin:0 -8px}
+  .foot{display:none}
+  .lb{padding:10px}
+  .lb img{max-height:70vh}
+}
+
+
+/* ── v2.4: スイッチ with 説明 / WIP / 未読 / foldbar ── */
+.sw{flex-wrap:wrap}
+.haltchip{
+  display:none; font-family:var(--font-mono); font-size:10px;
+  border:1px solid var(--bad); color:var(--bad); border-radius:4px;
+  padding:1px 6px;
+}
+.sw[aria-pressed="true"][data-sw="pause"] .haltchip{display:inline-block}
+html.halt .spin, html.halt .ptab.doing .dot{ animation-play-state:paused; }
+html.halt .stat .v{ filter:saturate(.35); }
+
+.foldbar{
+  display:flex; gap:6px; align-items:center; margin-bottom:var(--gap);
+  color:var(--muted); font-size:11px; flex-wrap:wrap;
+}
+.foldbar .ghost{padding:3px 8px; font-size:11px}
+.group > summary::after{
+  content:'▸'; font-family:var(--font-mono); color:var(--muted);
+  transition:transform .12s;
+}
+.group[open] > summary::after{transform:rotate(90deg)}
+
+.ptab .unread{
+  width:6px; height:6px; border-radius:50%; flex:none;
+  background:var(--bad); display:none;
+}
+.ptab.has-unread .unread{display:block}
+.gmini .unread{display:none; width:6px; height:6px; border-radius:50%; background:var(--bad)}
+
+.wipbad{
+  display:none; font-family:var(--font-mono); font-size:10px;
+  border:1px solid var(--warn); color:var(--warn);
+  border-radius:4px; padding:1px 6px;
+}
+.wipbad.on{display:inline-block}
+.wipbad.hot{border-color:var(--bad); color:var(--bad)}
+
+/* undo toast */
+.toast{
+  position:fixed; bottom:18px; left:50%; transform:translateX(-50%);
+  z-index:60; display:none; align-items:center; gap:10px;
+  background:var(--bg1); border:1px solid var(--accent);
+  border-radius:var(--radius); padding:8px 14px;
+  color:var(--text); font-size:12px; box-shadow:0 6px 24px #0009;
+}
+.toast[open]{display:flex}
+.toast .undo{color:var(--accent); cursor:pointer; font-family:var(--font-mono); font-size:11px}
+.toast .undo:hover{text-decoration:underline}
+
+/* コマンドパレット */
+.pal{
+  position:fixed; inset:0; z-index:70; display:none;
+  align-items:flex-start; justify-content:center; padding-top:14vh;
+  background:color-mix(in srgb,var(--bg0) 70%,transparent);
+}
+.pal[open]{display:flex}
+.pal .box{
+  width:min(560px,92vw); background:var(--bg1); border:1px solid var(--line);
+  border-radius:var(--radius); overflow:hidden; box-shadow:0 10px 40px #000a;
+}
+.pal input{
+  width:100%; border:0; background:none; color:var(--text);
+  font:inherit; padding:12px 14px; outline:none;
+  border-bottom:1px solid var(--line);
+}
+.pal .list{max-height:46vh; overflow-y:auto}
+.pal .it{
+  display:flex; align-items:center; gap:10px; padding:8px 14px;
+  cursor:pointer; font-size:13px;
+}
+.pal .it .k{margin-left:auto; font-family:var(--font-mono); font-size:10px; color:var(--muted)}
+.pal .it.sel, .pal .it:hover{background:color-mix(in srgb,var(--accent) 14%,transparent)}
+.pal .none{padding:14px; color:var(--muted); font-size:12px}
+
+/* ── v2.5: スイッチ1行化 ── */
+.swline{
+  display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+  padding:10px 16px 2px; max-width:1440px; margin:0 auto;
+}
+.swline .sw{
+  min-height:0; padding:5px 12px;
+  border:1px solid var(--line); border-radius:100px; background:var(--bg1);
+}
+.swline .sw:hover{border-color:var(--accent)}
+html.halt .swline .sw[data-sw="pause"]{ border-color:var(--bad); }
+@media (pointer:coarse){ .swline .sw{min-height:44px} }
+
+/* ══ #45: カードモーダル。面・箱・入力はパレットと同じ見た目を使う ══ */
+.modal{
+  position:fixed; inset:0; z-index:75; display:none;
+  align-items:flex-start; justify-content:center; padding-top:8vh;
+  background:color-mix(in srgb,var(--bg0) 70%,transparent);
+}
+.modal[open]{display:flex}
+.modal .box{
+  width:min(560px,92vw); max-height:80vh; overflow-y:auto;
+  background:var(--bg1); border:1px solid var(--line);
+  border-radius:var(--radius); box-shadow:0 10px 40px #000a;
+  padding:12px 14px; display:flex; flex-direction:column; gap:8px;
+}
+.modal .cmhead{display:flex; align-items:center; gap:8px; font-family:var(--font-mono); font-size:11px; color:var(--muted)}
+.modal .cmhead button{margin-left:auto}
+.modal label.f{display:flex; flex-direction:column; gap:2px; font-size:11px; color:var(--muted)}
+.modal label.f input{
+  background:var(--bg2); border:1px solid var(--line); border-radius:var(--radius);
+  color:var(--text); font:inherit; padding:6px 8px;
+}
+.modal label.f input:focus{outline:1px solid var(--accent); outline-offset:0}
+.modal label.f input:disabled{opacity:.65}
+.modal .row2{display:grid; grid-template-columns:1fr 1fr; gap:8px}
+.modal .cmprio{display:flex; align-items:center; gap:6px; font-size:11px; color:var(--muted); flex-wrap:wrap}
+.modal .cmact{display:flex; gap:6px; flex-wrap:wrap; align-items:center; border-top:1px solid var(--line); padding-top:8px}
+.modal button{
+  background:var(--bg2); border:1px solid var(--line); border-radius:var(--radius);
+  color:var(--text); font:inherit; font-size:11px; padding:5px 10px; cursor:pointer;
+}
+.modal button:hover{border-color:var(--accent)}
+.modal .cmprio button[aria-pressed="true"]{border-color:var(--accent); color:var(--accent)}
+.modal #cm-del{border-color:var(--bad); color:var(--bad)}
+
+/* #46: DnD の面。列は出すだけ、カードは掴める */
+.card[draggable="true"]{cursor:grab}
+.card.dragging{opacity:.45}
+.col.drop{outline:1px dashed var(--accent); outline-offset:-2px}
+
+/* ══ 全プロジェクトビュー (v2.3: 横断ボード/フォールディング) ══ */
+.pview{display:none}
+.pview[open]{display:block}
+.group{
+  border:1px solid var(--line); border-radius:var(--radius); background:var(--bg1);
+  margin-bottom:var(--gap);
+}
+.group > summary{
+  list-style:none; cursor:pointer; padding:8px 12px;
+  display:flex; align-items:center; gap:8px; font-size:12px;
+  border-radius:var(--radius);
+}
+.group > summary:hover{background:var(--bg2)}
+.group .gname{font-weight:500; cursor:pointer}
+.group .gname:hover{color:var(--accent); text-decoration:underline}
+.group .gnum{font-family:var(--font-mono); font-size:10px; color:var(--muted)}
+.group .gmini{margin-left:auto; display:flex; gap:8px; font-family:var(--font-mono); font-size:10px; color:var(--muted)}
+.gbar{
+  flex:0 0 120px; height:4px; border-radius:2px; overflow:hidden;
+  background:var(--bg2); border:1px solid var(--line); margin:0 8px; cursor:pointer;
+}
+.gbar i{display:block; height:100%; background:var(--accent)}
+.gbar i.full{background:var(--ok)}
+.group article.card{margin:0 12px 8px; background:var(--bg2)}
+.grouparticle, .group .cards{padding:0 0 4px}
+
+/* 追加: j/k 選択の可視化 */
+.card.sel{outline:2px solid var(--accent); outline-offset:-1px}
+/* 追加: 列内インライン新規。パレット/モーダルを1つも増やさない */
+.addrow{margin-bottom:var(--gap)}
+.addrow .addin{
+  width:100%; background:var(--bg2); color:var(--text); font:inherit;
+  border:1px dashed var(--accent); border-radius:var(--radius); padding:6px 8px;
+}
+.addrow .addin:focus{outline:1px solid var(--accent); outline-offset:0}
 </style>
 </head>
 <body>
-<div class="wrap">
-  <h1>KANBAN - __KB_HOST__ <span id="conn" class="ok" role="status">接続中</span><button id="theme" type="button" aria-label="ライトテーマに切り替え" title="ライトテーマに切り替え"><svg class="ic-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg><svg class="ic-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8"/></svg></button></h1>
-  <div id="banner" role="alert">サーバに接続できません。前回の表示を維持しています…</div>
-  <div id="note" role="status" hidden></div>
 
-  <div class="dash">
-    <nav class="tabs" role="tablist" aria-label="ダッシュボード">
-      <button class="tab active" id="tab-board" type="button" role="tab" aria-selected="true" aria-controls="pane-board">ボード</button>
-      <button class="tab" id="tab-projects" type="button" role="tab" aria-selected="false" aria-controls="pane-projects">プロジェクト</button>
-      <button class="tab" id="tab-weekly" type="button" role="tab" aria-selected="false" aria-controls="pane-weekly">週次</button>
-      <button class="tab" id="tab-settings" type="button" role="tab" aria-selected="false" aria-controls="pane-settings">設定</button>
-    </nav>
-    <div class="panes">
-      <div class="pane" id="pane-board" role="tabpanel" aria-labelledby="tab-board">
-        <!-- 案A: 看板を左に、サマリ（次にやる / STATS / 配信）を右の sticky カラムに置く -->
-        <div class="bd">
-          <div class="bd-main">
-            <!-- 1-4: 絞り込みはクライアント側だけ（API は変えない）。状態は cardFilter（モジュールスコープ） -->
-            <div class="ctl" id="filters" role="group" aria-label="カードの絞り込み">
-              <span>絞り込み</span>
-              <button class="sw on" type="button" id="f-all" aria-pressed="true">全部</button>
-              <button class="sw" type="button" id="f-ok" aria-pressed="false">着手可能</button>
-              <button class="sw" type="button" id="f-overdue" aria-pressed="false">期限超過</button>
-              <button class="sw" type="button" id="f-blocked" aria-pressed="false">ブロック中</button>
-              <!-- #17: session 行が消えたので、検索とプロジェクト絞り込みは絞り込みバーへ移した -->
-              <input id="q" class="q" type="search" placeholder="検索: 本文・#番号・project・sid・session・commit・blocked・label（/ でフォーカス, Esc でクリア）" autocomplete="off">
-              <select id="proj" class="q" aria-label="プロジェクトで絞り込み"></select>
-              <!-- #22: ラベル絞り込み。cardFilter（単一選択のボタン群）とは独立した直交軸。 -->
-              <select id="lab" class="q" aria-label="ラベルで絞り込み">
-                <option value="">ラベル: 全部</option>
-                <option value="bug">bug</option>
-                <option value="feature">feature</option>
-                <option value="chore">chore</option>
-                <option value="調査">調査</option>
-              </select>
-            </div>
-            <!-- phase0: project が既定のボード。作業ディレクトリ（git ルート）単位で共有する -->
-            <!-- 見出しは #proj の選択（全部／ボード名）が兼ねる -->
-            <div id="project"></div>
-          </div>
-          <aside class="bd-side" aria-label="ボードのサマリ">
-            <!-- #19: 次にやる 1 枚（project ボードだけ）。空でもセクションは消さない（レイアウトが跳ねる） -->
-            <div class="side-sec">
-              <p class="sec-note">依存が片付いた TODO の先頭 1 枚。ここから着手する。</p>
-              <section id="nextsec"></section>
-            </div>
-            <!-- #36: STATS は広い面を取らない。全 0 では畳む -->
-            <section id="statsec" aria-labelledby="h-stats">
-              <h2 id="h-stats">STATS</h2>
-              <p class="sec-note">このボードの件数。着手可能=依存が全部 DONE / 期限接近=3 日以内 / 期限超過=未完了のみ。</p>
-              <div class="stats" id="stats" aria-label="統計サマリ"></div>
-            </section>
-            <!-- #12: 配信サーバーのタブを廃止してここへ吸収。入れ物の id は #serve のまま（renderServe は無変更）。 -->
-            <section class="side-serve" aria-labelledby="h-serve">
-              <div class="hd" id="h-serve">配信サーバー</div>
-              <p class="sec-note">エージェントが /serve で立てた URL。停止すると 404 になる（ファイルは消えない）。</p>
-              <div id="serve"></div>
-            </section>
-          </aside>
-        </div>
-      </div>
-      <div class="pane" id="pane-projects" role="tabpanel" aria-labelledby="tab-projects" hidden>
-        <div id="projects"></div>
-      </div>
-      <!-- #23: 週次サマリ。サーバが週変わりを観測して作った決定論的な集計を出す -->
-      <div class="pane" id="pane-weekly" role="tabpanel" aria-labelledby="tab-weekly" hidden>
-        <div id="weekly"></div>
-      </div>
-      <!-- #11: ボードごとの設定はここに集約する。ボード側は状態（halt と 再開）だけ。 -->
-      <div class="pane" id="pane-settings" role="tabpanel" aria-labelledby="tab-settings" hidden>
-        <section aria-labelledby="h-loops">
-          <div class="hd" id="h-loops">ボードのループ</div>
-          <div id="settings-loops"></div>
-        </section>
-        <section aria-labelledby="h-db">
-          <div class="hd" id="h-db">保存データ</div>
-          <div id="settings-db"></div>
-        </section>
-        <section aria-labelledby="h-selftest">
-          <div class="hd" id="h-selftest">自己診断</div>
-          <div id="settings-selftest"></div>
-        </section>
-      </div>
+<header class="topbar">
+  <div class="toprow">
+    <span class="wordmark">KANBAN</span>
+    <button class="ghost" id="palBtn" title="Ctrl+K">⌘ パレット</button>
+    <button class="ghost" id="densityBtn">密度: 標準</button>
+    <button class="ghost" id="themeBtn">テーマ: 暗</button>
+    <label class="search">
+      <span aria-hidden="true">⌕</span>
+      <input type="search" id="q" placeholder="本文・#番号・label・プロジェクト名で絞り込み（横断）">
+      <kbd>/</kbd>
+    </label>
+  </div>
+  <nav class="ptabs" aria-label="プロジェクト切り替え" id="ptabs"></nav>
+</header>
+
+<section class="strip" aria-label="計数">
+  <div class="stat"><div class="k">TODO</div><div class="v" id="sv-todo">0</div></div>
+  <div class="stat"><div class="k">DOING</div><div class="v" id="sv-doing">0</div></div>
+  <div class="stat"><div class="k">DONE</div><div class="v" id="sv-done">0</div></div>
+  <div class="stat bad"><div class="k">期限超過</div><div class="v" id="sv-due">0</div></div>
+  <div class="stat warn"><div class="k">停滞</div><div class="v" id="sv-stall">0</div></div>
+  <div class="stat check"><div class="k" id="sl-proj">この看板</div><div class="v" id="sv-proj">—</div></div>
+</section>
+
+<section class="swline" id="swline" data-rv="proj" aria-label="この看板のスイッチ">
+  <div class="sw" role="switch" aria-pressed="false" tabindex="0" data-sw="loop" title="DONE で止まらず TODO へ戻って継続実行する（残数を消費）">
+    <span class="lab">loop</span><span class="track" aria-hidden="true"></span><span class="num" id="loop-left"></span>
+  </div>
+  <div class="sw" role="switch" aria-pressed="false" tabindex="0" data-sw="pick" title="完了時に、着手可能（依存なし）な最小カードを自動で DOING へ">
+    <span class="lab">pick</span><span class="track" aria-hidden="true"></span>
+  </div>
+  <div class="sw" role="switch" aria-pressed="false" tabindex="0" data-sw="pause" title="loop / 自動 pick を止める">
+    <span class="lab">一時停止</span><span class="track" aria-hidden="true"></span><span class="haltchip">STOP</span>
+  </div>
+</section>
+
+<main class="layout">
+  <section class="cols" aria-label="ボード" id="board"></section>
+  <section class="pview" id="allview" aria-label="全プロジェクト横断">
+    <div class="foldbar">
+      <span>未完を上に。完了済みは既定で畳む。</span>
+      <button class="ghost" id="foldAll">全開く</button>
+      <button class="ghost" id="foldDone">完了を閉じる</button>
+    </div>
+    <div id="groups"></div>
+  </section>
+  <aside class="rail" aria-label="サマリ" id="rail"></aside>
+</main>
+
+<div class="pal" id="pal" role="dialog" aria-modal="true" aria-label="コマンドパレット">
+  <div class="box">
+    <input id="palq" type="text" placeholder="コマンド検索: プロジェクト切替 / loop / summary …">
+    <div class="list" id="pallist"></div>
+  </div>
+</div>
+<div class="toast" id="toast"><span id="toastmsg"></span><span class="undo" id="toastundo">元に戻す</span></div>
+
+<!-- #45: カードモーダル。面・箱・入力はパレットと共通の CSS を使う -->
+<div class="modal" id="cm" role="dialog" aria-modal="true" aria-label="カード編集">
+  <div class="box">
+    <div class="cmhead">
+      <span id="cm-id">#—</span>
+      <button class="ghost" id="cm-close" title="Esc">閉じる</button>
+    </div>
+    <label class="f"><span>本文</span><input id="cm-text" type="text"></label>
+    <div class="row2">
+      <label class="f"><span>project（空で解除）</span><input id="cm-project" type="text"></label>
+      <label class="f"><span>labels（, 区切り / 空で解除）</span><input id="cm-labels" type="text"></label>
+    </div>
+    <div class="row2">
+      <label class="f"><span>due（表示のみ）</span><input id="cm-due" type="date" disabled></label>
+      <label class="f"><span>estimate（表示のみ）</span><input id="cm-estimate" type="number" disabled></label>
+    </div>
+    <label class="f"><span>blocked（空で解除）</span><input id="cm-blocked" type="text"></label>
+    <label class="f"><span>実行予約 at（+30m / +2h / +1d / ISO8601 / 空で解除）</span><input id="cm-at" type="text"></label>
+    <div class="cmprio">
+      <span>priority</span>
+      <button type="button" data-prio="10" title="autoPick で先に拾う">10 中</button>
+      <button type="button" data-prio="5" title="中より後">5 低</button>
+      <button type="button" data-prio="0" title="既定">0 普通</button>
+    </div>
+    <div class="cmact">
+      <button type="button" id="cm-save">保存</button>
+      <button type="button" id="cm-sched">実行予約</button>
+      <button type="button" data-move="todo">TODO へ</button>
+      <button type="button" data-move="doing">DOING へ</button>
+      <button type="button" data-move="done">DONE へ</button>
+      <button type="button" id="cm-del">削除</button>
     </div>
   </div>
 </div>
 
+<footer class="foot">
+  <span><kbd>1</kbd>〜<kbd>9</kbd> 切替</span>
+  <span><kbd>0</kbd> すべて</span>
+  <span><kbd>j</kbd><kbd>k</kbd> 選択</span>
+  <span><kbd>/</kbd> 検索</span>
+  <span><kbd>c</kbd> 新規</span>
+  <span><kbd>d</kbd> 完了</span>
+  <span class="right" id="footright">API · dashboard v2.5</span>
+</footer>
+
+<div class="lb" id="lb" role="dialog" aria-modal="true" aria-label="添付画像プレビュー">
+  <img id="lbimg" alt="">
+  <div class="cap" id="lbcap"></div>
+</div>
+
 <script>
-(function(){
-  var API = "/api/dashboard";           // relative on purpose: same origin, no host assumptions
-  var MEDIA = "/api/media/";             // mirrors MEDIA_PREFIX (server side)
-  var MAX_PER_COL = 10;
-  var COLS = [["todo","TODO"],["doing","DOING"],["done","DONE"]];
-  var STAT_KEYS = [["todo","todo"],["doing","doing"],["done","done"],["serve","serve"],["media","media"]];
-  var lastData = null;   // keep previous payload when the server blinks
-  var sig = "";
-  // #48: 検索語とボードの開閉はクライアント側の状態。ポーリングの再描画と
-  // DOM 作り直しを跨いで保持する（localStorage は使わない: 既存の流儀どおり）。
-  var query = "";        // 小文字化済みの検索語
-  // 選択中のボード。"" = cwd のボード、"\u0000" = (無所属)。
-  // "\u0000" は normalizeProject（[A-Za-z0-9._-] のみ許可）を通らないので、本物の slug と同値化できない。
-  var projPick = "";
-  // #41: board() から見える「絞り込み前の看板」。検索やフィルタで依存先が画面から消えても判定できる。
-  var depPool = [];
-  // 1-4: カードの絞り込み（"" = 全部 / "ok" 着手可能 / "overdue" 期限超過 / "blocked" ブロック中）。
-  // 再描画のたびに DOM を作り直すので、選択状態はここに持つ（query / projPick と同じ流儀）。
-  var cardFilter = "";
-  // #22: ラベル絞り込み（"" = 全部）。cardFilter と共存する直交軸なので別の持ち物にする。
-  // uiSig には載せない: 静的な <select> なので復元が要らず、載せると選択のたびに描画が走る。
-  var labFilter = "";
-  // #38-7/#38-11: どちらもクライアントだけの状態（サーバには保存しない）。
-  // #62: 列のキーは "project.:col"（#17: project ボードは sid を持たないので空文字が入る）。
-  var collapsed = {};    // ckey -> true while a column is folded
-  // #72: 60 字超の本文のクリック展開（.open）だけは別の持ち物が要る。.open は表示状態なので
-  // isEditing() では守れず、分境界の再描画で必ず畳まれる。sig には載せない（載せると
-  // クリックのたびに描画が走ってフォーカスが飛ぶ）— 描画時にここから引くだけ。
-  var cardOpen = {};     // ckey + "#" + id -> true while the card's body is expanded
-  // #75: その場追加の入力欄（.addin）は再描画で列ごと作り直される。開閉と打ちかけの文字を
-  // 列（ckey）単位で持つ。sig には載せない（載せると打鍵のたびに描画が走ってフォーカスが飛ぶ）。
-  // 捨てるのは明示的な操作（Escape / Enter 確定 / 空のまま blur）だけ。blur で無条件に
-  // 捨てると、再描画前の一瞬のフォーカス移動で打ちかけが消える（#75 の不具合そのもの）。
-  var addDraft = {};     // ckey -> 打ちかけの文字列（キーがある = 開いている）
-  // #62: 開閉だけ localStorage に残す。kb-theme と同じく失敗は握りつぶし、
-  // 保存が無いキーは今の既定のまま。ns は dash のみ（#84 で右パネルは消えた）。
-  var LS_KEY = "kb-collapse", LS_NS = "dash";
-  // #76: リロード越しの記憶。kb-scroll/dash = 列のスクロール位置、kb-open/dash = 展開中の
-  // カード（DONE は対象外・上限 40）。再描画越しの cardOpen の上に「保存層」を足す形。
+(function () {
+  "use strict";
+  var MEDIA = "/api/media/";
+  var POLL = 3000;
+  var DAY = 86400000;
+  var STALE = 7 * DAY;
 
-  __KB_MEMORY_JS__
+  var state = {
+    payload: null, projects: null, board: null,
+    cur: "", allview: false, query: "", sel: -1,
+    cards: {}, open: {}, doneOpen: false, projDoneOpen: false, offline: false, addCol: null,
+    modal: null,
+  };
+  var etags = {};
 
-  var scrollTimer = null;
-  // #76: DONE はリロードで閉じた状態に戻す。kb-collapse（#72 の残骸）にも載せない。
-  function keptOpen(){
-    return memCompactCards(cardOpen, MAX_CARD_OPEN);
-  }
-  function memoCards(){
-    // 保存のたびに掃除する（毎描画ではない）。DONE と上限超過はここで落ちる。
-    memSave(LS_OPEN, LS_NS, keptOpen());
-  }
-  function persistCore(){
-    try {
-      var all = JSON.parse(localStorage.getItem(LS_KEY) || "{}");
-      if (!all || typeof all !== "object") all = {};
-      all[LS_NS] = { cols: collapsed, open: keptOpen() };
-      localStorage.setItem(LS_KEY, JSON.stringify(all));
-    } catch (e) {}
-  }
-  function saveScrollPos(deck){
-    var k = deck && deck.getAttribute("data-ckey");
-    if (!k || !(deck.clientHeight > 0)) return; // 畳んだ列は測れない（0 で潰さない）
-    var m = memLoad(LS_SCROLL, LS_NS) || {};
-    m[k] = deck.scrollTop;
-    memSave(LS_SCROLL, LS_NS, m);
-  }
-  function onScroll(e){
-    var t = e && e.target;
-    if (!t || !t.getAttribute) return;
-    clearTimeout(scrollTimer);
-    scrollTimer = setTimeout(function(){ saveScrollPos(t); }, SCROLL_DEBOUNCE_MS);
-  }
-  function restoreScrollPos(root){
-    if (!root || !root.querySelectorAll) return;
-    var m = memLoad(LS_SCROLL, LS_NS);
-    if (!m) return;
-    var ds = root.querySelectorAll(".cards[data-ckey]");
-    for (var i = 0; i < ds.length; i++){
-      var k = ds[i].getAttribute("data-ckey");
-      var v = Object.prototype.hasOwnProperty.call(m, k) ? m[k] : null;
-      if (v == null) continue;
-      var y = memClamp(v, ds[i].scrollHeight, ds[i].clientHeight);
-      if (y > 0) ds[i].scrollTop = y;
-    }
-  }
-  // #65: 描画を止めるのは「ユーザが入力中」のときだけ。再描画で作り直される領域
-  // （#stats/#project/#serve）の中で、値を受け付ける要素にフォーカスがある間は描かない。
-  // フォーカス中の要素が DOM から切り離されると blur が飛ばず、打鍵が無言で消えるため。
-  // - #q（検索ボックス）は 4 領域の外にある静的ノードなので対象外。ここを含めると
-  //   検索打鍵中に redraw() が early return し、絞り込みが一切描画されず画面が凍る。
-  // - button / checkbox は含めない。Chrome はクリックした button にフォーカスを残すので、
-  //   含めるとモード切替ボタンを押した後ずっと更新が止まる。
-  // - クリックでフォーカスが残るが打鍵を受けない INPUT（checkbox/radio/button 系）は除外。
-  //   含めると #serve の永久トグルを押した後、blur するまで更新が止まる。
-  // 見送ったデータは sig を進めず（reload 参照）、blur 後の最初のポーリングで追いつく。
-  var NO_TYPE_INPUT = /^(checkbox|radio|button|submit|reset|file|image|range|color)$/;
-  function isEditing(){
-    var a = document.activeElement;
-    if (!a || a === document.body) return false;
-    var tg = a.tagName;
-    var typing = tg === "TEXTAREA" || a.isContentEditable === true ||
-      (tg === "INPUT" && !NO_TYPE_INPUT.test(a.type || "text"));
-    if (!typing) return false;
-    return !!(a.closest && a.closest("#stats, #project, #serve, #projects, #settings-loops"));
-  }
-  // sig は「今 DOM に描かれている状態」を記述する（query を落とすと検索語の変化を取り逃す）。
-  // cardFilter はクリック時に redraw() が sig を揃えるので、ここには載せない（既存テストの形を保つ）。
-  function uiSig(){ return JSON.stringify([collapsed, query, projPick]); }
-  function persist(){ persistCore(); }
-  // #72: 展開状態の読み直し + 消えたカードの掃除。render() からも呼ぶので例外は握りつぶす。
-  // 掃除は列単位（ckey 接頭辞）。掃除が起きたときだけ書き戻すので、保存も痩せる。
-  function cardKey(ckey, c){
-    return ckey + "#" + (c && c.id);
-  }
-  function loadOpen(ckey, list){
-    try {
-      var all = JSON.parse(localStorage.getItem(LS_KEY) || "null");
-      var v = all && all[LS_NS];
-      if (v && v.open && typeof v.open === "object") Object.keys(v.open).forEach(function(k){ cardOpen[k] = v.open[k] === true; });
-    } catch (e) {}
-    var present = {}, pruned = false;
-    list.forEach(function(c){ present[cardKey(ckey, c)] = true; });
-    Object.keys(cardOpen).forEach(function(k){
-      if (k.indexOf(ckey + "#") === 0 && !present[k]) { delete cardOpen[k]; pruned = true; }
-    });
-    if (pruned) { persist(); memoCards(); }
-  }
-  // #76: リロード越しの展開状態。DONE は保存しないので、ここで拾うのは TODO/DOING だけ。
-  var memoOpen = memLoad(LS_OPEN, LS_NS);
-  if (memoOpen) Object.keys(memoOpen).forEach(function(k){ if (memoOpen[k] === true) cardOpen[k] = true; });
-  (function(){
-    var all = null;
-    try { all = JSON.parse(localStorage.getItem(LS_KEY) || "null"); } catch (e) {}
-    var v = all && all[LS_NS];
-    if (!v || typeof v !== "object") return;
-    if (v.cols && typeof v.cols === "object") Object.keys(v.cols).forEach(function(k){ collapsed[k] = v.cols[k] === true; });
-    if (v.open && typeof v.open === "object") Object.keys(v.open).forEach(function(k){ cardOpen[k] = v.open[k] === true; });
-  })();
-  var STALE_GUI_MS = 2 * 60 * 60 * 1000; // DOING over this long gets a ⏳
-  // #18: 日数の段階はサーバから配らない。カード単位の判定はクライアント計算の流儀で、
-  // サーバに焼き込むと sigOf が now を外している前提が壊れて毎分全カード再描画になる。
-  var STALE_DAY_MS = 86400000;
-  var STALE_WEEK_MS = 7 * STALE_DAY_MS;
-  // #74: 相対時刻スパンの台帳。render() が書き、tick() が読む。
-  // nowT: ago() で描いたテキスト / nowS: 「N分前から」と ⏳
-  var nowBase = Date.now();
-  var nowT = [];
-  var nowS = [];
-
-  __KB_MD_JS__
-
-
-  // #48: "/" で検索欄へ、Esc でクリア。入力中は横取りしない。
-  if (document.addEventListener) document.addEventListener("keydown", function(e){
-    var qe = document.getElementById("q");
-    if (!qe || !e) return;
-    var tag = e.target && e.target.tagName ? String(e.target.tagName).toLowerCase() : "";
-    if (e.key === "/" && tag !== "input" && tag !== "textarea") {
-      e.preventDefault();
-      qe.focus();
-    } else if (e.key === "Escape" && document.activeElement === qe) {
-      qe.value = "";
-      query = "";
-      redraw();
-      qe.blur();
-    }
-  });
-
-  // #29 tabs: the sidebar only toggles the hidden attribute — no navigation.
-  // activeTab survives the 5s re-render because render() re-applies it.
-  var TABS = ["board", "projects", "weekly", "settings"]; // #17: session 撤廃。 #8: プロジェクトは真ん中。 #23: 週次をその隣
-  var activeTab = "board";
-  function selectTab(name){
-    if (TABS.indexOf(name) < 0) name = "board";
-    activeTab = name;
-    TABS.forEach(function(n){
-      var on = n === name;
-      var b = document.getElementById("tab-" + n);
-      if (b) { b.className = "tab" + (on ? " active" : ""); b.setAttribute("aria-selected", on ? "true" : "false"); }
-      var p = document.getElementById("pane-" + n);
-      if (p) p.hidden = !on;
-    });
-  }
-  TABS.forEach(function(n){
-    var b = document.getElementById("tab-" + n);
-    // プロジェクトは別エンドポイントなので、開いた時に取りに行く。render() は毎描画で
-    // selectTab(activeTab) を呼び直すので、そちらに置くとポーリングごとに二重に取る。
-    if (b && b.addEventListener) b.addEventListener("click", function(){
-      selectTab(n);
-      if (n === "projects") loadProjects();
-      else if (n === "weekly") loadWeekly();
-    });
-  });
-  selectTab(activeTab);
-
-  function el(tag, cls, text){
-    var e = document.createElement(tag);
-    if (cls) e.className = cls;
-    if (text !== undefined) e.textContent = text;
-    return e;
-  }
-  // #55: どの看板も編集できる（看板単位の書き込みロックは無い）。
-  // ctx.active が false になるのは読み取り専用の看板だけで、今は該当が無い
-  // （#17 で編集できる面は project ボード 1 枚だけになった）。文言だけ残してある。
-  var RO_MSG = "この看板は読み取り専用 — 編集するにはプロジェクトの看板を開いて";
-  var RO_TITLE = "読み取り専用（プロジェクトの看板で編集する）";
-  var noteTimer = null;
-  // #44/#39: 一時的なお知らせ行。#banner は接続断専用なので相乗りしない。
-  function note(msg){
-    var n = document.getElementById("note");
-    if (!n) return;
-    n.textContent = msg;
-    n.hidden = !msg;
-    clearTimeout(noteTimer);
-    if (msg) noteTimer = setTimeout(function(){ n.hidden = true; }, 4000);
-  }
-  // 見出しの 1 行だけ太字にする。html を組み立てないので innerHTML が要らない。
-  function empty(parent, icon, bold, rest){
-    var d = el("div", "empty");
-    d.appendChild(el("span", "big", icon));
-    d.appendChild(el("b", null, bold));
-    d.appendChild(el("span", null, rest));
-    parent.appendChild(d);
-  }
-  function ago(iso, nowMs){
-    var d = iso ? new Date(iso) : null;
-    if (!d || isNaN(d.getTime())) return "—";
-    var s = Math.max(0, Math.round(((nowMs != null ? nowMs : Date.now()) - d.getTime()) / 1000));
-    if (s < 60) return "たった今";
-    if (s < 3600) return Math.floor(s/60) + "分前";
-    if (s < 86400) return Math.floor(s/3600) + "時間前";
-    return Math.floor(s/86400) + "日前";
-  }
-  function full(iso){ var d = iso ? new Date(iso) : null; return (d && !isNaN(d.getTime())) ? d.toLocaleString() : ""; }
-  // カードの発火行は固定幅の列に収めるので長い toLocaleString は使わない: MM/DD HH:MM（24h）
-  function shortFire(v){
-    var d = v ? new Date(v) : null;
-    if (!d || isNaN(d.getTime())) return "—";
-    var p = function(n){ return (n < 10 ? "0" : "") + n; };
-    return p(d.getMonth() + 1) + "/" + p(d.getDate()) + " " + p(d.getHours()) + ":" + p(d.getMinutes());
-  }
-  // #36: datetime-local の値はローカル壁時計（タイムゾーン無し）。
-  function dtLocal(iso){
-    var d = iso ? new Date(iso) : null;
-    if (!d || isNaN(d.getTime())) return "";
-    var p = function(n){ return (n < 10 ? "0" : "") + n; };
-    return d.getFullYear() + "-" + p(d.getMonth()+1) + "-" + p(d.getDate()) + "T" + p(d.getHours()) + ":" + p(d.getMinutes());
-  }
-  function safeHref(u){
-    try { var x = new URL(u); return (x.protocol === "http:" || x.protocol === "https:") ? x.href : null; }
-    catch (e) { return null; }
+  function el(t, c, x) { var n = document.createElement(t); if (c) n.className = c; if (x != null) n.textContent = String(x); return n; }
+  function $(s) { return document.querySelector(s); }
+  function clear(n) { while (n.firstChild) n.removeChild(n.firstChild); return n; }
+  function pad(n) { return (n < 10 ? "0" : "") + n; }
+  function todayISO() { var d = new Date(); return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()); }
+  function qsOf(params) {
+    if (!params) return "";
+    var qs = [], keys = Object.keys(params), i;
+    for (i = 0; i < keys.length; i++) qs.push(encodeURIComponent(keys[i]) + "=" + encodeURIComponent(String(params[keys[i]])));
+    return qs.length ? "?" + qs.join("&") : "";
   }
 
-  // #30/#31: the one fetch site. The dashboard poll and every write go through it, so a
-  // write always carries scope (#17: session scope is gone; scope=project needs no sid).
-  function api(path, params, init){
-    var u = path;
-    if (params) {
-      var qs = [], keys = Object.keys(params), i;
-      for (i = 0; i < keys.length; i++) {
-        qs.push(encodeURIComponent(keys[i]) + "=" + encodeURIComponent(String(params[keys[i]])));
-      }
-      if (qs.length) u += (u.indexOf("?") < 0 ? "?" : "&") + qs.join("&");
-    }
-    // #52: 生ボディの POST（/api/upload）もこの 1 つの fetch 点を通す。
-    return fetch(u, init).then(function(r){
-      if (r.status === 401) authFail(); // #85: 401 は接続断ではなく Cookie 切れ
+  // ---- fetch: ETag 付き read（304 は null = 変化なし）と POST ----
+  function getJSON(path, params) {
+    var u = path + qsOf(params), h = {};
+    if (etags[u]) h["If-None-Match"] = etags[u];
+    return fetch(u, { headers: h }).then(function (r) {
+      if (r.status === 304) return null;
       if (!r.ok) throw new Error("http " + r.status);
+      var et = r.headers.get("ETag");
+      if (et) etags[u] = et;
       return r.json();
     });
   }
-  // One board write. ctx = {scope, sid, active, board}; sid rides along whenever we have one.
-  // board (?p=) says which board to write: the dashboard may be showing one that is not the cwd's.
-  function act(path, p, ctx){
-    var params = { scope: ctx.scope }, k;
-    for (k in p) if (Object.prototype.hasOwnProperty.call(p, k)) params[k] = p[k];
-    if (ctx.sid) params.sid = ctx.sid;
-    if (ctx.board) params.p = ctx.board;
-    // a failed write is not a connection failure: the next poll shows the truth
-    return api(path, params).then(function(){ reload(); }, function(){});
-  }
-  // The button stays disabled for as long as its handler's promise is in flight, so a
-  // triple click cannot become three writes. Released on success and on failure.
-  // #71/#011: the guard itself is flightGate (pure, no DOM) so it can be tested without
-  // a browser; btn() is only the wiring. A handler with no promise is a plain action
-  // (a redraw request) and must not leave the button dead.
-  function flightGate(fn){
-    var busy = false;
-    // null = did not start (busy, or the handler is synchronous); else the wrapped promise.
-    function run(){
-      if (busy) return null;
-      var r = fn();
-      if (!r || typeof r.then !== "function") return null;
-      busy = true;
-      return r.then(function(v){ busy = false; return v; }, function(e){ busy = false; throw e; });
-    }
-    run.isBusy = function(){ return busy; };
-    return run;
-  }
-  function btn(label, title, fn, disabled){
-    var b = el("button", "mini", label);
-    b.type = "button";
-    if (title) b.title = title;
-    b.disabled = !!disabled;
-    if (disabled) return b;
-    var run = flightGate(fn);
-    b.addEventListener("click", function(){
-      if (b.disabled) return;
-      var p = run();
-      if (!p) return;
-      b.disabled = true;
-      function release(){ b.disabled = false; }
-      p.then(release, release);
-    });
-    return b;
-  }
-  function boardCtx(scope, sid, active, board){ return { scope: scope, sid: sid || "", active: active !== false, board: board || "" }; }
-  // #52: ファイルを列（id 無し = 新規カード）かカード（id あり = そのカードに添付）へ送る。
-  // サーバは ext クエリ必須で OK_EXTS 以外は 415 なので、送る前に同じ集合で弾いて知らせる。
-  var OK_EXTS = ["png", "jpg", "gif", "webp", "avif", "mp4", "webm"]; // mirrors server OK_EXTS
-  var EXT_BY_MIME = {"image/png":"png","image/jpeg":"jpg","image/gif":"gif","image/webp":"webp","image/avif":"avif","video/mp4":"mp4","video/webm":"webm"};
-  // #59: #84 で旧テンプレートを落とした際にこの分岐も一緒に消えていた。drag 元（curl・一部 OS）は
-  // file.type が空で来るので、MIME -> ファイル名の順で引く。.jpeg は .jpg と同じ形式。
-  function extOfFile(file){
-    var byMime = file && EXT_BY_MIME[file.type];
-    if (byMime) return byMime;
-    var name = String((file && file.name) || "");
-    var dot = name.lastIndexOf(".");
-    var ext = dot >= 0 ? name.slice(dot + 1).toLowerCase() : "";
-    if (ext === "jpeg") ext = "jpg";
-    return OK_EXTS.indexOf(ext) >= 0 ? ext : "";
-  }
-  function uploadHere(ctx, col, file, id){
-    var name = String((file && file.name) || "");
-    var ext = extOfFile(file);
-    if (!ext) {
-      note("非対応のファイル: " + (name || "(無名)") + " — " + OK_EXTS.join("/") + " のみ");
-      return;
-    }
-    var params = { scope: ctx.scope, ext: ext, col: col };
-    if (ctx.sid) params.sid = ctx.sid;
-    if (ctx.board) params.p = ctx.board;
-    if (id !== undefined) params.id = id;
-    // 絞り込み中の新規カードはそのプロジェクトに入れる（\u0000 と "" は無所属）。
-    if (id === undefined && projPick !== "" && projPick !== "\u0000") params.project = projPick;
-    // 生ボディ (application/octet-stream)。api() に init を渡して同じ fetch 点を通す。
-    file.arrayBuffer().then(function(buf){
-      return api("/api/upload", params, { method: "POST", body: buf, headers: { "Content-Type": "application/octet-stream" } });
-    }).then(function(){
-      reload(); // サーバが返した新しい img / 新規カードを反映
-    }).catch(function(err){
-      note("アップロード失敗: " + (err && err.message ? err.message : "network error"));
+  // 帯の書き込みは GET+query（サーバ側は same-origin の GET だけ通す。#80-⑥）。
+  function act(path, params) {
+    var ps = {}, k;
+    for (k in params) if (Object.prototype.hasOwnProperty.call(params, k)) ps[k] = params[k];
+    if (state.cur && state.cur !== "__all__") ps.p = state.cur;
+    return fetch(path + qsOf(ps)).then(function (r) {
+      if (!r.ok) throw new Error("http " + r.status);
+      etags = {}; // 書き込み後は 304 で古い対面を掴まない
+      return r.json();
     });
   }
-  // #36: カード本文のダブルクリック編集。Enter=確定 / Shift+Enter=改行 / Escape=取消。
-  // 取消後の blur で二重発火しないよう done で一回限りに制限する。
-  function startEdit(tspan, raw, apply){
-    var ta = document.createElement("textarea");
-    ta.className = "ted";
-    ta.value = raw;
-    var done = false;
-    function finish(cancel){
-      if (done) return;
-      done = true;
-      if (ta.parentNode) ta.parentNode.replaceChild(tspan, ta);
-      var v = ta.value;
-      if (!cancel && v.trim().length > 0 && v !== raw) apply(v);
+  function fail(e) { toast("接続失敗: " + (e && e.message ? e.message : e)); }
+
+  // ---- derived data ----
+  function projReport() { return state.board && state.board.project ? state.board.project : null; }
+  function modesOf() {
+    var p = projReport();
+    if (p && p.modes) return p.modes;
+    if (state.board && state.board.modes && state.board.modes.project) return state.board.modes.project;
+    return {};
+  }
+  function halted() { var p = projReport(); return !!(p && p.halted); }
+  function summaryOf(slug) {
+    var ps = (state.projects && state.projects.projects) || [], i;
+    for (i = 0; i < ps.length; i++) if (ps[i].slug === slug) return ps[i];
+    return null;
+  }
+  function boards() { return (state.payload && state.payload.boards) || []; }
+  function matches(c) {
+    var q = state.query.trim().toLowerCase();
+    if (!q) return true;
+    var hay = [c.text, "#" + c.id, c.project, c.sid, c.commit, c.blocked, (c.labels || []).join(" ")]
+      .filter(Boolean).join(" ").toLowerCase();
+    return hay.indexOf(q) >= 0;
+  }
+  function prioOf(c) { return typeof c.priority === "number" && isFinite(c.priority) ? c.priority : 0; }
+  function dueOf(c) { return typeof c.due === "string" && /^\d{4}-\d{2}-\d{2}$/.test(c.due) ? c.due : ""; }
+  function daysLeft(due) { return Math.round((Date.parse(due + "T00:00:00Z") - Date.parse(todayISO() + "T00:00:00Z")) / DAY); }
+  function ago(ms) {
+    if (!ms) return "";
+    var d = Date.now() - ms;
+    if (d < 60000) return "たった今";
+    if (d < 3600000) return Math.floor(d / 60000) + "分前";
+    if (d < DAY) return Math.floor(d / 3600000) + "時間前";
+    return Math.floor(d / DAY) + "日前";
+  }
+  function stalled(c) { return c.col === "doing" && typeof c.movedAt === "number" && Date.now() - c.movedAt >= STALE; }
+  function imgsOf(c) {
+    if (typeof c.img !== "string" || !c.img) return [];
+    return c.img.split(",").map(function (s) { return s.trim(); }).filter(Boolean);
+  }
+  var VID = /\.(mp4|webm|mp3|wav|m4a|ogg)$/i;
+  function sortCol(list, col) {
+    var a = list.slice();
+    if (col === "todo") a.sort(function (x, y) { return (prioOf(y) - prioOf(x)) || (x.id - y.id); });
+    else a.sort(function (x, y) { return (y.movedAt || 0) - (x.movedAt || 0); });
+    return a;
+  }
+  function inCol(cards, col) { return sortCol(cards.filter(function (c) { return c.col === col && matches(c); }), col); }
+
+  // ---- widgets ----
+  var toastTimer;
+  function toast(msg, undo) {
+    var t = $("#toast"), u = $("#toastundo");
+    $("#toastmsg").textContent = msg;
+    u.style.display = undo ? "" : "none";
+    u.onclick = undo ? function () { t.removeAttribute("open"); undo(); } : null;
+    t.setAttribute("open", "");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { t.removeAttribute("open"); }, 6000);
+  }
+  function chip(cls, text) { return el("span", "chip" + (cls ? " " + cls : ""), text); }
+
+  function cardEl(c, showProject) {
+    var due = dueOf(c), left = due ? daysLeft(due) : 0;
+    var bad = due && left < 0 && c.col !== "done";
+    var a = el("article", "card" + (bad ? " overdue" : ""));
+    a.dataset.id = c.id;
+    // #46: ボード表示のときだけ掴める（すべてタブでは移動先の板が定まらない）。
+    if (!showProject) {
+      a.draggable = true;
+      a.addEventListener("dragstart", function (e) {
+        e.dataTransfer.setData("text/plain", String(c.id));
+        e.dataTransfer.effectAllowed = "move";
+        a.classList.add("dragging");
+      });
+      a.addEventListener("dragend", function () { a.classList.remove("dragging"); });
     }
-    ta.addEventListener("keydown", function(e){
-      if (e.key === "Escape") { e.preventDefault(); finish(true); }
-      else if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); finish(false); }
+    a.appendChild(el("span", "id", "#" + c.id));
+    a.appendChild(el("span", "t", c.text));
+    if (c.col === "doing") {
+      var sr = el("div", "spinrow");
+      sr.appendChild(el("span", "spin"));
+      sr.lastChild.setAttribute("aria-hidden", "true");
+      sr.appendChild(el("span", "spinlabel", "実行中"));
+      if (stalled(c)) sr.appendChild(chip("due-warn", Math.floor((Date.now() - c.movedAt) / DAY) + "日停滞"));
+      a.appendChild(sr);
+    }
+    var imgs = imgsOf(c);
+    var pics = imgs.filter(function (n) { return !VID.test(n); });
+    var vids = imgs.filter(function (n) { return VID.test(n); });
+    if (pics.length) {
+      var th = el("div", "thumbs");
+      pics.slice(0, 4).forEach(function (name, i) {
+        var f = el("figure", "thumb");
+        f.dataset.lb = name;
+        f.dataset.i = lbList().length;
+        var im = document.createElement("img");
+        im.alt = c.text;
+        im.loading = "lazy";
+        im.src = MEDIA + encodeURIComponent(name);
+        f.appendChild(im);
+        if (i === 3 && pics.length > 4) f.appendChild(el("figcaption", "more", "+" + (pics.length - 4)));
+        th.appendChild(f);
+      });
+      a.appendChild(th);
+    }
+    vids.forEach(function (name) {
+      var al = el("div", "attline");
+      al.appendChild(el("span", null, "▸"));
+      al.appendChild(el("span", null, name));
+      al.appendChild(el("span", null, (name.split(".").pop() || "").toLowerCase()));
+      a.appendChild(al);
     });
-    ta.addEventListener("blur", function(){ finish(false); });
-    tspan.parentNode.replaceChild(ta, tspan);
-    ta.focus();
-  }
-  function prioOf(c){ var v = c && c.priority; return (typeof v === "number" && isFinite(v)) ? v : 0; }
-  function intervalOf(m){ var v = m && m.intervalMin; return (typeof v === "number" && isFinite(v) && v > 0) ? v : 5; }
-  // #67: the doing-loop budget. Absent/invalid = 10 (the old hard-coded cap); 0 = unlimited.
-  // Mirrors maxLoopsOf on the server, so the GUI never shows a cap the loop does not use.
-  function maxLoopsOf(m){
-    var v = m && m.maxLoops;
-    if (typeof v !== "number" || v !== Math.floor(v)) return 10;
-    if (v <= 0) return 0;
-    return v <= 1000 ? v : 10;
-  }
-  // #17: 「残り N」はボード（project / global）の loops として来る。session 行は無くなったので
-  // 数えるのは看板 1 枚分だけ。上限 M は modes からここで読む。
-  function loopCountOf(scope){
-    var b = lastData && lastData[scope];
-    return (b && typeof b.loops === "number") ? b.loops : 0;
-  }
-  // Dashboard wording: 残り N / M, and 残り N / 無制限 when the cap is 0 (uncapped) —
-  // the same N as the footer's (loopRestText: remaining under a cap, used without one).
-  // #71/#011: the cap and the count come from files/published state, so nonzero garbage
-  // ("7", null, NaN, ±Infinity) must land on a real branch instead of throwing or
-  // printing "NaN": a cap that is not a finite number is uncapped, a count is ≥ 0 and
-  // finite. cap/used are the raw numbers; the display rule is fixed by the tests.
-  function loopRestLine(cap, used){
-    var c = (typeof cap === "number" && isFinite(cap)) ? cap : 0;
-    var u = (typeof used === "number" && isFinite(used) && used > 0) ? Math.floor(used) : 0;
-    if (c > 0) return "残り " + Math.max(0, c - u) + " / " + c;
-    return "残り " + u + " / 無制限";
+    var chips = el("div", "chips");
+    (c.labels || []).forEach(function (l) {
+      var k = l === "bug" ? "bug" : l === "feature" ? "feat" : l === "chore" ? "chore" : "";
+      chips.appendChild(chip(k, l));
+    });
+    if (due && c.col !== "done") {
+      if (left < 0) chips.appendChild(chip("due-bad", "期限超過 " + (-left) + "日"));
+      else if (left === 0) chips.appendChild(chip("due-bad", "今日"));
+      else if (left <= 3) chips.appendChild(chip("due-warn", "あと" + left + "日"));
+    }
+    (c.blocks || []).forEach(function (b) { chips.appendChild(chip("dep", "⊂ #" + b + " 待ち")); });
+    if (c.blocked) chips.appendChild(chip("dep", "⊂ " + c.blocked));
+    if (c.commit) chips.appendChild(chip("commit", String(c.commit).slice(0, 7)));
+    if (chips.childNodes.length) a.appendChild(chips);
+    var meta = el("div", "meta");
+    if (due) meta.appendChild(el("span", null, "due " + due.slice(5).replace("-", "-")));
+    if (typeof c.estimate === "number" && c.estimate > 0) meta.appendChild(el("span", null, c.estimate + "pt"));
+    if (prioOf(c) > 0) meta.appendChild(el("span", null, "prio " + prioOf(c)));
+    if (showProject && c.project) meta.appendChild(el("span", null, c.project));
+    if (c.col !== "todo" && c.movedAt) meta.appendChild(el("span", null, ago(c.movedAt)));
+    if (meta.childNodes.length) a.appendChild(meta);
+    return a;
   }
 
-  // #67: 再開ボタン。halt は拡張プロセスのメモリなので、この書き込みは「要求」でしかない
-  // （/api/resume は 202 を返し、そのボードの poll が実際に解除する）。
-  function resumeBtn(ctx){
-    var b = el("button", "mini", "再開");
-    b.type = "button";
-    b.title = "停止を解除して回数を 0 に戻す（doingLoop も ON に戻る）";
-    b.disabled = !ctx.active;
-    if (ctx.active) b.addEventListener("click", function(){ act("/api/resume", {}, ctx); });
-    return b;
-  }
-  // #17: 停止の理由（文字列）は session 行と一緒に消えた。残ったのは指標の bool だけなので、
-  // 理由は書かずに「止まっている」ことと解除先だけを示す。再開はボード行に移った。
-  function haltBox(b, ctx){
-    if (!b || b.halted !== true) return null;
-    var hb = el("div", "halt");
-    hb.appendChild(document.createTextNode("ループ停止中（上限に達したか、同じカードでスタック） — ここの「再開」、kanban ツールの resume、または /kanban loop on で解除する（スイッチを ON にしても再開しない） "));
-    hb.appendChild(resumeBtn(ctx));
-    return hb;
-  }
-  var PRIO_MAX = 99, PRIO_MIN = -99; // same range the server enforces
-  var dragging = null;               // {scope, sid, id} of the card being dragged
-
-  // 期限チップ。カード（.card .sched.warn/.bad）と「次にやる」（.next）で同じ 1 個を使う ——
-  // .next は .card の外なので、色だけ別系統にすると期限状態が色だけの場所ができる。
-  function dueChip(c){
-    var due = dueOf(c);
-    if (!due) return null;
-    var left = daysLeft(due);
-    // 完了済みに「期限切れ」は嘘なので、事実（期限と超過日数）だけ残す
-    var chip = el("span", "sched" + dueCls(due, c.col),
-      (left < 0 && c.col !== "done" ? "期限切れ " : "期限 ") + due.slice(5, 10).replace("-", "/"));
-    chip.title = left < 0 ? (-left) + " 日超過" : left === 0 ? "今日が期限" : "期限まで " + left + " 日";
-    return chip;
-  }
-
-  // #30: schedule + priority live on the card itself.
-  function cardOps(c, ctx){
-    var ops = el("div", "ops");
-    // 1-3: 期限 / 依存 / 見積の小片。値が無ければ何も出さない（API がまだ返さなくても壊れない）。
-    var chip = dueChip(c);
-    if (chip) ops.appendChild(chip);
-    var deps = Array.isArray(c.blocks) ? c.blocks : [];
-    // #18: 停滞チップ。DOING が 1 日以上動いていなければ日数を出す（期限チップの直後）。
-    // 色は期限チップと同じ規格: 1〜6 日 = warn / 7 日以上 = bad。
-    var stale = staleDays(c);
-    if (stale) {
-      var sc = el("span", "sched " + (nowBase - c.movedAt >= STALE_WEEK_MS ? "bad" : "warn"), "停滞 " + stale + "日");
-      sc.title = stale + " 日動いていない";
-      ops.appendChild(sc);
-    }
-    if (deps.length) ops.appendChild(el("span", "sched", "\u2295 依存 " + deps.length));
-    if (typeof c.estimate === "number" && isFinite(c.estimate)) ops.appendChild(el("span", "sched", c.estimate + "pt"));
-    // 表示は MM/DD HH:MM に削るので、年を含む完全な日時はホバーで補う
-    var sched = el("span", "sched", "発火 " + shortFire(c.nextFireAt));
-    sched.title = full(c.nextFireAt) || "発火予定なし";
-    ops.appendChild(sched);
-    function fire(at, label, title, off){
-      ops.appendChild(btn(label, title, function(){ return act("/api/schedule", { id: c.id, at: at }, ctx); }, !ctx.active || off));
-    }
-    fire("+5m", "+5m", "5分後に発火");
-    fire("+1h", "+1h", "1時間後に発火");
-    ops.appendChild(btn("明日9時", "明日9時に発火", function(){
-      var d = new Date();
-      d.setDate(d.getDate() + 1);
-      d.setHours(9, 0, 0, 0);
-      return act("/api/schedule", { id: c.id, at: d.toISOString() }, ctx);
-    }, !ctx.active));
-    fire("", "解除", "発火予定を消す", !c.nextFireAt);
-    // #36: 任意の時刻は datetime-local 直入力（空で解除）。プリセットは残す。
-    var dt = el("input");
-    dt.type = "datetime-local";
-    dt.value = dtLocal(c.nextFireAt);
-    dt.title = "任意の時刻に発火（空で解除）";
-    dt.setAttribute("aria-label", "発火時刻を指定");
-    dt.disabled = !ctx.active;
-    dt.style.flex = "1 1 150px";
-    dt.addEventListener("change", function(){
-      if (dt.value === "") { act("/api/schedule", { id: c.id, at: "" }, ctx); return; }
-      var t = new Date(dt.value).getTime();
-      if (isNaN(t)) { dt.value = dtLocal(c.nextFireAt); return; }
-      act("/api/schedule", { id: c.id, at: new Date(t).toISOString() }, ctx);
+  // ---- render: ptabs / strip / swline ----
+  function renderPtabs() {
+    var nav = clear($("#ptabs"));
+    var all = el("button", "ptab");
+    all.dataset.p = "__all__";
+    all.setAttribute("aria-pressed", String(state.cur === "__all__"));
+    all.appendChild(el("span", "dot"));
+    all.appendChild(el("b", null, "すべて"));
+    var g = (state.payload.global && state.payload.global.counts) || {};
+    all.appendChild(el("span", "num", (g.todo || 0) + (g.doing || 0) + " 未完"));
+    nav.appendChild(all);
+    boards().forEach(function (slug, i) {
+      var s = summaryOf(slug), b = el("button", "ptab");
+      b.dataset.p = slug;
+      b.title = String(i + 1);
+      b.setAttribute("aria-pressed", String(state.cur === slug));
+      if (s && s.counts.doing > 0) b.classList.add("doing");
+      var dot = el("span", "dot");
+      if (s && s.total > 0 && s.done === s.total) dot.classList.add("done");
+      else if (s && s.counts.doing > 0) dot.classList.add("live");
+      b.appendChild(dot);
+      b.appendChild(document.createTextNode(slug));
+      b.appendChild(el("span", "num", s ? (s.counts.todo ? "TODO " + s.counts.todo : s.done + "/" + s.total) : "—"));
+      if (i < 9) b.appendChild(el("span", "key", String(i + 1)));
+      nav.appendChild(b);
     });
-    ops.appendChild(dt);
-    // 数値が大きいほど先（server: priority desc, id asc）。0 は未設定なので表示しない。
-    var pair = el("span", "pair");
-    pair.appendChild(btn("▲", "優先度を上げる", function(){
-      if (prioOf(c) < PRIO_MAX) return act("/api/priority", { id: c.id, n: prioOf(c) + 1 }, ctx);
-    }, !ctx.active || prioOf(c) >= PRIO_MAX));
-    pair.appendChild(btn("▼", "優先度を下げる", function(){
-      if (prioOf(c) > PRIO_MIN) return act("/api/priority", { id: c.id, n: prioOf(c) - 1 }, ctx);
-    }, !ctx.active || prioOf(c) <= PRIO_MIN));
-    ops.appendChild(pair);
-    // #45: 削除。読み取り専用は aria-disabled（ネイティブ disabled だとクリックが
-    // 発火せず、押せない理由を返せない）。
-    var del = el("button", "mini del", "\u00d7");
-    del.type = "button";
-    del.setAttribute("aria-disabled", ctx.active ? "false" : "true");
-    del.title = ctx.active ? "このカードを削除" : RO_TITLE;
-    del.setAttribute("aria-label", "このカードを削除");
-    del.addEventListener("click", function(){
-      if (!ctx.active) { note(RO_MSG); return; }
-      if (!window.confirm("「" + String(c.text || "").slice(0, 40) + "」を削除しますか？")) return;
-      act("/api/remove", { id: c.id }, ctx);
-    });
-    ops.appendChild(del);
-    return ops;
   }
 
-  // #31: the switches a board owns. A board we may not write to renders them disabled
-  // (the server 403s a write coming from a session that is not the active one).
-  function boardCtl(ctx, m, cards){
-    var box = el("div", "ctl");
-    if (!ctx.active) box.title = "この看板は読み取り専用";
-    function sw(key, label){
-      var on = !m || m[key] !== false; // absent means ON, same as modesFor
-      var b = el("button", "sw" + (on ? " on" : ""), label + " " + (on ? "ON" : "OFF"));
-      b.type = "button";
-      b.disabled = !ctx.active;
-      b.title = key + " を " + (on ? "off" : "on") + " にする";
-      if (ctx.active) b.addEventListener("click", function(){ act("/api/modes", { key: key, value: on ? "off" : "on" }, ctx); });
+  function renderStrip() {
+    var todo, doing, done, due = 0, stall = 0, pct, label = "この看板", tot = 0, dnum = 0;
+    var rep = projReport();
+    var cards = (rep && rep.cards) || [];
+    if (state.allview) {
+      var g = (state.payload.global && state.payload.global.counts) || {};
+      todo = g.todo || 0; doing = g.doing || 0; done = g.done || 0;
+      ((state.projects && state.projects.projects) || []).forEach(function (p) { due += p.overdue || 0; });
+      ((state.payload.global && state.payload.global.cards) || []).forEach(function (c) { if (stalled(c)) stall += 1; });
+      label = "全体進捗";
+      tot = todo + doing + done; dnum = done;
+    } else {
+      var cnt = (rep && rep.counts) || {};
+      todo = cnt.todo || 0; doing = cnt.doing || 0; done = cnt.done || 0;
+      cards.forEach(function (c) { if (stalled(c)) stall += 1; });
+      var s = summaryOf(state.cur);
+      if (s) { due = s.overdue || 0; tot = s.total; dnum = s.done; }
+      else { cards.forEach(function (c) { var d = dueOf(c); if (d && c.col !== "done" && d < todayISO()) due += 1; }); tot = todo + doing + done; dnum = done; }
+    }
+    pct = tot ? Math.round((dnum / tot) * 100) : 0;
+    $("#sv-todo").textContent = todo;
+    $("#sv-doing").textContent = doing;
+    $("#sv-done").textContent = done;
+    $("#sv-due").textContent = due;
+    $("#sv-stall").textContent = stall;
+    $("#sl-proj").textContent = label;
+    var v = clear($("#sv-proj"));
+    v.appendChild(document.createTextNode(pct + "% "));
+    v.appendChild(el("small", null, dnum + "/" + tot));
+  }
+
+  function renderSw() {
+    var m = modesOf(), rep = projReport();
+    var loop = m.doingLoop !== false, pick = m.autoPick !== false;
+    document.querySelector('[data-sw="loop"]').setAttribute("aria-pressed", String(loop));
+    document.querySelector('[data-sw="pick"]').setAttribute("aria-pressed", String(pick));
+    var pause = document.querySelector('[data-sw="pause"]');
+    // #43/#48: 実値だけを見る。押した直後に楽観で反転しない（8 秒内の poll が返す）。
+    pause.setAttribute("aria-pressed", String(halted()));
+    pause.removeAttribute("aria-disabled");
+    pause.title = halted() ? "解除。残り回数は resume で上限へ戻る" : "loop / 自動 pick を止める";
+    var max = m.maxLoops, used = (rep && rep.loops) || 0;
+    $("#loop-left").textContent = max && max > 0 ? "残り " + Math.max(0, max - used) : "∞";
+  }
+
+  // ---- render: 3 columns ----
+  function renderBoard() {
+    var box = clear($("#board"));
+    var rep = projReport(), cards = (rep && rep.cards) || [];
+    ["todo", "doing", "done"].forEach(function (col) {
+      var list = inCol(cards, col);
+      var d = el("div", "col");
+      var head = el("div", "colhead");
+      head.appendChild(el("h2", null, col.toUpperCase()));
+      head.appendChild(el("span", "n", list.length));
+      if (col === "doing") {
+        var wip = el("span", "wipbad");
+        var n = (rep && rep.counts && rep.counts.doing) || 0;
+        if (n >= 3) wip.classList.add("on");
+        if (n >= 5) wip.classList.add("hot");
+        wip.textContent = "WIP " + n + "/3";
+        head.appendChild(wip);
+      }
+      if (col !== "done") {
+        var add = el("button", "add", "+");
+        add.title = "新規カード";
+        add.onclick = function () { addCard(col); };
+        head.appendChild(add);
+      }
+      d.appendChild(head);
+      if (state.addCol === col) d.appendChild(addRow(col));
+      // #46: HTML5 DnD。列は受けるだけ、POST は既存の moveCard。
+      d.addEventListener("dragover", function (e) {
+        if (!state.cur || state.cur === "__all__") return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "move";
+        d.classList.add("drop");
+      });
+      d.addEventListener("dragleave", function () { d.classList.remove("drop"); });
+      d.addEventListener("drop", function (e) {
+        e.preventDefault();
+        d.classList.remove("drop");
+        var id = Number(e.dataTransfer.getData("text/plain"));
+        if (id) moveCard(id, col).then(function () { toast("#" + id + " を " + col.toUpperCase() + " へ"); }, fail);
+      });
+      var shown = col === "done" && !state.doneOpen ? list.slice(0, 2) : list;
+      shown.forEach(function (c) { d.appendChild(cardEl(c, false)); });
+      if (col === "done" && list.length > 2) {
+        var fold = el("div", "donefold");
+        fold.setAttribute("role", "button");
+        fold.tabIndex = 0;
+        fold.appendChild(el("span", "upsym", state.doneOpen ? "⌄" : "⌃"));
+        fold.appendChild(document.createTextNode(state.doneOpen ? " 畳む" : " 残り " + (list.length - 2) + " 枚を開く"));
+        fold.onclick = function () { state.doneOpen = !state.doneOpen; render(); };
+        d.appendChild(fold);
+      }
+      box.appendChild(d);
+    });
+  }
+
+  // ---- render: 横断 ----
+  function renderGroups() {
+    var box = clear($("#groups"));
+    var ps = ((state.projects && state.projects.projects) || []).slice();
+    var openPs = ps.filter(function (p) { return p.done < p.total || p.total === 0; });
+    var donePs = ps.filter(function (p) { return p.total > 0 && p.done === p.total; });
+    var order = openPs.concat(state.query ? donePs : []); // 完了済みは折りたたみの下だけ
+    order.forEach(function (p) { box.appendChild(groupEl(p)); });
+    if (!state.query && donePs.length) {
+      var fold = el("div", "donefold");
+      fold.setAttribute("role", "button");
+      fold.tabIndex = 0;
+      fold.appendChild(el("span", "upsym", state.projDoneOpen ? "⌄" : "⌃"));
+      fold.appendChild(document.createTextNode(state.projDoneOpen ? " 完了済みを畳む" : " 完了済み " + donePs.length + " プロジェクトを開く"));
+      fold.onclick = function () { state.projDoneOpen = !state.projDoneOpen; render(); };
+      box.appendChild(fold);
+      if (!state.projDoneOpen) return;
+      donePs.forEach(function (p) { box.appendChild(groupEl(p)); });
+    }
+  }
+  function groupEl(p) {
+    var complete = p.total > 0 && p.done === p.total;
+    var det = document.createElement("details");
+    det.className = "group";
+    det.dataset.slug = p.slug;
+    var isOpen = !!state.open[p.slug]; // 既定は畳む（クリックで開いて即 fetch）
+    if (isOpen) det.setAttribute("open", "");
+    var sum = document.createElement("summary");
+    var dot = el("span", "dot");
+    dot.style.background = "var(--" + (complete ? "ok" : p.counts.doing > 0 ? "warn" : "muted") + ")";
+    sum.appendChild(dot);
+    // #44: 名前（と進捗バー）だけがプロジェクトタブへの遷移。summary の他の面は
+    // 既定のトグル（展開）のままにする。
+    var gname = el("span", "gname", p.name || p.slug);
+    gname.onclick = function (e) { e.preventDefault(); e.stopPropagation(); pick(p.slug); };
+    sum.appendChild(gname);
+    sum.appendChild(el("span", "gnum", p.done + "/" + p.total));
+    var bar = el("div", "gbar"), i = document.createElement("i");
+    i.style.width = p.progress + "%";
+    if (complete) i.className = "full";
+    bar.appendChild(i);
+    bar.onclick = function (e) { e.preventDefault(); e.stopPropagation(); pick(p.slug); };
+    sum.appendChild(bar);
+    sum.appendChild(el("span", "gmini", complete ? "100% ✓" : p.counts.todo ? "TODO " + p.counts.todo : p.counts.doing ? "DOING " + p.counts.doing : "—"));
+    det.appendChild(sum);
+    var body = el("div", "cards");
+    var cards = state.cards[p.slug];
+    if (!cards) body.appendChild(el("div", "donefold", "読み込み中…"));
+    else {
+      var list = cards.filter(matches);
+      if (!list.length) body.appendChild(el("div", "donefold", "該当なし"));
+      sortCol(list, "todo");
+      list.sort(function (x, y) { return x.col === "done" ? 1 : y.col === "done" ? -1 : 0; });
+      list.forEach(function (c) { body.appendChild(cardEl(c, true)); });
+    }
+    det.appendChild(body);
+    return det;
+  }
+  function fetchGroup(slug) {
+    return getJSON("/api/kanban", { p: slug }).then(function (b) {
+      if (b && b.project) state.cards[slug] = b.project.cards;
       return b;
-    }
-    box.appendChild(sw("doingLoop", "ループ"));
-    box.appendChild(sw("autoPick", "ピック"));
-    // 間隔・上限は「ラベル＋入力欄＋ボタン」を 1 つの nowrap 群にまとめる。
-    // 幅が足りないときは行ごと折り返すので、ラベルだけが泣き別れしない（#66）。
-    var ivg = el("span", "grp");
-    ivg.appendChild(el("span", null, "間隔"));
-    var iv = el("input");
-    iv.type = "number";
-    iv.min = "1";
-    iv.value = String(intervalOf(m));
-    iv.disabled = !ctx.active;
-    iv.title = "発火間隔（分）";
-    iv.setAttribute("aria-label", "発火間隔（分）");
-    ivg.appendChild(iv);
-    ivg.appendChild(btn("分", "この間隔（分）で保存", function(){
-      var v = Number(iv.value);
-      if (isFinite(v) && v > 0) return act("/api/interval", { min: Math.round(v) }, ctx);
-      note("間隔は 1 以上の整数（分）: " + (iv.value === "" ? "(空)" : iv.value));
-      iv.value = String(intervalOf(m));
-    }, !ctx.active));
-    box.appendChild(ivg);
-    // #67: ループ上限（0 = 無制限）。間隔と同じ行・同じ act() 経路で保存する。
-    // 保存済みの上限を出すときは intervalOf と同じ「無ければ既定」の読み方をする。
-    var cap = maxLoopsOf(m);
-    var mlg = el("span", "grp");
-    // 上限ラベルの表記。0 = 無制限。
-    mlg.appendChild(el("span", null, cap > 0 ? "上限" : "上限（無制限）"));
-    var ml = el("input");
-    ml.type = "number";
-    ml.min = "0";
-    ml.max = "1000";
-    ml.value = String(cap);
-    ml.disabled = !ctx.active;
-    ml.title = "ループ上限（回、0 = 無制限）";
-    ml.setAttribute("aria-label", "ループ上限（回、0 で無制限）");
-    mlg.appendChild(ml);
-    mlg.appendChild(btn("回", "この上限（回、0 = 無制限）で保存", function(){
-      var v = Number(ml.value);
-      // 範囲外は黙って捨てずに、サーバが返すのと同じ範囲を文言で知らせて値を戻す。
-      // 空欄は Number("") = 0 = 無制限になってしまうので、それも弾く。
-      if (!(ml.value !== "" && isFinite(v) && v >= 0 && v <= 1000 && v % 1 === 0)) {
-        note("上限は 0〜1000 の整数（0 = 無制限）: " + (ml.value === "" ? "(空)" : ml.value));
-        ml.value = String(cap);
-        return;
-      }
-      return act("/api/maxloops", { n: v }, ctx);
-    }, !ctx.active));
-    box.appendChild(mlg);
-    // #67: このボードで使った回数と残り。正本は拡張プロセス（loop.count）で、
-    // ダッシュボードは /api/dashboard の loops をそのまま出す（新しい API は要らない）。
-    box.appendChild(el("span", "rest", loopRestLine(cap, loopCountOf(ctx.sid))));
-    // DOING 全停止 reuses the existing blocked field, one card at a time (no new state).
-    var doing = cards.filter(function(c){
-      return c.col === "doing" && !(typeof c.blocked === "string" && c.blocked.trim().length > 0);
-    });
-    box.appendChild(btn("DOING 全停止", "この看板の DOING " + doing.length + " 枚を blocked にする", function(){
-      var chain = Promise.resolve();
-      doing.forEach(function(c){
-        chain = chain.then(function(){ return act("/api/schedule", { id: c.id, blocked: "一時停止" }, ctx); });
-      });
-      return chain;
-    }, !ctx.active || !doing.length));
-    return box;
+    }, function () { return null; });
   }
 
-  // One kanban (3 columns). Cards go in via textContent — no innerHTML for data.
-  function board(cards, nowMs, ctx){
-    if (typeof nowMs !== "number" || !isFinite(nowMs)) nowMs = Date.now(); // #38-10: 経過の基準
-    var wrap = el("div", "cols");
-    COLS.forEach(function(pair, ci){
-      var key = pair[0];
-      var list = cards.filter(function(c){ return c.col === key; });
-      // #38-7: 折りたたみのキーは看板ごと。
-      // #62: active sid は混ぜない（切り替わるたびに別キーになって勝手に開いていた）。
-      var ckey = ctx.scope + "." + ctx.sid + ":" + key;
-      var box = el("div", "col" + (key === "doing" && list.length ? " doingcol" : "") + (collapsed[ckey] ? " collapsed" : ""));
-      loadOpen(ckey, list); // #72: 描画のたびに読み直し、消えたカードの分を掃除する
-      box.setAttribute("data-col", key);
-      var h = el("h3", null, pair[1]);
-      h.appendChild(el("span", "c", String(list.length)));
-      // #38-7: 見出しクリックで列ごと畳む（状態はこのページ内だけ）
-      h.addEventListener("click", function(){ collapsed[ckey] = !collapsed[ckey]; box.classList.toggle("collapsed"); persist(); });
-      box.appendChild(h);
-      if (ctx && ctx.active) {
-        // #30 D&D: the drop handler lives on the board that owns the column.
-        // #52: ファイルも受ける。掴んでいるカードがあれば従来の移動経路を優先する。
-        box.addEventListener("dragover", function(ev){
-          if (dragging && dragging.scope === ctx.scope && dragging.sid === ctx.sid) {
-            if (ev && ev.preventDefault) ev.preventDefault();
-            box.classList.add("over");
-            return;
-          }
-          if (!ev || !ev.dataTransfer || !ev.dataTransfer.types || ev.dataTransfer.types.indexOf("Files") < 0) return;
-          if (ev.preventDefault) ev.preventDefault(); // 既定の「ファイルを開く」に落とさない
-          ev.dataTransfer.dropEffect = "copy";
-          box.classList.add("over");
-        });
-        box.addEventListener("dragleave", function(){ box.classList.remove("over"); });
-        box.addEventListener("drop", function(ev){
-          if (ev && ev.preventDefault) ev.preventDefault();
-          box.classList.remove("over");
-          var d = dragging;
-          dragging = null;
-          if (d) {
-            if (d.scope !== ctx.scope || d.sid !== ctx.sid) return;
-            act("/api/move", { id: d.id, col: key }, ctx);
-            return;
-          }
-          var f = ev && ev.dataTransfer && ev.dataTransfer.files && ev.dataTransfer.files[0];
-          if (!f) return;
-          if (ev.stopPropagation) ev.stopPropagation();
-          uploadHere(ctx, key, f, undefined); // 列の先頭に新規カード
-        });
-      }
-      // #76: 列スクロールはリロード越しにも覚える（描画越しは saveScroll が担当）
-      var deck = el("div", "cards");
-      deck.setAttribute("data-ckey", ckey);
-      deck.addEventListener("scroll", onScroll);
-      if (!list.length) {
-        deck.appendChild(el("div", "more", "なし"));
-      } else {
-        list.slice(0, MAX_PER_COL).forEach(function(c){
-          var card = el("div", "card");
-          if (ctx && ctx.active) {
-            card.setAttribute("draggable", "true");
-            card.addEventListener("dragstart", function(ev){
-              dragging = { scope: ctx.scope, sid: ctx.sid, id: c.id };
-              card.classList.add("dragging");
-              if (ev.dataTransfer) { ev.dataTransfer.effectAllowed = "move"; ev.dataTransfer.setData("text/plain", String(c.id)); }
-            });
-            card.addEventListener("dragend", function(){ card.classList.remove("dragging"); });
-            // #52: カードにファイルを落とすとそのカードに添付。
-            // カード移動の drag（text/plain）は素通しして列の drop に任せる。
-            card.addEventListener("dragover", function(ev){
-              if (!ev || !ev.dataTransfer || !ev.dataTransfer.types || ev.dataTransfer.types.indexOf("Files") < 0) return;
-              if (ev.preventDefault) ev.preventDefault();
-              ev.dataTransfer.dropEffect = "copy";
-              card.classList.add("fileover");
-            });
-            card.addEventListener("dragleave", function(){ card.classList.remove("fileover"); });
-            card.addEventListener("drop", function(ev){
-              var f = ev && ev.dataTransfer && ev.dataTransfer.files && ev.dataTransfer.files[0];
-              if (!f) return; // カード移動なら列の drop に任せる
-              if (ev.preventDefault) ev.preventDefault();
-              if (ev.stopPropagation) ev.stopPropagation();
-              card.classList.remove("fileover");
-              uploadHere(ctx, c.col, f, c.id);
-            });
-          } else if (ctx) {
-            // #44: 読み取り専用の看板。ダブルクリックしても書けない理由をホバーで先に示す
-            // （ドラッグ不可のまま。移動できないのは正しい挙動）。
-            card.title = RO_TITLE;
-            // #52: ファイルを落としてもブラウザに開かせない。理由を出す。
-            card.addEventListener("dragover", function(ev){
-              if (!ev || !ev.dataTransfer || !ev.dataTransfer.types || ev.dataTransfer.types.indexOf("Files") < 0) return;
-              if (ev.preventDefault) ev.preventDefault();
-            });
-            card.addEventListener("drop", function(ev){
-              if (!ev || !ev.dataTransfer || !ev.dataTransfer.files || !ev.dataTransfer.files[0]) return;
-              if (ev.preventDefault) ev.preventDefault();
-              if (ev.stopPropagation) ev.stopPropagation();
-              note(RO_MSG);
-            });
-          }
-          if (ctx && ctx.active) {
-            // #38-6: Tab でカードに入る。←→ で列移動、Enter で DOING、m でメモ。
-            card.tabIndex = 0;
-            card.addEventListener("keydown", function(e){
-              if (e.target !== card) return; // a button or the memo textarea keeps its own keys
-              if (e.key === "ArrowLeft" && ci > 0) { e.preventDefault(); act("/api/move", { id: c.id, col: COLS[ci-1][0] }, ctx); }
-              else if (e.key === "ArrowRight" && ci < COLS.length - 1) { e.preventDefault(); act("/api/move", { id: c.id, col: COLS[ci+1][0] }, ctx); }
-              else if (e.key === "Enter") { e.preventDefault(); act("/api/move", { id: c.id, col: "doing" }, ctx); }
-              else if (e.key === "m") {
-                e.preventDefault();
-                var sp = card.querySelector(".t");
-                if (sp) startEdit(sp, c.text, function(v){ act("/api/rename", { id: c.id, text: v }, ctx); });
-              }
-            });
-          }
-          card.appendChild(el("span", "id", "#" + c.id));
-          if (c.project) card.appendChild(el("span", "proj", c.project));
-          // #20: 会話タグ。短縮は表示だけ、全文は title に残す（リンクは張らない）。
-          if (c.sessionId) {
-            var sid = String(c.sessionId);
-            var ss = el("span", "sess", sid.length > 8 ? sid.slice(0, 8) + "\u2026" : sid);
-            ss.title = sid;
-            card.appendChild(ss);
-          }
-          if (c.commit) {
-            var sha = String(c.commit);
-            var cc = el("span", "commit", sha.slice(0, 7));
-            cc.title = sha;
-            card.appendChild(cc);
-          }
-          // #22: ラベル。固定 4 種なので検証はサーバ側。ここは出すだけ。
-          if (c.labels && c.labels.length) {
-            for (var li = 0; li < c.labels.length; li += 1) card.appendChild(el("span", "lab", String(c.labels[li])));
-          }
-          // #16: カードの由来は、ツール側の [slug] と同じ語彙で出す。
-          if (c.sid) card.appendChild(el("span", "proj", "[" + c.sid + "]"));
-          // #41: 依存の状態を 1 語で先に出す（判定は depState に一元）。
-          var st = depState(c, depPool);
-          card.appendChild(el("span", "dep " + st, st === "ok" ? "着手可能" : "ブロック中"));
-          var t = el("span", "t");
-          // #38-10/#38-11: DOING の経過を本文の前に出す（2 時間超は ⏳ も）。movedAt の
-          // 無いカードは何も出さない（推測で「0分」を書かない）。
-          // #74: 経過分と ⏳ は lead で作っておき、台帳に載せて tick() が文字だけ書き換える。
-          var lead = "";
-          var movedAt = c.movedAt;
-          if (c.col === "doing" && typeof movedAt === "number") lead = sinceLead(movedAt);
-          t.innerHTML = lead + md(c.text); // md escapes first, then expands the whitelisted subset
-          if (lead !== "" && typeof movedAt === "number") sinceLive(movedAt, t);
-          // #38-5: 60 字超は 3 行で切ってクリック展開（列内の高さを揃える）。
-          if (String(c.text || "").length > 60) {
-            t.classList.add("clampable");
-            var okey = cardKey(ckey, c);
-            if (cardOpen[okey]) t.classList.add("open");
-            t.addEventListener("click", function(){
-              if (t.classList.toggle("open")) cardOpen[okey] = true; else delete cardOpen[okey];
-              persist();
-              memoCards(); // #76: DONE は memCompactCards が落とす（画面の開閉はそのまま）
-            });
-          }
-          card.appendChild(t);
-          // #41: ブロック中の理由。相手の #id と本文・列を出す（引けない相手も隠さない）。
-          if (st === "blocked") {
-            var bad = depCards(c, depPool), parts = [];
-            bad.slice(0, 3).forEach(function(b){
-              if (!b.card) return; // 見えているボードに居ない相手は下の「ほか」に含める
-              parts.push("#" + b.id + "「" + Array.from(String(b.card.text || "")).slice(0, 60).join("") + "」 (" + b.card.col + ")");
-            });
-            var why = el("div", "why");
-            if (parts.length) why.appendChild(el("span", "wbad", parts.join(" / ")));
-            if (!parts.length) why.appendChild(el("span", null, "依存を確認できません"));
-            else if (bad.length > parts.length) why.appendChild(el("span", null, " ほか " + (bad.length - parts.length) + " 件"));
-            card.appendChild(why);
-          }
-          // #36: 本文のダブルクリックで編集。書き込みは既存の text 系 API（rename）。
-          // #44: 当たり判定はカード本体（短いカードだと .t が細く、#id/余白を叩いて無反応に見える）。
-          // .t 側にも登録すると二重発火するので、ここ 1 本に統一する。
-          card.addEventListener("dblclick", function(e){
-            var tgt = e.target;
-            // ボタン・リンク・編集中 textarea の誤爆は無視
-            if (tgt && tgt.closest && (tgt.closest(".ops") || tgt.closest("a") || tgt.closest("textarea"))) return;
-            if (!ctx || !ctx.active) { note(RO_MSG); return; }
-            var span = card.querySelector(".t");
-            if (span) startEdit(span, c.text, function(v){ act("/api/rename", { id: c.id, text: v }, ctx); });
-          });
-          if (c.img) {
-            // Only images decode in an img element; video bytes need a real video element.
-            var mediaExt = c.img.slice(c.img.lastIndexOf(".") + 1).toLowerCase();
-            var isVid = mediaExt === "mp4" || mediaExt === "webm";
-            var im;
-            if (isVid) {
-              // No autoplay: the card is a preview, so only metadata loads until play.
-              im = document.createElement("video");
-              im.controls = true;
-              im.preload = "metadata";
-            } else {
-              im = document.createElement("img");
-              im.alt = "";
-            }
-            im.src = MEDIA + encodeURIComponent(c.img);
-            im.onerror = function(){
-              var s = el("span", "badimg", "\uD83D\uDDBC?");
-              if (im.parentNode) im.parentNode.replaceChild(s, im);
-            };
-            card.appendChild(im);
-          }
-          if (prioOf(c)) card.appendChild(el("span", "prio", "P" + prioOf(c)));
-          if (c.blocked) { var bs = el("span", "blocked", "停止中"); bs.title = String(c.blocked); card.appendChild(bs); }
-          if (ctx) card.appendChild(cardOps(c, ctx));
-          deck.appendChild(card);
-        });
-        if (list.length > MAX_PER_COL) deck.appendChild(el("div", "more", "他 " + (list.length - MAX_PER_COL) + " 枚"));
-      }
-      box.appendChild(deck);
-      restoreScrollPos(box);
-      // #45: 列の最後尾でその場に追加。Enter=確定 / Escape=取消 / blur=閉じる。
-      // 読み取り専用は aria-disabled（理由を返すためクリックは受ける）。
-      var addBtn = el("button", "mini addbtn", "+");
-      addBtn.type = "button";
-      addBtn.setAttribute("aria-disabled", ctx.active ? "false" : "true");
-      addBtn.title = ctx.active ? "この列にカードを追加" : RO_TITLE;
-      addBtn.setAttribute("aria-label", "この列にカードを追加");
-      var addIn = el("input", "addin");
-      addIn.placeholder = "追加して Enter";
-      addIn.setAttribute("aria-label", "この列にカードを追加");
-      var sending = false;
-      // 表示の切替だけを行う。打ちかけの破棄は clearAdd() に分離する（#75）。
-      function showAdd(on){
-        addBtn.style.display = on ? "none" : "";
-        addIn.style.display = on ? "" : "none";
-        if (on) addIn.focus();
-      }
-      function clearAdd(){
-        delete addDraft[ckey];
-        addIn.value = "";
-      }
-      // #75: 再描画を跨いで開いたまま・打ちかけの文字も残す（描画のたびにここで戻す）。
-      if (addDraft[ckey] != null) addIn.value = addDraft[ckey];
-      showAdd(addDraft[ckey] != null);
-      addIn.addEventListener("input", function(){ addDraft[ckey] = addIn.value; });
-      addBtn.addEventListener("click", function(){
-        if (!ctx.active) { note(RO_MSG); return; }
-        showAdd(true);
-      });
-      addIn.addEventListener("keydown", function(e){
-        if (e.key === "Escape") { e.preventDefault(); clearAdd(); showAdd(false); return; }
-        if (e.key !== "Enter") return;
-        var v = addIn.value.trim();
-        clearAdd();
-        if (!v) { showAdd(false); return; }
-        sending = true;
-        var p = { col: key, text: v };
-        // 絞り込み中の新規作成はそのプロジェクトに入れる（\u0000 と "" は無所属）。
-        if (projPick !== "" && projPick !== "\u0000") p.project = projPick;
-        act("/api/add", p, ctx).then(function(){ sending = false; });
-        showAdd(false);
-      });
-      // 送信中（act の往復中）の blur では閉じない: reload 由来の blur で二重に閉じるのを防ぐ。
-      // 値が入っているなら閉じない。打鍵中の再描画や
-      // 別要素のクリックで打ちかけを失わせないため（#75）。
-      addIn.addEventListener("blur", function(){
-        if (sending || addIn.value.trim()) return;
-        clearAdd();
-        showAdd(false);
-      });
-      box.appendChild(addBtn);
-      box.appendChild(addIn);
-      wrap.appendChild(box);
+  // ---- render: rail ----
+  function renderRail() {
+    var rail = clear($("#rail"));
+    var rep = projReport();
+    var cards = (rep && rep.cards) || [];
+    var p1 = el("div", "panel");
+    p1.appendChild(el("h3", null, "次に着手"));
+    var nexts = [];
+    if (rep && rep.next) nexts.push(rep.next);
+    inCol(cards, "todo").forEach(function (c) { if (nexts.length < 3 && (!nexts[0] || c.id !== nexts[0].id)) nexts.push(c); });
+    if (!nexts.length) p1.appendChild(el("div", "donefold", "候補なし"));
+    nexts.forEach(function (c) {
+      var it = el("div", "next-item");
+      it.appendChild(el("span", "id", "#" + c.id));
+      it.appendChild(el("span", "t", c.text));
+      var d = dueOf(c);
+      it.appendChild(el("span", "why", d ? "期限 " + d.slice(5) : prioOf(c) > 0 ? "prio " + prioOf(c) : "依存なし"));
+      p1.appendChild(it);
     });
-    return wrap;
+    rail.appendChild(p1);
+    var p2 = el("div", "panel");
+    p2.appendChild(el("h3", null, "活動 — この看板"));
+    var moved = cards.filter(function (c) { return c.movedAt; }).sort(function (x, y) { return y.movedAt - x.movedAt; }).slice(0, 3);
+    if (!moved.length) p2.appendChild(el("div", "donefold", "記録なし"));
+    moved.forEach(function (c) {
+      var ev = el("div", "ev");
+      ev.appendChild(el("time", null, ago(c.movedAt)));
+      ev.appendChild(el("b", null, "#" + c.id));
+      ev.appendChild(document.createTextNode(" を " + c.col.toUpperCase() + " へ"));
+      p2.appendChild(ev);
+    });
+    rail.appendChild(p2);
   }
 
-  // #19: 「次にやる」は見えているボードの 1 枚だけ。
-  // 候補はサーバの nextTodo と同じ 1 枚をそのまま出す（表示だけ）。
-  // 本文は textContent で入れる: ここは 1 行の要約で、md() で展開する場所ではない。
-  function renderNext(d){
-    var sec = document.getElementById("nextsec");
-    if (!sec) return;
-    sec.innerHTML = "";
-    var n = d && d.project ? d.project.next : null;
-    if (!n || typeof n !== "object") {
-      // next が null でも「TODO が空」とは限らない: nextTodo は blocked / 予約中を落とす。
-      // 直下に TODO が並んで見えているのに「空」と言うと嘘になる。
-      var cs = (d && d.project && d.project.cards) || [];
-      var todo = cs.filter(function(c){ return c && c.col === "todo"; }).length;
-      sec.appendChild(el("div", "next",
-        todo ? "TODO はあるが、今はどれも着手できない（ブロック / 予約中）" : "TODO が空"));
-      return;
-    }
-    var box = el("div", "next");
-    var head = el("div");
-    head.appendChild(el("span", "next-lbl", "次にやる"));
-    head.appendChild(el("span", "next-id", "#" + String(n.id)));
-    box.appendChild(head);
-    var t = String(n.text || "");
-    // サロゲートペア（絵文字）の途中で切ると末尾が U+FFFD になる。文字単位で数える。
-    var ch = Array.from(t);
-    box.appendChild(el("div", "next-t", ch.length > 60 ? ch.slice(0, 60).join("") + "\u2026" : t));
-    var meta = el("div", "next-meta");
-    var p = prioOf(n);
-    if (p) meta.appendChild(el("span", "prio", "P" + p));
-    var chip = dueChip(n);
-    if (chip) meta.appendChild(chip);
-    if (meta.children.length) box.appendChild(meta);
-    sec.appendChild(box);
+  function renderFoot() {
+    var p = state.payload || {};
+    $("#footright").textContent = "API " + (p.version || "?") + " · " + (state.offline ? "接続断" : "3秒ポーリング") + " · dashboard v2.5";
   }
 
-  function renderStats(st){
-    var box = document.getElementById("stats");
-    box.innerHTML = "";
-    var allZero = true; // #36: 全部 0 のときは場所を取らない
-    // 1-4: カードから数える4つを先頭に足す（既存の7つは後ろに残す）。
-    var cs = cardStats(lastData);
-    [
-      ["着手可能", "", cs.ok, ""],
-      ["期限超過", cs.over > 0 ? "bad" : "", cs.over, ""],
-      ["期限接近", cs.soon > 0 ? "warn" : "", cs.soon, ""],
-      ["ブロック中", cs.blocked > 0 ? "warn" : "", cs.blocked, ""],
-      ["進捗率", "", cs.rate, "%"]
-    ].forEach(function(p){
-      var txt = String(p[2]) + p[3];
-      if (p[2] > 0) allZero = false;
-      var s = el("div", "stat" + (p[1] ? " " + p[1] : ""));
-      s.setAttribute("aria-label", p[0] + " " + txt);
-      s.appendChild(el("span", "n", txt));
-      s.appendChild(el("span", "l", p[0]));
-      box.appendChild(s);
-    });
-    STAT_KEYS.forEach(function(p){
-      var v = st ? (st[p[0]] || 0) : 0;
-      if (v > 0) allZero = false;
-      var s = el("div", "stat" + (v > 0 && p[0] === "doing" ? " hot" : ""));
-      s.setAttribute("aria-label", p[1] + " " + v);
-      s.appendChild(el("span", "n", String(v)));
-      s.appendChild(el("span", "l", p[1]));
-      box.appendChild(s);
-    });
-    if (st && !st.todo && !st.doing && !st.done && !st.serve && !st.media) {
-      box.title = "すべて 0 — サーバは起動しているけど、まだ何もない";
-    }
-    // #36: 普段は空なので、全部 0 のときはブロックごと畳んで場所を取らない
-    var sec = document.getElementById("statsec");
-    if (sec) sec.hidden = !st || allZero;
+  function render() {
+    if (!state.payload) return;
+    var html = document.documentElement;
+    html.classList.toggle("halt", halted());
+    html.classList.toggle("allview", state.allview);
+    $("#board").style.display = state.allview ? "none" : "";
+    if (state.allview) $("#allview").setAttribute("open", ""); else $("#allview").removeAttribute("open");
+    renderPtabs(); renderStrip(); renderSw();
+    if (state.allview) renderGroups(); else renderBoard();
+    renderRail(); renderFoot();
+    applySel();
   }
 
-  // #48: 検索中は「TODO ヒット/総数」で出す。畳んだり絞ったりして見えていない
-  // カードで件数が水増しされないよう、表示中のカードだけで数える。
-  // プロジェクト絞り込みの述語。project を持たないカードは「無所属」だけに当たる。
-  // 見えているプールは常に 1 ボード（cwd か ?p= で取り直したボード）なので、ボード名での
-  // 絞り込みは要らない。必要なのは「(無所属)」だけ。
-  // #34: ボードの slug はカードの sid にも project にも入りうる（カード単位の所属は通常 null）。
-  function projOk(c){
-    if (projPick !== "\u0000") return true;
-    var p = c && typeof c.project === "string" && c.project !== "" ? c.project
-          : (c && typeof c.sid === "string" ? c.sid : "");
-    return p === "";
+  function visibleCards() { return Array.prototype.slice.call(document.querySelectorAll("#board .card, #groups .card")); }
+  function applySel() {
+    var all = visibleCards();
+    if (state.sel >= all.length) state.sel = all.length - 1;
+    all.forEach(function (n, i) { n.classList.toggle("sel", i === state.sel); });
   }
-  // 1-3/1-4: 期限と依存はクライアントで計算する（API を増やさない）。due は "YYYY-MM-DD"
-  // （UTC の日付のみ）。形が違う値や未実装APIの undefined は「無い」として扱う。
-  function dueOf(c){
-    var v = c && c.due;
-    return typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : "";
-  }
-  function todayISO(){ return new Date().toISOString().slice(0, 10); }
-  // 期限までの日数（今日 = 0、過去は負）。UTC の日付同士なのでミリ秒差の丸めで足りる。
-  function daysLeft(due){
-    return Math.round((Date.parse(due + "T00:00:00Z") - Date.parse(todayISO() + "T00:00:00Z")) / 86400000);
-  }
-  // 期限の色は看板とプロジェクトタブで同じ規則。完了済みは色を付けない —— 期限超過の集計も
-  // 完了済みを数えないので、片方だけ赤いと「超えているのに 0 件」と読めてしまう。
-  function dueCls(due, col){
-    if (!due || col === "done") return "";
-    var left = daysLeft(due);
-    return left < 0 ? " bad" : left <= 3 ? " warn" : "";
-  }
-  // 依存の解決状態。blocks の id を同じボードのカードから引く（引けない = 未完了扱い）。
-  // #16: id はボードごとに独立。sid まで込みで引く（別ボードの同じ id を拾わない）。
-  function depCards(c, pool){
-    var deps = c && Array.isArray(c.blocks) ? c.blocks : [];
-    var sid = (c && c.sid) || "", byId = {};
-    for (var i = 0; i < pool.length; i++) if (pool[i]) byId[((pool[i].sid) || "") + "\u0000" + pool[i].id] = pool[i];
-    var bad = [];
-    for (var j = 0; j < deps.length; j++){
-      var d = byId[sid + "\u0000" + deps[j]];
-      if (!d || d.col !== "done") bad.push({ id: deps[j], card: d || null });
+
+  // ---- data: poll ----
+  function refresh() {
+    var jobs = [
+      getJSON("/api/dashboard").then(function (p) {
+        if (p) { state.payload = p; if (!state.cur) state.cur = p.project && p.project.id ? p.project.id : "__all__"; }
+      }),
+      getJSON("/api/projects").then(function (p) { if (p) state.projects = p; }),
+    ];
+    if (state.cur && state.cur !== "__all__") {
+      jobs.push(getJSON("/api/kanban", { p: state.cur }).then(function (b) { if (b) state.board = b; }));
+    } else if (state.cur === "__all__") {
+      Object.keys(state.open).forEach(function (s) { if (state.open[s]) jobs.push(fetchGroup(s)); });
     }
-    return bad;
+    return Promise.all(jobs).then(function () {
+      state.offline = false;
+      if (state.allview) { state.allview = true; }
+      render();
+    }, function (e) {
+      state.offline = true;
+      renderFoot();
+      fail(e);
+    });
   }
-  function depState(c, pool){ return depCards(c, pool).length ? "blocked" : "ok"; }
-  // pool は絞り込み前の看板のカード（検索やプロジェクトで依存先が画面から消えても判定できる）。
-  function cardFilterOk(c, pool){
-    if (labFilter !== "" && (c.labels || []).indexOf(labFilter) < 0) return false;
-    if (cardFilter === "ok") return depState(c, pool) === "ok";
-    if (cardFilter === "blocked") return depState(c, pool) === "blocked";
-    if (cardFilter === "overdue") { var d = dueOf(c); return !!d && d < todayISO() && c.col !== "done"; }
+
+  function pick(slug) {
+    state.cur = slug;
+    state.allview = slug === "__all__";
+    state.sel = -1;
+    state.board = null;
+    closeModal();
+    var jobs = [getJSON("/api/projects").then(function (p) { if (p) state.projects = p; })];
+    if (state.allview) {
+      ((state.projects && state.projects.projects) || []).forEach(function (p) {
+        if (state.open[p.slug]) jobs.push(fetchGroup(p.slug)); // 開いた時だけ取得
+      });
+    } else {
+      jobs.push(getJSON("/api/kanban", { p: slug }).then(function (b) { if (b) state.board = b; }));
+    }
+    return Promise.all(jobs).then(render, function (e) { fail(e); });
+  }
+
+  // ---- actions ----
+  function needProj() {
+    if (state.allview || !state.cur || state.cur === "__all__") { toast("横断ビューでは操作できない（ボードを選ぶ）"); return false; }
     return true;
   }
-  // 1-4: カードから数える指標（API の stats には無い）。見えているボードの依存を解いて足し上げる。
-  // #17: 面は project ボード 1 枚だけ（session 行は無くなった）。
-  function cardStats(d){
-    var list = (d && d.project && d.project.cards) || [];
-    var today = todayISO(), ok = 0, over = 0, soon = 0, blocked = 0, done = 0, total = 0;
-    list.forEach(function(c){
-      if (!c) return;
-      total += 1;
-      if (c.col === "done") done += 1;
-      if (depState(c, list) === "ok") ok += 1; else blocked += 1;
-      var due = dueOf(c);
-      if (due && c.col !== "done") {
-        if (due < today) over += 1;
-        if (dueCls(due, c.col) === " warn") soon += 1;
-      }
-    });
-    return { ok: ok, over: over, soon: soon, blocked: blocked, rate: total ? Math.round(done * 100 / total) : 0 };
+  function addCard(col) {
+    if (!needProj()) return;
+    state.addCol = col;
+    render();
+    var i = document.querySelector("#board .addin");
+    if (i) i.focus();
   }
-  // 選択肢は描画のたび lastData から作り直す。選択中の値は失わない
-  // （消えた slug を選んでいたら全部に戻す）。
-  function syncProjOptions(d){
-    var sel = document.getElementById("proj");
-    if (!sel) return;
-    var seen = {}, slugs = [];
-    function add(p){
-      if (typeof p === "string" && p !== "" && p !== "\u0000" && !seen[p]) { seen[p] = true; slugs.push(p); }
-    }
-    // 選択肢はボードそのもの（d.boards）から作る。古いサーバは boards を送らないので、
-    // 従来どおり見えているカードの sid / project から作る（card.project はカード単位の所属）。
-    if (d && d.boards && d.boards.length) {
-      d.boards.forEach(add);
-    } else {
-      (((d && d.project) || {}).cards || []).forEach(function(c){
-        add(c && (c.project || c.sid));
-      });
-    }
-    slugs.sort();
-    // #35/#41: ?p= の取得中は d.project を空にして描くので、その 1 描画では
-    // ボード一覧が「不明」になる。不明なときに選択を忘れると、取り直しの宛先が消える。
-    var known = !!((d && d.boards && d.boards.length) || (d && d.project));
-    if (known && projPick !== "" && projPick !== "\u0000" && !seen[projPick]) projPick = "";
-    var opts = [["", "全部"], ["\u0000", "(無所属)"]];
-    slugs.forEach(function(p){ opts.push([p, p]); });
-    sel.innerHTML = "";
-    opts.forEach(function(o){
-      var op = el("option", null, o[1]);
-      op.value = o[0];
-      sel.appendChild(op);
-    });
-    sel.value = projPick;
+  function addRow(col) {
+    var f = document.createElement("form");
+    f.className = "addrow";
+    var inp = document.createElement("input");
+    inp.className = "addin";
+    inp.placeholder = "新規カード → Enter (Esc で取消)";
+    inp.onkeydown = function (e) { if (e.key === "Escape") { state.addCol = null; render(); } };
+    f.onsubmit = function (e) { e.preventDefault(); submitAdd(col, inp.value); };
+    f.appendChild(inp);
+    return f;
   }
-
-  // #21: 見えているボード内の検索（横断するならボードを切り替える）。
-  // 対象は人間がカードを思い出す語彙だけ（img / estimate / blocks / col などの内部値は入れない）。
-  // query は呼び出し側で trim + toLowerCase 済み。
-  function cardHit(c, q){
-    if (q === "") return true;
-    // 番号は完全一致だけ。部分一致にすると "7" が 17 や 27 に当たって使えなくなる。
-    var id = String(c.id);
-    if (q === id || q === "#" + id) return true;
-    var fields = [c.text, c.project, c.sid, c.sessionId, c.commit, c.blocked, (c.labels || []).join(" ")];
-    for (var i = 0; i < fields.length; i += 1) {
-      if (fields[i] && String(fields[i]).toLowerCase().indexOf(q) >= 0) return true;
-    }
-    return false;
+  function submitAdd(col, text) {
+    if (!text || !text.trim()) { state.addCol = null; render(); return; }
+    act("/api/add", { text: text.trim(), col: col }).then(function () {
+      state.addCol = null;
+      refresh();
+      toast("#" + (col === "todo" ? "TODO" : col.toUpperCase()) + " に追加");
+    }, fail);
+  }
+  function moveCard(id, col) {
+    if (!needProj()) return;
+    return act("/api/move", { id: id, col: col }).then(function () { refresh(); }, fail);
+  }
+  function toggleMode(key) {
+    if (!needProj()) return;
+    var m = modesOf(), on = key === "doingLoop" ? m.doingLoop !== false : m.autoPick !== false;
+    act("/api/modes", { key: key, value: on ? "off" : "on" }).then(function () { refresh(); }, fail);
+  }
+  function doneTop() {
+    if (!needProj()) return;
+    var doing = inCol((projReport() && projReport().cards) || [], "doing");
+    if (!doing.length) { toast("DOING にカードが無い"); return; }
+    var c = doing[0];
+    moveCard(c.id, "done").then(function () {
+      toast("#" + c.id + " を DONE へ", function () { moveCard(c.id, "doing"); });
+    }, fail);
+  }
+  function summary() {
+    var rep = projReport(), m = modesOf();
+    var cnt = (rep && rep.counts) || {};
+    var t = "kanban " + (state.cur || "?") + " — TODO " + (cnt.todo || 0) + " / DOING " + (cnt.doing || 0) +
+      " / DONE " + (cnt.done || 0) + " · loop " + (m.doingLoop !== false ? "on" : "off") +
+      " · pick " + (m.autoPick !== false ? "on" : "off") + (halted() ? " · HALT" : "");
+    toast(t);
+    if (navigator.clipboard) navigator.clipboard.writeText(t).catch(function () {});
   }
 
-  // phase0: このプロセス（＝この cwd の git ルート）のボード。
-  // 古いサーバは project を返さない: その場合は空の見出しだけ出して落ちない。
-  // 「残り N / M」と 再開 ボタンは session 行のものだったので、この行に移した（#17）。
-  function renderProject(p, nowMs){
-    var box = document.getElementById("project");
-    if (!box) return;
-    box.innerHTML = "";
-    var ctx = boardCtx("project", "", true, projPick === "\u0000" ? "" : projPick);
-    // cwd で解決されるので sid は送らない。p（選んだボードの slug）は act() が ?p= として送る。
-    // #18: 見出しの停滞件数は絞り込み後の cards を数えるので、DOM を組む前に確定させる。
-    var all = (p && p.cards) || [];
-    depPool = all;
-    // 絞り込み規則は filters（cardFilter / labFilter / query）に一元。
-    var search = query !== "";
-    var filtered = search || projPick !== "" || cardFilter !== "" || labFilter !== "";
-    var cards = all.filter(function(x){
-      return projOk(x) && cardFilterOk(x, all) && (!search || cardHit(x, query));
+  // ---- palette ----
+  var palSel = 0, palRuns = [];
+  function palItems() {
+    var items = [];
+    boards().forEach(function (slug, i) {
+      items.push({ label: "切替: " + slug + (i < 9 ? " (" + (i + 1) + ")" : ""), run: function () { pick(slug); } });
     });
-    if (p) {
-      var head = el("div", "sess-hd");
-      head.appendChild(el("span", "sess-cwd", loopRestLine(maxLoopsOf(p.modes), loopCountOf("project")) + staleText(cards)));
-      box.appendChild(head);
-      var hb = haltBox(p, ctx);
-      if (hb) box.appendChild(hb);
-    } else {
-      empty(box, "\u25A1", "プロジェクト看板なし", " — サーバが古いと出ないよ");
-    }
-    if (!p) return;
-    if (!cards.length && filtered) { box.appendChild(el("div", "sess-empty", "該当なし")); return; }
-    // 空でも board() を描く（project は既定のボードなので、空のときこそ + が要る）。
-    box.appendChild(board(cards, nowMs, ctx));
+    items.push({ label: "横断ビュー: すべて", run: function () { pick("__all__"); } });
+    items.push({ label: "loop " + (modesOf().doingLoop !== false ? "off" : "on"), run: function () { toggleMode("doingLoop"); } });
+    items.push({ label: "autoPick " + (modesOf().autoPick !== false ? "off" : "on"), run: function () { toggleMode("autoPick"); } });
+    items.push({ label: "summary を出す", run: summary });
+    items.push({ label: "新規カード", run: function () { addCard("todo"); } });
+    return items;
   }
-
-  function serveLeft(v, nowMs){
-    if (v.permanent) return { text: "永久", cls: "ok" };
-    // サーバが計算した expiresAt を最優先。古い payload 用に createdAt+7日へ fallback。
-    var at = v.expiresAt ? new Date(v.expiresAt).getTime() : NaN;
-    if (isNaN(at) && v.createdAt) at = new Date(v.createdAt).getTime() + 7 * 24 * 60 * 60 * 1000;
-    if (isNaN(at)) return { text: "—", cls: "" };
-    var s = Math.round((at - (nowMs != null ? nowMs : Date.now())) / 1000);
-    if (s <= 0) return { text: "期限切れ", cls: "dead" };
-    var d = Math.floor(s / 86400);
-    if (d >= 1) return { text: "あと" + d + "日", cls: "" };
-    var h = Math.floor(s / 3600);
-    if (h >= 1) return { text: "あと" + h + "時間", cls: "" };
-    return { text: "あと" + Math.max(1, Math.floor(s / 60)) + "分", cls: "" };
-  }
-
-  // #17: /api/serve は sid を使わない（レジストリはボードに属さない）ので、ctx は固定でよい。
-  function renderServe(list, nowMs){
-    var box = document.getElementById("serve");
-    if (!box) return; // ペイン組み替えで container が消えても render() を凍らせない
-    box.innerHTML = "";
-    if (!list.length) {
-      empty(box, "\u2192", "serve なし", " — エージェントが /serve でサーバーを立てると、URL がここに並ぶよ");
-      return;
-    }
-    list.forEach(function(v){
-      var gone = !v.exists;
-      var row = el("div", "srv" + (gone ? " gone" : ""));
-      if (v.title) row.appendChild(el("span", "n", v.title));
-      var u = el("span", "u");
-      var href = safeHref(v.url);
-      if (href && !gone) {
-        var a = el("a", null, v.url);
-        a.href = href; a.target = "_blank"; a.rel = "noopener noreferrer";
-        u.appendChild(a);
-      } else {
-        u.appendChild(el("span", null, v.url));
-      }
-      u.appendChild(el("span", gone ? "badge gone" : "badge on", gone ? "\u2715 消失" : "\u25CF 配信中"));
-      row.appendChild(u);
-      // #80-⑦: the server stopped sending the absolute path; name is the last segment.
-      row.appendChild(el("span", "p", v.name || ""));
-      var left = serveLeft(v, nowMs);
-      var x = el("span", "x" + (left.cls ? " " + left.cls : ""), left.text);
-      x.title = v.permanent ? "永久（自動削除なし）" : (v.expiresAt ? "期限: " + full(v.expiresAt) : "createdAt が無いので期限なし");
-      row.appendChild(x);
-      var t = el("span", "t");
-      agoLive(v.createdAt, t);
-      t.title = full(v.createdAt);
-      row.appendChild(t);
-      // Serve has no per-entry process to stop: 停止 deregisters the URL, 削除 also
-      // drops the served file (server unlinks regular files only, never a directory).
-      var ops = el("span", "ops");
-      var sctx = boardCtx("global", "", false); // serve は board 非依存なので scope は意味なし（tests/kanban-dashboard-cards.test が固定）
-      // 永久トグル。変更は既存の /api/serve 経由（scope+sid が載る）。
-      var perm = el("label", "permx");
-      perm.title = "永久にする（自動削除なし）";
-      var cb = el("input");
-      cb.type = "checkbox";
-      cb.checked = v.permanent === true;
-      cb.addEventListener("change", function(){
-        act("/api/serve", { action: "permanent", id: v.id, value: cb.checked ? "1" : "0" }, sctx);
-      });
-      perm.appendChild(cb);
-      perm.appendChild(el("span", null, "永久"));
-      row.appendChild(perm);
-      ops.appendChild(btn(gone ? "登録解除" : "停止", gotTitle(gone), function(){
-        act("/api/serve", { action: "remove", id: v.id }, sctx);
-      }));
-      // #66-security: no dashboard button deletes a file. A GET that unlinks is
-      // exploitable from any page via <img src>, and this dashboard has no auth.
-      // Deleting a served file is a local filesystem action, not a remote one.
-      row.appendChild(ops);
-      box.appendChild(row);
+  function renderPal() {
+    var q = $("#palq").value.trim().toLowerCase();
+    var box = clear($("#pallist"));
+    palRuns = palItems().filter(function (it) { return !q || it.label.toLowerCase().indexOf(q) >= 0; });
+    if (palSel >= palRuns.length) palSel = Math.max(0, palRuns.length - 1);
+    palRuns.forEach(function (it, i) {
+      var d = el("div", "it" + (i === palSel ? " sel" : ""), it.label);
+      d.onclick = function () { closePal(); it.run(); };
+      box.appendChild(d);
     });
   }
+  function openPal() { $("#pal").setAttribute("open", ""); $("#palq").value = ""; palSel = 0; renderPal(); $("#palq").focus(); }
+  function closePal() { $("#pal").removeAttribute("open"); }
 
-  function gotTitle(gone){
-    return gone ? "消失した登録を一覧から消す" : "配信を止める（/serve/<id>/ が 404 になる）";
+  // ---- lightbox ----
+  var lbList = function () { return Array.prototype.slice.call(document.querySelectorAll(".thumb")); };
+  var lbAt = 0;
+  function showLb(i) {
+    var th = lbList();
+    if (!th.length) return;
+    lbAt = (i + th.length) % th.length;
+    var im = th[lbAt].querySelector("img");
+    $("#lbimg").src = im.src;
+    $("#lbcap").textContent = (th[lbAt].dataset.lb || im.alt || "") + "  (" + (lbAt + 1) + "/" + th.length + ")";
+    $("#lb").setAttribute("open", "");
   }
+  function closeLb() { $("#lb").removeAttribute("open"); $("#lbimg").src = ""; }
 
-  // #11: 設定タブ。ループのスイッチはこのプロジェクトのボード 1 枚だけが持つ
-  // （看板は 1 枚だけなので、ここにボードを選ぶ UI は置かない）。
-  function renderSettings(d){
-    var box = document.getElementById("settings-loops");
-    if (!box) return;
-    box.innerHTML = "";
-    var p = d.project || {};
-    var rows = [{ label: p.id ? "ボード（" + p.id + "）" : "ボード",
-      ctx: boardCtx("project", "", true, projPick === "\u0000" ? "" : projPick), b: p }];
-    rows.forEach(function(r){
-      var row = el("div", "srow");
-      row.appendChild(el("div", "rowlabel", r.label));
-      row.appendChild(boardCtl(r.ctx, r.b.modes, r.b.cards || []));
-      // #58: スイッチだけ見て「効く」と誤解させない。解除ボタンはボード行にある（#17）。
-      var hb = haltBox(r.b, r.ctx);
-      if (hb) row.appendChild(hb);
-      box.appendChild(row);
-    });
-    renderDb(d.db);
-    renderSelfTest();
+  // ---- card modal (#45) ----
+  function modalCard() {
+    var rep = projReport(), cards = (rep && rep.cards) || [], i;
+    for (i = 0; i < cards.length; i++) if (cards[i].id === state.modal) return cards[i];
+    return null;
   }
-
-  // #80-⑦: 絶対パスは出さない（サーバはファイル名だけ送る）。
-  function kbSize(n){
-    if (typeof n !== "number" || !isFinite(n) || n < 0) return "—";
-    if (n < 1024) return n + " B";
-    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
-    return (n / (1024 * 1024)).toFixed(1) + " MB";
+  function openModal(id) {
+    if (!needProj()) return;
+    state.modal = id;
+    var c = modalCard();
+    if (!c) { state.modal = null; return; }
+    $("#cm-id").textContent = "#" + c.id;
+    $("#cm-text").value = c.text || "";
+    $("#cm-project").value = c.project || "";
+    $("#cm-labels").value = (c.labels || []).join(",");
+    $("#cm-due").value = dueOf(c);
+    $("#cm-estimate").value = typeof c.estimate === "number" ? String(c.estimate) : "";
+    $("#cm-blocked").value = c.blocked || "";
+    $("#cm-at").value = c.nextFireAt || "";
+    renderPrio(c);
+    $("#cm").setAttribute("open", "");
+    $("#cm-text").focus();
   }
-  // 旧サーバーは db を送らない。その場合は何も置かない（空欄で埋めない）。
-  function renderDb(dbInfo){
-    var box = document.getElementById("settings-db");
-    if (!box) return;
-    box.innerHTML = "";
-    if (!dbInfo) return;
-    var row = el("div", "srow");
-    row.appendChild(el("div", "rowlabel", String(dbInfo.file || "")));
-    row.appendChild(el("span", null, kbSize(dbInfo.bytes)));
-    row.appendChild(el("span", "rest", "ボード " + numOr0(dbInfo.boards) + " / カード " + numOr0(dbInfo.cards) +
-      " / プロジェクト " + numOr0(dbInfo.projects) + " / 決定 " + numOr0(dbInfo.decisions)));
-    box.appendChild(row);
-    // #13: 診断と VACUUM。実行中は結果行を「実行中…」にする（結果は dbResult が持つ）。
-    var act = el("div", "srow");
-    act.appendChild(btn("DB 診断", "整合性とページ数を読む（/api/db/diagnose）", function(){ runDbAction("diagnose"); }, dbBusy !== null));
-    act.appendChild(btn("VACUUM", "空き領域を回収してファイルを縮める（/api/db/vacuum）", function(){ runDbAction("vacuum"); }, dbBusy !== null));
-    box.appendChild(act);
-    var res = el("div", null, dbBusy ? "実行中…" : (dbResult || ""));
-    res.id = "settings-db-result";
-    res.setAttribute("aria-live", "polite");
-    box.appendChild(res);
-  }
-  // #13: 実行中フラグと結果は selfTest と同じ理由でモジュールに持つ。renderDb() は 5 秒
-  // ポーリングの再描画でボタン DOM ごと作り直されるので、btn() の flightGate（ノードに残る）
-  // だけでは実行中の再描画で新品の有効ボタンが生えて 2 回目の POST が通る。
-  var dbResult = null;  // 最後の結果（ポーリングの再描画でも消さない）
-  var dbBusy = null;    // 実行中の action 名。null = 実行していない
-  function runDbAction(action){
-    if (dbBusy) return;
-    dbBusy = action;
-    renderDb(lastData && lastData.db); // 押したノードも即 disabled の新品に差し替える
-    // api() は !ok で throw するので、503/500 の本文が読めるよう生 fetch で読む（selftest と同じ）。
-    return fetch("/api/db/" + action, { method: "POST" }).then(function(r){
-      if (r.status === 401) authFail();
-      return r.json();
-    }).then(function(d){
-      dbBusy = null;
-      dbResult = dbResultText(action, d);
-      renderDb(lastData && lastData.db);
-      reload(); // 件数とサイズはサーバの数字を取り直す（自前で再計算しない）
-    }, function(){
-      dbBusy = null;
-      dbResult = "NG 実行できません";
-      renderDb(lastData && lastData.db);
+  function closeModal() { state.modal = null; $("#cm").removeAttribute("open"); }
+  function renderPrio(c) {
+    var n = prioOf(c);
+    Array.prototype.forEach.call(document.querySelectorAll("#cm [data-prio]"), function (b) {
+      b.setAttribute("aria-pressed", String(Number(b.dataset.prio) === n));
     });
   }
-  function dbResultText(action, d){
-    if (!d || typeof d !== "object") return "NG 応答が読めない";
-    if (action === "diagnose") {
-      if (d.ok !== true) return "NG 整合性 " + (d.integrity || "不明");
-      return "整合性 " + d.integrity + " / ページ " + numOr0(d.pages) + " / 空き " + numOr0(d.freelist) +
-        " / " + kbSize(d.bytes);
-    }
-    if (d.ok !== true) return "NG " + (d.error || "VACUUM に失敗");
-    var saved = numOr0(d.saved);
-    if (saved <= 0) return kbSize(d.before) + "（変化なし）";
-    return kbSize(d.before) + " → " + kbSize(d.after) + "（-" + Math.round((saved / d.before) * 100) + "%）";
-  }
-  function numOr0(v){ return typeof v === "number" && isFinite(v) ? v : 0; }
-
-  // #38-1 の自己診断を GUI から。POST /api/selftest は NG を 503 で返すので、
-  // !ok で throw する api() は通さない（503 も本文は正しい診断結果）。
-  var selfTest = null; // 最後の結果。ポーリングの再描画でも消さない
-  // #11: 実行中フラグはボタンのノードではなくここに持つ。renderSelfTest() は 5 秒ポーリングの
-  // render() から毎回呼ばれ、ボタン DOM ごと作り直されるので、btn() の flightGate（ノードに残る）
-  // だけでは実行中の再描画で新品の有効ボタンが生えて 2 回目の POST が通る。
-  var selfTestBusy = false;
-  function runSelfTest(){
-    if (selfTestBusy) return;
-    selfTestBusy = true;
-    renderSelfTest(); // 押したノードも即 disabled に（btn() は戻り値 promise が無いと disabled にしない）
-    return fetch("/api/selftest", { method: "POST" }).then(function(r){
-      if (r.status === 401) authFail(); // #85: api() と同じ扱い
-      return r.json();
-    }).then(function(d){
-      selfTest = d && typeof d === "object" ? d : { ok: false, checks: [] };
-      selfTestBusy = false;
-      renderSelfTest();
-    }, function(){
-      selfTestBusy = false;
-      renderSelfTest();
-      note("自己診断を実行できません");
-    });
-  }
-  function renderSelfTest(){
-    var box = document.getElementById("settings-selftest");
-    if (!box) return;
-    box.innerHTML = "";
-    var row = el("div", "srow");
-    // busy 中は disabled で描く（btn() は disabled のときリスナを張らないので、再描画後の
-    // 新品ノードも正しく死ぬ）
-    row.appendChild(btn("診断を実行", "サーバの自己診断（/api/selftest）を実行", function(){ runSelfTest(); }, selfTestBusy));
-    if (selfTest) {
-      var checks = selfTest.checks || [];
-      var bad = [];
-      checks.forEach(function(c, i){
-        if (c && c.ok === true) return;
-        bad.push(c && c.name ? c.name : "#" + (i + 1));
-      });
-      row.appendChild(el("span", selfTest.ok === true ? "badge on" : "halt",
-        selfTest.ok === true ? "OK（" + checks.length + " 件）" : "NG: " + (bad.length ? bad.join(", ") : "理由不明")));
-    }
-    box.appendChild(row);
-  }
-
-  // #8: プロジェクトタブ。ボードとは別エンドポイントなので、専用のタイマーは作らずに
-  // reload() の末尾（とタブのクリック）からのみ取りに行く。
-  var projectData = null;
-  // #24: 取得中の要求を捨てない。捨てると削除直後の再取得が in-flight の応答に
-  // 握り潰され、消した行が次のポーリング（最大 5 秒）まで残る。
-  var projectsBusy = false;
-  var projectsAgain = false;    // 取得中に来た要求を 1 本だけ控える
-  function loadProjects(){
-    if (projectsBusy) { projectsAgain = true; return; }
-    projectsBusy = true;
-    api("/api/projects").then(function(d){
-      projectsBusy = false;
-      // 控えがある＝この応答は要求時点より前の状態。描かずに取り直す
-      if (projectsAgain) { projectsAgain = false; loadProjects(); return; }
-      projectData = d;
-      // 決定を打っている最中に描き直すと入力が消えるので、描くのは次の取得（5 秒ポーリングか、
-      // タブを開き直した時）まで待つ。その時には新しい応答で projectData は置き換わっている
-      if (!isEditing()) renderProjects();
-    }, function(){
-      projectsBusy = false;
-      projectsAgain = false;
-      // 前回の表示は消さない（空と「取れなかった」を取り違えないため）
-      note("プロジェクトを取得できません");
-    });
-  }
-  function leftText(left){
-    if (left < 0) return -left + "日超過";
-    if (left === 0) return "今日";
-    return "あと" + left + "日";
-  }
-  // /api/decision はボードに属さない（scope/sid を見ない）ので act() は通さない。
-  // ダミーの scope を渡すと「ボード書き込み」に見えて、契約が読めなくなる。
-  function decisionRow(d){
-    var row = el("div", "prow");
-    var when = el("span", "d", ago(d.at));
-    when.title = full(d.at);
-    row.appendChild(when);
-    row.appendChild(el("span", "t", d.text));
-    if (d.why) row.appendChild(el("span", "w", "なぜ: " + d.why));
-    var del = btn("\u00D7", "この決定を削除", function(){
-      // 決定は記録なので、カード削除と同じく一度確認する（誤クリックで履歴を失わない）
-      if (!window.confirm("「" + String(d.text || "").slice(0, 40) + "」を削除しますか？")) return;
-      return api("/api/decision", { action: "delete", id: d.id }).then(loadProjects, function(){ note("決定を削除できません"); });
-    });
-    // 内容が「×」なので accname は title では決まらない。カード削除（:757）と同じく両方付ける
-    del.setAttribute("aria-label", "この決定を削除");
-    row.appendChild(del);
-    return row;
-  }
-  // slug を渡さない呼び出しが『プロジェクト横断』（slug "" に書かれる）。
-  function decisionForm(slug){
-    var form = el("div", "pform");
-    // 同じ画面に 2 つ並ぶので、どちらのプロジェクトに書くのかをラベルに入れる
-    var where = slug ? "プロジェクト " + slug : "プロジェクト横断";
-    var ti = el("input");
-    ti.type = "text";
-    ti.placeholder = "決定";
-    ti.setAttribute("aria-label", "決定（本文）— " + where);
-    var wi = el("input");
-    wi.type = "text";
-    wi.placeholder = "なぜ（任意）";
-    wi.setAttribute("aria-label", "なぜ（任意）— " + where);
-    form.appendChild(ti);
-    form.appendChild(wi);
-    form.appendChild(btn("追記", "決定を記録する", function(){
-      var text = String(ti.value || "").trim();
-      if (!text) { note("決定の本文を入れて"); return; }
-      var p = { text: text };
-      if (slug) p.project = slug;
-      var why = String(wi.value || "").trim();
-      if (why) p.why = why;
-      return api("/api/decision", p).then(function(){
-        ti.value = "";
-        wi.value = "";
-        note("決定を記録した");
-        loadProjects();
-      }, function(){ note("決定を記録できません"); });
+  // 本文は /api/rename、残り（at/blocked/project/labels）は 1 本の /api/schedule。
+  // due/estimate を更新する端点は無いので、この面では表示のみ（v1）。
+  function saveModal() {
+    var c = modalCard();
+    if (!c) return;
+    var id = c.id, text = $("#cm-text").value.trim(), jobs = [];
+    if (text && text !== c.text) jobs.push(act("/api/rename", { id: id, text: text }));
+    jobs.push(act("/api/schedule", {
+      id: id,
+      at: $("#cm-at").value.trim(),
+      blocked: $("#cm-blocked").value.trim(),
+      project: $("#cm-project").value.trim(),
+      labels: $("#cm-labels").value.trim(),
     }));
-    return form;
-  }
-  function projectBlock(p){
-    var ms = p.milestones || [], bl = p.blockers || [], ds = p.decisions || [];
-    var pts = p.points || { total: 0, done: 0 };
-    var art = el("article", "pj");
-    var hd = el("div", "sess-hd");
-    var name = el("span", "sess-t");
-    name.appendChild(el("span", null, p.name || p.slug));
-    // 名前が slug と同じなのは「宣言されていない」から。理由が見えるように添える。
-    if (!p.declared) name.appendChild(el("span", "badge", "未宣言"));
-    hd.appendChild(name);
-    var meta = el("span", "pmeta");
-    meta.appendChild(el("span", null, (p.done || 0) + "/" + (p.total || 0) + " 枚"));
-    // 0 の行は出さない（色だけの行で場所を取らない）
-    if (p.overdue > 0) meta.appendChild(el("span", "bad", "期限超過 " + p.overdue));
-    if (bl.length) meta.appendChild(el("span", "warn", "ブロッカー " + bl.length));
-    meta.appendChild(el("span", null, "決定 " + ds.length + " 件"));
-    hd.appendChild(meta);
-    art.appendChild(hd);
-    // 見積が入っているなら pt 比、無ければ枚数比。どちらで描いたかは隣の文字に出す
-    // （サーバの progress は枚数比なので、pt 比で描くときはここで計算し直す）。
-    var byPt = pts.total > 0;
-    var pct = byPt ? Math.round(pts.done * 100 / pts.total) : (p.progress || 0);
-    var grow = el("div", "prow");
-    var bar = el("div", "pbar");
-    bar.setAttribute("role", "progressbar");
-    bar.setAttribute("aria-valuemin", "0");
-    bar.setAttribute("aria-valuemax", "100");
-    bar.setAttribute("aria-valuenow", String(pct));
-    bar.setAttribute("aria-label", (p.name || p.slug) + " の進捗 " + pct + "%");
-    var fill = el("span", null);
-    fill.style.width = pct + "%";
-    bar.appendChild(fill);
-    grow.appendChild(bar);
-    grow.appendChild(el("span", "pct", pct + "%"));
-    grow.appendChild(el("span", "x", byPt
-      ? pts.total + "pt 中 " + pts.done + "pt"
-      : (p.total || 0) + " 枚中 " + (p.done || 0) + " 枚"));
-    art.appendChild(grow);
-    if (ms.length) {
-      art.appendChild(el("div", "hd", "マイルストーン"));
-      ms.forEach(function(m){
-        // dueOf() を通す: 手編集した board.json の壊れた日付で「あとNaN日」を出さない
-        var due = dueOf(m);
-        var left = due ? daysLeft(due) : null;
-        var row = el("div", "prow");
-        row.appendChild(el("span", "d", due ? due.slice(5, 10).replace("-", "/") : "—"));
-        row.appendChild(el("span", "t", m.text));
-        // 列名は看板と同じ表記（COLS の大文字側）に合わせる
-        row.appendChild(el("span", "x ra", String(m.col).toUpperCase()));
-        // 色の規則は看板と共通（dueCls）。ここで独自の条件を書かない
-        var lclass = dueCls(due, m.col);
-        row.appendChild(el("span", "x" + lclass, left === null ? "—" : leftText(left)));
-        art.appendChild(row);
-      });
-    }
-    if (bl.length) {
-      art.appendChild(el("div", "hd", "ブロッカー"));
-      bl.forEach(function(b){
-        var row = el("div", "prow");
-        row.appendChild(el("span", "d", "#" + b.id));
-        row.appendChild(el("span", "t", b.text));
-        row.appendChild(el("span", "w", b.blocked));
-        art.appendChild(row);
-      });
-    }
-    // 空の見出しは墓標になるので出さない。フォームだけは常に出す（1 件目を書く場所が消える）。
-    if (ds.length) {
-      // 件数は上の要約行（pmeta）に 1 回だけ出す。同じ数字を 2 回書かない
-      art.appendChild(el("div", "hd", "決定ログ"));
-      ds.forEach(function(d){ art.appendChild(decisionRow(d)); });
-    }
-    art.appendChild(decisionForm(p.slug));
-    return art;
-  }
-  function renderProjects(){
-    var box = document.getElementById("projects");
-    if (!box) return;
-    box.innerHTML = "";
-    var list = (projectData && projectData.projects) || [];
-    if (!list.length) {
-      empty(box, "\u25A1", "ボードがまだ無い", " — どのディレクトリでも kanban を使えばここに並ぶよ");
-    } else {
-      list.forEach(function(p){ box.appendChild(projectBlock(p)); });
-    }
-    // 横断ログは末尾の別セクション。プロジェクトが 0 件でも書けるよう常に出す。
-    var cross = el("section");
-    var cds = (projectData && projectData.decisions) || [];
-    cross.appendChild(el("div", "hd", "プロジェクト横断 " + cds.length));
-    cds.forEach(function(d){ cross.appendChild(decisionRow(d)); });
-    cross.appendChild(decisionForm(""));
-    box.appendChild(cross);
+    Promise.all(jobs).then(function () { closeModal(); refresh(); toast("#" + id + " を保存"); }, fail);
   }
 
-  // #23: 週次タブ。完走・停滞・ブロックの一覧をプロジェクト別に出す（決定論的、LLM は呼ばへない）。
-  // プロジェクトと同じ流儀で、タブを開いた時と 5 秒ポーリングの相乗りだけで取る（専用タイマー無し）。
-  var weeklyData = null;
-  // #24: loadProjects と同じく、取得中の要求は捨てずに 1 本だけ控える
-  var weeklyBusy = false;
-  var weeklyAgain = false;
-  var weekPick = ""; // "" = 現週（サーバがその場で計算した current）
-  var weekSaved;     // 選んだ週の保存分。undefined = 取得中、null = 保存が無い
-  function loadWeekly(){
-    if (weeklyBusy) { weeklyAgain = true; return; }
-    weeklyBusy = true;
-    api("/api/weekly").then(function(d){
-      weeklyBusy = false;
-      // 控えがある＝この応答は要求時点より前の状態。描かずに取り直す
-      if (weeklyAgain) { weeklyAgain = false; loadWeekly(); return; }
-      weeklyData = d;
-      // 一覧から消えた週を選び続けない（現週に戻す）
-      if (weekPick && (d.weeks || []).indexOf(weekPick) < 0) { weekPick = ""; weekSaved = undefined; }
-      if (weekPick) loadWeekSaved(weekPick);
-      else renderWeekly();
-    }, function(){
-      weeklyBusy = false;
-      weeklyAgain = false;
-      note("週次サマリを取得できません"); // 前回の表示は消さない
-    });
-  }
-  function loadWeekSaved(w){
-    api("/api/weekly", { week: w }).then(function(d){
-      weekSaved = d.summary || null;
-      renderWeekly();
-    }, function(){ note("週次サマリを取得できません"); });
-  }
-  // 行の形はどのグループも同じ（#id / 本文 / 右端の一言）。本文は textContent で入れる
-  // （カードの本文は Markdown ではないので md() は使わない）。
-  function weeklyRow(art, id, text, right, cls){
-    var row = el("div", "prow");
-    row.appendChild(el("span", "d", "#" + id));
-    row.appendChild(el("span", "t", text));
-    row.appendChild(el("span", cls, right));
-    art.appendChild(row);
-  }
-  function renderWeekly(){
-    var box = document.getElementById("weekly");
-    if (!box) return;
-    var d = weeklyData;
-    if (!d) return; // 一度も取れていない: 何も描かない（空と「取れなかった」を混ぜない）
-    var cur = d.current || null;
-    var curWeek = cur ? cur.week : "";
-    var weeks = (d.weeks || []).slice();
-    box.innerHTML = "";
-    var head = el("div", "ctl");
-    if (weeks.length) {
-      var pick = el("select", "q");
-      pick.setAttribute("aria-label", "表示する週");
-      weeks.forEach(function(w){
-        var o = el("option", null, w === curWeek ? w + "（今週）" : w);
-        o.value = w;
-        pick.appendChild(o);
-      });
-      pick.value = weekPick || curWeek;
-      pick.addEventListener("change", function(){
-        var w = pick.value;
-        weekPick = w === curWeek ? "" : w;
-        weekSaved = undefined;
-        if (weekPick) loadWeekSaved(weekPick);
-        else renderWeekly();
-      });
-      head.appendChild(pick);
-    }
-    var s = weekPick ? weekSaved : cur;
-    if (s) head.appendChild(el("span", null,
-      "完了 " + s.totals.done + " / 停滞 " + s.totals.stale + " / ブロック " + s.totals.blocked));
-    box.appendChild(head);
-    if (weekPick && weekSaved === undefined) return; // 保存分を取得中
-    if (!s) {
-      // 週変わりを観測する前に落ちたなど、その週の行が作られていない場合
-      empty(box, "\u25A1", "この週の保存は無い", " — 週変わりを観測した時に作られるよ");
+  // ---- wiring ----
+  document.addEventListener("click", function (e) {
+    var t = e.target;
+    var ptab = t.closest && t.closest(".ptab");
+    if (ptab) { pick(ptab.dataset.p); return; }
+    var sw = t.closest && t.closest(".sw");
+    if (sw) {
+      var k = sw.dataset.sw;
+      if (k === "pause") {
+        // #43/#48: 止まっていれば解除、動いていれば halt。表示は poll の実値に従う。
+        if (!needProj()) return;
+        var was = halted();
+        act(was ? "/api/resume" : "/api/halt").then(function () {
+          refresh();
+          toast(was ? "解除を要求した（次のポーリングで戻る）" : "一時停止を要求した");
+        }, fail);
+        return;
+      }
+      toggleMode(k === "loop" ? "doingLoop" : "autoPick");
       return;
     }
-    var shown = 0;
-    (s.projects || []).forEach(function(p){
-      var dn = p.done || [], st = p.stale || [], bl = p.blocked || [];
-      if (!dn.length && !st.length && !bl.length) return; // 0 件のプロジェクトは見出しごと出さない
-      shown += 1;
-      var art = el("article", "pj");
-      var hd = el("div", "sess-hd");
-      hd.appendChild(el("span", "sess-t", p.slug));
-      var meta = el("span", "pmeta");
-      if (dn.length) meta.appendChild(el("span", null, "完了 " + dn.length));
-      if (st.length) meta.appendChild(el("span", "warn", "停滞 " + st.length));
-      if (bl.length) meta.appendChild(el("span", "bad", "ブロック " + bl.length));
-      hd.appendChild(meta);
-      art.appendChild(hd);
-      if (dn.length) {
-        art.appendChild(el("div", "hd", "完了 " + dn.length));
-        dn.forEach(function(c){
-          // at が数値でない保存行で toISOString が RangeError を投げると、描画ごと止まる
-          weeklyRow(art, c.id, c.text, typeof c.at === "number" ? full(new Date(c.at).toISOString()) : "", "x");
-        });
+    if (t.closest && t.closest("#cm")) {
+      var prio = t.closest("[data-prio]");
+      var mv = t.closest("[data-move]");
+      var c0 = modalCard();
+      if (prio && c0) {
+        act("/api/priority", { id: c0.id, n: Number(prio.dataset.prio) }).then(function () { refresh(); var c1 = modalCard(); if (c1) renderPrio(c1); }, fail);
+        return;
       }
-      if (st.length) {
-        art.appendChild(el("div", "hd", "停滞 " + st.length));
-        // 日数は集計側（STALE_DAY_MS）の数字をそのまま出す。GUI で割り直さない
-        st.forEach(function(c){ weeklyRow(art, c.id, c.text, "\u26A0" + c.days + "d", "bad"); });
+      if (mv && c0) {
+        var col = mv.dataset.move;
+        act("/api/move", { id: c0.id, col: col }).then(function () { closeModal(); refresh(); toast("#" + c0.id + " を " + col.toUpperCase() + " へ"); }, fail);
+        return;
       }
-      if (bl.length) {
-        art.appendChild(el("div", "hd", "ブロック " + bl.length));
-        bl.forEach(function(c){ weeklyRow(art, c.id, c.text, c.blocked, "w"); });
+      if (t.id === "cm-close") { closeModal(); return; }
+      if (t.id === "cm-save") { saveModal(); return; }
+      if (t.id === "cm-sched" && c0) {
+        var at = $("#cm-at").value.trim();
+        act("/api/schedule", { id: c0.id, at: at }).then(function () {
+          refresh();
+          toast("#" + c0.id + (at ? " を " + at + " で実行予約" : " の実行予約を解除"));
+        }, fail);
+        return;
       }
-      box.appendChild(art);
-    });
-    if (!shown) empty(box, "\u25A1", "この週に動いたカードは無い", "");
-  }
-
-  function render(d, nowMs){
-    if (isEditing()) return; // #65: 編集中は描画しない（sig を進める判断は呼び出し元）
-    nowBase = nowMs;
-    // 絞り込みの選択肢を先に揃える（消えた slug を選んでいたらここで全部に戻る）。
-    syncProjOptions(d);
-    // #74: 前回描いたスパンは DOM ごと捨てるので、台帳もここで捨てる（伸びない）。
-    nowT = [];
-    nowS = [];
-    renderNext(d); // #19
-    renderStats(d.stats);
-    renderProject(d.project, nowMs);
-    renderServe(d.serve || [], nowMs);
-    renderSettings(d); // #11
-    selectTab(activeTab); // a poll re-render must keep the tab the user picked
-  }
-
-  function setConn(ok, firstFail){
-    var c = document.getElementById("conn");
-    var b = document.getElementById("banner");
-    c.className = ok ? "ok" : "bad";
-    c.textContent = ok ? "接続中" : "再接続中";
-    b.classList.toggle("on", !ok);
-    // #85: a 401 is not a connection failure, so it keeps its own (already shown) text.
-    if (!ok && firstFail && !authFailed) b.textContent = "サーバに接続できません" +
-      (lastData ? "。前回の表示を維持しています…" : "。サーバが起動するのを待っています…");
-}
-  // #85: /api/* needs the cookie now. When one comes back 401, the way back in is the
-  // token-bearing URL from /kanban url, so say that instead of "server unreachable".
-  var authFailed = false;
-  function authFail(){
-    authFailed = true;
-    var b = document.getElementById("banner");
-    if (!b) return;
-    b.textContent = "トークンが必要。/kanban url の URL を開き直して。";
-    b.classList.add("on");
-  }
-  // A failed first fetch must not sit dark until the 5s tick. Retry fast, then back off.
-  // 1s/2s/4s... capped at 30s; success resets to the normal 5s poll.
-  var POLL_MS = 5000;
-  var RETRY_MAX_MS = 30000;
-  var fails = 0, timer = null;
-  function nextDelay(){
-    if (fails === 0) return POLL_MS;
-    return Math.min(1000 * Math.pow(2, fails - 1), RETRY_MAX_MS);
-  }
-  function schedule(){
-    clearTimeout(timer);
-    // 隠れたタブは問い合わせない。fails は触らないので、戻った時のバックオフはそのまま続く。
-    if (document.visibilityState === "hidden") return;
-    timer = setTimeout(reload, nextDelay());
-  }
-  // 復帰したら待たずに 1 回取る。schedule() は clearTimeout するので timer は二重にならない。
-  // （テスト用の最小 document には addEventListener が無いので存在確認だけする）
-  if (typeof document.addEventListener === "function") document.addEventListener("visibilitychange", function(){
-    if (document.visibilityState !== "hidden") reload();
-  });
-  // #74: 分境界項は無い。データが変わらなければ sig も変わらない（相対時刻は
-  // ticker が textContent を書き換える。毎分のフル再描画はそれで用済み）。
-  // サーバの now は毎分変わる（#65 で分単位に丸め済み）ので、sig からは外す。
-  // これを戻すと 1 分ごとにフル再描画が復活する。
-  function sigOf(d){
-    var c = Object.assign({}, d);
-    delete c.now;
-    return JSON.stringify(c);
-  }
-  // #74: 相対時刻は render を回さずにここで書き換える。nowBase は「このスパンを
-  // 描いた瞬間の時刻」。tick() は nowBase と Date.now() の差が 1 分以上動いた時だけ
-  // textContent を差し替える：DOM は部分的に動くが、看板の中身は差し替わらない。
-  function agoLive(iso, node){
-    var r = { el: node, at: iso ? new Date(iso).getTime() : NaN, base: nowBase, text: ago(iso, nowBase) };
-    node.textContent = r.text;
-    nowT.push(r);
-  }
-  // tick はテキストノードの値だけ差し替える（textContent 代入はノードを作り直すので、
-  // 構造の変異として数えられてしまう。ここは文字の変異が正しい）。
-  function setLive(r, text){
-    if (text === r.text) return;
-    var n = r.el.firstChild;
-    if (n) n.nodeValue = text;
-    else r.el.textContent = text;
-    r.text = text;
-  }
-  // #74: 文字列で組み立てるのは、テストが .t の innerHTML で経過を検証しているため。
-  // tick() はここで作った .since の文字だけを書き換え、⏳ の出し入れはしない
-  // （データが次に変わった時に判定される。分粒度なので許容 — #74 の副作用）。
-  function sinceLead(movedAt){
-    var age = nowBase - movedAt;
-    var mins = Math.max(0, Math.floor(age / 60000));
-    var lead = age > STALE_GUI_MS
-      ? '<span class="stale" title="' + mins + '分前から DOING">⏳</span>'
-      : "";
-    return lead + '<span class="since">' + sinceText(age) + '</span>';
-  }
-  // #18: 経過の 3 段階（分 → 時間 → 日）。sinceLead と tick の両方がここを通る。
-  function sinceText(ageMs){
-    var ms = Math.max(0, ageMs);
-    if (ms >= STALE_DAY_MS) return Math.floor(ms / STALE_DAY_MS) + "日前から";
-    if (ms >= 3600000) return Math.floor(ms / 3600000) + "時間前から";
-    return Math.floor(ms / 60000) + "分前から";
-  }
-  // #18: DOING が 1 日以上動いていない日数（0 = 停滞ではない）。TODO/DONE は対象外で、
-  // movedAt の無いカードは推測しない（サーバの staleTag と同じ規則）。
-  function staleDays(c){
-    if (!c || c.col !== "doing" || typeof c.movedAt !== "number") return 0;
-    var d = Math.floor((nowBase - c.movedAt) / STALE_DAY_MS);
-    return d >= 1 ? d : 0;
-  }
-  // #18: 見出し（div.sess-hd）の ・ 停滞 N。絞り込み後の cards を数えるので、
-  // 表示中のチップと数字が食い違わない。0 件なら何も出さない。
-  function staleText(cards){
-    var n = 0;
-    for (var i = 0; i < cards.length; i++) if (staleDays(cards[i]) > 0) n++;
-    return n ? " ・ 停滞 " + n : "";
-  }
-  function sinceLive(movedAt, box){
-    var si = box.querySelector ? box.querySelector(".since") : null;
-    nowS.push({ el: si || box, at: movedAt, base: nowBase, text: si ? si.textContent : "" });
-  }
-  function tick(at){
-    var now = at != null ? at : Date.now();
-    // 位相を揃える: 次に textContent を差し替えるのは描画から 60 秒後（分境界ではない）。
-    nowBase = now;
-    for (var i = 0; i < nowT.length; i++) {
-      var t = nowT[i];
-      if (now - t.base < 60000) continue;
-      setLive(t, isNaN(t.at) ? "—" : ago(new Date(t.at).toISOString(), now));
+      if (t.id === "cm-del" && c0) {
+        if (!window.confirm("#" + c0.id + " を削除する？")) return;
+        act("/api/remove", { id: c0.id }).then(function () { closeModal(); refresh(); toast("#" + c0.id + " を削除"); }, fail);
+        return;
+      }
+      return; // モーダル内の他のクリックは下へ流さない
     }
-    for (var j = 0; j < nowS.length; j++) {
-      var r = nowS[j];
-      if (now - r.base < 60000) continue;
-      setLive(r, sinceText(now - r.at));
+    var th = t.closest && t.closest(".thumb");
+    if (th) { showLb(lbList().indexOf(th)); return; }
+    if (t.id === "lb" || t.id === "lbimg") closeLb();
+    // カード本文クリックで選択（j/k と同じ対象）＋編集モーダル（#45）。
+    var card = t.closest && t.closest("article.card");
+    if (card && !(t.closest("button,form,input"))) {
+      var all = visibleCards();
+      state.sel = all.indexOf(card);
+      applySel();
+      if (card.closest("#board")) openModal(Number(card.dataset.id));
     }
-  }
-  // #48: 開閉・検索語を変えたら即描画。sig も更新するので、次のポーリングが
-  // 「同じ sig」で描画をスキップしても画面と sig が食い違わない。
-  function redraw(){
-    if (!lastData) return;
-    if (isEditing()) return; // #65: render() は何もしないので、sig だけ進めてはいけない
-    paint();
-  }
-  // #74: 描画の基準時刻はサーバの now（分丸め済み）。テストは固定の now を送って
-  // 相対時刻を検証するので、ここは d.now を優先する。sigOf は now を外しているので、
-  // この値を描画に使っても毎分のフル再描画は起きない。
-  function baseOf(d){
-    var t = d && d.now ? new Date(d.now).getTime() : NaN;
-    return isNaN(t) ? Date.now() : t;
-  }
-  // #74: redraw()/reload() の両方が呼ぶ共通の描画点。
-  function paint(){
-    var d = lastData;
-    var nowMs = baseOf(d);
-    // Render first: if render throws, sig must not advance or the board freezes until the payload changes.
-    render(d, nowMs);
-    sig = sigOf(d) + uiSig();
-    tick(nowMs); // 描いた瞬間に揃える。次の ticker はちょうど +60 秒
-  }
-  // #35: cwd を解決できないと /api/dashboard の project は process.cwd() のボード（pi-web）になる。
-  // プロジェクトを選んでいる間は ?p=<slug> の看板で上書きし、未選択なら従来どおり dashboard の
-  // project をそのまま使う。
-  // #35: 応答が返った時点で projPick を読み直すと、A の応答に B のボードを載せて別ボードの
-  // カード id で書き込むことになる（カード id はボードローカル）。選んだ slug を引数で受け取る。
-  function boardOf(d, pick){
-    if (pick === "" || pick === "\u0000") return Promise.resolve(d);
-    return api("/api/kanban", { p: pick }).then(function(k){
-      // 取れなかったら「前のボード」ではなく「看板なし」を描く。誤ったボードは、
-      // そこから書き込めるぶん空より危ない。
-      d.project = k && k.ok && k.project ? k.project : null;
-      return d;
-    }, function(){ d.project = null; return d; });
-  }
-  function reload(){
-    // #35: この往復の宛先を先に固定する。完了時に選び直されていたら、古い応答は捨てる。
-    var pick = projPick;
-    api(API).then(function(d){ return boardOf(d, pick); }).then(function(d){
-      if (!d || typeof d !== "object") throw new Error("bad payload");
-      // #35: A を選んで往復中に B へ切り替え、B が先に描いた後に A が返る競合。
-      // lastData ごと捨てる（描画もしない）。次の reload() は既に予約済み。
-      if (pick !== projPick) return;
-      lastData = d;
-      setConn(true);
-      fails = 0;
-      // #74: データが変わっていなくても、時刻 ticker の位相はここで揃え直す
-      // （render はしない。DOM は触らない。分丸め済みの now ではなく実時刻で進める）。
-      var s = sigOf(d) + uiSig();
-      if (s === sig) { tick(baseOf(d)); return; }
-      // #65: 編集中で描画を見送ったら sig は進めない。次に編集が終わったポーリングで
-      // 「変わっていない」と誤判定され、永久に再描画されなくなるため。
-      if (isEditing()) return;
-      // A render bug must not look like a dropped connection: catch it here so the .catch below
-      // never sees it, and advance sig so we retry once per new payload instead of every poll.
-      try { paint(); } catch (e) { sig = s; console.error("kanban: render failed", e); }
-    }).catch(function(){
-      fails += 1;
-      // keep lastData on screen; just flag the reconnect state
-      setConn(false, !document.getElementById("banner").classList.contains("on"));
-      if (!lastData) {
-        // never got any data: draw the empty states instead of blank sections
-        renderStats(null); renderProject(null, null); renderServe([], null);
+  });
+  document.addEventListener("toggle", function (e) {
+    var det = e.target;
+    if (!det.classList || !det.classList.contains("group")) return;
+    var slug = det.dataset.slug;
+    state.open[slug] = det.open;
+    if (det.open && !state.cards[slug]) fetchGroup(slug).then(render);
+  }, true);
+
+  $("#q").addEventListener("input", function () { state.query = this.value; state.sel = -1; render(); });
+  $("#palBtn").onclick = openPal;
+  $("#palq").addEventListener("input", function () { palSel = 0; renderPal(); });
+  $("#palq").addEventListener("keydown", function (e) {
+    if (e.key === "ArrowDown") { palSel = Math.min(palRuns.length - 1, palSel + 1); renderPal(); e.preventDefault(); }
+    else if (e.key === "ArrowUp") { palSel = Math.max(0, palSel - 1); renderPal(); e.preventDefault(); }
+    else if (e.key === "Enter") { var it = palRuns[palSel]; if (it) { closePal(); it.run(); } }
+    else if (e.key === "Escape") { closePal(); }
+  });
+  $("#foldAll").onclick = function () {
+    ((state.projects && state.projects.projects) || []).forEach(function (p) { state.open[p.slug] = true; });
+    state.projDoneOpen = true;
+    var jobs = ((state.projects && state.projects.projects) || []).filter(function (p) { return !state.cards[p.slug]; })
+      .map(function (p) { return fetchGroup(p.slug); });
+    Promise.all(jobs).then(render);
+  };
+  $("#foldDone").onclick = function () {
+    state.projDoneOpen = false;
+    ((state.projects && state.projects.projects) || []).forEach(function (p) {
+      if (p.total > 0 && p.done === p.total) state.open[p.slug] = false;
+    });
+    render();
+  };
+  $("#themeBtn").onclick = function () {
+    var light = document.documentElement.getAttribute("data-theme") === "light";
+    document.documentElement.setAttribute("data-theme", light ? "dark" : "light");
+    this.textContent = "テーマ: " + (light ? "暗" : "明");
+    try { localStorage.setItem("kb-theme", light ? "dark" : "light"); } catch (err) { void err; }
+  };
+  $("#densityBtn").onclick = function () {
+    var c = document.documentElement.getAttribute("data-density") === "compact";
+    document.documentElement.setAttribute("data-density", c ? "normal" : "compact");
+    this.textContent = "密度: " + (c ? "標準" : "コンパクト");
+    try { localStorage.setItem("kb-density", c ? "normal" : "compact"); } catch (err) { void err; }
+  };
+
+  document.addEventListener("keydown", function (e) {
+    // Ctrl/Cmd+K は検索欄からでも開く（入力中の打鍵は下で捨てる）
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); openPal(); return; }
+    var tag = (e.target.tagName || "").toLowerCase();
+    if (tag === "input" || tag === "textarea") {
+      if (e.key === "Escape") { e.target.blur(); if (e.target.id === "palq") closePal(); }
+      return;
+    }
+    if ($("#pal").hasAttribute("open")) {
+      if (e.key === "Escape") closePal();
+      else $("#palq").focus();
+      return;
+    }
+    if ($("#cm").hasAttribute("open")) {
+      if (e.key === "Escape") closeModal();
+      return;
+    }
+    if ($("#lb").hasAttribute("open")) {
+      if (e.key === "Escape") closeLb();
+      else if (e.key === "ArrowRight") showLb(lbAt + 1);
+      else if (e.key === "ArrowLeft") showLb(lbAt - 1);
+      return;
+    }
+    if (e.key === "Escape") { state.sel = -1; applySel(); return; }
+    if (e.key === "Enter" && state.sel >= 0) {
+      var sel = visibleCards()[state.sel];
+      if (sel) {
+        var tn = sel.querySelector(".thumb");
+        if (tn) { showLb(lbList().indexOf(tn)); e.preventDefault(); }
       }
-    }).then(function(){
-      // プロジェクトは別エンドポイントなので、タブを開いている時だけ相乗りで取る（専用タイマーは作らない）
-      if (activeTab === "projects") loadProjects();
-      else if (activeTab === "weekly") loadWeekly();
-      schedule();
-    });
-  }
-  // #48: 入力のたびに再描画（fetch はしない。lastData を使い回す）
-  var qEl = document.getElementById("q");
-  if (qEl) qEl.addEventListener("input", function(){
-    query = qEl.value.trim().toLowerCase();
-    redraw();
+      return;
+    }
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    var k = e.key;
+    if (k >= "0" && k <= "9") {
+      if (k === "0") { pick("__all__"); return; }
+      var slug = boards()[Number(k) - 1];
+      if (slug) pick(slug);
+      return;
+    }
+    if (k === "/") { e.preventDefault(); $("#q").focus(); return; }
+    if (k === "c") { addCard("todo"); return; }
+    if (k === "d") { doneTop(); return; }
+    if (k === "j" || k === "k") {
+      var all = visibleCards();
+      if (!all.length) return;
+      state.sel = Math.max(0, Math.min(all.length - 1, state.sel + (k === "j" ? 1 : -1)));
+      applySel();
+      if (all[state.sel]) all[state.sel].scrollIntoView({ block: "nearest" });
+      e.preventDefault();
+    }
   });
-  var projEl = document.getElementById("proj");
-  if (projEl) projEl.addEventListener("change", function(){
-    projPick = projEl.value || "";
-    // カード id はボードローカル。取り直しが終わる前の1描画に前のボードのカードを
-    // 残すと、その id で新しいボードの別カードを動かしてしまう。空で描いて待つ。
-    if (lastData) lastData.project = null;
-    redraw(); // クライアント側の絞り込みは即座に効かせる
-    reload(); // 選んだ slug の看板を取り直す（lastData のボードはポーリング待ちにしない）
-  });
-  // #22: ラベル絞り込み。projPick と同じ配線（値は固定 4 種＋"" なので検証は要らない）。
-  var labEl = document.getElementById("lab");
-  if (labEl) labEl.addEventListener("change", function(){
-    labFilter = labEl.value || "";
-    redraw();
-  });
-  // 1-4: フィルタバー。静的なボタンなので、押された時だけ aria-pressed と見た目を揃える。
-  var FBTNS = [["f-all", ""], ["f-ok", "ok"], ["f-overdue", "overdue"], ["f-blocked", "blocked"]];
-  function syncFilters(){
-    FBTNS.forEach(function(p){
-      var b = document.getElementById(p[0]);
-      if (!b) return;
-      var on = cardFilter === p[1];
-      b.setAttribute("aria-pressed", on ? "true" : "false");
-      if (on) b.classList.add("on"); else b.classList.remove("on");
-    });
-  }
-  FBTNS.forEach(function(p){
-    var b = document.getElementById(p[0]);
-    if (b) b.addEventListener("click", function(){
-      cardFilter = p[1];
-      syncFilters();
-      redraw();
-    });
-  });
-  syncFilters();
-  reload();
-  // #74: 相対時刻の ticker は新しい setInterval ではなく既存のポーリングに乗る。
-  // reload() の「sig が変わらない」分岐が tick() を呼ぶので、通信も再描画も増やさず
-  // （通信は既存の 1 本のまま）、span の文字だけが分粒度で動く。
+
+  try {
+    var th = localStorage.getItem("kb-theme");
+    if (th === "light") { document.documentElement.setAttribute("data-theme", "light"); $("#themeBtn").textContent = "テーマ: 明"; }
+    if (localStorage.getItem("kb-density") === "compact") { document.documentElement.setAttribute("data-density", "compact"); $("#densityBtn").textContent = "密度: コンパクト"; }
+  } catch (err) { void err; }
+
+  refresh();
+  setInterval(refresh, POLL);
 })();
-</script>
-<script>
-(function(){
-  // theme toggle: click -> opposite theme + explicit pick in localStorage (kb-theme);
-  // while no explicit pick exists, live-updates with the OS color-scheme.
-  var btn = document.getElementById("theme");
-  var pick = false;
-  try { pick = localStorage.getItem("kb-theme") != null; } catch (e) {}
-  function label(){ return document.documentElement.dataset.theme === "light" ? "ダークテーマに切り替え" : "ライトテーマに切り替え"; }
-  function refreshLabel(){ var l = label(); btn.setAttribute("aria-label", l); btn.title = l; }
-  function setTheme(t, save){
-    document.documentElement.setAttribute("data-theme", t);
-    if (save) { pick = true; try { localStorage.setItem("kb-theme", t); } catch (e) {} }
-    refreshLabel();
-  }
-  btn.addEventListener("click", function(){
-    setTheme(document.documentElement.dataset.theme === "light" ? "dark" : "light", true);
-  });
-  if (window.matchMedia) {
-    var mq = matchMedia("(prefers-color-scheme: light)");
-    var onChange = function(){ if (!pick) setTheme(mq.matches ? "light" : "dark", false); };
-    if (mq.addEventListener) mq.addEventListener("change", onChange);
-    else if (mq.addListener) mq.addListener(onChange);
-  }
-  refreshLabel();
-})();
+
 </script>
 </body>
 </html>

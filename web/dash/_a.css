@@ -1,0 +1,126 @@
+
+:root{
+  --bg0:#0a0c10; --bg1:#10131a; --bg2:#161a23; --line:#232936;
+  --text:#e8ebf2; --muted:#8a92a6;
+  --accent:#7aa2f7; --warn:#e0af68; --bad:#f7768e; --ok:#9ece6a;
+  --gap:8px; --radius:6px;
+  --font-body:"Segoe UI","Noto Sans JP","Hiragino Sans",sans-serif;
+  --font-mono:ui-monospace,"Cascadia Mono","SF Mono",Consolas,monospace;
+}
+html[data-theme="light"]{
+  --bg0:#f4f5f8; --bg1:#ffffff; --bg2:#f7f8fb; --line:#d8dde6;
+  --text:#1a1f2b; --muted:#5c6577;
+  --accent:#2f6bdb; --warn:#b07514; --bad:#c73e56; --ok:#3f8f4a;
+}
+html[data-density="compact"]{ --gap:5px; }
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--bg0); color:var(--text);
+  font:13px/1.5 var(--font-body);
+}
+a{color:inherit;text-decoration:none}
+.mono{font-family:var(--font-mono)}
+
+/* ── topbar ─────────────────────────────── */
+.topbar{
+  position:sticky; top:0; z-index:10;
+  background:var(--bg1); border-bottom:1px solid var(--line);
+}
+.toprow{
+  height:46px; display:flex; align-items:center; gap:12px; padding:0 16px;
+}
+.wordmark{
+  font-family:var(--font-mono); font-size:12px; letter-spacing:.35em;
+  color:var(--accent); font-weight:600;
+}
+.search{
+  flex:1; max-width:420px; margin-left:auto;
+  display:flex; align-items:center; gap:8px;
+  border:1px solid var(--line); border-radius:var(--radius);
+  background:var(--bg2); padding:5px 10px; color:var(--muted);
+}
+.search input{
+  flex:1; border:0; background:none; color:var(--text);
+  font:inherit; outline:none;
+}
+.search kbd{
+  font-family:var(--font-mono); font-size:10px; color:var(--muted);
+  border:1px solid var(--line); border-radius:4px; padding:1px 5px;
+}
+.ghost{
+  border:1px solid var(--line); background:var(--bg2); color:var(--muted);
+  border-radius:var(--radius); padding:5px 10px; font:inherit; font-size:12px;
+  cursor:pointer; white-space:nowrap;
+}
+.ghost:hover{color:var(--text); border-color:var(--accent)}
+
+/* ── プロジェクトチップ列 (1クリック切替) ── */
+.ptabs{
+  display:flex; gap:6px; padding:0 16px 10px; overflow-x:auto;
+  scrollbar-width:none;
+  scroll-snap-type:x proximity;
+}
+.ptabs::-webkit-scrollbar{display:none}
+.ptab{
+  flex:none; display:flex; align-items:center; gap:7px;
+  border:1px solid var(--line); border-radius:var(--radius);
+  background:var(--bg2); color:var(--muted);
+  padding:5px 12px; font:inherit; font-size:12px; cursor:pointer;
+  position:relative; white-space:nowrap;
+  scroll-snap-align:start;
+}
+.ptab:hover{color:var(--text); border-color:color-mix(in srgb,var(--accent) 45%,var(--line))}
+.ptab[aria-pressed="true"]{
+  color:var(--text); border-color:var(--accent);
+  background:color-mix(in srgb,var(--accent) 12%,var(--bg2));
+}
+.ptab .dot{
+  width:7px; height:7px; border-radius:50%; background:var(--line);
+  flex:none;
+}
+.ptab .dot.live{background:var(--warn)}   /* doing 有り → スピン化は CSS */
+.ptab .dot.done{background:var(--ok)}
+.ptab.doing .dot{
+  background:var(--warn);
+  border-radius:50%;
+}
+.ptab.doing .dot{ animation:spin 1.6s linear infinite;
+  clip-path: polygon(50% 0,100% 0,100% 35%,50% 35%,50% 65%,100% 65%,100% 100%,50% 100%,50% 35%,0 35%,0 65%,35% 65%,0 100%,100% 100%);
+  background: var(--warn);
+}
+@keyframes spin{ to{ transform: rotate(360deg);} }
+.ptab.doing .dot{
+  background: conic-gradient(var(--warn) 0 62%, color-mix(in srgb,var(--warn) 18%,var(--bg2)) 62% 100%);
+  animation:spin 1.4s linear infinite;
+}
+.ptab .num{font-family:var(--font-mono); font-size:10px}
+.ptab .key{
+  font-family:var(--font-mono); font-size:9px; color:var(--muted);
+  border:1px solid var(--line); border-radius:3px; padding:0 4px; opacity:.7;
+}
+.pmore{
+  flex:none; display:flex; align-items:center; gap:6px;
+  border:1px dashed var(--line); border-radius:var(--radius);
+  background:var(--bg1); color:var(--muted);
+  padding:5px 10px; font:inherit; font-size:11px; cursor:pointer;
+}
+.pmore:hover{color:var(--text); border-color:var(--accent)}
+
+/* ── 計数ストリップ ──────────────────────── */
+.strip{
+  display:flex; gap:var(--gap); padding:12px 16px 4px;
+  max-width:1440px; margin:0 auto;
+}
+.stat{
+  flex:1; background:var(--bg1); border:1px solid var(--line);
+  border-radius:var(--radius); padding:8px 12px;
+  min-width:96px;
+}
+.stat .k{font-size:11px; color:var(--muted); letter-spacing:.06em}
+.stat .v{
+  font-family:var(--font-mono); font-size:20px; font-weight:600; line-height:1.2;
+}
+.stat .v small{font-size:11px; font-weight:400; color:var(--muted)}
+.stat.bad .v{color:var(--bad)}
+.stat.warn .v{color:var(--warn)}
+.stat.check .v{color:var(--ok); font-size:14px; padding-top:4px}

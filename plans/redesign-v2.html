@@ -1,0 +1,882 @@
+<!doctype html>
+<!--
+  KANBAN gen2 — 再設計プロトタイプ (v2.5: スイッチ1行化 (統計バー直下) / 統計タブ別切替 (全プロ合算 vs この看板) / 右レール2分割 (proj vs all=進捗バー))
+  設計宣言 (system):
+    色系    : Tokyo Night 系 6 トークン (bg0/bg1/bg2/line/text/muted + accent/warn/bad/ok)
+              1 背景 + 1 面の 2 階層。hex 直書きはトークン定義の 1 箇所のみ。
+    タイプ  : 本文 13px / ラベル・計数 11px ui-monospace / 見出し 15px / ページ題 12px 字間広
+    レイアウト: topbar 52px 固定 → 計数ストリップ → grid [3列 kanban | 320px レール]
+    リズム  : 隙間 8px 基準。角丸 6px、影は hover の 1 種のみ (既定フラット)。
+    実データ: カード名・進捗・プロジェクト列は実ボード (#38-#46) と /api/projects の実値。
+    切替v2.1: topbar 全プロジェクト chip 直置き (1クリック) + レール行クリック + 数字キー 1-5。
+    添付v2.2: カード内サムネ 2x2 (上限4枚, +N) + lightbox。video/audio はプレビュー行。
+    モバイルv2.2: 1 列縦積み, 検索 2 行目, 計数横スワイプ(snap), タッチ 44px, lightbox full-bleed。
+    v2.3: DOING 卡に回転スピン (統一 mono 表示, prefers-reduced-motion で停止)。
+          トグル 3 連状態 + loop 巻き戻し (数字→0) 経路。
+          100 件スケール → ptabs は横スクロール+検索絞り込み, 「すべて」タブ横断, タブ上限。
+-->
+<html lang="ja" data-theme="dark" data-density="normal">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KANBAN gen2 — 再設計プロトタイプ</title>
+<style>
+:root{
+  --bg0:#0a0c10; --bg1:#10131a; --bg2:#161a23; --line:#232936;
+  --text:#e8ebf2; --muted:#8a92a6;
+  --accent:#7aa2f7; --warn:#e0af68; --bad:#f7768e; --ok:#9ece6a;
+  --gap:8px; --radius:6px;
+  --font-body:"Segoe UI","Noto Sans JP","Hiragino Sans",sans-serif;
+  --font-mono:ui-monospace,"Cascadia Mono","SF Mono",Consolas,monospace;
+}
+html[data-theme="light"]{
+  --bg0:#f4f5f8; --bg1:#ffffff; --bg2:#f7f8fb; --line:#d8dde6;
+  --text:#1a1f2b; --muted:#5c6577;
+  --accent:#2f6bdb; --warn:#b07514; --bad:#c73e56; --ok:#3f8f4a;
+}
+html[data-density="compact"]{ --gap:5px; }
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--bg0); color:var(--text);
+  font:13px/1.5 var(--font-body);
+}
+a{color:inherit;text-decoration:none}
+.mono{font-family:var(--font-mono)}
+
+/* ── topbar ─────────────────────────────── */
+.topbar{
+  position:sticky; top:0; z-index:10;
+  background:var(--bg1); border-bottom:1px solid var(--line);
+}
+.toprow{
+  height:46px; display:flex; align-items:center; gap:12px; padding:0 16px;
+}
+.wordmark{
+  font-family:var(--font-mono); font-size:12px; letter-spacing:.35em;
+  color:var(--accent); font-weight:600;
+}
+.search{
+  flex:1; max-width:420px; margin-left:auto;
+  display:flex; align-items:center; gap:8px;
+  border:1px solid var(--line); border-radius:var(--radius);
+  background:var(--bg2); padding:5px 10px; color:var(--muted);
+}
+.search input{
+  flex:1; border:0; background:none; color:var(--text);
+  font:inherit; outline:none;
+}
+.search kbd{
+  font-family:var(--font-mono); font-size:10px; color:var(--muted);
+  border:1px solid var(--line); border-radius:4px; padding:1px 5px;
+}
+.ghost{
+  border:1px solid var(--line); background:var(--bg2); color:var(--muted);
+  border-radius:var(--radius); padding:5px 10px; font:inherit; font-size:12px;
+  cursor:pointer; white-space:nowrap;
+}
+.ghost:hover{color:var(--text); border-color:var(--accent)}
+
+/* ── プロジェクトチップ列 (1クリック切替) ── */
+.ptabs{
+  display:flex; gap:6px; padding:0 16px 10px; overflow-x:auto;
+  scrollbar-width:none;
+  scroll-snap-type:x proximity;
+}
+.ptabs::-webkit-scrollbar{display:none}
+.ptab{
+  flex:none; display:flex; align-items:center; gap:7px;
+  border:1px solid var(--line); border-radius:var(--radius);
+  background:var(--bg2); color:var(--muted);
+  padding:5px 12px; font:inherit; font-size:12px; cursor:pointer;
+  position:relative; white-space:nowrap;
+  scroll-snap-align:start;
+}
+.ptab:hover{color:var(--text); border-color:color-mix(in srgb,var(--accent) 45%,var(--line))}
+.ptab[aria-pressed="true"]{
+  color:var(--text); border-color:var(--accent);
+  background:color-mix(in srgb,var(--accent) 12%,var(--bg2));
+}
+.ptab .dot{
+  width:7px; height:7px; border-radius:50%; background:var(--line);
+  flex:none;
+}
+.ptab .dot.live{background:var(--warn)}   /* doing 有り → スピン化は CSS */
+.ptab .dot.done{background:var(--ok)}
+.ptab.doing .dot{
+  background:var(--warn);
+  border-radius:50%;
+}
+.ptab.doing .dot{ animation:spin 1.6s linear infinite;
+  clip-path: polygon(50% 0,100% 0,100% 35%,50% 35%,50% 65%,100% 65%,100% 100%,50% 100%,50% 35%,0 35%,0 65%,35% 65%,0 100%,100% 100%);
+  background: var(--warn);
+}
+@keyframes spin{ to{ transform: rotate(360deg);} }
+.ptab.doing .dot{
+  background: conic-gradient(var(--warn) 0 62%, color-mix(in srgb,var(--warn) 18%,var(--bg2)) 62% 100%);
+  animation:spin 1.4s linear infinite;
+}
+.ptab .num{font-family:var(--font-mono); font-size:10px}
+.ptab .key{
+  font-family:var(--font-mono); font-size:9px; color:var(--muted);
+  border:1px solid var(--line); border-radius:3px; padding:0 4px; opacity:.7;
+}
+.pmore{
+  flex:none; display:flex; align-items:center; gap:6px;
+  border:1px dashed var(--line); border-radius:var(--radius);
+  background:var(--bg1); color:var(--muted);
+  padding:5px 10px; font:inherit; font-size:11px; cursor:pointer;
+}
+.pmore:hover{color:var(--text); border-color:var(--accent)}
+
+/* ── 計数ストリップ ──────────────────────── */
+.strip{
+  display:flex; gap:var(--gap); padding:12px 16px 4px;
+  max-width:1440px; margin:0 auto;
+}
+.stat{
+  flex:1; background:var(--bg1); border:1px solid var(--line);
+  border-radius:var(--radius); padding:8px 12px;
+  min-width:96px;
+}
+.stat .k{font-size:11px; color:var(--muted); letter-spacing:.06em}
+.stat .v{
+  font-family:var(--font-mono); font-size:20px; font-weight:600; line-height:1.2;
+}
+.stat .v small{font-size:11px; font-weight:400; color:var(--muted)}
+.stat.bad .v{color:var(--bad)}
+.stat.warn .v{color:var(--warn)}
+.stat.check .v{color:var(--ok); font-size:14px; padding-top:4px}
+
+/* ── 本体グリッド ───────────────────────── */
+.layout{
+  display:grid; grid-template-columns:minmax(0,1fr) 320px;
+  gap:12px; padding:12px 16px 24px; max-width:1440px; margin:0 auto;
+  align-items:start;
+}
+@media (max-width:980px){ .layout{grid-template-columns:1fr} }
+
+/* ── kanban 3列 ─────────────────────────── */
+.cols{display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:var(--gap)}
+@media (max-width:700px){ .cols{grid-template-columns:1fr} }
+.col{
+  background:var(--bg1); border:1px solid var(--line); border-radius:var(--radius);
+  padding:10px; min-height:320px;
+}
+.colhead{
+  display:flex; align-items:baseline; gap:8px; margin-bottom:10px;
+}
+.colhead h2{
+  margin:0; font-size:11px; font-weight:600; letter-spacing:.14em;
+  color:var(--muted);
+}
+.colhead .n{font-family:var(--font-mono); font-size:11px; color:var(--muted)}
+.colhead .add{
+  margin-left:auto; border:0; background:none; color:var(--muted);
+  font:16px/1 var(--font-mono); cursor:pointer;
+}
+.colhead .add:hover{color:var(--accent)}
+
+.card{
+  background:var(--bg2); border:1px solid var(--line); border-radius:var(--radius);
+  padding:8px 10px; margin-bottom:var(--gap); cursor:grab;
+}
+.card:hover{border-color:var(--accent)}
+.card .id{font-family:var(--font-mono); font-size:11px; color:var(--muted); margin-right:6px}
+.card .t{font-weight:500}
+.card.overdue .t{color:var(--bad)}
+.chips{display:flex; flex-wrap:wrap; gap:4px; margin-top:6px}
+.chip{
+  font-family:var(--font-mono); font-size:10px; border-radius:4px;
+  padding:1px 6px; border:1px solid var(--line); color:var(--muted);
+}
+.chip.feat{color:var(--accent); border-color:color-mix(in srgb,var(--accent) 40%,transparent)}
+.chip.bug{color:var(--bad); border-color:color-mix(in srgb,var(--bad) 40%,transparent)}
+.chip.chore{color:var(--muted)}
+.chip.due-warn{color:var(--warn); border-color:color-mix(in srgb,var(--warn) 45%,transparent)}
+.chip.due-bad{color:var(--bad); border-color:color-mix(in srgb,var(--bad) 45%,transparent)}
+.chip.dep{color:var(--warn); border-style:dashed}
+.chip.session{color:var(--ok); border-color:color-mix(in srgb,var(--ok) 40%,transparent)}
+.chip.commit{color:var(--muted); text-decoration:underline dotted}
+.meta{
+  display:flex; gap:10px; margin-top:6px;
+  font-family:var(--font-mono); font-size:10px; color:var(--muted);
+}
+html[data-density="compact"] .card{padding:5px 8px}
+html[data-density="compact"] .chips,html[data-density="compact"] .meta{display:none}
+
+/* DOING スピン: mono の回転リング。onカード見出しの横に一つ。 */
+.spinrow{display:flex; align-items:center; gap:6px; margin-top:6px}
+.spin{
+  flex:none; width:12px; height:12px; border-radius:50%;
+  border:2px solid color-mix(in srgb,var(--accent) 25%,var(--bg2));
+  border-top-color:var(--accent);
+  animation:spin .9s linear infinite;
+}
+.spinlabel{
+  font-family:var(--font-mono); font-size:10px; color:var(--accent);
+}
+@keyframes spin{ to{ transform: rotate(360deg);} }
+@media (prefers-reduced-motion:reduce){
+  .spin, .ptab.doing .dot{ animation:none; }
+  .spin{ border-top-color: color-mix(in srgb,var(--accent) 60%, var(--bg2)); }
+}
+
+/* ── 添付: サムネグリッド ───────────────── */
+.thumbs{
+  display:grid; grid-template-columns:1fr 1fr; gap:4px; margin-top:6px;
+}
+.thumb{
+  position:relative; border-radius:4px; overflow:hidden;
+  border:1px solid var(--line); cursor:zoom-in;
+  aspect-ratio:16/9; background:var(--bg0);
+}
+.thumb img{width:100%; height:100%; object-fit:cover; display:block}
+.thumb .more{
+  position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+  background:color-mix(in srgb,var(--bg0) 55%,transparent);
+  font-family:var(--font-mono); font-size:14px; color:var(--text);
+}
+.attline{
+  display:flex; align-items:center; gap:8px; margin-top:6px;
+  border:1px dashed var(--line); border-radius:4px; padding:5px 8px;
+  font-family:var(--font-mono); font-size:11px; color:var(--muted);
+}
+.attline:hover{border-color:var(--accent); color:var(--text)}
+
+/* ── lightbox ───────────────────────────── */
+.lb{
+  position:fixed; inset:0; z-index:50; display:none;
+  align-items:center; justify-content:center; flex-direction:column; gap:10px;
+  background:color-mix(in srgb,var(--bg0) 88%,transparent);
+  padding:24px;
+}
+.lb[open]{display:flex}
+.lb img{max-width:100%; max-height:80vh; border-radius:var(--radius); border:1px solid var(--line)}
+.lb .cap{font-family:var(--font-mono); font-size:11px; color:var(--muted)}
+
+/* ── switch (v2.3) ──────────────────────── */
+.sw{
+  display:inline-flex; align-items:center; gap:8px;
+  min-height:44px; padding:0 10px;
+}
+.sw .lab{
+  font-family:var(--font-mono); font-size:11px; color:var(--muted);
+  white-space:nowrap;
+}
+.sw .track{
+  position:relative; width:36px; height:20px; flex:none;
+  border:1px solid var(--line); border-radius:100px; background:var(--bg2);
+  transition: background .15s, border-color .15s; cursor:pointer;
+}
+.sw .track::after{
+  content:""; position:absolute; top:2px; left:2px;
+  width:14px; height:14px; border-radius:50%; background:var(--muted);
+  transition: left .15s, background .15s;
+}
+.sw[aria-pressed="true"] .track{ background:var(--accent); border-color:var(--accent); }
+.sw[aria-pressed="true"] .track::after{ left:18px; background:var(--bg1); }
+.sw:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
+
+/* ボードの下: ソフトな完了帯 */
+.donefold{
+  border-top:1px dashed var(--line); margin-top:6px; padding-top:6px;
+  color:var(--muted); font-size:11px; display:flex; gap:8px; align-items:center;
+  cursor:pointer;
+}
+.donefold:hover{color:var(--text)}
+.donefold .upsym{font-family:var(--font-mono)}
+
+/* v2.5: すべてタブではレールを潰して横断ビューを全幅に */
+html.allview .rail{display:none}
+html.allview .layout{grid-template-columns:1fr}
+
+/* ── 右レール ───────────────────────────── */
+.rail{display:flex; flex-direction:column; gap:12px}
+.panel{
+  background:var(--bg1); border:1px solid var(--line); border-radius:var(--radius);
+  padding:12px;
+}
+.panel h3{
+  margin:0 0 8px; font-size:11px; font-weight:600; letter-spacing:.14em;
+  color:var(--muted);
+}
+.next-item{
+  display:flex; align-items:baseline; gap:8px; padding:6px 0;
+  border-top:1px solid var(--line);
+}
+.next-item:first-of-type{border-top:0}
+.next-item .why{margin-left:auto; font-size:10px; color:var(--muted)}
+.projrow{
+  padding:7px 8px; margin:0 -8px; border-top:1px solid var(--line);
+  border-radius:var(--radius); cursor:pointer;
+}
+.projrow:first-of-type{border-top:0}
+.projrow:hover{background:var(--bg2)}
+.projrow[aria-current="true"]{background:color-mix(in srgb,var(--accent) 10%,transparent)}
+.projrow .name{display:flex; justify-content:space-between; align-items:baseline; gap:8px; font-size:12px}
+.projrow .name b{font-weight:500}
+.projrow .name .here{
+  font-family:var(--font-mono); font-size:9px; color:var(--accent);
+  border:1px solid color-mix(in srgb,var(--accent) 45%,transparent);
+  border-radius:3px; padding:0 4px;
+}
+.projrow .name span{font-family:var(--font-mono); font-size:10px; color:var(--muted)}
+.bar{
+  height:4px; border-radius:2px; background:var(--bg2);
+  border:1px solid var(--line); margin-top:5px; overflow:hidden;
+}
+.bar i{display:block; height:100%; background:var(--accent)}
+.bar i.full{background:var(--ok)}
+.ev{padding:5px 0; border-top:1px solid var(--line); font-size:12px}
+.ev:first-of-type{border-top:0}
+.ev time{
+  display:block; font-family:var(--font-mono); font-size:10px; color:var(--muted);
+}
+.ev b{font-weight:500}
+.ev .ok{color:var(--ok)} .ev .bad{color:var(--bad)} .ev .warn{color:var(--warn)}
+
+/* ── footer ─────────────────────────────── */
+.foot{
+  display:flex; gap:12px; align-items:center; white-space:nowrap;
+  max-width:1440px; margin:0 auto; padding:0 16px 20px;
+  color:var(--muted); font-size:11px;
+}
+.foot kbd{
+  font-family:var(--font-mono); font-size:10px;
+  border:1px solid var(--line); border-radius:4px; padding:1px 5px;
+  background:var(--bg2); margin-right:2px;
+}
+.foot .right{margin-left:auto; font-family:var(--font-mono)}
+
+/* ══ モバイル (v2.2~) ════════════════════ */
+@media (max-width:700px){
+  .toprow{flex-wrap:wrap; height:auto; padding:10px 12px; row-gap:8px}
+  .wordmark{order:1}
+  .toprow .ghost{order:2; margin-left:auto; padding:8px 10px}
+  .search{order:3; flex-basis:100%; max-width:none; margin-left:0; padding:9px 12px}
+  .search input{min-height:24px}
+  .ptabs{padding:0 12px 10px}
+  .ptab{padding:9px 12px}
+  .ptab .key{display:none}
+  .strip{
+    overflow-x:auto; scroll-snap-type:x mandatory; padding:10px 12px 4px;
+    scrollbar-width:none;
+  }
+  .strip::-webkit-scrollbar{display:none}
+  .stat{flex:0 0 118px; scroll-snap-align:start}
+  .layout{padding:10px 12px 20px}
+  .col{min-height:0; padding:8px}
+  .colhead{position:sticky; top:56px; background:var(--bg1); z-index:2; padding:4px 0}
+  .card{padding:12px}
+  .card:active{border-color:var(--accent)}
+  .donefold{padding:10px 4px; font-size:12px}
+  .rail{gap:10px}
+  .projrow{padding:11px 8px; margin:0 -8px}
+  .foot{display:none}
+  .lb{padding:10px}
+  .lb img{max-height:70vh}
+}
+
+/* ── v2.4: スイッチ with 説明 / WIP / 未読 / foldbar ── */
+.sw{flex-wrap:wrap}
+.haltchip{
+  display:none; font-family:var(--font-mono); font-size:10px;
+  border:1px solid var(--bad); color:var(--bad); border-radius:4px;
+  padding:1px 6px;
+}
+.sw[aria-pressed="true"][data-sw="pause"] .haltchip{display:inline-block}
+html.halt .spin, html.halt .ptab.doing .dot{ animation-play-state:paused; }
+html.halt .stat .v{ filter:saturate(.35); }
+
+.foldbar{
+  display:flex; gap:6px; align-items:center; margin-bottom:var(--gap);
+  color:var(--muted); font-size:11px; flex-wrap:wrap;
+}
+.foldbar .ghost{padding:3px 8px; font-size:11px}
+.group > summary::after{
+  content:'▸'; font-family:var(--font-mono); color:var(--muted);
+  transition:transform .12s;
+}
+.group[open] > summary::after{transform:rotate(90deg)}
+
+.ptab .unread{
+  width:6px; height:6px; border-radius:50%; flex:none;
+  background:var(--bad); display:none;
+}
+.ptab.has-unread .unread{display:block}
+.gmini .unread{display:none; width:6px; height:6px; border-radius:50%; background:var(--bad)}
+
+.wipbad{
+  display:none; font-family:var(--font-mono); font-size:10px;
+  border:1px solid var(--warn); color:var(--warn);
+  border-radius:4px; padding:1px 6px;
+}
+.wipbad.on{display:inline-block}
+.wipbad.hot{border-color:var(--bad); color:var(--bad)}
+
+/* undo toast */
+.toast{
+  position:fixed; bottom:18px; left:50%; transform:translateX(-50%);
+  z-index:60; display:none; align-items:center; gap:10px;
+  background:var(--bg1); border:1px solid var(--accent);
+  border-radius:var(--radius); padding:8px 14px;
+  color:var(--text); font-size:12px; box-shadow:0 6px 24px #0009;
+}
+.toast[open]{display:flex}
+.toast .undo{color:var(--accent); cursor:pointer; font-family:var(--font-mono); font-size:11px}
+.toast .undo:hover{text-decoration:underline}
+
+/* コマンドパレット */
+.pal{
+  position:fixed; inset:0; z-index:70; display:none;
+  align-items:flex-start; justify-content:center; padding-top:14vh;
+  background:color-mix(in srgb,var(--bg0) 70%,transparent);
+}
+.pal[open]{display:flex}
+.pal .box{
+  width:min(560px,92vw); background:var(--bg1); border:1px solid var(--line);
+  border-radius:var(--radius); overflow:hidden; box-shadow:0 10px 40px #000a;
+}
+.pal input{
+  width:100%; border:0; background:none; color:var(--text);
+  font:inherit; padding:12px 14px; outline:none;
+  border-bottom:1px solid var(--line);
+}
+.pal .list{max-height:46vh; overflow-y:auto}
+.pal .it{
+  display:flex; align-items:center; gap:10px; padding:8px 14px;
+  cursor:pointer; font-size:13px;
+}
+.pal .it .k{margin-left:auto; font-family:var(--font-mono); font-size:10px; color:var(--muted)}
+.pal .it.sel, .pal .it:hover{background:color-mix(in srgb,var(--accent) 14%,transparent)}
+.pal .none{padding:14px; color:var(--muted); font-size:12px}
+
+/* ── v2.5: スイッチ1行化 ── */
+.swline{
+  display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+  padding:10px 16px 2px; max-width:1440px; margin:0 auto;
+}
+.swline .sw{
+  min-height:0; padding:5px 12px;
+  border:1px solid var(--line); border-radius:100px; background:var(--bg1);
+}
+.swline .sw:hover{border-color:var(--accent)}
+html.halt .swline .sw[data-sw="pause"]{ border-color:var(--bad); }
+@media (pointer:coarse){ .swline .sw{min-height:44px} }
+
+/* ══ 全プロジェクトビュー (v2.3: 横断ボード/フォールディング) ══ */
+.pview{display:none}
+.pview[open]{display:block}
+.group{
+  border:1px solid var(--line); border-radius:var(--radius); background:var(--bg1);
+  margin-bottom:var(--gap);
+}
+.group > summary{
+  list-style:none; cursor:pointer; padding:8px 12px;
+  display:flex; align-items:center; gap:8px; font-size:12px;
+  border-radius:var(--radius);
+}
+.group > summary:hover{background:var(--bg2)}
+.group .gname{font-weight:500}
+.group .gnum{font-family:var(--font-mono); font-size:10px; color:var(--muted)}
+.group .gmini{margin-left:auto; display:flex; gap:8px; font-family:var(--font-mono); font-size:10px; color:var(--muted)}
+.gbar{
+  flex:0 0 120px; height:4px; border-radius:2px; overflow:hidden;
+  background:var(--bg2); border:1px solid var(--line); margin:0 8px;
+}
+.gbar i{display:block; height:100%; background:var(--accent)}
+.gbar i.full{background:var(--ok)}
+.group article.card{margin:0 12px 8px; background:var(--bg2)}
+.grouparticle, .group .cards{padding:0 0 4px}
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="toprow">
+    <span class="wordmark">KANBAN</span>
+    <button class="ghost" id="palBtn" title="Ctrl+K">⌘ パレット</button>
+    <button class="ghost" id="densityBtn">密度: 標準</button>
+    <button class="ghost" id="themeBtn">テーマ: 暗</button>
+    <label class="search">
+      <span aria-hidden="true">⌕</span>
+      <input type="search" placeholder="本文・#番号・label・プロジェクト名で絞り込み（横断）">
+      <kbd>/</kbd>
+    </label>
+  </div>
+  <!-- スケール対応: ptabs は横スクロール。100件なら上位30+検索+「すべて」で足りる -->
+  <nav class="ptabs" aria-label="プロジェクト切り替え" id="ptabs">
+    <button class="ptab" aria-pressed="false" data-p="__all__">
+      <span class="dot"></span><b>すべて</b><span class="num">44</span>
+    </button>
+    <button class="ptab" aria-pressed="true" data-p="pi-kanban-board" title="1">
+      <span class="dot done"></span>pi-kanban-board<span class="num">40/40</span><span class="key">1</span>
+    </button>
+    <button class="ptab doing has-unread" aria-pressed="false" data-p="assetscraping" title="3">
+      <span class="unread"></span><span class="dot live"></span>assetscraping<span class="num">TODO 1</span><span class="key">3</span>
+    </button>
+    <button class="ptab" aria-pressed="false" data-p="kk_sceneexplorer" title="2">
+      <span class="dot done"></span>kk_sceneexplorer<span class="num">3/3</span><span class="key">2</span>
+    </button>
+    <button class="ptab" aria-pressed="false" data-p="kk_dualbox" title="4">
+      <span class="dot"></span>kk_dualbox<span class="num">TODO 1</span><span class="key">4</span>
+    </button>
+    <button class="ptab" aria-pressed="false" data-p="kk_wanderers" title="5">
+      <span class="dot"></span>kk_wanderers<span class="num">TODO 2</span><span class="key">5</span>
+    </button>
+    <button class="pmore" id="pmore" title="プロジェクト検索で絞る">+96 もっと…</button>
+  </nav>
+</header>
+
+<section class="strip" aria-label="計数">
+  <div class="stat"><div class="k">TODO</div><div class="v" id="sv-todo">3</div></div>
+  <div class="stat"><div class="k">DOING</div><div class="v" id="sv-doing">2</div></div>
+  <div class="stat"><div class="k">DONE</div><div class="v" id="sv-done">40</div></div>
+  <div class="stat bad"><div class="k">期限超過</div><div class="v" id="sv-due">1</div></div>
+  <div class="stat warn"><div class="k">停滞</div><div class="v" id="sv-stall">1</div></div>
+  <div class="stat check"><div class="k" id="sl-proj">この看板</div><div class="v" id="sv-proj">100% <small>40/40</small></div></div>
+</section>
+
+<section class="swline" id="swline" data-rv="proj" aria-label="この看板のスイッチ">
+  <div class="sw" role="switch" aria-pressed="true" tabindex="0" data-sw="loop" title="DONE で止まらず TODO へ戻って継続実行する（残数を消費）">
+    <span class="lab">loop</span><span class="track" aria-hidden="true"></span><span class="num">残り 10</span>
+  </div>
+  <div class="sw" role="switch" aria-pressed="true" tabindex="0" data-sw="pick" title="完了時に、着手可能（依存なし）な最小カードを自動で DOING へ">
+    <span class="lab">pick on 完了</span><span class="track" aria-hidden="true"></span>
+  </div>
+  <div class="sw" role="switch" aria-pressed="false" tabindex="0" data-sw="pause" title="loop / 自動 pick を止め、着手中は保持し見たまま維持">
+    <span class="lab">一時停止</span><span class="track" aria-hidden="true"></span><span class="haltchip">STOP</span>
+  </div>
+</section>
+
+<main class="layout">
+  <section class="cols" aria-label="ボード" id="board">
+    <div class="col">
+      <div class="colhead"><h2>TODO</h2><span class="n">3</span><button class="add" title="新規カード">+</button></div>
+      <article class="card overdue">
+        <span class="id">#45</span><span class="t">週次サマリの文字化けを直す</span>
+        <div class="chips"><span class="chip bug">bug</span><span class="chip due-bad">期限超過 3日</span><span class="chip dep">⊂ #42 待ち</span></div>
+        <div class="attline"><span>▸</span><span>report.mp4</span><span>0:42 · 3.1MB</span></div>
+        <div class="meta"><span>due 10-30</span><span>2pt</span></div>
+      </article>
+      <article class="card">
+        <span class="id">#43</span><span class="t">CLI の --json 出力を整える</span>
+        <div class="chips"><span class="chip feat">feature</span><span class="chip due-warn">あと2日</span></div>
+        <div class="meta"><span>due 11-04</span><span>3pt</span></div>
+      </article>
+      <article class="card">
+        <span class="id">#44</span><span class="t">serve のトークン表示を整理</span>
+        <div class="chips"><span class="chip chore">chore</span></div>
+        <div class="meta"><span>1pt</span></div>
+      </article>
+    </div>
+    <div class="col">
+      <div class="colhead"><h2>DOING</h2><span class="n">2</span><span class="wipbad" id="wipbad">WIP 2/3</span><button class="add" title="新規カード">+</button></div>
+      <article class="card">
+        <span class="id">#42</span><span class="t">kanban CLI に commit を添付する</span>
+        <div class="spinrow"><span class="spin" aria-hidden="true"></span><span class="spinlabel">実行中</span><span class="chip session">着手中</span></div>
+        <div class="meta"><span>12分前に着手</span><span>3pt</span></div>
+      </article>
+      <article class="card">
+        <span class="id">#46</span><span class="t">テストのポート競合を減らす</span>
+        <div class="spinrow"><span class="spin" aria-hidden="true"></span><span class="spinlabel">実行中</span><span class="chip due-warn">2日停滞</span></div>
+        <div class="meta"><span>2日前に着手</span><span>2pt</span></div>
+      </article>
+    </div>
+    <div class="col">
+      <div class="colhead"><h2>DONE</h2><span class="n">40</span></div>
+      <article class="card">
+        <span class="id">#41</span><span class="t">ダッシュボード再デザイン</span>
+        <div class="thumbs">
+          <figure class="thumb" data-lb="案A — 1ペーン集中+右サマリ (0094c53)">
+            <img alt="案A スクショ" src='data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180"><rect width="320" height="180" fill="%2310131a"/><rect x="12" y="14" width="196" height="120" rx="4" fill="%23161a23" stroke="%23232936"/><rect x="220" y="14" width="88" height="120" rx="4" fill="%23161a23" stroke="%23232936"/><rect x="12" y="142" width="296" height="10" rx="3" fill="%23232936"/></svg>'>
+          </figure>
+          <figure class="thumb" data-lb="案A ライトテーマ">
+            <img alt="案A ライト" src='data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180"><rect width="320" height="180" fill="%23f4f5f8"/><rect x="12" y="14" width="196" height="120" rx="4" fill="%23ffffff" stroke="%23d8dde6"/><rect x="220" y="14" width="88" height="120" rx="4" fill="%23ffffff" stroke="%23d8dde6"/><rect x="12" y="142" width="296" height="10" rx="3" fill="%23d8dde6"/></svg>'>
+          </figure>
+          <figure class="thumb" data-lb="デモカード動作確認（ブロック中バッジ）">
+            <img alt="デモカード" src='data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180"><rect width="320" height="180" fill="%2310131a"/><rect x="16" y="20" width="288" height="60" rx="4" fill="%23161a23" stroke="%23232936"/><rect x="24" y="34" width="70" height="12" rx="3" fill="%23e0af68" opacity="0.8"/><rect x="24" y="56" width="120" height="8" rx="3" fill="%23232936"/><rect x="16" y="92" width="288" height="60" rx="4" fill="%23161a23" stroke="%23232936"/><rect x="24" y="106" width="70" height="12" rx="3" fill="%23f7768e" opacity="0.8"/><rect x="24" y="128" width="120" height="8" rx="3" fill="%23232936"/></svg>'>
+          </figure>
+          <figure class="thumb" data-lb="ほか 1 枚">
+            <img alt="続き" src='data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180"><rect width="320" height="180" fill="%2310131a"/><rect x="40" y="30" width="240" height="120" rx="4" fill="%23161a23" stroke="%23232936"/><polyline points="60,130 110,110 160,118 210,80 260,60" fill="none" stroke="%237aa2f7" stroke-width="2"/></svg>'>
+            <figcaption class="more">+1</figcaption>
+          </figure>
+        </div>
+        <div class="chips"><span class="chip feat">feature</span><span class="chip commit">0094c53</span></div>
+        <div class="meta"><span>画像 4</span><span>今日 18:56</span></div>
+      </article>
+      <article class="card">
+        <span class="id">#40</span><span class="t">UI モダンでリッチに</span>
+        <div class="thumbs">
+          <figure class="thumb" data-lb="影/丸め/hover デモ">
+            <img alt="hover デモ" src='data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180"><rect width="320" height="180" fill="%2310131a"/><rect x="24" y="36" width="130" height="100" rx="6" fill="%23161a23" stroke="%23232936"/><rect x="166" y="36" width="130" height="100" rx="6" fill="%23161a23" stroke="%237aa2f7"/></svg>'>
+          </figure>
+        </div>
+        <div class="chips"><span class="chip chore">chore</span><span class="chip commit">d20911b</span></div>
+        <div class="meta"><span>画像 1</span><span>昨日</span></div>
+      </article>
+      <div class="donefold" role="button" tabindex="0"><span class="upsym">⌃</span> 残り 38 枚を開く</div>
+    </div>
+  </section>
+
+  <!-- すべて (= 横断) ビュー: プロジェクト数が増えたときの 1 画面 -->
+  <section class="pview" id="allview" aria-label="全プロジェクト横断">
+    <div class="foldbar">
+      <span>未完を上に。完了済みは既定で畳む。</span>
+      <button class="ghost" id="foldAll">全開く</button>
+      <button class="ghost" id="foldDone">完了を閉じる</button>
+    </div>
+
+    <details class="group" open>
+      <summary><span class="dot" style="background:var(--warn)"></span><span class="gname">assetscraping</span><span class="gnum">0/1</span><div class="gbar"><i style="width:0%"></i></div><span class="gmini"><span class="unread" style="display:inline-block"></span>TODO 1</span></summary>
+      <div class="cards"><article class="card"><span class="id">#1</span><span class="t">test</span><div class="chips"><span class="chip chore">chore</span></div><div class="meta"><span>assetscraping</span></div></article></div>
+    </details>
+    <details class="group" open>
+      <summary><span class="dot" style="background:var(--warn)"></span><span class="gname">kk_wanderers</span><span class="gnum">0/2</span><div class="gbar"><i style="width:0%"></i></div><span class="gmini">TODO 2</span></summary>
+      <div class="cards"><article class="card"><span class="id">#1</span><span class="t">wanderer の init 構成を書く</span><div class="chips"><span class="chip feat">feature</span></div><div class="meta"><span>kk_wanderers</span></div></article>
+      <article class="card"><span class="id">#2</span><span class="t">persistence ファイルを SQLite 化</span><div class="chips"><span class="chip feat">feature</span></div><div class="meta"><span>kk_wanderers</span></div></article></div>
+    </details>
+    <details class="group">
+      <summary><span class="dot" style="background:var(--ok)"></span><span class="gname">kk_sceneexplorer</span><span class="gnum">3/3</span><div class="gbar"><i class="full" style="width:100%"></i></div><span class="gmini">100% ✓</span></summary>
+      <div class="cards"><article class="card"><span class="id">#3</span><span class="t">削除リグレッション検査</span><div class="chips"><span class="chip chore">chore</span><span class="chip session">完了</span></div><div class="meta"><span>kk_sceneexplorer</span></div></article></div>
+    </details>
+    <div class="donefold" role="button" tabindex="0"><span class="upsym">⌃</span> 完了済み 95 プロジェクトを開く（100件想定）</div>
+  </section>
+
+  <aside class="rail" aria-label="サマリ">
+    <div class="panel" data-rv="proj">
+      <h3>次に着手</h3>
+      <div class="next-item"><span class="id">#44</span><span class="t">serve のトークン表示</span><span class="why">依存なし・最小</span></div>
+      <div class="next-item"><span class="id">#43</span><span class="t">CLI --json 出力</span><span class="why">期限 2日</span></div>
+    </div>
+    <div class="panel" data-rv="proj">
+      <h3>活動 — この看板</h3>
+      <div class="ev"><time>12分前</time><b>#41</b> に画像 4 枚を添付</div>
+      <div class="ev"><time>3時間前</time><b>#45</b> が期限を超過 <span class="bad">due 10-30</span></div>
+      <div class="ev"><time>昨日</time><b>#40</b> を done へ <span class="ok">d20911b</span></div>
+    </div>
+  </aside>
+</main>
+
+<div class="pal" id="pal" role="dialog" aria-modal="true" aria-label="コマンドパレット">
+  <div class="box">
+    <input id="palq" type="text" placeholder="コマンド検索: プロジェクト切替 / 移動 / loop / summary …">
+    <div class="list" id="pallist"></div>
+  </div>
+</div>
+<div class="toast" id="toast"><span id="toastmsg"></span><span class="undo" id="toastundo">元に戻す</span></div>
+
+<footer class="foot">
+  <span><kbd>1</kbd>〜<kbd>9</kbd> 切替</span>
+  <span><kbd>0</kbd> すべて</span>
+  <span><kbd>j</kbd><kbd>k</kbd> 選択</span>
+  <span><kbd>/</kbd> 検索</span>
+  <span><kbd>c</kbd> 新規</span>
+  <span><kbd>d</kbd> 完了</span>
+  <span class="right">API 0.3.0 · gen2 prototype v2.5</span>
+</footer>
+
+<div class="lb" id="lb" role="dialog" aria-modal="true" aria-label="添付画像プレビュー">
+  <img id="lbimg" alt="">
+  <div class="cap" id="lbcap"></div>
+</div>
+
+<script>
+var root = document.documentElement;
+var current = "pi-kanban-board";
+
+/* テーマ / 密度 */
+document.getElementById("themeBtn").addEventListener("click", function () {
+  var dark = root.getAttribute("data-theme") === "dark";
+  root.setAttribute("data-theme", dark ? "light" : "dark");
+  this.textContent = "テーマ: " + (dark ? "明" : "暗");
+});
+document.getElementById("densityBtn").addEventListener("click", function () {
+  var compact = root.getAttribute("data-density") === "compact";
+  root.setAttribute("data-density", compact ? "normal" : "compact");
+  this.textContent = "密度: " + (compact ? "標準" : "コンパクト");
+});
+
+/* プロジェクト切替 */
+var PROJ_DATA = {
+  "__all__":{todo:11,doing:3,done:138,due:4,stall:2,pct:81,total:171},
+  "pi-kanban-board":{todo:3,doing:2,done:40,due:1,stall:1,pct:100,total:40},
+  "kk_sceneexplorer":{todo:0,doing:0,done:3,due:0,stall:0,pct:100,total:3},
+  "assetscraping":{todo:1,doing:0,done:0,due:0,stall:0,pct:0,total:1},
+  "kk_dualbox":{todo:1,doing:0,done:0,due:0,stall:0,pct:0,total:1},
+  "kk_wanderers":{todo:2,doing:0,done:0,due:0,stall:0,pct:0,total:2}
+};
+function syncStat() {
+  var d = PROJ_DATA[current] || PROJ_DATA["__all__"];
+  document.getElementById("sv-todo").textContent = d.todo;
+  document.getElementById("sv-doing").textContent = d.doing;
+  document.getElementById("sv-done").textContent = d.done;
+  document.getElementById("sv-due").textContent = d.due;
+  document.getElementById("sv-stall").textContent = d.stall;
+  document.getElementById("sl-proj").textContent = current === "__all__" ? "全体進捗" : "この看板";
+  document.getElementById("sv-proj").innerHTML = d.pct + "% <small>" + d.done + "/" + d.total + "</small>";
+}
+function bumpStat(k, delta) {
+  PROJ_DATA["pi-kanban-board"][k] += delta;
+  if (current === "pi-kanban-board") syncStat();
+}
+function pick(p) {
+  current = p;
+  var all = p === "__all__";
+  document.getElementById("board").style.display = all ? "none" : "";
+  document.getElementById("allview").style.display = all ? "" : "none";
+  document.getElementById("allview").toggleAttribute("open", all);
+  document.querySelectorAll(".ptab").forEach(function (t) {
+    t.setAttribute("aria-pressed", String(t.dataset.p === p));
+  });
+  root.classList.toggle("allview", all);
+  document.querySelectorAll("[data-rv]").forEach(function (el) {
+    el.style.display = el.dataset.rv === (all ? "all" : "proj") ? "" : "none";
+  });
+  syncStat();
+}
+document.querySelectorAll(".ptab").forEach(function (el) {
+  el.addEventListener("click", function () { pick(el.dataset.p); });
+});
+document.querySelectorAll(".projrow[data-proj]").forEach(function (r) {
+  r.addEventListener("click", function () { pick(r.dataset.proj); });
+});
+document.addEventListener("keydown", function (e) {
+  var map = { "0":"__all__","1":"pi-kanban-board","2":"kk_sceneexplorer","3":"assetscraping","4":"kk_dualbox","5":"kk_wanderers" };
+  if (map[e.key] && !e.ctrlKey && !e.metaKey && !/INPUT|TEXTAREA/.test(document.activeElement.tagName)) pick(map[e.key]);
+});
+
+/* スイッチ (what/how + pause は全体停止) */
+document.querySelectorAll(".sw").forEach(function (sw) {
+  function flip() {
+    var on = sw.getAttribute("aria-pressed") !== "true";
+    sw.setAttribute("aria-pressed", String(on));
+    if (sw.dataset.sw === "loop") {
+      sw.querySelector(".num").textContent = on ? "残り 10" : "—";
+    }
+    if (sw.dataset.sw === "pause") {
+      root.classList.toggle("halt", on);
+      toast(on ? "一時停止中 — loop / 自動 pick を止めた" : "再開 — loop / 自動 pick が効く", null);
+    }
+  }
+  sw.addEventListener("click", flip);
+  sw.addEventListener("keydown", function (e) {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); flip(); }
+  });
+});
+
+/* lightbox */
+var lb = document.getElementById("lb"), lbimg = document.getElementById("lbimg"), lbcap = document.getElementById("lbcap");
+document.querySelectorAll(".thumb").forEach(function (th) {
+  th.addEventListener("click", function () {
+    lbimg.src = th.querySelector("img").src;
+    lbcap.textContent = th.dataset.lb || "";
+    lb.setAttribute("open", "");
+  });
+});
+lb.addEventListener("click", function () { lb.removeAttribute("open"); });
+
+/* WIP バッジ: DOING>=3 で bad 色 (モックは静的 2 枚なので表現のみ) */
+var wip = 2;
+function syncWip() {
+  var el = document.getElementById("wipbad");
+  el.textContent = "WIP " + wip + "/3";
+  el.classList.toggle("on", wip >= 3);
+  el.classList.toggle("hot", wip >= 3);
+}
+syncWip();
+
+/* undo toast */
+var toastEl = document.getElementById("toast"), toastMsg = document.getElementById("toastmsg");
+var toastTimer = null, undoFn = null;
+function toast(msg, undo) {
+  toastMsg.textContent = msg;
+  undoFn = undo || null;
+  document.getElementById("toastundo").style.display = undo ? "" : "none";
+  toastEl.setAttribute("open", "");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(function () { toastEl.removeAttribute("open"); }, 5000);
+}
+document.getElementById("toastundo").addEventListener("click", function () {
+  if (undoFn) undoFn();
+  toastEl.removeAttribute("open");
+});
+
+/* カード移動デモ: d キーで DOING の先頭を DONE へ (undo 付き) */
+document.addEventListener("keydown", function (e) {
+  if (/INPUT|TEXTAREA/.test(document.activeElement.tagName)) return;
+  if (e.key === "d") {
+    var first = document.querySelector('#board .col:nth-child(2) .card');
+    if (!first) return;
+    var doneCol = document.querySelector('#board .col:nth-child(3)');
+    var oldParent = first.parentElement;
+    doneCol.insertBefore(first, doneCol.querySelector(".donefold"));
+    wip--; syncWip(); bumpStat("doing",-1); bumpStat("done",1);
+    toast((first.querySelector(".id").textContent) + " を DONE へ", function () {
+      oldParent.insertBefore(first, oldParent.querySelector(".colhead").nextSibling);
+      wip++; syncWip(); bumpStat("doing",1); bumpStat("done",-1);
+    });
+  }
+});
+
+/* foldbar: 全開く / 完了を閉じる */
+document.getElementById("foldAll").addEventListener("click", function () {
+  document.querySelectorAll("#allview details.group").forEach(function (d) { d.open = true; });
+});
+document.getElementById("foldDone").addEventListener("click", function () {
+  document.querySelectorAll("#allview details.group").forEach(function (d) {
+    if (d.querySelector(".gmini").textContent.indexOf("100%") >= 0) d.open = false;
+  });
+});
+
+/* コマンドパレット */
+var pal = document.getElementById("pal"), palq = document.getElementById("palq"), pallist = document.getElementById("pallist");
+var palItems = [
+  { k:"1", label:"pi-kanban-board を表示", run:function(){ pick("pi-kanban-board"); } },
+  { k:"2", label:"kk_sceneexplorer を表示", run:function(){ pick("kk_sceneexplorer"); } },
+  { k:"3", label:"assetscraping を表示", run:function(){ pick("assetscraping"); } },
+  { k:"4", label:"kk_dualbox を表示", run:function(){ pick("kk_dualbox"); } },
+  { k:"5", label:"kk_wanderers を表示", run:function(){ pick("kk_wanderers"); } },
+  { k:"0", label:"すべてのプロジェクト（横断）", run:function(){ pick("__all__"); } },
+  { k:"", label:"loop を切替", run:function(){ document.querySelector('[data-sw="loop"]').click(); } },
+  { k:"", label:"pick on 完了 を切替", run:function(){ document.querySelector('[data-sw="pick"]').click(); } },
+  { k:"", label:"一時停止 を切替", run:function(){ document.querySelector('[data-sw="pause"]').click(); } },
+  { k:"", label:"完了カードを折りたたむ", run:function(){ document.getElementById("foldDone").click(); } },
+  { k:"", label:"summary を出力（現在の全状況をテキストで）", run:function(){ toast("TODO 3 · DOING 2 · DONE 40 · 期限超過 1 · 停滞 1", null); } }
+];
+var palSel = 0, palView = palItems;
+function palRender() {
+  pallist.innerHTML = "";
+  if (!palView.length) { pallist.innerHTML = '<div class="none">該当なし</div>'; return; }
+  palView.forEach(function (it, i) {
+    var d = document.createElement("div");
+    d.className = "it" + (i === palSel ? " sel" : "");
+    d.innerHTML = '<span>' + it.label + '</span>' + (it.k ? '<span class="k">' + it.k + '</span>' : '');
+    d.addEventListener("click", function () { palClose(); it.run(); });
+    pallist.appendChild(d);
+  });
+}
+function palOpen() { pal.setAttribute("open", ""); palq.value = ""; palFilter(""); palq.focus(); }
+function palClose() { pal.removeAttribute("open"); palq.blur(); }
+function palFilter(q) {
+  q = q.toLowerCase();
+  palView = palItems.filter(function (it) { return it.label.toLowerCase().indexOf(q) >= 0; });
+  palSel = 0; palRender();
+}
+document.getElementById("palBtn").addEventListener("click", palOpen);
+palq.addEventListener("input", function () { palFilter(palq.value); });
+pal.addEventListener("click", function (e) { if (e.target === pal) palClose(); });
+palq.addEventListener("keydown", function (e) {
+  if (e.key === "ArrowDown") { palSel = Math.min(palSel + 1, palView.length - 1); palRender(); e.preventDefault(); }
+  else if (e.key === "ArrowUp") { palSel = Math.max(palSel - 1, 0); palRender(); e.preventDefault(); }
+  else if (e.key === "Enter") { var it = palView[palSel]; if (it) { palClose(); it.run(); } }
+});
+document.addEventListener("keydown", function (e) {
+  if ((e.key === "k" && (e.ctrlKey || e.metaKey)) || (e.key === "/" && !/INPUT|TEXTAREA/.test(document.activeElement.tagName))) {
+    e.preventDefault(); palOpen();
+  }
+  if (e.key === "Escape") { palClose(); lb.removeAttribute("open"); }
+});
+</script>
+</body>
+</html>

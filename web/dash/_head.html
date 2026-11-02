@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>kanban — dashboard</title>
+<style>
+/*CSS_A*/
+
+/*CSS_B*/
+
+/*CSS_C*/
+
+/* 追加: j/k 選択の可視化 */
+.card.sel{outline:2px solid var(--accent); outline-offset:-1px}
+/* 追加: 列内インライン新規。パレット/モーダルを1つも増やさない */
+.addrow{margin-bottom:var(--gap)}
+.addrow .addin{
+  width:100%; background:var(--bg2); color:var(--text); font:inherit;
+  border:1px dashed var(--accent); border-radius:var(--radius); padding:6px 8px;
+}
+.addrow .addin:focus{outline:1px solid var(--accent); outline-offset:0}
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="toprow">
+    <span class="wordmark">KANBAN</span>
+    <button class="ghost" id="palBtn" title="Ctrl+K">⌘ パレット</button>
+    <button class="ghost" id="densityBtn">密度: 標準</button>
+    <button class="ghost" id="themeBtn">テーマ: 暗</button>
+    <label class="search">
+      <span aria-hidden="true">⌕</span>
+      <input type="search" id="q" placeholder="本文・#番号・label・プロジェクト名で絞り込み（横断）">
+      <kbd>/</kbd>
+    </label>
+  </div>
+  <nav class="ptabs" aria-label="プロジェクト切り替え" id="ptabs"></nav>
+</header>
+
+<section class="strip" aria-label="計数">
+  <div class="stat"><div class="k">TODO</div><div class="v" id="sv-todo">0</div></div>
+  <div class="stat"><div class="k">DOING</div><div class="v" id="sv-doing">0</div></div>
+  <div class="stat"><div class="k">DONE</div><div class="v" id="sv-done">0</div></div>
+  <div class="stat bad"><div class="k">期限超過</div><div class="v" id="sv-due">0</div></div>
+  <div class="stat warn"><div class="k">停滞</div><div class="v" id="sv-stall">0</div></div>
+  <div class="stat check"><div class="k" id="sl-proj">この看板</div><div class="v" id="sv-proj">—</div></div>
+</section>
+
+<section class="swline" id="swline" data-rv="proj" aria-label="この看板のスイッチ">
+  <div class="sw" role="switch" aria-pressed="false" tabindex="0" data-sw="loop" title="DONE で止まらず TODO へ戻って継続実行する（残数を消費）">
+    <span class="lab">loop</span><span class="track" aria-hidden="true"></span><span class="num" id="loop-left"></span>
+  </div>
+  <div class="sw" role="switch" aria-pressed="false" tabindex="0" data-sw="pick" title="完了時に、着手可能（依存なし）な最小カードを自動で DOING へ">
+    <span class="lab">pick</span><span class="track" aria-hidden="true"></span>
+  </div>
+  <div class="sw" role="switch" aria-pressed="false" tabindex="0" data-sw="pause" title="loop / 自動 pick を止める">
+    <span class="lab">一時停止</span><span class="track" aria-hidden="true"></span><span class="haltchip">STOP</span>
+  </div>
+</section>
+
+<main class="layout">
+  <section class="cols" aria-label="ボード" id="board"></section>
+  <section class="pview" id="allview" aria-label="全プロジェクト横断">
+    <div class="foldbar">
+      <span>未完を上に。完了済みは既定で畳む。</span>
+      <button class="ghost" id="foldAll">全開く</button>
+      <button class="ghost" id="foldDone">完了を閉じる</button>
+    </div>
+    <div id="groups"></div>
+  </section>
+  <aside class="rail" aria-label="サマリ" id="rail"></aside>
+</main>
+
+<div class="pal" id="pal" role="dialog" aria-modal="true" aria-label="コマンドパレット">
+  <div class="box">
+    <input id="palq" type="text" placeholder="コマンド検索: プロジェクト切替 / loop / summary …">
+    <div class="list" id="pallist"></div>
+  </div>
+</div>
+<div class="toast" id="toast"><span id="toastmsg"></span><span class="undo" id="toastundo">元に戻す</span></div>
+
+<!-- #45: カードモーダル。面・箱・入力はパレットと共通の CSS を使う -->
+<div class="modal" id="cm" role="dialog" aria-modal="true" aria-label="カード編集">
+  <div class="box">
+    <div class="cmhead">
+      <span id="cm-id">#—</span>
+      <button class="ghost" id="cm-close" title="Esc">閉じる</button>
+    </div>
+    <label class="f"><span>本文</span><input id="cm-text" type="text"></label>
+    <div class="row2">
+      <label class="f"><span>project（空で解除）</span><input id="cm-project" type="text"></label>
+      <label class="f"><span>labels（, 区切り / 空で解除）</span><input id="cm-labels" type="text"></label>
+    </div>
+    <div class="row2">
+      <label class="f"><span>due（表示のみ）</span><input id="cm-due" type="date" disabled></label>
+      <label class="f"><span>estimate（表示のみ）</span><input id="cm-estimate" type="number" disabled></label>
+    </div>
+    <label class="f"><span>blocked（空で解除）</span><input id="cm-blocked" type="text"></label>
+    <label class="f"><span>実行予約 at（+30m / +2h / +1d / ISO8601 / 空で解除）</span><input id="cm-at" type="text"></label>
+    <div class="cmprio">
+      <span>priority</span>
+      <button type="button" data-prio="10" title="autoPick で先に拾う">10 中</button>
+      <button type="button" data-prio="5" title="中より後">5 低</button>
+      <button type="button" data-prio="0" title="既定">0 普通</button>
+    </div>
+    <div class="cmact">
+      <button type="button" id="cm-save">保存</button>
+      <button type="button" id="cm-sched">実行予約</button>
+      <button type="button" data-move="todo">TODO へ</button>
+      <button type="button" data-move="doing">DOING へ</button>
+      <button type="button" data-move="done">DONE へ</button>
+      <button type="button" id="cm-del">削除</button>
+    </div>
+  </div>
+</div>
+
+<footer class="foot">
+  <span><kbd>1</kbd>〜<kbd>9</kbd> 切替</span>
+  <span><kbd>0</kbd> すべて</span>
+  <span><kbd>j</kbd><kbd>k</kbd> 選択</span>
+  <span><kbd>/</kbd> 検索</span>
+  <span><kbd>c</kbd> 新規</span>
+  <span><kbd>d</kbd> 完了</span>
+  <span class="right" id="footright">API · dashboard v2.5</span>
+</footer>
+
+<div class="lb" id="lb" role="dialog" aria-modal="true" aria-label="添付画像プレビュー">
+  <img id="lbimg" alt="">
+  <div class="cap" id="lbcap"></div>
+</div>
+
+<script>
+/*APP*/
+</script>
+</body>
+</html>

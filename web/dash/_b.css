@@ -1,0 +1,229 @@
+/* ── 本体グリッド ───────────────────────── */
+.layout{
+  display:grid; grid-template-columns:minmax(0,1fr) 320px;
+  gap:12px; padding:12px 16px 24px; max-width:1440px; margin:0 auto;
+  align-items:start;
+}
+@media (max-width:980px){ .layout{grid-template-columns:1fr} }
+
+/* ── kanban 3列 ─────────────────────────── */
+.cols{display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:var(--gap)}
+@media (max-width:700px){ .cols{grid-template-columns:1fr} }
+.col{
+  background:var(--bg1); border:1px solid var(--line); border-radius:var(--radius);
+  padding:10px; min-height:320px;
+}
+.colhead{
+  display:flex; align-items:baseline; gap:8px; margin-bottom:10px;
+}
+.colhead h2{
+  margin:0; font-size:11px; font-weight:600; letter-spacing:.14em;
+  color:var(--muted);
+}
+.colhead .n{font-family:var(--font-mono); font-size:11px; color:var(--muted)}
+.colhead .add{
+  margin-left:auto; border:0; background:none; color:var(--muted);
+  font:16px/1 var(--font-mono); cursor:pointer;
+}
+.colhead .add:hover{color:var(--accent)}
+
+.card{
+  background:var(--bg2); border:1px solid var(--line); border-radius:var(--radius);
+  padding:8px 10px; margin-bottom:var(--gap); cursor:grab;
+}
+.card:hover{border-color:var(--accent)}
+.card .id{font-family:var(--font-mono); font-size:11px; color:var(--muted); margin-right:6px}
+.card .t{font-weight:500}
+.card.overdue .t{color:var(--bad)}
+.chips{display:flex; flex-wrap:wrap; gap:4px; margin-top:6px}
+.chip{
+  font-family:var(--font-mono); font-size:10px; border-radius:4px;
+  padding:1px 6px; border:1px solid var(--line); color:var(--muted);
+}
+.chip.feat{color:var(--accent); border-color:color-mix(in srgb,var(--accent) 40%,transparent)}
+.chip.bug{color:var(--bad); border-color:color-mix(in srgb,var(--bad) 40%,transparent)}
+.chip.chore{color:var(--muted)}
+.chip.due-warn{color:var(--warn); border-color:color-mix(in srgb,var(--warn) 45%,transparent)}
+.chip.due-bad{color:var(--bad); border-color:color-mix(in srgb,var(--bad) 45%,transparent)}
+.chip.dep{color:var(--warn); border-style:dashed}
+.chip.session{color:var(--ok); border-color:color-mix(in srgb,var(--ok) 40%,transparent)}
+.chip.commit{color:var(--muted); text-decoration:underline dotted}
+.meta{
+  display:flex; gap:10px; margin-top:6px;
+  font-family:var(--font-mono); font-size:10px; color:var(--muted);
+}
+html[data-density="compact"] .card{padding:5px 8px}
+html[data-density="compact"] .chips,html[data-density="compact"] .meta{display:none}
+
+/* DOING スピン: mono の回転リング。onカード見出しの横に一つ。 */
+.spinrow{display:flex; align-items:center; gap:6px; margin-top:6px}
+.spin{
+  flex:none; width:12px; height:12px; border-radius:50%;
+  border:2px solid color-mix(in srgb,var(--accent) 25%,var(--bg2));
+  border-top-color:var(--accent);
+  animation:spin .9s linear infinite;
+}
+.spinlabel{
+  font-family:var(--font-mono); font-size:10px; color:var(--accent);
+}
+@keyframes spin{ to{ transform: rotate(360deg);} }
+@media (prefers-reduced-motion:reduce){
+  .spin, .ptab.doing .dot{ animation:none; }
+  .spin{ border-top-color: color-mix(in srgb,var(--accent) 60%, var(--bg2)); }
+}
+
+/* ── 添付: サムネグリッド ───────────────── */
+.thumbs{
+  display:grid; grid-template-columns:1fr 1fr; gap:4px; margin-top:6px;
+}
+.thumb{
+  position:relative; border-radius:4px; overflow:hidden;
+  border:1px solid var(--line); cursor:zoom-in;
+  aspect-ratio:16/9; background:var(--bg0);
+}
+.thumb img{width:100%; height:100%; object-fit:cover; display:block}
+.thumb .more{
+  position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+  background:color-mix(in srgb,var(--bg0) 55%,transparent);
+  font-family:var(--font-mono); font-size:14px; color:var(--text);
+}
+.attline{
+  display:flex; align-items:center; gap:8px; margin-top:6px;
+  border:1px dashed var(--line); border-radius:4px; padding:5px 8px;
+  font-family:var(--font-mono); font-size:11px; color:var(--muted);
+}
+.attline:hover{border-color:var(--accent); color:var(--text)}
+
+/* ── lightbox ───────────────────────────── */
+.lb{
+  position:fixed; inset:0; z-index:50; display:none;
+  align-items:center; justify-content:center; flex-direction:column; gap:10px;
+  background:color-mix(in srgb,var(--bg0) 88%,transparent);
+  padding:24px;
+}
+.lb[open]{display:flex}
+.lb img{max-width:100%; max-height:80vh; border-radius:var(--radius); border:1px solid var(--line)}
+.lb .cap{font-family:var(--font-mono); font-size:11px; color:var(--muted)}
+
+/* ── switch (v2.3) ──────────────────────── */
+.sw{
+  display:inline-flex; align-items:center; gap:8px;
+  min-height:44px; padding:0 10px;
+}
+.sw .lab{
+  font-family:var(--font-mono); font-size:11px; color:var(--muted);
+  white-space:nowrap;
+}
+.sw .track{
+  position:relative; width:36px; height:20px; flex:none;
+  border:1px solid var(--line); border-radius:100px; background:var(--bg2);
+  transition: background .15s, border-color .15s; cursor:pointer;
+}
+.sw .track::after{
+  content:""; position:absolute; top:2px; left:2px;
+  width:14px; height:14px; border-radius:50%; background:var(--muted);
+  transition: left .15s, background .15s;
+}
+.sw[aria-pressed="true"] .track{ background:var(--accent); border-color:var(--accent); }
+.sw[aria-pressed="true"] .track::after{ left:18px; background:var(--bg1); }
+.sw:focus-visible{ outline:2px solid var(--accent); outline-offset:2px; }
+
+/* ボードの下: ソフトな完了帯 */
+.donefold{
+  border-top:1px dashed var(--line); margin-top:6px; padding-top:6px;
+  color:var(--muted); font-size:11px; display:flex; gap:8px; align-items:center;
+  cursor:pointer;
+}
+.donefold:hover{color:var(--text)}
+.donefold .upsym{font-family:var(--font-mono)}
+
+/* v2.5: すべてタブではレールを潰して横断ビューを全幅に */
+html.allview .rail{display:none}
+html.allview .layout{grid-template-columns:1fr}
+
+/* ── 右レール ───────────────────────────── */
+.rail{display:flex; flex-direction:column; gap:12px}
+.panel{
+  background:var(--bg1); border:1px solid var(--line); border-radius:var(--radius);
+  padding:12px;
+}
+.panel h3{
+  margin:0 0 8px; font-size:11px; font-weight:600; letter-spacing:.14em;
+  color:var(--muted);
+}
+.next-item{
+  display:flex; align-items:baseline; gap:8px; padding:6px 0;
+  border-top:1px solid var(--line);
+}
+.next-item:first-of-type{border-top:0}
+.next-item .why{margin-left:auto; font-size:10px; color:var(--muted)}
+.projrow{
+  padding:7px 8px; margin:0 -8px; border-top:1px solid var(--line);
+  border-radius:var(--radius); cursor:pointer;
+}
+.projrow:first-of-type{border-top:0}
+.projrow:hover{background:var(--bg2)}
+.projrow[aria-current="true"]{background:color-mix(in srgb,var(--accent) 10%,transparent)}
+.projrow .name{display:flex; justify-content:space-between; align-items:baseline; gap:8px; font-size:12px}
+.projrow .name b{font-weight:500}
+.projrow .name .here{
+  font-family:var(--font-mono); font-size:9px; color:var(--accent);
+  border:1px solid color-mix(in srgb,var(--accent) 45%,transparent);
+  border-radius:3px; padding:0 4px;
+}
+.projrow .name span{font-family:var(--font-mono); font-size:10px; color:var(--muted)}
+.bar{
+  height:4px; border-radius:2px; background:var(--bg2);
+  border:1px solid var(--line); margin-top:5px; overflow:hidden;
+}
+.bar i{display:block; height:100%; background:var(--accent)}
+.bar i.full{background:var(--ok)}
+.ev{padding:5px 0; border-top:1px solid var(--line); font-size:12px}
+.ev:first-of-type{border-top:0}
+.ev time{
+  display:block; font-family:var(--font-mono); font-size:10px; color:var(--muted);
+}
+.ev b{font-weight:500}
+.ev .ok{color:var(--ok)} .ev .bad{color:var(--bad)} .ev .warn{color:var(--warn)}
+
+/* ── footer ─────────────────────────────── */
+.foot{
+  display:flex; gap:12px; align-items:center; white-space:nowrap;
+  max-width:1440px; margin:0 auto; padding:0 16px 20px;
+  color:var(--muted); font-size:11px;
+}
+.foot kbd{
+  font-family:var(--font-mono); font-size:10px;
+  border:1px solid var(--line); border-radius:4px; padding:1px 5px;
+  background:var(--bg2); margin-right:2px;
+}
+.foot .right{margin-left:auto; font-family:var(--font-mono)}
+
+/* ══ モバイル (v2.2~) ════════════════════ */
+@media (max-width:700px){
+  .toprow{flex-wrap:wrap; height:auto; padding:10px 12px; row-gap:8px}
+  .wordmark{order:1}
+  .toprow .ghost{order:2; margin-left:auto; padding:8px 10px}
+  .search{order:3; flex-basis:100%; max-width:none; margin-left:0; padding:9px 12px}
+  .search input{min-height:24px}
+  .ptabs{padding:0 12px 10px}
+  .ptab{padding:9px 12px}
+  .ptab .key{display:none}
+  .strip{
+    overflow-x:auto; scroll-snap-type:x mandatory; padding:10px 12px 4px;
+    scrollbar-width:none;
+  }
+  .strip::-webkit-scrollbar{display:none}
+  .stat{flex:0 0 118px; scroll-snap-align:start}
+  .layout{padding:10px 12px 20px}
+  .col{min-height:0; padding:8px}
+  .colhead{position:sticky; top:56px; background:var(--bg1); z-index:2; padding:4px 0}
+  .card{padding:12px}
+  .card:active{border-color:var(--accent)}
+  .donefold{padding:10px 4px; font-size:12px}
+  .rail{gap:10px}
+  .projrow{padding:11px 8px; margin:0 -8px}
+  .foot{display:none}
+  .lb{padding:10px}
+  .lb img{max-height:70vh}
+}
