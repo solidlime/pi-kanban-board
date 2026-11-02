@@ -271,8 +271,8 @@ check("exists=false のエントリも一覧に残る", () => {
 		assert.match(html, /^<!doctype html>/i);
 	});
 	check("GET / は /api/dashboard を参照する", () => assert.match(html, /\/api\/dashboard/));
-	check("GET / はダッシュボード本体（stats/board/global/serve）", () => {
-		for (const id of ['id="stats"', 'id="pane-board"', 'id="global"', 'id="serve"']) {
+	check("GET / はダッシュボード本体（stats/board/serve）", () => {
+		for (const id of ['id="stats"', 'id="pane-board"', 'id="project"', 'id="serve"']) {
 			assert.ok(html.includes(id), `${id} が無い`);
 		}
 		// 埋め込み時にバックスラッシュエスケープが二重化されていること。
