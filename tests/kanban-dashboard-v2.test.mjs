@@ -4,6 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { assemble } from "../scripts/build-web.mjs";
 
 const read = (rel) => readFileSync(fileURLToPath(new URL(`../${rel}`, import.meta.url)), "utf8");
 const HTML = read("web/dashboard.html");
@@ -16,10 +17,13 @@ test("dashboard.html: 必須 id が揃っている", () => {
 });
 
 test("dashboard.html: ビルド用プレースホルダが残っていない", () => {
-	for (const ph of ["__KB_HOST__", "__KB_MD_JS__", "__KB_MEMORY_JS__", "/*CSS_A*/", "/*CSS_B*/", "/*CSS_C*/", "/*APP*/"]) {
+	// __KB_HOST__ / __KB_MD_JS__ / __KB_MEMORY_JS__ は実行時・生成時に埋まるのが正しい。
+	// 組み立て用の /*CSS_x*/ と /*APP*/ だけが残ってはいけない。
+	for (const ph of ["/*CSS_A*/", "/*CSS_B*/", "/*CSS_C*/", "/*APP*/"]) {
 		assert.ok(!HTML.includes(ph), `${ph} が残っている`);
 	}
 	assert.ok(HTML.includes("dashboard v2.5"));
+	assert.ok(HTML.includes("__KB_HOST__"), "ホスト名の差し込み口が消えている（#94）");
 });
 
 test("dashboard.html: id が重複していない", () => {
@@ -32,14 +36,10 @@ test("dashboard.html: id が重複していない", () => {
 });
 
 test("dashboard.html は dash/* の結合結果と一致する", () => {
-	const p = (f) => read(f).replace(/\r\n?/g, "\n");
-	const out = p("web/dash/_head.html")
-		.replace("/*CSS_A*/", p("web/dash/_a.css"))
-		.replace("/*CSS_B*/", p("web/dash/_b.css"))
-		.replace("/*CSS_C*/", p("web/dash/_c.css"))
-		.replace("/*APP*/", p("web/dash/_app.js"));
-	assert.equal(p("web/dashboard.html"), out, "web/dashboard.html が dash/* とずれている");
-	for (const f of PARTS) assert.ok(p(f).length > 0);
+	// 組み立て規則は build-web.mjs が持つ。ここで二重に持たない。
+	const out = assemble();
+	assert.equal(read("web/dashboard.html").replace(/\r\n?/g, "\n"), out.replace(/\n+$/, "") + "\n");
+	for (const f of PARTS) assert.ok(read(f).length > 0);
 });
 
 test("kanban.ts: /api/halt が resume と同じ形で在る（#48）", () => {

@@ -249,7 +249,7 @@ await check("保存表記と cwd 表記が違っても modes は保存表記の�
 			ui: {
 				notify() {},
 				setWidget(_key, lines) {
-					footer = lines[1];
+					footer = lines[0];
 				},
 			},
 			sessionManager: { getSessionId: () => SID, getCwd: () => cwdDir, getEntries: () => [] },

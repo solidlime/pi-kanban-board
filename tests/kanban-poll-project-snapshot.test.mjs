@@ -102,15 +102,16 @@ const pi = {
 const t = mod.default(pi).__test;
 const ctx = mkCtx(SID);
 
-const globalLine = () => (widgets.at(-1) ?? "").split("\n")[0];
+// #47 で GLOBAL 行は廃止。footer は PROJECT の 1 行だけ。
+const projLine = () => (widgets.at(-1) ?? "").split("\n")[0];
 
 handlers.get("session_start")({ type: "session_start" }, ctx);
 
 // --- 1: 基準の描画（project ボードは空） ---------------------------------------
 t.poll();
-check("poll 1 回目が footer を描く（GLOBAL は空）", () => {
+check("poll 1 回目が footer を描く（PROJECT は空）", () => {
 	assert.equal(widgets.length, 1, `widgets=${widgets.length}`);
-	assert.match(globalLine(), /^GLOBAL: 0 todo \/ 0 doing/);
+	assert.match(projLine(), /^PROJECT: [^:]+: 0 todo \/ 0 doing/);
 });
 check("wake は出ない（doingLoop OFF）", () => assert.equal(sent.length, 0, `sent=${sent.length}`));
 
@@ -131,8 +132,8 @@ t.poll();
 check("project ボードの書き込みで poll が footer を描き直す", () => {
 	assert.equal(widgets.length, before + 1, `widgets=${widgets.length}（短絡した）`);
 });
-check("GLOBAL 行の件数が project ボードの 1 枚を反映する", () => {
-	assert.match(globalLine(), /^GLOBAL: 1 todo \/ 0 doing/, `line=${JSON.stringify(globalLine())}`);
+check("PROJECT 行の件数が project ボードの 1 枚を反映する", () => {
+	assert.match(projLine(), /^PROJECT: [^:]+: 1 todo \/ 0 doing/, `line=${JSON.stringify(projLine())}`);
 });
 
 // --- 4: 別 slug の project ボード（他リポ）でも同じ（集約 = 監視対象） ----------
@@ -144,7 +145,8 @@ seedBoard(`${KB}/projects/other-repo.json`, {
 t.poll();
 check("別 slug の project ボード書き込みでも描き直す", () => {
 	assert.equal(widgets.length, before2 + 1, `widgets=${widgets.length}（短絡した）`);
-	assert.match(globalLine(), /^GLOBAL: 1 todo \/ 1 doing/, `line=${JSON.stringify(globalLine())}`);
+	// 集約行（GLOBAL）は #47 で廃止したので件数は見ない。描き直しだけを固定する。
+	assert.match(projLine(), /^PROJECT: /, `line=${JSON.stringify(projLine())}`);
 });
 
 console.log(`${passed} passed, ${failures.length} failed`);

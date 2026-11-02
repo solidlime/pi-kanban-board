@@ -119,15 +119,16 @@ const ctx = {
 };
 handlers.get("session_start")({}, ctx);
 
-check("footer は 2 行固定", () => {
+check("footer は 1 行固定（#47 で GLOBAL 行を廃止）", () => {
 	assert.ok(widgetCalls.length > 0, "setWidget が呼ばれていない");
 	const lines = widgetCalls[widgetCalls.length - 1];
-	assert.equal(lines.length, 2, `lines=${JSON.stringify(lines)}`);
+	assert.equal(lines.length, 1, `lines=${JSON.stringify(lines)}`);
+	assert.ok(lines[0].startsWith("PROJECT:"), lines[0]);
 });
 
 check("PROJECT 行は 1 行・< 無し・改行なし（#17 で session 名は footer から消えた）", () => {
 	const lines = widgetCalls[widgetCalls.length - 1];
-	const projectLine = lines[1];
+	const projectLine = lines[0];
 	assert.ok(projectLine.startsWith("PROJECT:"), projectLine);
 	assert.ok(!projectLine.includes("\n") && !projectLine.includes("\r") && !projectLine.includes("\t"), "改行/タブが残存");
 	assert.ok(!projectLine.includes("<") && !projectLine.includes('"'), `タグ文字が残存: ${projectLine}`);
@@ -154,7 +155,7 @@ check("PROJECT 行はディレクトリの大小を保つ（#37）", () => {
 		...ctx,
 		sessionManager: { ...ctx.sessionManager, getCwd: () => `${HOME_DIR}/Kb-Mixed-Case` },
 	});
-	const line = widgetCalls[widgetCalls.length - 1][1];
+	const line = widgetCalls[widgetCalls.length - 1][0];
 	assert.match(line, /^PROJECT: Kb-Mixed-Case: /, line);
 });
 

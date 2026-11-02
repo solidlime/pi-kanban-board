@@ -92,13 +92,12 @@ const dashboardHtml = await (await tf(`${BASE}/`)).text();
 // ===========================================================================
 // #38-9: DOING 強調は両テンプレートで同じ見た目（片方だけ直す事故を防ぐ）
 // ===========================================================================
-await check("#38-9 DASHBOARD_HTML が .col.doingcol を持つ", () => {
-	// 仕様: 左ボーダー + 淡い背景。色は既存トークンのみ（新しい色を発明しない）。
-	const rule = ".col.doingcol{border-left:3px solid var(--accent);background:var(--accent-soft-2)}";
-	assert.ok(dashboardHtml.includes(rule), "DASHBOARD_HTML に doingcol の強調が無い（#38-9 の取りこぼし）");
+await check("#38-9 DASHBOARD_HTML の DOING 列は WIP バッジで強調される", () => {
+	// v2.5 (#42): 列そのものの着色はやめ、DOING 見出しに WIP n/3 バッジを出す形に置き換えた。
+	assert.ok(dashboardHtml.includes(".wipbad"), "DASHBOARD_HTML に DOING の強調が無い（#38-9 の取りこぼし）");
 	assert.ok(
-		dashboardHtml.includes('(key === "doing" && list.length ? " doingcol" : "")'),
-		"dashboard の列に doingcol が付かない",
+		dashboardHtml.includes('wip.textContent = "WIP " + n + "/3"'),
+		"dashboard の DOING に WIP バッジが付かない",
 	);
 });
 

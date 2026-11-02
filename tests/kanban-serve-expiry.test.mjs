@@ -173,13 +173,8 @@ check("期限切れは 410 Gone", () => {
 		const n = dash.serve.find((s) => s.id === NOCT_ID);
 		assert.equal(n.expiresAt, "");
 	});
-	check("dashboard の残り時間表示に permanent / expiresAt を使う実装がある", () => {
-		// 実ファイル側は表示文字列を含む（vm 無しでも template の欠落を検出する）
-		const html = readFileSync(`${HOME_DIR}/.pi/kanban/dashboard.html`, "utf8");
-		for (const frag of ['"永久"', '"期限切れ"', 'serveLeft(v, nowMs)', 'action: "permanent"']) {
-			assert.ok(html.includes(frag), `dashboard.html に ${frag} が無い`);
-		}
-	});
+	// v2.5（#42）で serve のパネルは UI から消えた。ここは API 側だけを固定する
+	// （表示の復活は別カードで扱う）。
 }
 
 // --- 3. /api/serve の永久トグル ----------------------------------------------

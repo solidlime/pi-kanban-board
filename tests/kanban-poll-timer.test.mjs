@@ -257,16 +257,17 @@ function mkCtx(sid, idle = true) {
 		assert.match(sent[0] ?? "", /DOING #7 "elsewhere"/),
 	);
 	const footer = widgets.at(-1) ?? [];
-	check("footer 2行目が ctx cwd のボードを名乗る", () =>
+	// #47 で GLOBAL 行が消え、footer は PROJECT 1 行だけになった。
+	check("footer が ctx cwd のボードを名乗る", () =>
 		assert.equal(
-			footer[1]?.startsWith(`PROJECT: ${OTHER}:`),
+			footer[0]?.startsWith(`PROJECT: ${OTHER}:`),
 			true,
 			`footer=${JSON.stringify(footer)}`,
 		),
 	);
 	// 件数もキーで変わる（旧実装は空ボードを読んで "0 todo / 0 doing" と描いた）。
-	check("footer 2行目が ctx cwd のボードの件数を出す", () =>
-		assert.ok(footer[1]?.includes("0 todo / 1 doing"), `footer=${JSON.stringify(footer)}`),
+	check("footer が ctx cwd のボードの件数を出す", () =>
+		assert.ok(footer[0]?.includes("0 todo / 1 doing"), `footer=${JSON.stringify(footer)}`),
 	);
 	rmSync(otherDir, { recursive: true, force: true });
 }

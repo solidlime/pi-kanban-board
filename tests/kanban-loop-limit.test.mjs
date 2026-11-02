@@ -432,10 +432,9 @@ await foot.handlers.get("agent_before_settle")({ context: { contextMessages: und
 {
 	const lines = widgets.at(-1) ?? [];
 	check("project で上限停止したら footer の PROJECT 行に HALTED:limit が出る", () => {
-		assert.equal(lines.length, 2, JSON.stringify(lines));
-		assert.match(lines[1], /HALTED:limit/, JSON.stringify(lines));
-		assert.ok(/^PROJECT:/.test(lines[1]), JSON.stringify(lines));
-		assert.ok(!/HALTED/.test(lines[0]), `GLOBAL 行に出ている: ${lines[0]}`);
+		assert.equal(lines.length, 1, JSON.stringify(lines));
+		assert.match(lines[0], /HALTED:limit/, JSON.stringify(lines));
+		assert.ok(/^PROJECT:/.test(lines[0]), JSON.stringify(lines));
 	});
 }
 {
@@ -473,9 +472,9 @@ foot2.handlers.get("session_start")({ type: "session_start" }, ctxFoot2);
 	check("project が駆動している settle は continuation を返す", () => assert.equal(res && res.continue, true, JSON.stringify(res)));
 	const lines = widgets2.at(-1) ?? [];
 	check("project の件数は footer の PROJECT 行に「残り/上限」で出る", () => {
-		assert.equal(lines.length, 2, JSON.stringify(lines));
+		assert.equal(lines.length, 1, JSON.stringify(lines));
 		// 上限 9、使った 4 -> 残り 5/9（session 自身は ON だが件数は project のもの）。
-		assert.match(lines[1], / 5\/9/, JSON.stringify(lines));
+		assert.match(lines[0], / 5\/9/, JSON.stringify(lines));
 	});
 	const row = await rowOf(SID_FOOT2);
 	check("loopCountOf は project の回数（4）を返す", () => {
@@ -590,22 +589,23 @@ const DASH = await (await tf(`${BASE}/`)).text();
 check("DASHBOARD_HTML に上限値の入力欄（/api/maxloops 経由）がある", () => {
 	assert.ok(/\/api\/maxloops/.test(DASH), "maxloops の保存経路が無い");
 	assert.ok(/上限/.test(DASH), "上限のラベルが無い");
-	assert.ok(/ml\.type = "number"/.test(DASH), "数値入力が無い");
+	assert.ok(/id="ml" type="number"/.test(DASH), "数値入力が無い");
 });
 check("DASHBOARD_HTML に「無制限」に切り替える手段がある", () => {
-	assert.ok(/無制限/.test(DASH), "無制限の文言が無い");
-	assert.ok(/maxloops[\s\S]{0,80}n=0|0 = 無制限|0 で無制限/.test(DASH), "0 = 無制限 の導線が無い");
+	// v2.5: 残り回数は ∞ 表示。上限そのものは /api/maxloops で書く。
+	assert.ok(/∞/.test(DASH), "無制限の表示（∞）が無い");
+	assert.ok(/\/api\/maxloops/.test(DASH), "maxloops の保存経路が無い");
 });
-check("DASHBOARD_HTML に「再開」ボタンの生成がある", () => {
-	assert.ok(/function resumeBtn/.test(DASH), "resumeBtn が無い");
-	assert.ok(/再開/.test(DASH), "「再開」の文言が無い");
-	assert.ok(/act\("\/api\/resume"/.test(DASH), "resume への送信が無い");
+check("DASHBOARD_HTML に halt/resume のスイッチがある（#43/#48 で resumeBtn は pause スイッチに統合）", () => {
+	assert.ok(/data-sw="pause"/.test(DASH), "pause スイッチが無い");
+	assert.ok(/\/api\/resume/.test(DASH), "resume への送信が無い");
+	assert.ok(/\/api\/halt/.test(DASH), "halt への送信が無い");
 });
 check("DASHBOARD_HTML の停止表示は halted の bool で駆動される（#17: 理由の文字列は消えた）", () => {
 	assert.ok(!/\$\{MAX_LOOPS\}/.test(DASH), "${MAX_LOOPS} が残っている");
-	assert.ok(/function haltBox\(/.test(DASH), "haltBox が無い");
-	assert.ok(/b\.halted !== true/.test(DASH), "haltBox が halted の bool を見ていない");
-	assert.ok(/上限/.test(DASH), "上限の導線が無い");
+	assert.ok(/function halted\(\)/.test(DASH), "halted() が無い");
+	assert.ok(/p\.halted/.test(DASH), "halted() が halted の bool を見ていない");
+	assert.ok(/setAttribute\("aria-pressed", String\(halted\(\)\)\)/.test(DASH), "スイッチが実値で駆動されない");
 });
 check("DASHBOARD_HTML の <script> はすべて構文として通る", () => {
 	const scripts = [...DASH.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
