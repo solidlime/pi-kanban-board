@@ -196,6 +196,9 @@ const haltedBySid = new Map<
 // #17: the key is a pi session id ONLY - never a board key (a project slug). The poll
 // consumes it with sidOf(ownCtx), so a slug here would park a request nobody ever reads.
 const resumeRequests = new Map<string, number>();
+// #48: the same door, the other direction. A halt is idempotent, so a Set is enough:
+// outstanding duplicates collapse into the one state the poll already holds.
+const haltRequests = new Set<string>();
 let server: Server | null = null;
 // Every non-starting state is surfaced in the footer: a dead API must never be silent.
 //   up    - this process owns the port, or a process of OUR version does.
@@ -1894,6 +1897,7 @@ function isWritePath(pathname: string, method: string): boolean {
 		case "/api/stuck":
 		case "/api/maxloops":
 		case "/api/resume":
+		case "/api/halt":
 		case "/api/priority":
 		case "/api/schedule":
 		case "/api/project":
@@ -4293,7 +4297,7 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 	// #26: the switch routes were the one global caller that was not a board write. global has no
 	// switch now, so they answer the scope here, before the board gate below would word it as a
 	// read-only board.
-	if (parseScope(q.get("scope")) === "global" && ["/api/modes", "/api/interval", "/api/stuck", "/api/resume"].includes(url.pathname)) {
+	if (parseScope(q.get("scope")) === "global" && ["/api/modes", "/api/interval", "/api/stuck", "/api/resume", "/api/halt"].includes(url.pathname)) {
 		sendJson(res, 400, { ok: false, error: GLOBAL_NO_SWITCH });
 		return;
 	}
@@ -4490,6 +4494,17 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 			// One counter of outstanding requests: a stuck consumer must not grow the map.
 			const pending = (resumeRequests.get(sid) ?? 0) + 1;
 			resumeRequests.set(sid, Math.min(pending, 5));
+			sendJson(res, 202, { ok: true, queued: true, sid });
+			return;
+		}
+		case "/api/halt": {
+			// #48: 再開（/api/resume）の逆。halt はサーバではなく拡張プロセスのメモリなので、
+			// ここも 202 で受けるだけ。実際の停止はそのセッションの poll が行う。
+			const key = settingsSidOf(q, res);
+			if (key === null) return;
+			// #17: resume と同じ re-key。process state はドライバの sid で引く。
+			const sid = activeSessionId ?? key;
+			haltRequests.add(sid);
 			sendJson(res, 202, { ok: true, queued: true, sid });
 			return;
 		}
@@ -5381,6 +5396,26 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 				deadCtx(err);
 			}
 		}
+		// #48: ダッシュボードの一時停止。resume と対で、同じ tick が消費する。limit halt と
+		// 同じ形（doingLoop を切る）にして、停止の理由も同じ `limit` にする。loop.count は
+		// 据え置き: 解除（resumeWithModes）が budget ごと戻すので、ここでは触らない。
+		if (haltRequests.delete(sid)) {
+			try {
+				// 既に halted なら何もしない（paintLoop は現在値を保つ）。
+				if (loop.halted === null) {
+					const hf = readModesFile();
+					const hkey = boardKeyFor(ownCtx, sid, "project");
+					loop.halted = "limit";
+					setMode(hf, hkey, "project", "doingLoop", false);
+					writeModesFile(hf);
+					persistLoop();
+					paintLoop(ownCtx, sid);
+					logServer(`halt from dashboard sid=${sid}`);
+				}
+			} catch (err) {
+				deadCtx(err);
+			}
+		}
 		// Before the snapshot shortcut: time passes even when no board file changes,
 		// so a still board would never wake the agent.
 		if (!tickInFlight) {
@@ -6246,6 +6281,8 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 			// (/api/resume parks a token, poll consumes it); these let a test assert
 			// the parked state instead of sleeping on a timer.
 			resumeRequests,
+			// #48: the halt hand-off is the same shape (park a token, poll consumes it).
+			haltRequests,
 			// Phase 0: the fold gate is only reachable while the real migration runs, so the
 			// tests drive it directly instead of racing a startup they cannot pause.
 			setMigrationPending: (p: Promise<void> | null) => {
