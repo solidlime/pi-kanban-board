@@ -135,16 +135,21 @@ await check("aggregateGlobal(): GLOBAL 残骸が先、以降 slug 昇順・id �
 	assert.deepEqual(j.global.cards.map((c) => `${c.sid}:${c.id}`), [":1", "alpha:1", "alpha:2", "beta:1"]);
 });
 
-await check("aggregateGlobal() と projectsPayload() は同じ 4 枚を返す", async () => {
+await check("aggregateGlobal() と projectsPayload() は同じ 3 枚を返す", async () => {
 	const agg = await (await tf(`${BASE}/api/kanban`)).json();
 	const proj = await (await tf(`${BASE}/api/projects`)).json();
-	const fromAgg = agg.global.cards.map((c) => `${c.sid === "" ? "global" : "project"}:${c.sid}:${c.id}`).sort();
+	// projectsPayload はボード基準なので GLOBAL 残骸（sid 無し）は数えない。
+	// 同じ供給を見ていることを確かめるため、aggregate 側もボードのカードだけに絞る。
+	const fromAgg = agg.global.cards
+		.filter((c) => c.sid !== "")
+		.map((c) => `project:${c.sid}:${c.id}`)
+		.sort();
 	const fromProj = proj.projects
 		.flatMap((p) => p.blockers)
 		.map((b) => `${b.scope}:${b.sid}:${b.id}`)
 		.sort();
 	assert.deepEqual(fromProj, fromAgg, `供給経路で差がある: projects=${JSON.stringify(fromProj)} agg=${JSON.stringify(fromAgg)}`);
-	assert.equal(fromAgg.length, 4);
+	assert.equal(fromAgg.length, 3);
 });
 
 await check("weeklyPayload().current は GLOBAL 残骸を数えない", async () => {

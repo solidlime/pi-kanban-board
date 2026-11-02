@@ -3320,8 +3320,10 @@ export type ProjectSummary = {
  * Cards in, one row per project out. Progress is never stored: the card is the only truth,
  * and a cached percentage is wrong the moment someone drags a card.
  *
- * A slug that only cards mention is listed too (name falls back to the slug), otherwise
- * work would disappear from the project tab just because nobody "created" the project.
+ * A board nobody has named is listed too (name falls back to the slug), otherwise work
+ * would disappear from the project tab just because nobody "created" the project.
+ * The board (scope + sid) is the project: card.project is a label that outlived that job,
+ * so counting it here would list a tag that no board holds and hide real boards with none.
  */
 export function projectRollup(
 	declared: { slug: string; name: string }[],
@@ -3331,7 +3333,7 @@ export function projectRollup(
 ): ProjectSummary[] {
 	const named = new Map(declared.map((p) => [p.slug, p.name]));
 	const slugs = new Set(named.keys());
-	for (const { card } of cards) if (card.project) slugs.add(card.project);
+	for (const { scope, sid } of cards) if (scope === "project" && sid !== "") slugs.add(sid);
 	const log = new Map<string, Decision[]>();
 	for (const d of decisions) {
 		// A decision can be written for a slug no card names yet: it must still show up.
@@ -3341,7 +3343,7 @@ export function projectRollup(
 		else list.push(d);
 	}
 	return [...slugs].sort().map((slug) => {
-		const mine = cards.filter((e) => e.card.project === slug);
+		const mine = cards.filter((e) => e.scope === "project" && e.sid === slug);
 		const done = mine.filter((e) => e.card.col === "done");
 		const points = (list: { card: RollupCard }[]) => list.reduce((n, e) => n + (e.card.estimate ?? 0), 0);
 		const at = (e: { card: RollupCard; scope: string; sid: string }) => ({ scope: e.scope, sid: e.sid });
@@ -3579,6 +3581,12 @@ async function dashboardPayload(): Promise<unknown> {
 		},
 		// #11: 設定タブの「保存データ」。絶対パスは出さない（#80-⑦）。
 		db: dbInfo(totals.todo + totals.doing + totals.done),
+		// The board picker's choices. projectKeys() is the board table itself, so a board with
+		// no cards yet is still selectable (listProjectBoards() only returns boards with cards).
+		boards: kanbanDb()
+			.projectKeys()
+			.map((b) => b.slug)
+			.sort(),
 		// #17/B2: a halt and a used count belong to a BOARD now, not to a session row. `loops`
 		// is the count this session has used on that board; `halted` says the loop is stopped.
 		// The dashboard draws 「残り N / 上限」 and the 再開 button off these two (B3).
@@ -3639,6 +3647,14 @@ function writeBoardPath(q: URLSearchParams): WriteTarget {
 	if (isLegacySessionScope(q)) return { ok: false, error: SESSION_SCOPE_GONE };
 	const scope = parseScope(q.get("scope"));
 	if (scope === "global") return { ok: false, error: "global board is read-only" };
+	// p names the board the dashboard is showing: without it every write lands on the cwd's
+	// board, so dragging a card while another board is open would edit the wrong repo.
+	const pRaw = q.get("p");
+	if (pRaw !== null && pRaw !== "") {
+		const slug = normalizeProject(pRaw);
+		if (slug === "") return { ok: false, error: "p must match [A-Za-z0-9._-]" };
+		return { ok: true, path: boardPath("project", storedProjectKey(slug)) };
+	}
 	const key = projectKeyOfWrite(q.get("sid"));
 	if (key === null) return { ok: false, error: "unknown sid" };
 	// #36: the board's own spelling, so a write and the reader above name the same board.
@@ -3662,6 +3678,17 @@ function settingsSidOf(q: URLSearchParams, res: ServerResponse): string | null {
 	const scope = parseScope(q.get("scope"));
 	// project keys its settings by board (the slug); the sid only says whose cwd to use.
 	if (scope === "project") {
+		// p names the board directly, exactly as writeBoardPath reads it: the panel must write
+		// the switches of the board it is showing, not of the cwd's board.
+		const pRaw = q.get("p");
+		if (pRaw !== null && pRaw !== "") {
+			const slug = normalizeProject(pRaw);
+			if (slug === "") {
+				sendJson(res, 400, { ok: false, error: "p must match [A-Za-z0-9._-]" });
+				return null;
+			}
+			return storedProjectKey(slug);
+		}
 		const key = projectKeyOfWrite(q.get("sid"));
 		if (key !== null) return storedProjectKey(key);
 		// Same 400 as a board write: an unknown sid must not land on OUR cwd's board.

@@ -49,20 +49,23 @@ async function check(name, fn) {
 
 // --- 1. 集計の純関数 ---------------------------------------------------------
 await check("projectRollup: カードだけが真実で進捗を導出する", () => {
+	// ボード（scope project + sid）がプロジェクトの実体。card.project はカード単位のタグで、
+	// それを集計に使うとボードの無い幽霊プロジェクトが並ぶ。
 	const cards = [
-		{ scope: "session", sid: "s1", card: { id: 1, text: "done 済み", col: "done", project: "kb-core", due: "2026-01-01", estimate: 3 } },
-		{ scope: "session", sid: "s1", card: { id: 2, text: "作業中", col: "doing", project: "kb-core", due: "2999-01-01", estimate: 2, blocked: "レビュー待ち" } },
-		{ scope: "project", sid: "pi-kanban-board", card: { id: 3, text: "未宣言", col: "todo", project: "ghost" } },
-		{ scope: "project", sid: "pi-kanban-board", card: { id: 4, text: "プロジェクト無し", col: "todo" } },
-		// 空文字の project は「プロジェクト無し」と同じ。"" の幽霊プロジェクトを作らない。
-		{ scope: "project", sid: "pi-kanban-board", card: { id: 5, text: "空 slug", col: "todo", project: "" } },
+		{ scope: "project", sid: "kb-core", card: { id: 1, text: "done 済み", col: "done", due: "2026-01-01", estimate: 3 } },
+		{ scope: "project", sid: "kb-core", card: { id: 2, text: "作業中", col: "doing", due: "2999-01-01", estimate: 2, blocked: "レビュー待ち" } },
+		{ scope: "project", sid: "ghost", card: { id: 3, text: "未宣言のボード", col: "todo" } },
+		// タグだけのカードは集計に入らない（"" と同じで、ボードの無いプロジェクトを作らない）。
+		{ scope: "session", sid: "s1", card: { id: 4, text: "タグだけ", col: "todo", project: "tag-only" } },
+		// GLOBAL の残骸（scope global）もボードではない。
+		{ scope: "global", sid: "", card: { id: 5, text: "GLOBAL の残骸", col: "todo", project: "tag-only" } },
 	];
 	const decisions = [
 		{ id: 1, slug: "kb-core", at: 1, text: "SQLite を採用" },
 		{ id: 2, slug: "", at: 2, text: "横断の決定" },
 	];
 	const out = mod.projectRollup([{ slug: "kb-core", name: "kanban core" }], decisions, cards, "2026-06-01");
-	assert.deepEqual(out.map((p) => p.slug), ["ghost", "kb-core"], "宣言済みもカードだけの slug も並ぶ");
+	assert.deepEqual(out.map((p) => p.slug), ["ghost", "kb-core"], "宣言済みもボードだけの slug も並ぶ");
 	const core = out[1];
 	assert.equal(core.name, "kanban core");
 	assert.equal(core.declared, true);
@@ -84,8 +87,8 @@ await check("projectRollup: カードだけが真実で進捗を導出する", (
 
 await check("projectRollup: 期限切れは done を数えない", () => {
 	const cards = [
-		{ scope: "session", sid: "s", card: { id: 1, text: "遅れ", col: "todo", project: "p", due: "2026-01-01" } },
-		{ scope: "session", sid: "s", card: { id: 2, text: "片付いた", col: "done", project: "p", due: "2026-01-01" } },
+		{ scope: "project", sid: "p", card: { id: 1, text: "遅れ", col: "todo", due: "2026-01-01" } },
+		{ scope: "project", sid: "p", card: { id: 2, text: "片付いた", col: "done", due: "2026-01-01" } },
 	];
 	const out = mod.projectRollup([], [], cards, "2026-06-01");
 	assert.equal(out[0].overdue, 1);
@@ -133,14 +136,15 @@ const get = async (path) => {
 };
 const projectOf = (body, slug) => body.projects.find((p) => p.slug === slug);
 
-await check("/api/projects: カードからプロジェクトを集計する", async () => {
-	const a = await add(`text=${q("集計される作業")}&col=todo&project=kb-core&due=2999-01-01&estimate=3`);
+await check("/api/projects: ボードのカードからプロジェクトを集計する", async () => {
+	// ?p= で書いた先のボードがプロジェクトになる（cwd のボードではなく）。
+	const a = await add(`text=${q("集計される作業")}&col=todo&p=kb-core&due=2999-01-01&estimate=3`);
 	assert.equal(a.status, 200);
 	const { status, body } = await get("/api/projects");
 	assert.equal(status, 200);
 	assert.equal(body.ok, true);
 	const p = projectOf(body, "kb-core");
-	assert.ok(p, "カードが名乗った slug が一覧に出る");
+	assert.ok(p, "ボード名が一覧に出る");
 	assert.equal(p.declared, false);
 	assert.equal(p.total, 1);
 	assert.equal(p.points.total, 3);
@@ -224,20 +228,20 @@ await check("/api/decision: 消せる。不正な id は 400", async () => {
 	assert.equal((await get("/api/decision?action=delete")).status, 400, "id 無しは 400");
 });
 
-await check("/api/projects: project ボードのカードも集計する", async () => {
-	const r = await tf(`${BASE}/api/add?scope=project&text=${q("全体の作業")}&project=kb-core`);
+await check("/api/projects: 別ボードのカードも集計する（cwd のボードに混ぜない）", async () => {
+	const r = await tf(`${BASE}/api/add?scope=project&p=kb-core&text=${q("全体の作業")}`);
 	assert.equal(r.status, 200);
-	const board = (await get("/api/kanban?scope=project")).body.project.cards;
-	assert.ok(board.some((c) => c.text === "全体の作業"), "project ボードに載っていない");
+	const board = (await get("/api/kanban?p=kb-core")).body.project.cards;
+	assert.ok(board.some((c) => c.text === "全体の作業"), "ボードに載っていない");
 	const p = projectOf((await get("/api/projects")).body, "kb-core");
 	assert.equal(p.total, 2);
 	assert.equal(p.counts.todo, 2);
 });
 
 await check("/api/projects: 完了させると進捗が動く", async () => {
-	const body = (await get("/api/kanban?scope=project")).body.project;
-	const moved = body.cards.find((c) => c.col === "todo" && c.project === "kb-core");
-	const r = await tf(`${BASE}/api/move?scope=project&id=${moved.id}&col=done`);
+	const body = (await get("/api/kanban?p=kb-core")).body.project;
+	const moved = body.cards.find((c) => c.col === "todo");
+	const r = await tf(`${BASE}/api/move?scope=project&p=kb-core&id=${moved.id}&col=done`);
 	assert.equal(r.status, 200);
 	assert.equal((await get("/api/projects")).status, 200);
 	const p = projectOf((await get("/api/projects")).body, "kb-core");
@@ -246,14 +250,16 @@ await check("/api/projects: 完了させると進捗が動く", async () => {
 });
 
 // #25: 供給が自 cwd の 1 枚だけだと、他リポのボードのカードが黙って欠ける（件数だけ 0 に見える）。
+// ボード基準になったので、他リポのボードはそのディレクトリ名で一覧に出る（タグは見ない）。
 await check("/api/projects: 他リポのボードのカードも数える（自 cwd だけ数えない）", async () => {
 	seedBoard(HOME_DIR + "/.pi/kanban/projects/other-repo.json", {
 		cards: [{ id: 1, text: "他リポの作業", col: "done", project: "other-proj", estimate: 2 }],
 		nextId: 2,
 	});
 	const body = (await get("/api/projects")).body;
-	const p = projectOf(body, "other-proj");
-	assert.ok(p, "他リポのボードのプロジェクトが一覧に出ない");
+	const p = projectOf(body, "other-repo");
+	assert.ok(p, "他リポのボードが一覧に出ない");
+	assert.equal(projectOf(body, "other-proj"), undefined, "カードのタグがプロジェクトを作った");
 	assert.equal(p.total, 1);
 	assert.equal(p.done, 1);
 	assert.equal(p.points.done, 2, "見積もりが他ボードから来ていない");
