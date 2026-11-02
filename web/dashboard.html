@@ -18,8 +18,8 @@
 </script>
 <style>
   /* dark tokens = the existing palette, untouched; light tokens override the same names */
-  :root{color-scheme:dark;--bg:#18181b;--panel:#1f1f23;--card:#27272a;--border:#27272a;--border-strong:#3f3f46;--text:#e4e4e7;--muted:#a1a1aa;--accent:#a78bfa;--accent-hover:#c4b5fd;--accent-soft:#241f38;--accent-soft-2:#1e1b2e;--ok:#4ade80;--bad-dot:#f87171;--warn:#fbbf24;--bad:#f87171;--danger-bg:#7f1d1d;--danger-fg:#fee2e2;--danger-soft-fg:#fecaca;--danger-border:#7f1d1d;--empty-big:#52525b}
-  :root[data-theme="light"]{color-scheme:light;--bg:#fafafa;--panel:#ffffff;--card:#ececf1;--border:#e4e4e7;--border-strong:#d4d4d8;--text:#18181b;--muted:#62626b;--accent:#6d28d9;--accent-hover:#7c3aed;--accent-soft:#ede9fa;--accent-soft-2:#e4e0f7;--ok:#15803d;--bad-dot:#dc2626;--warn:#a16207;--bad:#dc2626;--danger-bg:#b91c1c;--danger-fg:#fef2f2;--danger-soft-fg:#b91c1c;--danger-border:#dc2626;--empty-big:#a1a1aa}
+  :root{color-scheme:dark;--bg:#18181b;--panel:#1f1f23;--card:#27272a;--border:#27272a;--border-strong:#3f3f46;--text:#e4e4e7;--muted:#a1a1aa;--accent:#a78bfa;--accent-hover:#c4b5fd;--accent-soft:#241f38;--accent-soft-2:#1e1b2e;--ok:#4ade80;--bad-dot:#f87171;--warn:#fbbf24;--bad:#f87171;--danger-bg:#7f1d1d;--danger-fg:#fee2e2;--danger-soft-fg:#fecaca;--danger-border:#7f1d1d;--empty-big:#52525b;--shadow-card:0 1px 2px rgba(0,0,0,.35);--shadow-pop:0 6px 18px rgba(0,0,0,.4)}
+  :root[data-theme="light"]{color-scheme:light;--bg:#fafafa;--panel:#ffffff;--card:#ececf1;--border:#e4e4e7;--border-strong:#d4d4d8;--text:#18181b;--muted:#62626b;--accent:#6d28d9;--accent-hover:#7c3aed;--accent-soft:#ede9fa;--accent-soft-2:#e4e0f7;--ok:#15803d;--bad-dot:#dc2626;--warn:#a16207;--bad:#dc2626;--danger-bg:#b91c1c;--danger-fg:#fef2f2;--danger-soft-fg:#b91c1c;--danger-border:#dc2626;--empty-big:#a1a1aa;--shadow-card:0 1px 2px rgba(24,24,27,.07);--shadow-pop:0 6px 16px rgba(24,24,27,.13)}
   *{box-sizing:border-box}
   body{margin:0;padding:14px;background:var(--bg);color:var(--text);font:13px/1.5 system-ui,-apple-system,sans-serif}
   a{color:var(--accent)}
@@ -30,7 +30,7 @@
   h2{margin:0 0 8px;font-size:11px;letter-spacing:.08em;color:var(--muted);font-weight:600}
   .hd{font-size:11px;letter-spacing:.08em;color:var(--accent);margin:18px 0 8px}
   /* #19: 次にやる 1 枚。着手ボタンは付けない（既存のドラッグ / Enter で足りる） */
-  .next{background:var(--panel);border-left:3px solid var(--accent);padding:10px 12px;border-radius:8px;margin-bottom:8px}
+  .next{background:linear-gradient(130deg,var(--accent-soft),var(--accent-soft-2) 70%,transparent);border-left:4px solid var(--accent);padding:10px 12px;border-radius:10px;margin-bottom:8px}
   .next-lbl{font-size:11px;letter-spacing:.08em;color:var(--accent)}
   .next-id{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
   .next-t{font-size:13px;color:var(--text);overflow-wrap:anywhere}
@@ -57,7 +57,10 @@
   /* stats */
   /* 指標は7個→11個に増えたので、幅に応じて折り返す（メディアクエリ側が下で上書きする） */
   .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(88px,1fr));gap:8px;margin-bottom:6px}
-  .stat{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:10px 12px}
+  .stat{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:10px 12px;transition:transform .12s ease,box-shadow .12s ease}
+  @media (prefers-reduced-motion: no-preference){
+    .stat:hover{transform:translateY(-1px);box-shadow:var(--shadow-pop)}
+  }
   .stat .n{display:block;font-size:24px;font-weight:600;line-height:1.2;color:var(--text);font-variant-numeric:tabular-nums}
   .stat .l{display:block;font-size:10px;letter-spacing:.1em;color:var(--muted);text-transform:uppercase}
   .stat.hot .n{color:var(--accent)}
@@ -67,15 +70,18 @@
   /* boards */
   /* #38-13: 列の高さは揃える（グリッド既定の stretch のまま）。空の列を内容の高さに
      縮めるとドラッグのドロップ先が細くなり、盤面も階段状に崩れる。揃っているのが普通。 */
-  .cols{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
-  .col{background:var(--panel);border-radius:8px;padding:8px;min-height:52px}
+  .cols{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
+  .col{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:9px;min-height:52px}
   .col h3{margin:0 0 6px;font-size:11px;letter-spacing:.08em;color:var(--muted);font-weight:600}
   .col h3 .c{color:var(--accent);margin-left:4px}
   .col.doingcol h3{color:var(--accent)}
   /* #38-9: DOING 列の強調（左ボーダー＋淡い背景で「今これ」と分かる） */
   .col.doingcol{border-left:3px solid var(--accent);background:var(--accent-soft-2)}
-  .card{background:var(--card);border-radius:6px;padding:6px 8px;margin-bottom:6px;font-size:12px;display:flex;gap:4px;align-items:baseline;flex-wrap:wrap}
-  .card .id{color:var(--accent);flex:none}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:7px 9px;margin-bottom:6px;font-size:12px;display:flex;gap:4px;align-items:baseline;flex-wrap:wrap;box-shadow:var(--shadow-card);transition:transform .12s ease,box-shadow .12s ease,border-color .12s ease}
+  @media (prefers-reduced-motion: no-preference){
+    .card:hover{transform:translateY(-1px);box-shadow:var(--shadow-pop);border-color:var(--border-strong)}
+  }
+  .card .id{color:var(--accent);flex:none;font-weight:700}
   .card .proj{flex:none;font-size:10px;color:var(--muted);border:1px solid var(--border-strong);border-radius:999px;padding:0 5px}
   /* #20: 会話リンクは ID の小片。pi-web の origin は分からないのでリンクにはしない。 */
   /* #22: ラベルも同じ小片（宣言を共有して 1 行で済ませる）。 */
@@ -117,7 +123,8 @@
   /* ▲▼ は組で一行に保つ（折返しで片方だけ落ちない） */
   .card .ops .pair{display:flex;gap:3px;flex:none}
   button.mini{font:inherit;font-size:10px;line-height:1.5;color:var(--muted);background:var(--panel);border:1px solid var(--border-strong);border-radius:4px;padding:0 5px;cursor:pointer}
-  button.mini:hover{color:var(--accent);border-color:var(--accent)}
+  button.mini{transition:color .12s ease,background-color .12s ease,border-color .12s ease}
+  button.mini:hover{color:var(--accent);border-color:var(--accent);background:var(--accent-soft)}
   button.mini[disabled]{opacity:.45;cursor:default}
   /* #45 列末尾の追加 UI とカード削除（色は既存トークンのみ） */
   /* 読み取り専用は aria-disabled: ネイティブ disabled はクリックを飲んで理由を出せない */
@@ -163,7 +170,7 @@
   .sess .caret{flex:none;font-size:13px;line-height:1;color:var(--text);width:1em;text-align:center;margin-right:4px}
   /* #62: GLOBAL のヘッダも同じ caret を使う（.sess の外にあるので別セレクタ） */
   .sess-hd>.caret{flex:none;font-size:13px;line-height:1;color:var(--text);width:1em;text-align:center;margin-right:4px}
-  .sess-empty{border:1px dashed var(--border-strong);border-radius:6px;padding:10px;text-align:center;color:var(--muted);font-size:12px}
+  .sess-empty{border:1px dashed var(--border-strong);border-radius:10px;padding:14px 10px;text-align:center;color:var(--muted);background:color-mix(in srgb,var(--panel) 60%,transparent);font-size:12px}
   /* #48: カード検索（列の絞り込み。色は既存トークンのみ） */
   .q{width:100%;max-width:320px;font:inherit;font-size:12px;background:var(--panel);color:var(--text);border:1px solid var(--border-strong);border-radius:6px;padding:3px 6px;margin-bottom:8px}
   .q:focus{border-color:var(--accent)}
@@ -240,6 +247,11 @@
   }
   @media (max-width:479px){ .stats{grid-template-columns:repeat(2,1fr)} }
   @media (prefers-reduced-motion: reduce){ *{transition:none!important;animation:none!important} }
+  *{scrollbar-width:thin;scrollbar-color:var(--border-strong) transparent}
+  ::-webkit-scrollbar{width:10px;height:10px}
+  ::-webkit-scrollbar-thumb{background:var(--border-strong);border-radius:999px;border:3px solid transparent;background-clip:content-box}
+  ::-webkit-scrollbar-thumb:hover{background:var(--muted);background-clip:content-box}
+  ::-webkit-scrollbar-track{background:transparent}
 </style>
 </head>
 <body>
