@@ -251,7 +251,7 @@ await check("ダッシュボード: #proj セレクト / .proj バッジ / projP
 	assert.ok(!html.includes("\u0000"), "生成 HTML に実 NUL が入っている（テンプレートのエスケープ漏れ）");
 	assert.match(
 		html,
-		/function uiSig\(\)\{ return JSON\.stringify\(\[gOpen, collapsed, query, projPick\]\)/,
+		/function uiSig\(\)\{ return JSON\.stringify\(\[collapsed, query, projPick\]\)/,
 		"uiSig に projPick が入っていない",
 	);
 });

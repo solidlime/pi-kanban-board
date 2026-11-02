@@ -288,13 +288,13 @@ await check("#62 ダッシュボードが既存のキー kb-collapse を使う",
 	assert.ok(dashboardHtml.includes('localStorage.getItem("kb-theme")'), "kb-theme が壊れている");
 });
 
-await check("#62 GLOBAL の ckey は active sid を含まない", () => {
+await check("#62 ckey は scope.sid:col", () => {
 	assert.ok(
-		dashboardHtml.includes('var ckey = ctx.scope === "global" ? "global:" + key : ctx.scope + "." + ctx.sid + ":" + key;'),
-		"dashboard の GLOBAL ckey に sid が混ざっている",
+		dashboardHtml.includes('var ckey = ctx.scope + "." + ctx.sid + ":" + key;'),
+		"dashboard の列キーが scope.sid:col になっていない",
 	);
-	// セッション側の名前空間は従来どおり
-	assert.ok(dashboardHtml.includes('ctx.scope + "." + ctx.sid + ":" + key'), "セッション側のキー形式が変わっている");
+	// scope で分岐しない（GLOBAL 廃止で面は 1 つになった）
+	assert.ok(!dashboardHtml.includes('ctx.scope === "global"'), "GLOBAL 用の分岐が残っている");
 });
 
 // ===========================================================================
@@ -322,7 +322,8 @@ await check("#62 GLOBAL の ckey は active sid を含まない", () => {
 		assert.equal(saved.dash.cols["project.:todo"], true, `project.:todo が保存されていない: ${JSON.stringify(saved.dash.cols)}`);
 		// #17: session 行の開閉状態（sess）はもう書かない。
 		assert.equal(saved.dash.sess, undefined, "廃止した sess が書かれている");
-		assert.equal(saved.dash.g, true, "GLOBAL の既定（開）が壊れている");
+		// #41: GLOBAL 廃止に伴い g はもう書かない（古い保存は g を無視して他キーだけ読む）。
+		assert.equal(saved.dash.g, undefined, "persistCore が廃止した g を書いている");
 	});
 
 	await check("#62(a) localStorage を使えない環境でも同じ操作が落ちない（getItem 例外）", async () => {

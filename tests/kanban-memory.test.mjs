@@ -398,8 +398,8 @@ const runTimers = (timers) => {
 		// 既存の kb-collapse もキー名・スキーマは不変。ただし DONE はリロードで閉じるので
 		// open には載せない（載せると次回の起動で開いたまま復元されてしまう）。
 		const collapse = storage.read("kb-collapse");
-		// #17: sessOpen（session 行の開閉）は廃止。残るのは cols / g / open。
-		assert.deepEqual(Object.keys(collapse.dash).sort(), ["cols", "g", "open"], "スキーマが変わった");
+		// #17: sessOpen（session 行の開閉）は廃止。残るのは cols / open（#41 で g も廃止）。
+		assert.deepEqual(Object.keys(collapse.dash).sort(), ["cols", "open"], "スキーマが変わった");
 		assert.equal(collapse.dash.open["project.:todo#1"], true, "TODO が kb-collapse から落ちた");
 		assert.ok(!collapse.dash.open["project.:done#3"], "DONE が kb-collapse に載っている");
 	});

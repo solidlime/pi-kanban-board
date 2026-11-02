@@ -124,23 +124,32 @@ check("タブは button で、ペインを hidden で切り替える（遷移し
 // 設定ペインだけを切り出す（この後ろに続くのは dashboard のポーリング JS）。
 const SETTINGS_PANE = html.slice(html.indexOf('id="pane-settings"'), html.indexOf('var API = "/api/dashboard"'));
 
-check("#11/#12: 設定ペインはループ / 保存データ / 配信サーバー / 自己診断の 4 セクションを持つ", () => {
+check("#11/#12: 設定ペインはループ / 保存データ / 自己診断の 3 セクションを持つ", () => {
 	const pane = SETTINGS_PANE;
-	for (const id of ["settings-loops", "settings-db", "serve", "settings-selftest"]) {
+	for (const id of ["settings-loops", "settings-db", "settings-selftest"]) {
 		assert.ok(pane.includes(`id="${id}"`), `#${id} が設定ペインに無い`);
 	}
 	assert.ok(
 		pane.indexOf('id="settings-loops"') < pane.indexOf('id="settings-db"') &&
-			pane.indexOf('id="settings-db"') < pane.indexOf('id="serve"') &&
-			pane.indexOf('id="serve"') < pane.indexOf('id="settings-selftest"'),
-		"セクションの順がループ → 保存データ → 配信サーバー → 自己診断でない",
+			pane.indexOf('id="settings-db"') < pane.indexOf('id="settings-selftest"'),
+		"セクションの順がループ → 保存データ → 自己診断でない",
 	);
-	assert.ok(pane.includes('id="h-serve"'), "配信サーバーの見出しが無い");
+	// #41: 配信サーバーはボードの右カラムへ移った（設定ペインには無い）。
+	assert.ok(!pane.includes('id="serve"'), "#serve が設定ペインに残っている");
 });
 
-check("#12: 配信サーバーの入れ物 #serve は設定ペインの中だけにある", () => {
+check("#41: 配信サーバーの入れ物 #serve はボードの右カラムにある", () => {
 	assert.equal((html.match(/id="serve"/g) || []).length, 1, "id=\"serve\" が 1 つでない");
-	assert.ok(SETTINGS_PANE.includes('id="serve"'), "#serve が設定ペインの外にある");
+	const pane = html.slice(html.indexOf('id="pane-board"'), html.indexOf('id="pane-projects"'));
+	assert.ok(pane.includes('class="bd-side"'), "ボードペインに右カラムが無い");
+	const side = pane.slice(pane.indexOf('class="bd-side"'));
+	assert.ok(side.includes('id="serve"'), "#serve が右カラムの外にある");
+	assert.ok(
+		side.indexOf('id="nextsec"') < side.indexOf('id="statsec"') &&
+			side.indexOf('id="statsec"') < side.indexOf('id="serve"'),
+		"右カラムの順が 次にやる → STATS → 配信サーバーでない",
+	);
+	assert.ok(side.includes('id="h-serve"'), "配信サーバーの見出しが無い");
 	// #pane-serve の残骸（見出し・入れ物）がどこにも無いこと。
 	assert.ok(!html.includes("pane-serve"), "pane-serve が残っている");
 });
@@ -152,11 +161,13 @@ check("ボードペインは project 看板だけを持つ（GLOBAL 欄は削除
 	assert.ok(!pane.includes('id="sessions"'), "pane-board に session 行が残っている");
 });
 
-check("#36: STATS はボードペインの上部（project/GLOBAL より上）に移動している", () => {
+check("#41: STATS はボードの右カラム、看板は左の .bd-main にある", () => {
 	const pane = html.slice(html.indexOf('id="pane-board"'), html.indexOf('id="pane-projects"'));
 	assert.ok(pane.includes('id="statsec"'), "pane-board に statsec が無い");
-	assert.ok(pane.indexOf('id="statsec"') < pane.indexOf('id="project"'), "STATS が project より上に無い");
 	assert.ok(pane.includes('id="stats"'), "stats 領域が無い");
+	const main = pane.slice(pane.indexOf('class="bd-main"'), pane.indexOf('class="bd-side"'));
+	assert.ok(main.includes('id="project"'), "#project が .bd-main の外にある");
+	assert.ok(!main.includes('id="statsec"'), "STATS が .bd-main 側に残っている");
 });
 
 check("既存要素は消えていない（stats/serve/conn/banner/theme）", () => {

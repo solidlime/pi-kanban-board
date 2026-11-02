@@ -162,14 +162,11 @@ test("ヘッダの期限超過件数は未完了だけを数える（赤い行�
 const tile = (d, label) =>
 	all(d.byId.stats, (e) => new RegExp("^" + label + " ").test(e.getAttribute("aria-label") || ""))[0];
 
-test("着手可能タイルは d.project を足さない（global は既に自ボードを含む）", async () => {
+test("着手可能は見えているボードのカードだけで数える", async () => {
 	const one = { id: 1, text: "一枚", col: "todo", sid: "own" };
-	// global は全 project ボードの合成。自ボードのカードは既にそちらに入っているので、
-	// d.project.cards を足すと同じカードを二重に数える。
 	const d = await boot({
 		...DASH,
 		stats: { sessions: 0, active: 0, todo: 1, doing: 0, done: 0, serve: 0, media: 0 },
-		global: { counts: { todo: 1, doing: 0, done: 0 }, cards: [one] },
 		project: { id: "own", counts: { todo: 1, doing: 0, done: 0 }, cards: [{ ...one }] },
 	});
 	assert.equal(tile(d, "着手可能").getAttribute("aria-label"), "着手可能 1", "同じカードを 2 枚と数えている");
@@ -189,8 +186,8 @@ test("ボードのカードは由来ボードを [slug] で出す", async () => 
 	)}`);
 });
 
-// --- #16: GLOBAL の依存解決は sid まで込みで引く --------------------------------
-test("GLOBAL の blocks は同じ sid のカードで解く（別ボードの同じ id を引かない）", async () => {
+// --- #16: 依存は sid まで込みで引く ------------------------------------------
+test("blocks は同じ sid のカードで解く（別ボードの同じ id を引かない）", async () => {
 	// ボードごとに id は 1 から。b:1 は todo のまま、a:1 は done。
 	// id だけで引くと後勝ちで a:1 (done) を拾い、b:2 が着手可能に見えてしまう。
 	const cards = [
@@ -201,7 +198,36 @@ test("GLOBAL の blocks は同じ sid のカードで解く（別ボードの同
 	const d = await boot({
 		...DASH,
 		stats: { sessions: 0, active: 0, todo: 2, doing: 0, done: 1, serve: 0, media: 0 },
-		global: { counts: { todo: 2, doing: 0, done: 1 }, cards },
+		project: { id: "b", counts: { todo: 2, doing: 0, done: 1 }, cards },
 	});
 	assert.equal(tile(d, "ブロック中").getAttribute("aria-label"), "ブロック中 1", "別ボードの id=1 で依存を解いている");
+});
+
+// --- #41: 期限接近は warn の境界（今日〜3 日後）を踏む ---------------------------
+test("期限接近は 3 日後を含み、4 日後を含まない", async () => {
+	// DASH の SOON = 3 日後（doing）/ FAR = 4 日後（todo）/ TODO = 2 日超過
+	const d = await boot();
+	assert.equal(tile(d, "期限接近").getAttribute("aria-label"), "期限接近 1", "warn の境界がずれている");
+});
+
+// --- #41: ブロック中の理由をカードに出す ---------------------------------------
+test("ブロック中のカードに .why が出て、相手の #id と col を含む", async () => {
+	const base = { id: 1, text: "土台", col: "todo" };
+	const dep = { id: 2, text: "待つ側", col: "todo", blocks: [1] };
+	const d = await boot({
+		...DASH,
+		project: { id: "own", counts: { todo: 2, doing: 0, done: 0 }, cards: [base, dep] },
+	});
+	const why = all(d.byId.project, (e) => e.className === "why");
+	assert.equal(why.length, 1, `.why が 1 本でない: ${why.length}`);
+	const txt = why[0].children.map((c) => c.textContent).join("");
+	assert.ok(txt.includes("#1"), `相手の #id が無い: ${txt}`);
+	assert.ok(txt.includes("(todo)"), `相手の列が無い: ${txt}`);
+	const badges = all(d.byId.project, (e) => /^dep /.test(e.className));
+	assert.equal(badges.length, 2, ".dep バッジが 2 枚でない");
+	assert.ok(
+		badges.some((e) => e.className === "dep blocked" && e.textContent === "ブロック中"),
+		"ブロック中のバッジが無い",
+	);
+	assert.ok(badges.some((e) => e.className === "dep ok" && e.textContent === "着手可能"), "着手可能のバッジが無い");
 });

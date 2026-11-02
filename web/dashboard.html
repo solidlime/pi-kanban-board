@@ -25,7 +25,7 @@
   a{color:var(--accent)}
   a:hover{color:var(--accent-hover)}
   :focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
-  .wrap{max-width:1200px;margin:0 auto}
+  .wrap{max-width:1320px;margin:0 auto}
   h1{margin:0 0 12px;font-size:16px;letter-spacing:.08em;color:var(--accent);display:flex;align-items:center;gap:10px;flex-wrap:wrap}
   h2{margin:0 0 8px;font-size:11px;letter-spacing:.08em;color:var(--muted);font-weight:600}
   .hd{font-size:11px;letter-spacing:.08em;color:var(--accent);margin:18px 0 8px}
@@ -113,7 +113,7 @@
   /* #30 card ops: schedule / priority / blocked, existing tokens only */
   .card .prio{flex:none;font-size:10px;color:var(--accent);border:1px solid var(--border-strong);border-radius:999px;padding:0 5px}
   .card .blocked{flex:none;font-size:10px;color:var(--danger-soft-fg);border:1px solid var(--danger-border);border-radius:999px;padding:0 5px}
-  .card .sched{flex:none;font-size:10px;color:var(--muted);font-variant-numeric:tabular-nums}
+  .card .sched{flex:none;font-size:10px;color:var(--muted);font-variant-numeric:tabular-nums;border:1px solid currentColor;border-radius:999px;padding:0 6px}
   /* 期限の小片: 3日以内 = --warn / 超過 = --bad。超過は文字も「期限切れ」にするが、
      完了済みは色も語も付けない（dueCls）—— 期限超過の集計も完了を数えないので。 */
   .card .sched.warn{color:var(--warn)}
@@ -154,21 +154,37 @@
     .ctl input[type=number]{width:44px}
   }
   .more{font-size:11px;color:var(--muted);padding:2px 4px}
-  /* board rows（#17: .sess-hd / .sess-cwd は project と GLOBAL の行が流用している） */
+  /* 案A: 看板 3 列 + 右サマリ（320px）。狭い幅では 1 カラムに落す */
+  .bd{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:14px;align-items:start}
+  .bd-main{min-width:0}
+  .bd-side{display:flex;flex-direction:column;gap:10px;min-width:0;position:sticky;top:14px}
+  .side-sec{min-width:0}
+  .sec-note{margin:0 0 8px;font-size:11px;line-height:1.45;color:var(--muted)}
+  .bd-side .stats{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .bd-side .stats .stat .n{font-size:20px}
+  .side-serve{display:flex;flex-direction:column;gap:8px}
+  .side-serve .hd{font-weight:600;font-size:12px;color:var(--text);margin:0}
+  /* 依存の状態バッジと、ブロック中の理由行（相手の #id と列） */
+  .card .dep{flex:none;font-size:10px;border:1px solid currentColor;border-radius:999px;padding:0 6px;color:var(--muted)}
+  .card .dep.ok{color:var(--ok)}
+  .card .dep.blocked{color:var(--warn)}
+  .card .why{flex-basis:100%;font-size:10px;color:var(--muted);overflow-wrap:anywhere}
+  .why .wbad{color:var(--warn)}
+  /* board rows（#17: .sess-hd / .sess-cwd は project の行が流用している） */
   .sess-hd{display:flex;gap:6px 14px;align-items:baseline;flex-wrap:wrap;margin-bottom:8px}
   .sess-t{font-size:13px;font-weight:600;overflow-wrap:anywhere;display:inline-flex;align-items:center;gap:6px}
   .sess-cwd{font-size:11px;color:var(--muted);overflow-wrap:anywhere}
   /* #48: 看板はヘッダのクリックで畳める（既定は全開） */
   /* #49: 10px/var(--muted) の ▾ は見えなかった。本文色 + 13px + hover で「畳める」ことを示す。
      caret は文字のまま差し替える（回転より読み上げ・コピーに強い）。
-     GLOBAL のヘッダは .sess-hd をレイアウト流用しているだけなので role で限定する。*/
+     .sess-hd は看板の行とレイアウトを共有しているだけなので role で限定する。*/
   .sess-hd[role="button"]{cursor:pointer;border-radius:6px;margin:-4px -6px 8px;padding:4px 6px;user-select:none;-webkit-user-select:none}
   .sess-hd[role="button"]:hover{background:var(--accent-soft)}
   /* #17 で .sess の箱は消えたが、この 1 行は caret の見た目の仕様として
      tests/kanban-dashboard-collapse-search.test.mjs が固定している（tests/ は今は触らない）。
      実際に当たるのは下の .sess-hd>.caret。*/
   .sess .caret{flex:none;font-size:13px;line-height:1;color:var(--text);width:1em;text-align:center;margin-right:4px}
-  /* #62: GLOBAL のヘッダも同じ caret を使う（.sess の外にあるので別セレクタ） */
+  /* 看板のヘッダは .sess の外にあるので別セレクタで同じ caret を使う */
   .sess-hd>.caret{flex:none;font-size:13px;line-height:1;color:var(--text);width:1em;text-align:center;margin-right:4px}
   .sess-empty{border:1px dashed var(--border-strong);border-radius:10px;padding:14px 10px;text-align:center;color:var(--muted);background:color-mix(in srgb,var(--panel) 60%,transparent);font-size:12px}
   /* #48: カード検索（列の絞り込み。色は既存トークンのみ） */
@@ -240,6 +256,8 @@
   @media (max-width:899px){
     .stats{grid-template-columns:repeat(4,1fr)}
     .cols{grid-template-columns:1fr}
+    .bd{grid-template-columns:1fr}
+    .bd-side{position:static}
   }
   @media (max-width:640px){
     .tabs{flex-direction:row;width:100%}
@@ -269,35 +287,52 @@
     </nav>
     <div class="panes">
       <div class="pane" id="pane-board" role="tabpanel" aria-labelledby="tab-board">
-        <!-- #19: 次にやる 1 枚（project ボードだけ）。空でもセクションは消さない（レイアウトが跳ねる） -->
-        <section id="nextsec"></section>
-        <!-- #36: エージェントタブ廃止。STATS はボードの上に置く。全 0 では畳む -->
-        <section id="statsec" aria-labelledby="h-stats">
-          <h2 id="h-stats">STATS</h2>
-          <div class="stats" id="stats" aria-label="統計サマリ"></div>
-        </section>
-        <!-- 1-4: 絞り込みはクライアント側だけ（API は変えない）。状態は cardFilter（モジュールスコープ） -->
-        <div class="ctl" id="filters" role="group" aria-label="カードの絞り込み">
-          <span>絞り込み</span>
-          <button class="sw on" type="button" id="f-all" aria-pressed="true">全部</button>
-          <button class="sw" type="button" id="f-ok" aria-pressed="false">着手可能</button>
-          <button class="sw" type="button" id="f-overdue" aria-pressed="false">期限超過</button>
-          <button class="sw" type="button" id="f-blocked" aria-pressed="false">ブロック中</button>
-          <!-- #17: session 行が消えたので、検索とプロジェクト絞り込みは絞り込みバーへ移した -->
-          <input id="q" class="q" type="search" placeholder="検索: 本文・#番号・project・sid・session・commit・blocked・label（/ でフォーカス, Esc でクリア）" autocomplete="off">
-          <select id="proj" class="q" aria-label="プロジェクトで絞り込み"></select>
-          <!-- #22: ラベル絞り込み。cardFilter（単一選択のボタン群）とは独立した直交軸。 -->
-          <select id="lab" class="q" aria-label="ラベルで絞り込み">
-            <option value="">ラベル: 全部</option>
-            <option value="bug">bug</option>
-            <option value="feature">feature</option>
-            <option value="chore">chore</option>
-            <option value="調査">調査</option>
-          </select>
+        <!-- 案A: 看板を左に、サマリ（次にやる / STATS / 配信）を右の sticky カラムに置く -->
+        <div class="bd">
+          <div class="bd-main">
+            <!-- 1-4: 絞り込みはクライアント側だけ（API は変えない）。状態は cardFilter（モジュールスコープ） -->
+            <div class="ctl" id="filters" role="group" aria-label="カードの絞り込み">
+              <span>絞り込み</span>
+              <button class="sw on" type="button" id="f-all" aria-pressed="true">全部</button>
+              <button class="sw" type="button" id="f-ok" aria-pressed="false">着手可能</button>
+              <button class="sw" type="button" id="f-overdue" aria-pressed="false">期限超過</button>
+              <button class="sw" type="button" id="f-blocked" aria-pressed="false">ブロック中</button>
+              <!-- #17: session 行が消えたので、検索とプロジェクト絞り込みは絞り込みバーへ移した -->
+              <input id="q" class="q" type="search" placeholder="検索: 本文・#番号・project・sid・session・commit・blocked・label（/ でフォーカス, Esc でクリア）" autocomplete="off">
+              <select id="proj" class="q" aria-label="プロジェクトで絞り込み"></select>
+              <!-- #22: ラベル絞り込み。cardFilter（単一選択のボタン群）とは独立した直交軸。 -->
+              <select id="lab" class="q" aria-label="ラベルで絞り込み">
+                <option value="">ラベル: 全部</option>
+                <option value="bug">bug</option>
+                <option value="feature">feature</option>
+                <option value="chore">chore</option>
+                <option value="調査">調査</option>
+              </select>
+            </div>
+            <!-- phase0: project が既定のボード。作業ディレクトリ（git ルート）単位で共有する -->
+            <!-- 見出しは #proj の選択（全部／ボード名）が兼ねる -->
+            <div id="project"></div>
+          </div>
+          <aside class="bd-side" aria-label="ボードのサマリ">
+            <!-- #19: 次にやる 1 枚（project ボードだけ）。空でもセクションは消さない（レイアウトが跳ねる） -->
+            <div class="side-sec">
+              <p class="sec-note">依存が片付いた TODO の先頭 1 枚。ここから着手する。</p>
+              <section id="nextsec"></section>
+            </div>
+            <!-- #36: STATS は広い面を取らない。全 0 では畳む -->
+            <section id="statsec" aria-labelledby="h-stats">
+              <h2 id="h-stats">STATS</h2>
+              <p class="sec-note">このボードの件数。着手可能=依存が全部 DONE / 期限接近=3 日以内 / 期限超過=未完了のみ。</p>
+              <div class="stats" id="stats" aria-label="統計サマリ"></div>
+            </section>
+            <!-- #12: 配信サーバーのタブを廃止してここへ吸収。入れ物の id は #serve のまま（renderServe は無変更）。 -->
+            <section class="side-serve" aria-labelledby="h-serve">
+              <div class="hd" id="h-serve">配信サーバー</div>
+              <p class="sec-note">エージェントが /serve で立てた URL。停止すると 404 になる（ファイルは消えない）。</p>
+              <div id="serve"></div>
+            </section>
+          </aside>
         </div>
-        <!-- phase0: project が既定のボード。作業ディレクトリ（git ルート）単位で共有する -->
-        <!-- 見出しは #proj の選択（全部／ボード名）が兼ねる -->
-        <div id="project"></div>
       </div>
       <div class="pane" id="pane-projects" role="tabpanel" aria-labelledby="tab-projects" hidden>
         <div id="projects"></div>
@@ -315,11 +350,6 @@
         <section aria-labelledby="h-db">
           <div class="hd" id="h-db">保存データ</div>
           <div id="settings-db"></div>
-        </section>
-        <!-- #12: 配信サーバーのタブを廃止してここへ吸収。入れ物の id は #serve のまま（renderServe は無変更）。 -->
-        <section aria-labelledby="h-serve">
-          <div class="hd" id="h-serve">配信サーバー</div>
-          <div id="serve"></div>
         </section>
         <section aria-labelledby="h-selftest">
           <div class="hd" id="h-selftest">自己診断</div>
@@ -345,6 +375,8 @@
   // 選択中のボード。"" = cwd のボード、"\u0000" = (無所属)。
   // "\u0000" は normalizeProject（[A-Za-z0-9._-] のみ許可）を通らないので、本物の slug と同値化できない。
   var projPick = "";
+  // #41: board() から見える「絞り込み前の看板」。検索やフィルタで依存先が画面から消えても判定できる。
+  var depPool = [];
   // 1-4: カードの絞り込み（"" = 全部 / "ok" 着手可能 / "overdue" 期限超過 / "blocked" ブロック中）。
   // 再描画のたびに DOM を作り直すので、選択状態はここに持つ（query / projPick と同じ流儀）。
   var cardFilter = "";
@@ -352,19 +384,17 @@
   // uiSig には載せない: 静的な <select> なので復元が要らず、載せると選択のたびに描画が走る。
   var labFilter = "";
   // #38-7/#38-11: どちらもクライアントだけの状態（サーバには保存しない）。
-  // #62: 列のキーは "project.:col" / "global:col"（#17: project ボードは sid を持たない）。
+  // #62: 列のキーは "project.:col"（#17: project ボードは sid を持たないので空文字が入る）。
   var collapsed = {};    // ckey -> true while a column is folded
   // #72: 60 字超の本文のクリック展開（.open）だけは別の持ち物が要る。.open は表示状態なので
   // isEditing() では守れず、分境界の再描画で必ず畳まれる。sig には載せない（載せると
   // クリックのたびに描画が走ってフォーカスが飛ぶ）— 描画時にここから引くだけ。
   var cardOpen = {};     // ckey + "#" + id -> true while the card's body is expanded
-                         // (GLOBAL: ckey + "#" + sid + "\u0000" + id, see cardKey)
   // #75: その場追加の入力欄（.addin）は再描画で列ごと作り直される。開閉と打ちかけの文字を
   // 列（ckey）単位で持つ。sig には載せない（載せると打鍵のたびに描画が走ってフォーカスが飛ぶ）。
   // 捨てるのは明示的な操作（Escape / Enter 確定 / 空のまま blur）だけ。blur で無条件に
   // 捨てると、再描画前の一瞬のフォーカス移動で打ちかけが消える（#75 の不具合そのもの）。
   var addDraft = {};     // ckey -> 打ちかけの文字列（キーがある = 開いている）
-  var gOpen = true;      // #62: GLOBAL 看板の開閉（既定は開）
   // #62: 開閉だけ localStorage に残す。kb-theme と同じく失敗は握りつぶし、
   // 保存が無いキーは今の既定のまま。ns は dash のみ（#84 で右パネルは消えた）。
   var LS_KEY = "kb-collapse", LS_NS = "dash";
@@ -386,7 +416,7 @@
     try {
       var all = JSON.parse(localStorage.getItem(LS_KEY) || "{}");
       if (!all || typeof all !== "object") all = {};
-      all[LS_NS] = { g: gOpen, cols: collapsed, open: keptOpen() };
+      all[LS_NS] = { cols: collapsed, open: keptOpen() };
       localStorage.setItem(LS_KEY, JSON.stringify(all));
     } catch (e) {}
   }
@@ -417,7 +447,7 @@
     }
   }
   // #65: 描画を止めるのは「ユーザが入力中」のときだけ。再描画で作り直される領域
-  // （#stats/#project/#global/#serve）の中で、値を受け付ける要素にフォーカスがある間は描かない。
+  // （#stats/#project/#serve）の中で、値を受け付ける要素にフォーカスがある間は描かない。
   // フォーカス中の要素が DOM から切り離されると blur が飛ばず、打鍵が無言で消えるため。
   // - #q（検索ボックス）は 4 領域の外にある静的ノードなので対象外。ここを含めると
   //   検索打鍵中に redraw() が early return し、絞り込みが一切描画されず画面が凍る。
@@ -438,23 +468,21 @@
   }
   // sig は「今 DOM に描かれている状態」を記述する（query を落とすと検索語の変化を取り逃す）。
   // cardFilter はクリック時に redraw() が sig を揃えるので、ここには載せない（既存テストの形を保つ）。
-  function uiSig(){ return JSON.stringify([gOpen, collapsed, query, projPick]); }
+  function uiSig(){ return JSON.stringify([collapsed, query, projPick]); }
   function persist(){ persistCore(); }
   // #72: 展開状態の読み直し + 消えたカードの掃除。render() からも呼ぶので例外は握りつぶす。
   // 掃除は列単位（ckey 接頭辞）。掃除が起きたときだけ書き戻すので、保存も痩せる。
-  // #16: GLOBAL は複数ボードの合成で、カード id はボードごとに 1 から振られる。
-  // 展開状態のキーだけは由来 (sid) まで含める（他の面は id で一意なので今のキーのまま）。
-  function cardKey(ckey, c, scope){
-    return ckey + "#" + (scope === "global" ? ((c && c.sid) || "") + "\u0000" : "") + (c && c.id);
+  function cardKey(ckey, c){
+    return ckey + "#" + (c && c.id);
   }
-  function loadOpen(ckey, list, scope){
+  function loadOpen(ckey, list){
     try {
       var all = JSON.parse(localStorage.getItem(LS_KEY) || "null");
       var v = all && all[LS_NS];
       if (v && v.open && typeof v.open === "object") Object.keys(v.open).forEach(function(k){ cardOpen[k] = v.open[k] === true; });
     } catch (e) {}
     var present = {}, pruned = false;
-    list.forEach(function(c){ present[cardKey(ckey, c, scope)] = true; });
+    list.forEach(function(c){ present[cardKey(ckey, c)] = true; });
     Object.keys(cardOpen).forEach(function(k){
       if (k.indexOf(ckey + "#") === 0 && !present[k]) { delete cardOpen[k]; pruned = true; }
     });
@@ -470,7 +498,6 @@
     if (!v || typeof v !== "object") return;
     if (v.cols && typeof v.cols === "object") Object.keys(v.cols).forEach(function(k){ collapsed[k] = v.cols[k] === true; });
     if (v.open && typeof v.open === "object") Object.keys(v.open).forEach(function(k){ cardOpen[k] = v.open[k] === true; });
-    if (typeof v.g === "boolean") gOpen = v.g;
   })();
   var STALE_GUI_MS = 2 * 60 * 60 * 1000; // DOING over this long gets a ⏳
   // #18: 日数の段階はサーバから配らない。カード単位の判定はクライアント計算の流儀で、
@@ -536,10 +563,8 @@
     return e;
   }
   // #55: どの看板も編集できる（看板単位の書き込みロックは無い）。
-  // ctx.active が false なのは今は GLOBAL だけ（サーバが 400 を返す読み取り専用の集約ビュー）。
-  // 見出しに「読み取り専用」と出るので、ツールチップの文言は GLOBAL 向けのままにしてある。
-  // #17: ボードは project 1 枚だけ。どちらも編集できるのは project だけなので、
-  // 読み取り専用の理由は GLOBAL 側の文言で括る（旧「セッションをアクティブに」は無くなった）。
+  // ctx.active が false になるのは読み取り専用の看板だけで、今は該当が無い
+  // （#17 で編集できる面は project ボード 1 枚だけになった）。文言だけ残してある。
   var RO_MSG = "この看板は読み取り専用 — 編集するにはプロジェクトの看板を開いて";
   var RO_TITLE = "読み取り専用（プロジェクトの看板で編集する）";
   var noteTimer = null;
@@ -853,8 +878,7 @@
   // (the server 403s a write coming from a session that is not the active one).
   function boardCtl(ctx, m, cards){
     var box = el("div", "ctl");
-    // GLOBAL は「アクティブでない」のではなく読み取り専用（/api/schedule?scope=global は 400）。
-    if (!ctx.active) box.title = ctx.scope === "global" ? "GLOBAL は読み取り専用" : "この看板は読み取り専用";
+    if (!ctx.active) box.title = "この看板は読み取り専用";
     function sw(key, label){
       var on = !m || m[key] !== false; // absent means ON, same as modesFor
       var b = el("button", "sw" + (on ? " on" : ""), label + " " + (on ? "ON" : "OFF"));
@@ -936,11 +960,11 @@
     COLS.forEach(function(pair, ci){
       var key = pair[0];
       var list = cards.filter(function(c){ return c.col === key; });
-      // #38-7: 折りたたみのキーは看板ごと（GLOBAL と project で別々に畳める）
-      // #62: GLOBAL に active sid を混ぜない（切り替わるたびに別キーになって勝手に開いていた）。
-      var ckey = ctx.scope === "global" ? "global:" + key : ctx.scope + "." + ctx.sid + ":" + key;
+      // #38-7: 折りたたみのキーは看板ごと。
+      // #62: active sid は混ぜない（切り替わるたびに別キーになって勝手に開いていた）。
+      var ckey = ctx.scope + "." + ctx.sid + ":" + key;
       var box = el("div", "col" + (key === "doing" && list.length ? " doingcol" : "") + (collapsed[ckey] ? " collapsed" : ""));
-      loadOpen(ckey, list, ctx.scope); // #72: 描画のたびに読み直し、消えたカードの分を掃除する
+      loadOpen(ckey, list); // #72: 描画のたびに読み直し、消えたカードの分を掃除する
       box.setAttribute("data-col", key);
       var h = el("h3", null, pair[1]);
       h.appendChild(el("span", "c", String(list.length)));
@@ -948,7 +972,7 @@
       h.addEventListener("click", function(){ collapsed[ckey] = !collapsed[ckey]; box.classList.toggle("collapsed"); persist(); });
       box.appendChild(h);
       if (ctx && ctx.active) {
-        // #30 D&D: same handler on the GLOBAL board and on the project board.
+        // #30 D&D: the drop handler lives on the board that owns the column.
         // #52: ファイルも受ける。掴んでいるカードがあれば従来の移動経路を優先する。
         box.addEventListener("dragover", function(ev){
           if (dragging && dragging.scope === ctx.scope && dragging.sid === ctx.sid) {
@@ -1062,8 +1086,11 @@
           if (c.labels && c.labels.length) {
             for (var li = 0; li < c.labels.length; li += 1) card.appendChild(el("span", "lab", String(c.labels[li])));
           }
-          // #16: GLOBAL 看板のカードは各 project ボードから来る。由来はツール側の [slug] と同じ語彙で出す。
+          // #16: カードの由来は、ツール側の [slug] と同じ語彙で出す。
           if (c.sid) card.appendChild(el("span", "proj", "[" + c.sid + "]"));
+          // #41: 依存の状態を 1 語で先に出す（判定は depState に一元）。
+          var st = depState(c, depPool);
+          card.appendChild(el("span", "dep " + st, st === "ok" ? "着手可能" : "ブロック中"));
           var t = el("span", "t");
           // #38-10/#38-11: DOING の経過を本文の前に出す（2 時間超は ⏳ も）。movedAt の
           // 無いカードは何も出さない（推測で「0分」を書かない）。
@@ -1076,7 +1103,7 @@
           // #38-5: 60 字超は 3 行で切ってクリック展開（列内の高さを揃える）。
           if (String(c.text || "").length > 60) {
             t.classList.add("clampable");
-            var okey = cardKey(ckey, c, ctx.scope);
+            var okey = cardKey(ckey, c);
             if (cardOpen[okey]) t.classList.add("open");
             t.addEventListener("click", function(){
               if (t.classList.toggle("open")) cardOpen[okey] = true; else delete cardOpen[okey];
@@ -1085,6 +1112,19 @@
             });
           }
           card.appendChild(t);
+          // #41: ブロック中の理由。相手の #id と本文・列を出す（引けない相手も隠さない）。
+          if (st === "blocked") {
+            var bad = depCards(c, depPool), parts = [];
+            bad.slice(0, 3).forEach(function(b){
+              if (!b.card) return; // 見えているボードに居ない相手は下の「ほか」に含める
+              parts.push("#" + b.id + "「" + Array.from(String(b.card.text || "")).slice(0, 60).join("") + "」 (" + b.card.col + ")");
+            });
+            var why = el("div", "why");
+            if (parts.length) why.appendChild(el("span", "wbad", parts.join(" / ")));
+            if (!parts.length) why.appendChild(el("span", null, "依存を確認できません"));
+            else if (bad.length > parts.length) why.appendChild(el("span", null, " ほか " + (bad.length - parts.length) + " 件"));
+            card.appendChild(why);
+          }
           // #36: 本文のダブルクリックで編集。書き込みは既存の text 系 API（rename）。
           // #44: 当たり判定はカード本体（短いカードだと .t が細く、#id/余白を叩いて無反応に見える）。
           // .t 側にも登録すると二重発火するので、ここ 1 本に統一する。
@@ -1183,8 +1223,8 @@
     return wrap;
   }
 
-  // #19: 「次にやる」は project ボードの 1 枚だけ。GLOBAL は読み取り専用の集約ビューなので
-  // 「次を決める」場所にしない。候補はサーバの nextTodo と同じ 1 枚をそのまま出す（表示だけ）。
+  // #19: 「次にやる」は見えているボードの 1 枚だけ。
+  // 候補はサーバの nextTodo と同じ 1 枚をそのまま出す（表示だけ）。
   // 本文は textContent で入れる: ここは 1 行の要約で、md() で展開する場所ではない。
   function renderNext(d){
     var sec = document.getElementById("nextsec");
@@ -1227,6 +1267,7 @@
     [
       ["着手可能", "", cs.ok, ""],
       ["期限超過", cs.over > 0 ? "bad" : "", cs.over, ""],
+      ["期限接近", cs.soon > 0 ? "warn" : "", cs.soon, ""],
       ["ブロック中", cs.blocked > 0 ? "warn" : "", cs.blocked, ""],
       ["進捗率", "", cs.rate, "%"]
     ].forEach(function(p){
@@ -1285,19 +1326,20 @@
     var left = daysLeft(due);
     return left < 0 ? " bad" : left <= 3 ? " warn" : "";
   }
-  // 依存の解決状態。blocks の id を同じ看板のカードから引く（引けない = 未完了扱い）。
-  // #16: id はボードごとに独立。GLOBAL は全 project の合成なので sid まで込みで引く。
-  function depState(c, pool){
+  // 依存の解決状態。blocks の id を同じボードのカードから引く（引けない = 未完了扱い）。
+  // #16: id はボードごとに独立。sid まで込みで引く（別ボードの同じ id を拾わない）。
+  function depCards(c, pool){
     var deps = c && Array.isArray(c.blocks) ? c.blocks : [];
-    if (!deps.length) return "ok";
     var sid = (c && c.sid) || "", byId = {};
     for (var i = 0; i < pool.length; i++) if (pool[i]) byId[((pool[i].sid) || "") + "\u0000" + pool[i].id] = pool[i];
+    var bad = [];
     for (var j = 0; j < deps.length; j++){
       var d = byId[sid + "\u0000" + deps[j]];
-      if (!d || d.col !== "done") return "blocked";
+      if (!d || d.col !== "done") bad.push({ id: deps[j], card: d || null });
     }
-    return "ok";
+    return bad;
   }
+  function depState(c, pool){ return depCards(c, pool).length ? "blocked" : "ok"; }
   // pool は絞り込み前の看板のカード（検索やプロジェクトで依存先が画面から消えても判定できる）。
   function cardFilterOk(c, pool){
     if (labFilter !== "" && (c.labels || []).indexOf(labFilter) < 0) return false;
@@ -1306,25 +1348,23 @@
     if (cardFilter === "overdue") { var d = dueOf(c); return !!d && d < todayISO() && c.col !== "done"; }
     return true;
   }
-  // 1-4: カードから数える指標（API の stats には無い）。看板ごとに依存を解いて足し上げる。
-  // #16: d.global は全 project ボードの合成なので、d.project を足すと同じカードを二重に数える。
-  // #17: 面は global / project の 2 つだけ（session 行は無くなった）。
+  // 1-4: カードから数える指標（API の stats には無い）。見えているボードの依存を解いて足し上げる。
+  // #17: 面は project ボード 1 枚だけ（session 行は無くなった）。
   function cardStats(d){
-    var boards = [];
-    if (d && d.global) boards.push(d.global.cards || []);
-    if (d && !d.global && d.project) boards.push(d.project.cards || []);
-    var today = todayISO(), ok = 0, over = 0, blocked = 0, done = 0, total = 0;
-    boards.forEach(function(list){
-      list.forEach(function(c){
-        if (!c) return;
-        total += 1;
-        if (c.col === "done") done += 1;
-        if (depState(c, list) === "ok") ok += 1; else blocked += 1;
-        var due = dueOf(c);
-        if (due && due < today && c.col !== "done") over += 1;
-      });
+    var list = (d && d.project && d.project.cards) || [];
+    var today = todayISO(), ok = 0, over = 0, soon = 0, blocked = 0, done = 0, total = 0;
+    list.forEach(function(c){
+      if (!c) return;
+      total += 1;
+      if (c.col === "done") done += 1;
+      if (depState(c, list) === "ok") ok += 1; else blocked += 1;
+      var due = dueOf(c);
+      if (due && c.col !== "done") {
+        if (due < today) over += 1;
+        if (dueCls(due, c.col) === " warn") soon += 1;
+      }
     });
-    return { ok: ok, over: over, blocked: blocked, rate: total ? Math.round(done * 100 / total) : 0 };
+    return { ok: ok, over: over, soon: soon, blocked: blocked, rate: total ? Math.round(done * 100 / total) : 0 };
   }
   // 選択肢は描画のたび lastData から作り直す。選択中の値は失わない
   // （消えた slug を選んでいたら全部に戻す）。
@@ -1340,12 +1380,15 @@
     if (d && d.boards && d.boards.length) {
       d.boards.forEach(add);
     } else {
-      [].concat(((d && d.global) || {}).cards || [], ((d && d.project) || {}).cards || []).forEach(function(c){
+      (((d && d.project) || {}).cards || []).forEach(function(c){
         add(c && (c.project || c.sid));
       });
     }
     slugs.sort();
-    if (projPick !== "" && projPick !== "\u0000" && !seen[projPick]) projPick = "";
+    // #35/#41: ?p= の取得中は d.project を空にして描くので、その 1 描画では
+    // ボード一覧が「不明」になる。不明なときに選択を忘れると、取り直しの宛先が消える。
+    var known = !!((d && d.boards && d.boards.length) || (d && d.project));
+    if (known && projPick !== "" && projPick !== "\u0000" && !seen[projPick]) projPick = "";
     var opts = [["", "全部"], ["\u0000", "(無所属)"]];
     slugs.forEach(function(p){ opts.push([p, p]); });
     sel.innerHTML = "";
@@ -1357,7 +1400,7 @@
     sel.value = projPick;
   }
 
-  // #21: 全ボード横断の検索。GLOBAL は全プロジェクトの集約なので、ここを通せば横断になる。
+  // #21: 見えているボード内の検索（横断するならボードを切り替える）。
   // 対象は人間がカードを思い出す語彙だけ（img / estimate / blocks / col などの内部値は入れない）。
   // query は呼び出し側で trim + toLowerCase 済み。
   function cardHit(c, q){
@@ -1383,7 +1426,8 @@
     // cwd で解決されるので sid は送らない。p（選んだボードの slug）は act() が ?p= として送る。
     // #18: 見出しの停滞件数は絞り込み後の cards を数えるので、DOM を組む前に確定させる。
     var all = (p && p.cards) || [];
-    // 絞り込みは GLOBAL と同じ規則（上部の絞り込みバーは両方の看板に効く）。
+    depPool = all;
+    // 絞り込み規則は filters（cardFilter / labFilter / query）に一元。
     var search = query !== "";
     var filtered = search || projPick !== "" || cardFilter !== "" || labFilter !== "";
     var cards = all.filter(function(x){
@@ -1456,7 +1500,7 @@
       // Serve has no per-entry process to stop: 停止 deregisters the URL, 削除 also
       // drops the served file (server unlinks regular files only, never a directory).
       var ops = el("span", "ops");
-      var sctx = boardCtx("global", "", false);
+      var sctx = boardCtx("global", "", false); // serve は board 非依存なので scope は意味なし（tests/kanban-dashboard-cards.test が固定）
       // 永久トグル。変更は既存の /api/serve 経由（scope+sid が載る）。
       var perm = el("label", "permx");
       perm.title = "永久にする（自動削除なし）";
@@ -1485,7 +1529,7 @@
   }
 
   // #11: 設定タブ。ループのスイッチはこのプロジェクトのボード 1 枚だけが持つ
-  // （GLOBAL は読み取り専用の集約ビューで、settle も poll も駆動しないので設定が無い）。
+  // （看板は 1 枚だけなので、ここにボードを選ぶ UI は置かない）。
   function renderSettings(d){
     var box = document.getElementById("settings-loops");
     if (!box) return;
