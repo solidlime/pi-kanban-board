@@ -3512,6 +3512,34 @@ async function dbMaintenance(pathname: string, res: ServerResponse): Promise<voi
 	}
 }
 
+/**
+ * #35: one board, reported the same way whether it came from the session cwd or from ?p=.
+ * Both routes must answer these 7 keys - the dashboard reads all of them, and a board
+ * rendered without counts/next/loops looks like a board with nothing on it.
+ *
+ * #19: 次にやる 1 枚。nextTodo の規則（priority 降順 → id 昇順、blocked/予約済みを除く）を
+ * そのまま使い、無ければ null（undefined は JSON から消えて UI が「空」と区別できない）。
+ * 第 2/3 引数（scope/sid）は呼び出し規約: nextTodo の中では絞り込みに使わない。
+ * この値は request 時点のスナップショット。sigOf は now を除外しているので、時刻だけで
+ * 変わる候補（予約が発火しなかった等）は次の payload 変化まで古いまま。
+ */
+function projectReport(
+	slug: string,
+	pb: Board,
+	f: ReturnType<typeof readModesFile>,
+	sidActor: string,
+) {
+	return {
+		id: slug,
+		counts: countCols(pb),
+		cards: pb.cards,
+		next: nextTodo(pb.cards, "project", sidActor) ?? null,
+		modes: modesFor(f, slug, "project"),
+		loops: loopCountOf(sidActor, "project"),
+		halted: haltedBySid.get(sidActor)?.scope === "project",
+	};
+}
+
 /** GET /api/dashboard: one request carrying everything the dashboard renders. */
 async function dashboardPayload(): Promise<unknown> {
 	// #17: projectKeyOfWrite() reads the session-info cache, and this route is now the only
@@ -3546,7 +3574,6 @@ async function dashboardPayload(): Promise<unknown> {
 	// failed and byId is empty.
 	const slug = storedProjectKey(projectSlugOf(cwdOfSidSync(null)));
 	const pb = readBoard(boardPath("project", slug));
-	const projectCounts = countCols(pb);
 	// Dead registrations stay listed; `exists` is the flag that tells the UI.
 	// 期限切れも残す: dashboard が「期限切れ」と出し、そこから解除できるようにする。
 	const serve = readServeFile().map((e) => ({
@@ -3600,20 +3627,7 @@ async function dashboardPayload(): Promise<unknown> {
 		},
 		// Phase 0: the board of the active session's cwd (#27: one server can host several cwds).
 		// global stays above for the un-migrated rows the tests and the UI still read.
-		project: {
-			id: slug,
-			counts: projectCounts,
-			cards: pb.cards,
-			// #19: 次にやる 1 枚。nextTodo の規則（priority 降順 → id 昇順、blocked/予約済みを除く）を
-			// そのまま使い、無ければ null（undefined は JSON から消えて UI が「空」と区別できない）。
-			// 第 2/3 引数（scope/sid）は呼び出し規約: nextTodo の中では絞り込みに使わない。
-			// この値は request 時点のスナップショット。sigOf は now を除外しているので、時刻だけで
-			// 変わる候補（予約が発火しなかった等）は次の payload 変化まで古いまま。
-			next: nextTodo(pb.cards, "project", sidActor) ?? null,
-			modes: modesFor(f, slug, "project"),
-			loops: loopCountOf(sidActor, "project"),
-			halted: haltedBySid.get(sidActor)?.scope === "project",
-		},
+		project: projectReport(slug, pb, f, sidActor),
 		serve,
 	};
 }
@@ -4111,13 +4125,16 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 		}
 		// #36: `?p=` is the caller's spelling, not the board's; read the stored one and report it.
 		const storedSid = storedProjectKey(projectSid);
-		const project = readBoard(boardPath("project", storedSid));
+		const pb = readBoard(boardPath("project", storedSid));
 		sendJson(res, 200, {
 			ok: true,
 			projectId: storedSid,
 			global: keys === null ? global : projectBoard(global, keys),
-			project: keys === null ? project : projectBoard(project, keys),
+			// `fields=` still wins: a projected answer stays a bare Board (the callers that
+			// ask for it want cards only). Without it, answer the same 7 keys as /api/dashboard.
+			project: keys === null ? projectReport(storedSid, pb, f, activeSessionId ?? "") : projectBoard(pb, keys),
 			// #26: global is an aggregate view with no switches, so the panel has one row.
+			// Kept for the callers that read it from here instead of project.modes.
 			modes: { project: modesFor(f, storedSid, "project") },
 		});
 		return;

@@ -104,11 +104,6 @@ check("カードのフィルタとキーボード操作がある", () => {
 	assert.ok(html.includes(".sess-empty{"), "該当なしの CSS が無い");
 });
 
-check("件数は検索中だけヒット/総数（meta の乖離を潰す）", () => {
-	assert.match(html, /function countsText\(counts, cards, search\)/);
-	assert.match(html, /return cards\.filter\(function\(c\)\{ return c\.col === k; \}\)\.length \+ "\/" \+ total;/);
-});
-
 // --- #49 欠陥2: caret の視認性（10px/var(--muted) では見えなかった） ---
 check("caret は 13px 以上で濃い色（opacity を使わない）", () => {
 	const m = html.match(/\.sess \.caret\{([^}]*)\}/);

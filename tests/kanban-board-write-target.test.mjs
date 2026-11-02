@@ -123,6 +123,21 @@ await check("/api/projects はカードのあるボードを全部返す（タ�
 	assert.deepEqual(slugs, ["alpha", cwdSlug], `ボードが揃っていない: ${JSON.stringify(slugs)}`);
 });
 
+// #35: 形が違うと、選んだ看板は「次にやる」も残数も再開ボタンも無い板として描かれる。
+await check("/api/kanban?p= の project は /api/dashboard と同じ 7 キーを返す", async () => {
+	const keys = (o) => Object.keys(o || {}).sort().join(",");
+	const dash = (await get("/api/dashboard")).body.project;
+	const one = (await get(`/api/kanban?p=${cwdSlug}`)).body;
+	assert.equal(keys(one.project), keys(dash), `形が違う: ${keys(one.project)} != ${keys(dash)}`);
+	assert.equal(keys(one.project), "cards,counts,halted,id,loops,modes,next", "7 キーではない");
+	assert.equal(one.projectId, one.project.id, "projectId と project.id が食い違う");
+});
+
+await check("?p= に fields= を付けると射影された素の Board のまま", async () => {
+	const body = (await get(`/api/kanban?p=${cwdSlug}&fields=id`)).body;
+	assert.deepEqual(Object.keys(body.project).sort(), ["cards", "nextId"], "射影が崩れている");
+});
+
 for (const f of failures) console.error("FAIL", f);
 console.log(`kanban-board-write-target: ${passed} passed, ${failures.length} failed`);
 // サーバを掴んだままにしない（プロセスを終了させる）

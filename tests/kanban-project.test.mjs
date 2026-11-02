@@ -342,9 +342,21 @@ await check("ダッシュボード: #proj セレクト / .proj バッジ / projP
 		URL,
 		localStorage: { getItem: () => null, setItem() {} },
 		matchMedia: () => ({ matches: false, addEventListener() {} }),
+		// 実サーバと同じく、応答は毎回新しいオブジェクトを返す（UI は d.project を書き換える）。
 		fetch: (u) => {
 			urls.push(u);
-			return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(payload) });
+			const fresh = () => JSON.parse(JSON.stringify(payload));
+			// #35: /api/kanban?p= は project を dashboard と同じ 7 キーで返す。
+			if (/^\/api\/kanban(\?|$)/.test(String(u))) {
+				const slug = (/[?&]p=([^&]*)/.exec(String(u)) || [])[1] || "";
+				const board = Object.assign(fresh().project, { id: decodeURIComponent(slug) });
+				return Promise.resolve({
+					ok: true,
+					status: 200,
+					json: () => Promise.resolve({ ok: true, projectId: board.id, project: board, modes: { project: board.modes } }),
+				});
+			}
+			return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(fresh()) });
 		},
 		setTimeout: () => 0,
 		clearTimeout() {},
@@ -365,9 +377,11 @@ await check("ダッシュボード: #proj セレクト / .proj バッジ / projP
 	// Counters read "TODO 1/3 ・ 更新 …", so the two count assertions need a substring match; everything else stays exact.
 	const textIncludes = (root, txt) => walk(root).some((n) => (n.textContent && String(n.textContent).includes(txt)) || String(n.innerHTML || '').includes(txt));
 	const addIn = () => walk(byId["project"]).find((n) => n.className === "addin");
-	const pick = (v) => {
+	// #35: 選ぶと ?p= で取り直すので、描画はその完了後になる（取り直し前は空で描く）。
+	const pick = async (v) => {
 		byId["proj"].value = v;
 		byId["proj"]._lis.change.forEach((fn) => fn({}));
+		for (let i = 0; i < 4; i++) await flush();
 	};
 
 	await check("vm: select の選択肢は 全部 / (無所属) / 実在する slug", () => {
@@ -378,24 +392,22 @@ await check("ダッシュボード: #proj セレクト / .proj バッジ / projP
 		assert.equal(byId["proj"].value, "", "初期選択が全部でない");
 	});
 
-	await check("vm: slug を選ぶとタグの違うカードだけ落ちる（ボードのカードはタグ無しでも残る）", () => {
-		pick("alpha");
+	await check("vm: slug を選ぶとその看板のカードがそのまま出る（名前での絞り込みはしない）", async () => {
+		await pick("alpha");
 		assert.equal(byId["proj"].value, "alpha", "選択値が失われた");
+		// #34 の逆穴: ボード名で絞るとラベルの表記ゆれで自分のボードのカードが消える。
 		assert.ok(textOf(byId["project"], "alpha card"), "alpha card が出ていない");
-		assert.ok(!textOf(byId["project"], "beta card"), "beta card が残っている");
-		// ボードを見ているとき、カードの sid は付かない（sid は全ボード集約の印）。
-		// 印の無いカードは見ているボードのもの: ここで落とすと選んだ看板が空になる。
 		assert.ok(textOf(byId["project"], "orphan card"), "ボードのカードが消えている");
 	});
 
-	await check("vm: (無所属) は project を持たないカードだけ残る", () => {
-		pick("\u0000");
+	await check("vm: (無所属) は project を持たないカードだけ残る", async () => {
+		await pick("\u0000");
 		assert.ok(textOf(byId["project"], "orphan card"), "無所属カードが出ていない");
 		assert.ok(!textOf(byId["project"], "alpha card"), "alpha card が残っている");
 	});
 
-	await check("vm: 絞り込み中の新規作成は project を載せる（要の UX）", () => {
-		pick("alpha");
+	await check("vm: 絞り込み中の新規作成は project を載せる（要の UX）", async () => {
+		await pick("alpha");
 		urls.length = 0;
 		const inp = addIn();
 		assert.ok(inp, "追加 input が無い");
@@ -406,9 +418,9 @@ await check("ダッシュボード: #proj セレクト / .proj バッジ / projP
 		assert.ok(add.includes("project=alpha"), `project が載っていない: ${add}`);
 	});
 
-	await check("vm: 全部（\"\"）と (無所属) の新規作成は project を載せない", () => {
+	await check("vm: 全部（\"\"）と (無所属) の新規作成は project を載せない", async () => {
 		for (const v of ["", "\u0000"]) {
-			pick(v);
+			await pick(v);
 			urls.length = 0;
 			const inp = addIn();
 			inp.value = "tenantless";
@@ -421,21 +433,20 @@ await check("ダッシュボード: #proj セレクト / .proj バッジ / projP
 
 
 	// #17: 件数表示（TODO n/m）は GLOBAL 行の担当になった。project 行にはループ残数の行がある。
-	await check("vm: project 行にループ残数（残り 7 / 10）が出る", () => {
-		pick("");
+	await check("vm: project 行にループ残数（残り 7 / 10）が出る", async () => {
+		await pick("");
 		assert.ok(textIncludes(byId["project"], "残り 7 / 10"), "project 行にループ残数が無い");
 	});
 
-	await check("vm: 消えた slug を選んでいたら全部に戻る", () => {
-		pick("gamma"); // payload に無い slug
+	await check("vm: 消えた slug を選んでいたら全部に戻る", async () => {
+		await pick("gamma"); // payload に無い slug
 		assert.equal(byId["proj"].value, "", "存在しない slug が選択されたまま");
 	});
 
 	// #35: cwd 解決に頼らず、選んだ slug の看板を /api/kanban?p= で取り直す。
 	await check("vm: slug を選ぶと /api/kanban?p=<slug> で看板を取り直す", async () => {
 		urls.length = 0;
-		pick("alpha");
-		for (let i = 0; i < 4; i++) await flush();
+		await pick("alpha");
 		assert.ok(
 			urls.some((u) => u.includes("/api/kanban?p=alpha")),
 			`?p= の取得が無い: ${JSON.stringify(urls)}`,
