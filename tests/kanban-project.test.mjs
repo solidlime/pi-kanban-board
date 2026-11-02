@@ -324,6 +324,7 @@ await check("ダッシュボード: #proj セレクト / .proj バッジ / projP
 		project: {
 			id: "alpha",
 			counts: { todo: 3, doing: 0, done: 0 },
+			next: { id: 1, text: "alpha card", col: "todo", project: "alpha" },
 			modes: { maxLoops: 10 },
 			loops: 3,
 			halted: false,
@@ -443,7 +444,17 @@ await check("ダッシュボード: #proj セレクト / .proj バッジ / projP
 		assert.equal(byId["proj"].value, "", "存在しない slug が選択されたまま");
 	});
 
-	// #35: cwd 解決に頼らず、選んだ slug の看板を /api/kanban?p= で取り直す。
+		// #35: 選んだ看板は ?p= の 7 キーをそのまま使う。素の Board で上書きすると id/counts/next が
+	// 消え、主画面が「次にやる」も残数も再開ボタンも出さない嘘の板になる。
+	await check("vm: 選んだ看板でも「次にやる」が出る（?p= の応答を素の Board で上書きしない）", async () => {
+		await pick("alpha");
+		assert.ok(
+			textOf(byId["nextsec"], "次にやる"),
+			"nextsec に「次にやる」が無い: " + walk(byId["nextsec"]).map((n) => n.textContent).join(" | "),
+		);
+	});
+
+// #35: cwd 解決に頼らず、選んだ slug の看板を /api/kanban?p= で取り直す。
 	await check("vm: slug を選ぶと /api/kanban?p=<slug> で看板を取り直す", async () => {
 		urls.length = 0;
 		await pick("alpha");
