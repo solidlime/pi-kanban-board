@@ -1399,7 +1399,8 @@ function esc(s){return String(s).replace(/[&<>"]/g,function(c){return {"&":"&amp
   }
   function renderDeliverables() {
     var box = $("#deliverables"), grid = $("#delgrid");
-    var cards = delCards().filter(function (c) { return imgsOf(c).length; });
+    // #72: この帯は成果物だけ。TODO/DOING/DONE のカードは第4列と列側で見る。
+    var cards = delCards().filter(function (c) { return c.col === "deliverable" && imgsOf(c).length; });
     // 添付が 1 枚も無い看板では帯ごと消す（空箱を置かない）。
     box.hidden = !cards.length;
     if (!cards.length) { clear(grid); $("#delcount").textContent = ""; box.dataset.sig = ""; return; }
@@ -1413,7 +1414,7 @@ function esc(s){return String(s).replace(/[&<>"]/g,function(c){return {"&":"&amp
       if (imgsOf(c).some(function (n) { return refOf(n); })) refs += 1;
       grid.appendChild(delTile(c));
     });
-    $("#delcount").textContent = "添付付きカード " + cards.length + " 枚 / 参照型 " + refs + " 枚";
+    $("#delcount").textContent = "成果物 " + cards.length + " 枚 / 参照型 " + refs + " 枚";
   }
 
   // ---- render: rail ----
