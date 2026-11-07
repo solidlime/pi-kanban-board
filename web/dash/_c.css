@@ -118,6 +118,8 @@ html.halt .swline .sw[data-sw="pause"]{ border-color:var(--bad); }
 .modal label.f input:focus{outline:1px solid var(--accent); outline-offset:0}
 .modal label.f input:disabled{opacity:.65}
 .modal .row2{display:grid; grid-template-columns:1fr 1fr; gap:8px}
+/* #82: 成果物モード（#cm.deliv）では card 専用の欄を出さない。本文・添付・削除だけ。 */
+.modal.deliv .cardonly{display:none}
 .modal .cmprio{display:flex; align-items:center; gap:6px; font-size:11px; color:var(--muted); flex-wrap:wrap}
 .modal .cmact{display:flex; gap:6px; flex-wrap:wrap; align-items:center; border-top:1px solid var(--line); padding-top:8px}
 .modal button{

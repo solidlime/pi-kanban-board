@@ -53,12 +53,19 @@ await check("listProjectBoards() の呼び出しは allRollupCards() の中の 1
 	assert.ok(calls[0] >= inside && calls[0] < inside + body.length, "listProjectBoards() が allRollupCards の外にある");
 });
 
-await check("readBoard(GLOBAL_JSON) は allRollupCards() の中だけ", () => {
+// #82: the aggregate now has two halves (cards and deliverables), each reading the legacy
+// global board in its own function. Anything else reading it is still drift.
+await check("readBoard(GLOBAL_JSON) は allRollupCards() と aggregateDelivs() の中だけ", () => {
 	const reads = occurrences(SOURCE, "readBoard(GLOBAL_JSON)");
-	assert.equal(reads.length, 1, `readBoard(GLOBAL_JSON) が ${reads.length} か所ある`);
-	const body = bodyOf("allRollupCards");
-	const inside = SOURCE.indexOf(body);
-	assert.ok(reads[0] >= inside && reads[0] < inside + body.length, "readBoard(GLOBAL_JSON) が allRollupCards の外にある");
+	assert.equal(reads.length, 2, `readBoard(GLOBAL_JSON) が ${reads.length} か所ある`);
+	for (const name of ["allRollupCards", "aggregateDelivs"]) {
+		const body = bodyOf(name);
+		const inside = SOURCE.indexOf(body);
+		assert.ok(
+			reads.some((r) => r >= inside && r < inside + body.length),
+			`readBoard(GLOBAL_JSON) が ${name} の中に無い`,
+		);
+	}
 });
 
 // --- 2: 4 経路すべてがその 1 関数から供給を受ける --------------------------------------

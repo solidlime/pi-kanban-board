@@ -53,7 +53,13 @@ export type Card = {
 	blocks?: number[];
 };
 
-export type Board = { cards: Card[]; nextId: number };
+/**
+ * #82: a deliverable is output, not work: it has no col, no phase, no owner. Its own table
+ * so a card rewrite (writeBoard) can never touch it.
+ */
+export type Deliv = { id: number; text: string; img?: string; at: number };
+
+export type Board = { cards: Card[]; nextId: number; deliverables: Deliv[]; delivNextId: number };
 
 /**
  * A board is a (scope, sid) pair. Global boards use sid = "".
@@ -106,6 +112,8 @@ export type KanbanDb = {
 	 * board (the same order aggregateGlobal() builds). Two queries total, not one per board.
 	 */
 	listProjectBoards(): { slug: string; cards: Card[] }[];
+	/** #82: every project board's deliverables, keyed by slug (the cross-project view). */
+	listProjectDeliverables(): { slug: string; deliverables: Deliv[] }[];
 	/** Every project, most recently touched first. */
 	listProjects(): Project[];
 	/** Read one project, or null. */
@@ -172,6 +180,13 @@ const SCHEMA = [
 	"  text TEXT NOT NULL, why TEXT",
 	");",
 	"CREATE INDEX IF NOT EXISTS decision_by_slug ON decision (slug, at DESC);",
+	// #82: output lives here, not in card. Its own id sequence: rowToCard's ids and these
+	// are different namespaces (a #3 card and a #3 deliverable are not the same thing).
+	"CREATE TABLE IF NOT EXISTS deliv (",
+	"  scope TEXT NOT NULL, sid TEXT NOT NULL, id INTEGER NOT NULL, ord INTEGER NOT NULL,",
+	"  text TEXT NOT NULL, img TEXT, at INTEGER NOT NULL,",
+	"  PRIMARY KEY (scope, sid, id)",
+	");",
 "CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);",
 ].join("\n");
 
@@ -295,6 +310,12 @@ export function openKanbanDb(file: string): KanbanDb {
 	if (!cols.has("session_id")) db.exec("ALTER TABLE card ADD COLUMN session_id TEXT");
 	if (!cols.has("commit_sha")) db.exec("ALTER TABLE card ADD COLUMN commit_sha TEXT");
 	if (!cols.has("labels")) db.exec("ALTER TABLE card ADD COLUMN labels TEXT");
+	// #82: the deliverable id sequence. max(id)+1 would re-issue the id of a deleted row and
+	// INSERT OR REPLACE would then silently overwrite a live one.
+	const boardCols = new Set(
+		(db.prepare("PRAGMA table_info(board)").all() as Row[]).map((r) => String(r.name)),
+	);
+	if (!boardCols.has("deliv_next_id")) db.exec("ALTER TABLE board ADD COLUMN deliv_next_id INTEGER NOT NULL DEFAULT 1");
 	// shortcut: ALTER は列名で判定する。型変更が必要になったらテーブル再作成に切り替える。
 	db.exec("PRAGMA user_version = 2");
 
@@ -302,7 +323,9 @@ export function openKanbanDb(file: string): KanbanDb {
 	// `c:\code\repo`, so every sid lookup matches case-insensitively. What is STORED keeps
 	// the spelling it was written with (writeBoard reads the first one back for the rest of
 	// the transaction), or the same directory would grow a second board.
-	const selectBoard = db.prepare("SELECT next_id, sid FROM board WHERE scope = ? AND sid = ? COLLATE NOCASE");
+	const selectBoard = db.prepare(
+		"SELECT next_id, deliv_next_id, sid FROM board WHERE scope = ? AND sid = ? COLLATE NOCASE",
+	);
 	const selectCards = db.prepare(
 		"SELECT id, text, col, img, moved_at, moved_by, priority, next_fire_at, blocked, fired_for, project, due, estimate, session_id, commit_sha, labels FROM card WHERE scope = ? AND sid = ? COLLATE NOCASE ORDER BY ord",
 	);
@@ -315,14 +338,26 @@ export function openKanbanDb(file: string): KanbanDb {
 		"SELECT sid, card_id, blocks_id FROM card_dep WHERE scope = 'project' ORDER BY sid, card_id, blocks_id",
 	);
 	const insertBoard = db.prepare(
-		"INSERT INTO board (scope, sid, next_id, rev, touched_at) VALUES (?, ?, ?, 1, ?)",
+		"INSERT INTO board (scope, sid, next_id, deliv_next_id, rev, touched_at) VALUES (?, ?, ?, ?, 1, ?)",
 	);
 	const countBoard = db.prepare("SELECT 1 AS hit FROM board WHERE scope = ? AND sid = ? COLLATE NOCASE");
 	const upsertBoard = db.prepare(
-		"UPDATE board SET next_id = ?, rev = rev + 1, touched_at = ? WHERE scope = ? AND sid = ? COLLATE NOCASE",
+		"UPDATE board SET next_id = ?, deliv_next_id = ?, rev = rev + 1, touched_at = ? WHERE scope = ? AND sid = ? COLLATE NOCASE",
 	);
 	const deleteBoardRow = db.prepare("DELETE FROM board WHERE scope = ? AND sid = ? COLLATE NOCASE");
 	const deleteAllCards = db.prepare("DELETE FROM card WHERE scope = ? AND sid = ? COLLATE NOCASE");
+	// #82: deliverables are rewritten wholesale, the same way card_dep is: a removed row must
+	// not survive the next read.
+	const selectDelivs = db.prepare(
+		"SELECT id, text, img, at FROM deliv WHERE scope = ? AND sid = ? COLLATE NOCASE ORDER BY ord",
+	);
+	const selectProjectDelivs = db.prepare(
+		"SELECT sid, id, text, img, at FROM deliv WHERE scope = 'project' ORDER BY sid, ord",
+	);
+	const deleteAllDelivs = db.prepare("DELETE FROM deliv WHERE scope = ? AND sid = ? COLLATE NOCASE");
+	const insertDeliv = db.prepare(
+		"INSERT OR REPLACE INTO deliv (scope, sid, id, ord, text, img, at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+	);
 	const deleteStaleCards = db.prepare(
 		"DELETE FROM card WHERE scope = ? AND sid = ? COLLATE NOCASE AND id NOT IN (SELECT value FROM json_each(?))",
 	);
@@ -365,6 +400,21 @@ export function openKanbanDb(file: string): KanbanDb {
 		}
 	};
 
+	const rowToDeliv = (r: Row): Deliv => {
+		const d: Deliv = { id: Number(r.id), text: String(r.text), at: Number(r.at) };
+		const img = optionalText(r.img);
+		if (img !== undefined) d.img = img;
+		return d;
+	};
+
+	const writeDelivs = (scope: string, sid: string, rows: Deliv[]): void => {
+		deleteAllDelivs.run(scope, sid);
+		for (let i = 0; i < rows.length; i++) {
+			const d = rows[i];
+			insertDeliv.run(scope, sid, d.id, i, d.text ?? "", d.img ?? null, d.at);
+		}
+	};
+
 	const readBoard = (key: BoardKey): Board | null => {
 		const head = selectBoard.get(key.scope, key.sid) as Row | undefined;
 		if (!head) return null;
@@ -384,7 +434,13 @@ export function openKanbanDb(file: string): KanbanDb {
 				if (blocks !== undefined) c.blocks = blocks;
 			}
 		}
-		return { cards, nextId: Number(head.next_id) };
+		const deliverables = (selectDelivs.all(key.scope, key.sid) as Row[]).map(rowToDeliv);
+		return {
+			cards,
+			nextId: Number(head.next_id),
+			deliverables,
+			delivNextId: Number(head.deliv_next_id),
+		};
 	};
 
 	// First column of a one-row pragma. Only maintenance() reads pragmas this way, so this
@@ -401,6 +457,10 @@ export function openKanbanDb(file: string): KanbanDb {
 		// removed card cannot come back on the next read.
 		writeBoard(key, b) {
 			const now = Date.now();
+			// #82: a caller that only speaks cards (an old seed, a scratch board) means "no
+			// deliverables" rather than a crash on the bind below.
+			const delivs = b.deliverables ?? [];
+			const delivNext = b.delivNextId ?? 1;
 			// #34: a board that already exists keeps the spelling it was created with, so a
 			// write under another case cannot split its cards into a twin board.
 			const head = selectBoard.get(key.scope, key.sid) as Row | undefined;
@@ -408,9 +468,9 @@ export function openKanbanDb(file: string): KanbanDb {
 			db.exec("BEGIN IMMEDIATE");
 			try {
 				if (head === undefined) {
-					insertBoard.run(key.scope, sid, b.nextId, now);
+					insertBoard.run(key.scope, sid, b.nextId, delivNext, now);
 				} else {
-					upsertBoard.run(b.nextId, now, key.scope, sid);
+					upsertBoard.run(b.nextId, delivNext, now, key.scope, sid);
 				}
 				const ids = JSON.stringify(b.cards.map((c) => c.id));
 				deleteStaleCards.run(key.scope, sid, ids);
@@ -439,6 +499,7 @@ export function openKanbanDb(file: string): KanbanDb {
 					);
 				}
 				writeDeps(key.scope, sid, b.cards);
+				writeDelivs(key.scope, sid, delivs);
 				db.exec("COMMIT");
 			} catch (err) {
 				db.exec("ROLLBACK");
@@ -461,8 +522,9 @@ export function openKanbanDb(file: string): KanbanDb {
 			const now = Date.now();
 			db.exec("BEGIN IMMEDIATE");
 			try {
-				insertBoard.run(key.scope, key.sid, b.nextId, now);
+				insertBoard.run(key.scope, key.sid, b.nextId, b.delivNextId ?? 1, now);
 				deleteAllCards.run(key.scope, key.sid);
+				writeDelivs(key.scope, key.sid, b.deliverables ?? []);
 				for (let i = 0; i < b.cards.length; i++) {
 					const c = b.cards[i];
 					insertCard.run(
@@ -568,6 +630,7 @@ export function openKanbanDb(file: string): KanbanDb {
 		deleteBoard(key) {
 			deleteDeps.run(key.scope, key.sid);
 			deleteAllCards.run(key.scope, key.sid);
+			deleteAllDelivs.run(key.scope, key.sid);
 			deleteBoardRow.run(key.scope, key.sid);
 		},
 		dropNonProject() {
@@ -575,6 +638,7 @@ export function openKanbanDb(file: string): KanbanDb {
 			// Not one transaction either: the caller sets its marker only after this returns, so
 			// a throw half way leaves the marker unset and the next start retries the reset.
 			db.prepare("DELETE FROM card_dep WHERE scope != 'project'").run();
+			db.prepare("DELETE FROM deliv WHERE scope != 'project'").run();
 			db.prepare("DELETE FROM card WHERE scope != 'project'").run();
 			return Number(db.prepare("DELETE FROM board WHERE scope != 'project'").run().changes ?? 0);
 		},
@@ -616,6 +680,16 @@ export function openKanbanDb(file: string): KanbanDb {
 			}
 			// Map insertion order is the SQL order (sid ascending), which is the contract above.
 			return [...boards].map(([slug, cards]) => ({ slug, cards }));
+		},
+		listProjectDeliverables() {
+			const bySid = new Map<string, Deliv[]>();
+			for (const r of selectProjectDelivs.all() as Row[]) {
+				const slug = String(r.sid);
+				const rows = bySid.get(slug);
+				if (rows === undefined) bySid.set(slug, [rowToDeliv(r)]);
+				else rows.push(rowToDeliv(r));
+			}
+			return [...bySid].map(([slug, deliverables]) => ({ slug, deliverables }));
 		},
 		close() {
 			db.close();

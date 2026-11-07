@@ -48,7 +48,8 @@ check("ドリルダウンが readBoard(boardPath(scope, projKey)) を直接呼�
 check("drillBoard の global 分岐は aggregateGlobal() の集約から組む", () => {
 	assert.match(
 		DRILL,
-		/scope === "global"\s*\?\s*\{\s*cards: aggregateGlobal\(\)\.cards/,
+		// #82: 集約は deliverables も運ぶので、分岐は aggregateGlobal() の戻り値をそのまま使う。
+		/scope === "global"\s*\?\s*aggregateGlobal\(\)/,
 		"global 分岐が aggregateGlobal() を使っていない",
 	);
 });

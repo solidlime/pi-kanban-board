@@ -59,7 +59,7 @@ The model calls this directly. Actions include `list`, `add`, `move`, `remove`, 
 
 `/api/add` also takes the board-metadata trio: `due=YYYY-MM-DD` (a date, never a time), `estimate=<integer >= 0>` (points), and `blocks=<id,id,...>` (cards this one blocks). Invalid values are a 400, never silently dropped. Dependencies are stored in their own `card_dep` table and rewritten with the board on every write; a self-reference or a cycle (`a blocks b blocks a`) is a 400.
 
-`card.col` has a fourth value, `deliverable` (#67) — output, not work. The dashboard's board is three columns (TODO/DOING/DONE); `deliverable` is **not** one of them. It holds output, not work: a card there sits outside TODO/DOING/DONE, so `counts` keeps its three keys and does not include it, a project's `total`/`done`/`progress`/`overdue` do not count it, and the loop never picks or drives it (`nextTodo` reads TODO only, `doingHeadOf`/`tickCardFor` read DOING only). `/api/move`, `/api/add` and the `kanban` tool's `move` all accept `col=deliverable`; the project payload adds `deliverableCount` for the band's heading. Since #79 the 「成果物」 band (`#deliverables`) at the bottom of the page is the only place these cards appear — every `deliverable` card is listed there, with or without attachments, and the band's `+` adds a card with `col=deliverable`. A `deliverable` card has no phase: it is neither draggable nor given move buttons in the card modal.
+Deliverables are not cards (#82). A card has three phases, `todo`/`doing`/`done`, and nothing else: `counts` therefore has three keys, a project's `total`/`done`/`progress`/`overdue` count cards only, and the loop never sees a deliverable (`nextTodo` reads TODO only, `doingHeadOf`/`tickCardFor` read DOING only). Deliverables live in their own table, `deliv`, keyed by board (`scope`,`sid`) and numbered per board from `deliv_next_id` — `max(id)+1` would re-issue the id of a removed row and silently overwrite the next one. Three routes write them and nothing else does: `GET /api/deliv/add?p=&text=`, `GET /api/deliv/edit?p=&id=&text=` and `GET /api/deliv/remove?p=&id=` (empty `text` is `400 text required`, an unknown `id` is `404`); remove moves the attachments to `.trash` first. The project payload carries `deliverables: Deliv[]` (`{id,text,img?,at}`), `/api/dashboard`'s `global.deliverables` carries the same rows with `sid`, and `deliverableCount` is that length. `/api/move` refuses `col=deliverable` (`400 deliverable is not a phase`) and `/api/add` no longer accepts it, so no new legacy row can be created; rows that still hold `col=deliverable` stay readable and can be moved out to todo/doing/done. The 「成果物」 band (`#deliverables`) at the bottom of the page is the only place deliverables appear: the band's `+` posts to `/api/deliv/add`, its heading opens the deliverable modal (no phase, priority, schedule or dependency fields; the header click and Esc behave as on a card), and the band and the modal keep their ids apart from the card's (`deliv #3` and `card #3` are different rows).
 
 `project` and `decision` are global tables keyed by slug (a card's `project` is that slug). A decision keeps `why`, because a decision log without the reason is just a diary. Deleting a project takes its decisions with it in one transaction. Milestones and phases are not tables: a milestone is a card with a `due`, and a phase is a label that #7 decides how to attach.
 
@@ -85,11 +85,11 @@ A card carries its own files (`card.img`, a comma-separated list of names under 
 /kanban img <id> <path>    attach a local file to card <id>
 ```
 
-The dashboard upload button posts to `/api/upload` (`?id=<card>&ext=<ext>`); each upload **adds** to the card instead of replacing what is already there, so one card can hold several images, videos and `.html` pages. Hover a tile in the 成果物 band and click the `×` to drop **one** entry: `/api/attach/del?p=<board>&id=<card>&n=<index>` removes that csv entry only. A referenced file (`file:<abs>`) stays where it is; a media name is moved to `.trash` unless another card still shows the same file. Removing the last entry clears `card.img`, so the tile loses its preview (the card itself stays in the band, now without an attachment). Media is trashed wholesale when the card itself is deleted (`/api/remove`, 7-day grace period, see below).
+The dashboard upload button posts to `/api/upload` (`?id=<card>&ext=<ext>`, or `?deliv=<id>&ext=<ext>` for a deliverable — `deliv=` with an unknown id is a `404`, it does not fall back to creating a card); each upload **adds** to the row instead of replacing what is already there, so one card or deliverable can hold several images, videos and `.html` pages. Hover a tile in the 成果物 band and click the `×` to drop **one** entry: `/api/attach/del?p=<board>&deliv=<id>&n=<index>` (`id=<card>` for a card) removes that csv entry only. A referenced file (`file:<abs>`) stays where it is; a media name is moved to `.trash` unless another card **or deliverable** still shows the same file. Removing the last entry clears `img`, so the tile loses its preview (the row itself stays in the band, now without an attachment). Media is trashed wholesale when the row itself is deleted (`/api/remove` for a card, `/api/deliv/remove` for a deliverable, 7-day grace period, see below).
 
 Accepted extensions are `png jpg gif webp avif mp4 webm html`. The per-file cap is 8MB (`KANBAN_MEDIA_MAX_BYTES` overrides it, videos get 64MB), and the whole `media/` directory has a 1GiB budget; over either limit `/api/upload` answers `413` and leaves the card untouched.
 
-**Paste is the second way in.** Copy an image (⌘/Ctrl+C on a screenshot), then paste it anywhere on the dashboard: it lands on the card whose menu is open, otherwise on the arrow-key selected card, otherwise on a fresh TODO card named 「ペースト画像」. A clipboard `File` has no body to POST, so the image rides the query as a base64 dataURL — `GET /api/upload2?p=<board>&id=<card>&data=<dataURL>` — which caps the payload at 128KB of dataURL (`413`), answers `415` for a MIME outside the list above or an `ext` that disagrees with it, and `404` for an unknown card. The dashboard HTML is generated at startup, so restart pi once after upgrading to get the paste handler.
+**Paste is the second way in.** Copy an image (⌘/Ctrl+C on a screenshot), then paste it anywhere on the dashboard: it lands on the card whose menu is open, otherwise on the arrow-key selected card, otherwise on a fresh TODO card named 「ペースト画像」. A clipboard `File` has no body to POST, so the image rides the query as a base64 dataURL — `GET /api/upload2?p=<board>&id=<card>&data=<dataURL>` (`deliv=<id>` for a deliverable) — which caps the payload at 128KB of dataURL (`413`), answers `415` for a MIME outside the list above or an `ext` that disagrees with it, and `404` for an unknown card. The dashboard HTML is generated at startup, so restart pi once after upgrading to get the paste handler.
 
 An `.html` attachment opens in the dashboard's lightbox as an iframe preview. The server serves it with `Content-Security-Policy: sandbox allow-scripts allow-forms` and no `X-Frame-Options`, and the iframe itself carries `sandbox="allow-scripts allow-forms"` — no `allow-same-origin`, so the page cannot reach the dashboard's cookie or its origin. Inside that sandbox a three.js page loads its modules from a CDN the normal way, and `allow-forms` lets an interactive page (a questionnaire) submit **inside the frame**. Images and videos keep the thumbnail/video treatment they had.
 
@@ -133,17 +133,18 @@ Two worked examples live in `~/workspace/kanban-demo/` (not in this repo): `wiza
 
 ```
 ~/.pi/kanban/
-├── global.json          global view (read-only; no cards of its own)
-├── projects/<slug>.json per-project board (where cards live)
+├── boards.sqlite        every board, card and deliverable (WAL; the one file that matters)
 ├── modes.json           per-board loop/pick/interval settings
 ├── serve.json           legacy served paths (no registration path since #53)
-├── media/               images attached to cards
+├── serve-allow.json     path allowlist for /api/ref
+├── serve-host.json      the host the last serve used
+├── media/               files attached to cards and deliverables
 ├── token                the secret every HTTP route requires (0600)
 ├── server.log           HTTP server log
 └── dashboard.html       generated dashboard
 ```
 
-The boards themselves live in one SQLite file, `boards.sqlite`; the rest is plain JSON on disk. Nothing leaves the machine.
+Everything except the database and `media/` is plain JSON on disk. Nothing leaves the machine.
 
 Since #17 there is no per-session board: a pi session ID is only an *actor* (it is what `movedBy` and the move log record), never a board key. On startup the extension runs the scope reset once, which deletes every non-project board row and keeps the project ones — `boards.sqlite.pre-scope-reset` holds the copy taken first, so the old rows can be recovered from it. Project boards survive the reset untouched.
 
@@ -163,24 +164,27 @@ The `Sec-Fetch-Site` / `Origin` checks from #68 are still there as a second laye
 
 The verb is a layer too (#80-⑥): the thirteen `GET`-reachable write routes (`/api/add`, `/api/move`, `/api/remove`, `/api/rename`, `/api/modes`, `/api/interval`, `/api/stuck`, `/api/maxloops`, `/api/resume`, `/api/priority`, `/api/schedule`, `/api/project`, `/api/decision`) plus `/api/serve`, `/api/upload`, `/api/upload2`, `/api/host` and `/api/selftest` answer `405 {"ok":false,"error":"method not allowed"}` to a `GET` whose `Sec-Fetch-Site` is present and not `same-origin` — that is a pasted URL, a bookmark (`none`), a link in another site (`cross-site`/`same-site`), i.e. exactly the prefetch that a chat unfurl or a URL scanner makes. The dashboard's own clicks (`same-origin`) are unaffected. **Provisional:** a request with no `Sec-Fetch-Site` at all still goes through, because curl, older browsers and a sibling pi send none; that gap closes when `Sec-Fetch-*` is universal.
 
-The first layer is a **Host allowlist** (#80-⑨), checked before the token: a request whose `Host` is not `localhost`, `127.0.0.1`, `::1`, this machine's hostname, one of its interface addresses, or a name listed in `KANBAN_HOSTS` (comma-separated) gets `403 {"ok":false,"error":"host not allowed"}`. This is what stops DNS rebinding — the browser sends the attacker's domain as `Host`, so the cookie is never even read. Reaching the board under a name no interface carries (`nas`, a MagicDNS name, a reverse-proxy host) needs `KANBAN_HOSTS=nas,...`; the interfaces are read per request, so a new tailscale/docker address needs no restart, only the env var does.
+The first layer is a **Host allowlist** (#80-⑨), checked before the token: a request whose `Host` is not `localhost`, `127.0.0.1`, `::1`, this machine's hostname, one of its interface addresses, or a name listed in `KANBAN_HOSTS` (comma-separated) gets `403 {"ok":false,"error":"host not allowed"}`. This is what stops DNS rebinding — the browser sends the attacker's domain as `Host`, so the cookie is never even read. Reaching the board under a name no interface carries (a MagicDNS name, a reverse-proxy host, a name in someone's `/etc/hosts`) needs `KANBAN_HOSTS=<name>,<name>`; the interfaces are read per request, so a new VPN or container address needs no restart, only the env var does.
 
 ## Nothing here is a service
 
-There is no daemon. The HTTP server lives inside the pi process, so board state is available exactly as long as pi is running. The generated HTML is written once at startup. Its source is `web/dashboard.html` - see below.
+There is no daemon. The HTTP server lives inside the pi process, so board state is available exactly as long as pi is running. The generated HTML is written once at startup. Its source is `web/dash/` - see below.
 
 ## Working on the code
 
 The dashboard used to be a 1,500-line template literal inside the extension. It is now split:
 
 ```
-web/dashboard.html      the page itself (markup, script, style)
+web/dash/_head.html     the page shell (markup)
+web/dash/_a|_b|_c.css   the styles, in cascade order
+web/dash/_app.js        the dashboard script
 web/md.js               card-body markdown renderer, inlined into the page
 web/memory.js           column scroll / open-card memory, inlined into the page
-scripts/build-web.mjs   inlines the three into extensions/dashboard.generated.ts
+web/dashboard.html      build artifact: dash/ assembled - committed, never edited by hand
+scripts/build-web.mjs   assembles the above into web/dashboard.html and extensions/dashboard.generated.ts
 ```
 
-npm run build regenerates extensions/dashboard.generated.ts. prepack runs it; pretest only checks it (--check) and fails when the file is stale. The generated file is committed because the published package ships only extensions/ and pi loads extensions/kanban.ts straight off disk - it cannot build at install time. Edit web/, never the generated file.
+npm run build assembles `web/dash/` into `web/dashboard.html` and then regenerates extensions/dashboard.generated.ts. prepack runs it; pretest only checks it (--check) and fails when the file is stale. The generated file is committed because the published package ships only extensions/ and pi loads extensions/kanban.ts straight off disk - it cannot build at install time. Edit web/, never the generated file.
 
 npm test runs the whole suite with no dependencies beyond Node itself.
 

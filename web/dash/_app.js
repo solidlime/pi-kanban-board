@@ -11,6 +11,8 @@
     cur: "", allview: false, query: "", sel: -1,
     cards: {}, open: {}, doneOpen: false, projDoneOpen: false, offline: false, addCol: null,
     modal: null, uploading: false,
+    // #82: 成果物のモーダル番号。card の #3 と deliv の #3 は別物なので id 空間を共有しない。
+    modalDeliv: null,
     // #52: false = 他セッションの TODO は畳んで「他 N 件」だけ出す。押した時だけ true にして
     // showOthers=1 で取りに行く（既定の見え方を自動挙動に合わせない）。
     showOthers: false,
@@ -191,8 +193,7 @@
     var a = el("article", "card" + (bad ? " overdue" : ""));
     a.dataset.id = c.id;
     // #46: ボード表示のときだけ掴める（すべてタブでは移動先の板が定まらない）。
-    // #79: 成果物は phase を持たないので DnD の対象にしない。
-    if (!showProject && c.col !== "deliverable") {
+    if (!showProject) {
       a.draggable = true;
       a.addEventListener("dragstart", function (e) {
         e.dataTransfer.setData("text/plain", String(c.id));
@@ -373,8 +374,8 @@
     if (note) note.hidden = !halted();
   }
 
-  // ---- render: 4 columns (#67: 成果物 = deliverable, TODO/DOING/DONE の外) ----
-  function colName(col) { return col === "deliverable" ? "成果物" : col.toUpperCase(); }
+  // ---- render: 3 columns (#82: 成果物は列ではない) ----
+  function colName(col) { return col.toUpperCase(); }
   function renderBoard() {
     // #78: poll のたびに #board を作り直すと img が再デコードされてチカチカする。
     // 列の中身（innerHTML）が前回と同じなら、その列のノードはそのまま残して DOM を触らない。
@@ -387,8 +388,8 @@
       var d = el("div", "col");
       var head = el("div", "colhead");
       head.appendChild(el("h2", null, colName(col)));
-      // 見出しの数字は 4 列目だけ payload の deliverableCount（counts は 3 キーのまま）。
-      head.appendChild(el("span", "n", col === "deliverable" ? ((rep && rep.deliverableCount) || 0) : list.length));
+      // 見出しの数字は列の枚数（#82: 成果物は deliv の件数なのでここには出さない）。
+      head.appendChild(el("span", "n", list.length));
       if (col === "doing") {
         var wip = el("span", "wipbad");
         var n = (rep && rep.counts && rep.counts.doing) || 0;
@@ -521,13 +522,12 @@
     }, function () { return null; });
   }
 
-  // ---- render: 第4帯『成果物』(#58) ----
-  // 添付(img)を持つカードだけを大きなタイルで並べる。proj は board.project.cards、
-  // 横断は payload.global.cards（サーバが全プロジェクトを sid 付きで集約したもの）。
-  function delCards() {
-    if (state.allview) return (state.payload.global && state.payload.global.cards) || [];
+  // ---- render: 下部帯「成果物」(#58/#82) ----
+  // データは card ではなく deliv（api/kanban の project.deliverables / global.deliverables）。
+  function delItems() {
+    if (state.allview) return (state.payload.global && state.payload.global.deliverables) || [];
     var rep = projReport();
-    return (rep && rep.cards) || [];
+    return (rep && rep.deliverables) || [];
   }
   // 1 カード 1 タイル。プレビューは最初の添付（html/ref は mini iframe、動画は <video>）。
   function delBody(name, alt) {
@@ -560,7 +560,7 @@
   function delTile(c) {
     var imgs = imgsOf(c), name = imgs[0];
     var t = el("div", "del-tile");
-    t.dataset.id = c.id; // #79: 帯のタイルからモーダルを開くための id
+    t.dataset.deliv = c.id; // #82: 帯のタイル→成果物モーダル（card の id 空間とは別）
     // 動画はタイル内で再生できるので lightbox には載せない（.thumb を付けない）。
     if (imgs.length && !VID.test(name)) { t.classList.add("thumb"); t.dataset.lb = name; }
     var cap = el("div", "del-cap");
@@ -585,7 +585,7 @@
         // 横断ビューは c.sid、ボード表示は state.cur が書き先の slug。
         var p = c.sid || state.cur;
         if (!p || p === "__all__") { toast("添付を外す先のボードが定まらない"); return; }
-        fetch("/api/attach/del" + qsOf({ p: p, id: c.id, n: at })).then(function (r) {
+        fetch("/api/attach/del" + qsOf({ p: p, deliv: c.id, n: at })).then(function (r) {
           if (r.status === 401) authFail();
           return r.json().then(function (j) {
             if (!r.ok || !j || !j.ok) throw new Error((j && j.error) || "http " + r.status);
@@ -600,8 +600,8 @@
   }
   function renderDeliverables() {
     var box = $("#deliverables"), grid = $("#delgrid");
-    // #79: 3 列化したので成果物の置き場はこの帯だけ。添付の有無に関わらず deliverable を全部出す。
-    var cards = delCards().filter(function (c) { return c.col === "deliverable"; });
+    // #79: 3 列化したので成果物の置き場はこの帯だけ。添付の有無に関わらず全部出す。
+    var cards = delItems();
     // 打ちかけ（state.addCol）も署名に含める。含めないと + を押しても入力欄が出ない。
     var sig = String(state.addCol) + "\n" + cards.map(function (c) { return c.id + "|" + c.img + "|" + (c.sid || "") + "|" + c.text; }).join("\n");
     if (box.dataset.sig === sig) return;
@@ -791,8 +791,17 @@
   function submitAdd(col, text) {
     var body = text || "";
     if (!body.trim()) { state.addCol = null; render(); return; }
-    // #79: 成果物は quickadd を使わない（quickadd は col を取れず TODO 行きになる）。1 枚のカードとして足す。
-    var multi = col !== "deliverable" && (body.indexOf("\n") >= 0 || QA_RE.test(body));
+    // #82: 成果物は card ではない。1 件だけ /api/deliv/add へ（quickadd は通さない）。
+    if (col === "deliverable") {
+      act("/api/deliv/add", { text: body.trim() }).then(function (r) {
+        state.addCol = null;
+        delete addDraft[col];
+        refresh();
+        toast("成果物 #" + ((r && r.deliverable && r.deliverable.id) || "?") + " を追加");
+      }, fail);
+      return;
+    }
+    var multi = body.indexOf("\n") >= 0 || QA_RE.test(body);
     var req = multi
       ? act("/api/quickadd", { text: body })
       : act("/api/add", { text: body.trim(), col: col });
@@ -922,15 +931,36 @@
     for (i = 0; i < cards.length; i++) if (cards[i].id === state.modal) return cards[i];
     return null;
   }
+  // #82: 成果物モーダルの行。card と同じ #cm を使うが、探す先と番号空間が違う。
+  function delivModal() {
+    var list = delItems(), i;
+    for (i = 0; i < list.length; i++) if (list[i].id === state.modalDeliv) return list[i];
+    return null;
+  }
+  function modalOpen() { return state.modal != null || state.modalDeliv != null; }
+  function openDelivModal(id) {
+    state.modal = null;
+    state.modalDeliv = id;
+    var d = delivModal();
+    if (!d) { state.modalDeliv = null; return; }
+    // 横断ビューは読み取り専用（削除と添付× だけ d.sid 宛で許す）。
+    var ro = state.allview || !state.cur || state.cur === "__all__";
+    $("#cm").classList.add("deliv");
+    $("#cm-text").readOnly = ro;
+    $("#cm-id").textContent = "#" + d.id;
+    $("#cm-text").value = d.text || "";
+    renderAtt(d);
+    $("#cm").setAttribute("open", "");
+    $("#cm-text").focus();
+  }
   function openModal(id) {
     if (!needProj()) return;
     state.modal = id;
+    state.modalDeliv = null;
     var c = modalCard();
     if (!c) { state.modal = null; return; }
-    // #79: 成果物は phase を持たない。移動先ボタンを出さない（横断ビューからモーダルを開いても同じ）。
-    Array.prototype.forEach.call(document.querySelectorAll("#cm [data-move]"), function (b) {
-      b.style.display = c.col === "deliverable" ? "none" : "";
-    });
+    $("#cm").classList.remove("deliv");
+    $("#cm-text").readOnly = false;
     $("#cm-id").textContent = "#" + c.id;
     $("#cm-text").value = c.text || "";
     $("#cm-project").value = c.project || "";
@@ -944,7 +974,13 @@
     $("#cm").setAttribute("open", "");
     $("#cm-text").focus();
   }
-  function closeModal() { state.modal = null; $("#cm").removeAttribute("open"); }
+  function closeModal() {
+    state.modal = null;
+    state.modalDeliv = null;
+    $("#cm").classList.remove("deliv");
+    $("#cm-text").readOnly = false;
+    $("#cm").removeAttribute("open");
+  }
   function renderPrio(c) {
     var n = prioOf(c);
     Array.prototype.forEach.call(document.querySelectorAll("#cm [data-prio]"), function (b) {
@@ -975,8 +1011,11 @@
       }, function () { throw new Error("http " + r.status); });
     });
   }
-  function uploadOne(id, file) {
-    return upFetch("/api/upload" + qsOf({ p: state.cur, id: id, ext: upExtOf(file.name) }), {
+  function uploadOne(sel, file) {
+    var params = { p: sel.p, ext: upExtOf(file.name) };
+    if (sel.deliv != null) params.deliv = sel.deliv;
+    else params.id = sel.id;
+    return upFetch("/api/upload" + qsOf(params), {
       method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: file,
     });
   }
@@ -985,36 +1024,50 @@
   // （iframe 由来の小さい payload と同じ形。サーバの上限も 128KB）。
   // 添付先: モーダルのカード > 選択中（矢印キーで選ぶ state.sel）のカード > TODO に受け皿。
   var PASTE_MAX_FILE = 96 * 1024; // base64 にすると 4/3 倍 = 128KB（サーバの同じ上限）
-  function pasteOne(id, file) {
+  function pasteOne(sel, file) {
     return new Promise(function (ok, ng) {
       var r = new FileReader();
       r.onload = function () { ok(String(r.result || "")); };
       r.onerror = function () { ng(new Error("クリップボードを読めない")); };
       r.readAsDataURL(file);
     }).then(function (data) {
-      return upFetch("/api/upload2" + qsOf({ p: state.cur, id: id, data: data }));
+      var params = { p: sel.p, data: data };
+      if (sel.deliv != null) params.deliv = sel.deliv;
+      else params.id = sel.id;
+      return upFetch("/api/upload2" + qsOf(params));
     });
   }
-  function pasteTo(id, file) {
-    return pasteOne(id, file).then(function () {
-      toast("画像を #" + id + " に添付");
+  function pasteTo(sel, file) {
+    return pasteOne(sel, file).then(function () {
+      toast((sel.deliv != null ? "成果物 #" + sel.deliv : "#" + sel.id) + " に画像を添付");
       return refresh();
     }, function (e) { toast("添付できず: " + (e && e.message ? e.message : e)); });
+  }
+  // 今モーダルが相手にしている行（card か deliv）。添付 API の引数はここで決める。
+  function attSel() {
+    if (state.modalDeliv != null) {
+      var d = delivModal();
+      if (!d) return null;
+      // 横断ビューの書き先は d.sid（帯の × と同じ解決）。
+      return { p: d.sid || state.cur, deliv: d.id };
+    }
+    if (state.modal != null) return { p: state.cur, id: state.modal };
+    return null;
   }
   function pasteImage(file) {
     if (!file) return;
     if (file.size > PASTE_MAX_FILE) { toast("大きすぎる画像（base64 で 128KB 超）"); return; }
-    var c = state.modal ? modalCard() : null;
-    if (c) { pasteTo(c.id, file); return; }
+    var c = attSel();
+    if (c) { pasteTo(c, file); return; }
     if (state.allview || !state.cur || state.cur === "__all__") { toast("ボードを選んでからペーストして"); return; }
     var sel = state.sel >= 0 ? visibleCards()[state.sel] : null;
-    if (sel) { pasteTo(Number(sel.dataset.id), file); return; }
+    if (sel) { pasteTo({ p: state.cur, id: Number(sel.dataset.id) }, file); return; }
     // 選択が無いときは受け皿を 1 枚作る（ペーストだけで完結させる）。
     act("/api/add", { text: "ペースト画像", col: "todo" }).then(function (r) {
       var cards = (r && r.cards) || [];
       if (!cards.length) throw new Error("カードを作れない");
       var id = Math.max.apply(null, cards.map(function (x) { return x.id; }));
-      return pasteTo(id, file);
+      return pasteTo({ p: state.cur, id: id }, file);
     }).then(null, function (e) { toast("添付できず: " + (e && e.message ? e.message : e)); });
   }
   document.addEventListener("paste", function (e) {
@@ -1031,10 +1084,11 @@
   });
   // モーダルを閉じても送信は止めない（完了後の refresh は state.cur の盤にしか触らない）。
   function uploadFiles(files) {
-    var c = state.modal ? modalCard() : null;
-    if (!c) return;
+    var sel = attSel();
+    if (!sel) return;
     if (state.uploading) { toast("送信中… 終わるまで待って"); return; }
-    var id = c.id, go = [], bad = [];
+    var id = sel.deliv != null ? sel.deliv : sel.id, go = [], bad = [];
+    var label = sel.deliv != null ? "成果物 #" + id : "#" + id;
     Array.prototype.forEach.call(files || [], function (f) {
       if (UP_EXTS.indexOf(upExtOf(f.name)) >= 0) go.push(f); else bad.push(f.name);
     });
@@ -1045,16 +1099,16 @@
     // 1 ファイル 1 リクエスト。直列にしてサーバの総量判定を並列で揺らさない。
     go.forEach(function (f) {
       chain = chain.then(function () {
-        return uploadOne(id, f).then(function () { sent.push(f.name); }, function (e) { err = e; });
+        return uploadOne(sel, f).then(function () { sent.push(f.name); }, function (e) { err = e; });
       });
     });
     chain.then(function () {
       attBusy(false);
-      if (sent.length) toast("#" + id + " に " + sent.join(", ") + " を添付");
+      if (sent.length) toast(label + " に " + sent.join(", ") + " を添付");
       if (err) toast("添付失敗: " + (err.message || err));
       refresh().then(function () {
-        if (state.modal !== id) return;
-        var c1 = modalCard();
+        if (!modalOpen()) return;
+        var c1 = state.modalDeliv != null ? delivModal() : modalCard();
         if (c1) renderAtt(c1);
       }, fail);
     });
@@ -1074,9 +1128,9 @@
   function wireAttach() {
     var cm = $("#cm"), zone = $("#cm-drop"), file = $("#cm-file");
     file.addEventListener("change", function () { uploadFiles(file.files); file.value = ""; });
-    cm.addEventListener("dragover", function (e) { if (state.modal) e.preventDefault(); });
+    cm.addEventListener("dragover", function (e) { if (modalOpen()) e.preventDefault(); });
     cm.addEventListener("drop", function (e) {
-      if (!state.modal) return;
+      if (!modalOpen()) return;
       e.preventDefault();
       zone.classList.remove("over");
       if (e.target === zone || (zone.contains && zone.contains(e.target))) {
@@ -1084,7 +1138,7 @@
       }
     });
     zone.addEventListener("dragover", function (e) {
-      if (!state.modal) return;
+      if (!modalOpen()) return;
       e.preventDefault();
       e.stopPropagation();
       zone.classList.add("over");
@@ -1096,6 +1150,16 @@
   // 本文は /api/rename、残り（at/blocked/project/labels）は 1 本の /api/schedule。
   // due/estimate を更新する端点は無いので、この面では表示のみ（v1）。
   function saveModal() {
+    // #82: 成果物モードは本文だけ（project/labels/due/estimate/loop/依存/移動/予約の欄は出ない）。
+    if (state.modalDeliv != null) {
+      var d = delivModal();
+      if (!d) { closeModal(); return; }
+      if (!needProj()) return;
+      var t = $("#cm-text").value.trim();
+      if (!t || t === d.text) { closeModal(); return; }
+      act("/api/deliv/edit", { id: d.id, text: t }).then(function () { closeModal(); refresh(); toast("成果物 #" + d.id + " を保存"); }, fail);
+      return;
+    }
     var c = modalCard();
     if (!c) return;
     var id = c.id, text = $("#cm-text").value.trim(), jobs = [];
@@ -1182,11 +1246,22 @@
         act("/api/remove", { id: c0.id }).then(function () { closeModal(); refresh(); toast("#" + c0.id + " を削除"); }, fail);
         return;
       }
+      // #82: 成果物モードの削除。横断ビューでも d.sid 宛でなら許す。
+      if (t.id === "cm-del" && state.modalDeliv != null) {
+        var dv = delivModal();
+        if (!dv) { closeModal(); return; }
+        if (!dv.sid && !needProj()) return;
+        if (!window.confirm("成果物 #" + dv.id + " を削除する？")) return;
+        act("/api/deliv/remove", { p: dv.sid || state.cur, id: dv.id }).then(function () {
+          closeModal(); refresh(); toast("成果物 #" + dv.id + " を削除");
+        }, fail);
+        return;
+      }
       return; // モーダル内の他のクリックは下へ流さない
     }
-    // #79: 帯タイルは見出し（.del-cap）だけが編集モーダル。サムネは lightbox、添付なしは入口にしない。
+    // #82: 帯タイルは見出し（.del-cap）だけが成果物モーダル。サムネは lightbox、添付なしは入口にしない。
     var dt = t.closest && t.closest(".del-tile");
-    if (dt && t.closest(".del-cap")) { openModal(Number(dt.dataset.id)); return; }
+    if (dt && t.closest(".del-cap")) { openDelivModal(Number(dt.dataset.deliv)); return; }
     var th = t.closest && t.closest(".thumb");
     if (th) { showLb(lbList().indexOf(th)); return; }
     if (t.id === "lb" || t.id === "lbimg") closeLb();

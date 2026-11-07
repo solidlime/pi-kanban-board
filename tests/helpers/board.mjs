@@ -19,7 +19,8 @@ const need = () => {
 
 /** Seed a board exactly as the server would. Throws instead of hiding a write failure. */
 export const seedBoard = (path, b) => {
-	const err = need().writeBoard(path, b);
+	// #82: a Board carries deliverables/delivNextId too; a seed that omits them means "none".
+	const err = need().writeBoard(path, { deliverables: [], delivNextId: 1, ...b });
 	if (err !== null) throw new Error(err);
 };
 

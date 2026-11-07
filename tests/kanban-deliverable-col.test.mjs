@@ -1,12 +1,10 @@
-// #67: card.col に第4列 "deliverable"（成果物）。TODO/DOING/DONE の外の独立列。
-// 契約:
-//   1. /api/move と /api/add は col=deliverable を受ける（parseCol が 4 値）。
-//   2. counts は todo/doing/done の 3 キーのまま。deliverable は入らない。
-//   3. project payload に deliverableCount（= deliverable 枚数）が増える。
-//   4. projectRollup の total/done/progress/overdue は deliverable を数えない
-//      （成果物は「進捗」ではなく、終わった成果）。
+// #82: 成果物は card.col ではなく deliv テーブル。ここは「列ではなくなった」ことの契約:
+//   1. /api/move の col=deliverable は 400（deliverable is not a phase）。旧行の退出は通る。
+//   2. counts は todo/doing/done の 3 キーのまま。旧 col=deliverable 行は入らない。
+//   3. project payload の deliverableCount は deliv の件数（= deliverables.length）。
+//   4. projectRollup は旧 col 行も 1 枚のカードとして数える（除外はもう無い）。
 //   5. loop は deliverable を駆動しない: nextTodo は todo だけ、tickCardFor は doing だけ。
-//   6. 他セッションの deliverable は隠さない（hiddenTodoCount は todo だけの話）。
+//   6. 他セッションの旧 deliverable 行は隠さない（hiddenTodoCount は todo だけの話）。
 // フレームワーク無しで `node tests/kanban-deliverable-col.test.mjs`。
 import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
@@ -75,6 +73,8 @@ const B = "sid-session-b";
 const seed = () =>
 	seedBoard(BOARD, {
 		nextId: 5,
+		delivNextId: 1,
+		deliverables: [],
 		cards: [
 			{ id: 1, text: "A の todo", col: "todo", movedBy: A, movedAt: 1 },
 			{ id: 2, text: "B の todo", col: "todo", movedBy: B, movedAt: 1 },
@@ -98,45 +98,60 @@ const move = async (id, col, sid) => {
 	return tf(`${BASE}/api/move?${q}`);
 };
 
-// --- 1. /api/move は deliverable を受ける ---------------------------------------
-await check("#67 /api/move?col=deliverable は 200 で、col が変わる", async () => {
+// --- 1. /api/move は deliverable を受けない -------------------------------------
+await check("#82 /api/move?col=deliverable は 400 で、col は変わらない", async () => {
 	const r = await move(1, "deliverable", A);
-	assert.equal(r.status, 200, `status ${r.status} ${await r.text()}`);
+	assert.equal(r.status, 400, `status ${r.status}`);
+	assert.deepEqual(await r.json(), { ok: false, error: "deliverable is not a phase" });
 	const b = readBoardAt(BOARD);
-	assert.equal(b.cards.find((c) => c.id === 1).col, "deliverable", "board に書かれていない");
-	const rep = await boardOf(null, true);
-	assert.equal(rep.cards.find((c) => c.id === 1).col, "deliverable", "payload に反映されていない");
+	assert.equal(b.cards.find((c) => c.id === 1).col, "todo", "board が書き換わった");
+});
+
+await check("#82 旧 col=deliverable 行は done へ退出できる", async () => {
+	const r = await move(4, "done", B);
+	assert.equal(r.status, 200, `status ${r.status}`);
+	assert.equal(readBoardAt(BOARD).cards.find((c) => c.id === 4).col, "done");
+	seed(); // 次のチェックのために戻す
 });
 
 // --- 2. counts は 3 キーのまま（deliverable は入らない） -------------------------
 await check("#67 counts は todo/doing/done の 3 キーだけ", async () => {
 	const rep = await boardOf(null, true);
 	assert.deepEqual(Object.keys(rep.counts).sort(), ["doing", "done", "todo"], JSON.stringify(rep.counts));
-	assert.deepEqual(rep.counts, { todo: 1, doing: 0, done: 1 }, JSON.stringify(rep.counts));
+	assert.deepEqual(rep.counts, { todo: 2, doing: 0, done: 1 }, JSON.stringify(rep.counts));
 });
 
-// --- 3. deliverableCount ------------------------------------------------------
-await check("#67 project payload に deliverableCount", async () => {
+// --- 3. deliverableCount は deliv の件数 ---------------------------------------
+await check("#82 project payload の deliverableCount は deliv の件数", async () => {
 	const rep = await boardOf(null, true);
 	assert.equal(typeof rep.deliverableCount, "number", "deliverableCount が無い");
-	assert.equal(rep.deliverableCount, 2, `deliverableCount=${rep.deliverableCount}`); // #1 + #4
+	assert.equal(rep.deliverableCount, 0, `deliverableCount=${rep.deliverableCount}`); // 旧 col 行は数えない
+	const add = await tf(`${BASE}/api/deliv/add?${new URLSearchParams({ p: SLUG, text: "成果物 1" })}`);
+	assert.equal(add.status, 200, `add: status ${add.status}`);
+	const rep2 = await boardOf(null, true);
+	assert.equal(rep2.deliverableCount, 1, `deliverableCount=${rep2.deliverableCount}`);
+	assert.equal(rep2.deliverables.length, 1);
 });
 
 // --- 4. stats / progress は deliverable を数えない ------------------------------
-await check("#67 /api/dashboard の stats は deliverable を足さない", async () => {
+await check("#82 /api/dashboard の stats はカードだけ、成果物は global.deliverables", async () => {
 	const r = await tf(`${BASE}/api/dashboard`);
 	assert.equal(r.status, 200, `status ${r.status}`);
 	const d = await r.json();
 	const cards = d.global.cards;
-	assert.equal(cards.filter((c) => c.col === "deliverable").length, 2, "global.cards に deliverable が居ない");
+	// 旧 col=deliverable 行も 1 枚のカードとして残る（read は壊さない）。stats はその合計。
+	assert.equal(cards.filter((c) => c.col === "deliverable").length, 1, "旧行が global.cards から消えた");
+	// 旧 col=deliverable 行は 3 つの列のどれでもないので counts に入らない（新規には作れない）。
 	assert.equal(
 		d.stats.todo + d.stats.doing + d.stats.done,
 		cards.filter((c) => c.col !== "deliverable").length,
-		"stats の合計に deliverable が混ざった",
+		"stats の合計がカード数と合わない",
 	);
+	assert.equal(d.global.deliverables.length, 1, "global.deliverables が deliv 行を返していない");
+	assert.equal(d.global.deliverables[0].sid, SLUG, "sid が付いていない");
 });
 
-await check("#67 projectRollup: total/done/progress は deliverable を数えない", () => {
+await check("#82 projectRollup は旧 col 行も 1 枚として数える（除外しない）", () => {
 	const at = (id, col) => ({ scope: "project", sid: "kb", card: { id, text: `t${id}`, col } });
 	const rows = mod.projectRollup(
 		[],
@@ -145,24 +160,24 @@ await check("#67 projectRollup: total/done/progress は deliverable を数えな
 		"2026-01-01",
 	);
 	const p = rows.find((r) => r.slug === "kb");
-	assert.equal(p.total, 2, `total=${p.total}`);
+	assert.equal(p.total, 4, `total=${p.total}`);
 	assert.equal(p.done, 1, `done=${p.done}`);
-	assert.equal(p.progress, 50, `progress=${p.progress}`);
+	assert.equal(p.progress, 25, `progress=${p.progress}`);
 	assert.equal(p.counts.done, 1);
 });
 
-await check("#67 projectRollup: 期限超過に deliverable は入らない", () => {
+await check("#82 projectRollup: 期限超過も旧 col 行を含めて数える", () => {
 	const at = (id, col) => ({
 		scope: "project",
 		sid: "kb",
 		card: { id, text: `t${id}`, col, due: "2025-01-01" },
 	});
 	const p = mod.projectRollup([], [], [at(1, "todo"), at(2, "deliverable")], "2026-01-01").find((r) => r.slug === "kb");
-	assert.equal(p.overdue, 1, `overdue=${p.overdue}`);
+	assert.equal(p.overdue, 2, `overdue=${p.overdue}`);
 });
 
 // --- 5. loop は deliverable を駆動しない ---------------------------------------
-await check("#67 nextTodo は deliverable を拾わない", () => {
+await check("#82 nextTodo は deliverable を拾わない", () => {
 	const cards = [
 		{ id: 1, text: "成果物", col: "deliverable", priority: 99 },
 		{ id: 2, text: "todo", col: "todo" },
@@ -171,26 +186,27 @@ await check("#67 nextTodo は deliverable を拾わない", () => {
 	assert.equal(mod.nextTodo([{ id: 1, text: "成果物", col: "deliverable" }], "project", A), undefined);
 });
 
-await check("#67 tickCardFor（doingLoop の駆動元）は deliverable を拾わない", () => {
+await check("#82 tickCardFor（doingLoop の駆動元）は deliverable を拾わない", () => {
 	assert.equal(mod.tickCardFor([{ id: 1, text: "成果物", col: "deliverable", movedBy: A }], A), undefined);
 });
 
 // --- 6. 他セッションの deliverable は隠さない ----------------------------------
-await check("#67 hiddenTodoCount は deliverable を隠さない", async () => {
+await check("#82 hiddenTodoCount は旧 deliverable 行を隠さない", async () => {
 	seed();
 	const rep = await boardOf(A, false);
 	assert.equal(rep.hiddenTodoCount, 1, "隠れたのは B の TODO 1 枚だけのはず");
-	assert.equal(rep.cards.filter((c) => c.col === "deliverable").length, 1, "他セッションの成果物が消えた");
+	assert.equal(rep.cards.filter((c) => c.col === "deliverable").length, 1, "他セッションの旧行が消えた");
 });
 
-// --- 7. /api/add も deliverable を受ける ---------------------------------------
-await check("#67 /api/add?col=deliverable は 200 で deliverable に置かれる", async () => {
+// --- 7. /api/add はもう deliverable を作れない ----------------------------------
+await check("#82 /api/add?col=deliverable は新規の旧形式行を作らない（todo に落ちる）", async () => {
 	seed();
 	const q = new URLSearchParams({ p: SLUG, col: "deliverable", text: "新しい成果物", sid: A });
 	const r = await tf(`${BASE}/api/add?${q}`);
-	assert.equal(r.status, 200, `status ${r.status} ${await r.text()}`);
+	assert.equal(r.status, 200, `status ${r.status}`);
 	const b = readBoardAt(BOARD);
-	assert.equal(b.cards.find((c) => c.text === "新しい成果物").col, "deliverable");
+	assert.equal(b.cards.find((c) => c.text === "新しい成果物").col, "todo", "parseCol が deliverable を通した");
+	assert.equal(b.cards.filter((c) => c.col === "deliverable").length, 1, "旧形式の行が増えた");
 });
 
 // --- 8. UI 構造（ブラウザ実機は #057 の担当。ここは配線だけ） --------------------
@@ -200,7 +216,9 @@ await check("#67/#79 _app.js の board は 3 列（deliverable は列ではな�
 	const app = read("web/dash/_app.js");
 	assert.match(app, /\["todo", "doing", "done"\]\.forEach/, "3 列の forEach が無い");
 	assert.ok(!app.includes('["todo", "doing", "done", "deliverable"].forEach'), "#79: 4 列目は撤去");
-	assert.ok(app.includes('col === "deliverable"'), "成果物の扱い（colName / 帯）が無い");
+	assert.ok(!app.includes('function colName(col) { return col === "deliverable"'), "colName に成果物の分岐が残っている");
+	const board3 = app.slice(app.indexOf("function renderBoard()"), app.indexOf("function cardEl("));
+	assert.ok(!board3.includes("deliverable"), "renderBoard に成果物の列分岐が残っている");
 });
 
 await check("#67/#79 _b.css の .cols は 3 列、狭い時は 1 列", () => {
@@ -217,6 +235,7 @@ await check("#77/#78/#79 UI の配線（ブラウザ実機は #057 の担当）"
 	assert.ok(app.includes('e.key === "Escape" && $("#cm").hasAttribute("open")'), "#77: Esc でモーダルが閉じない");
 	assert.ok(app.includes('t.closest(".del-cap")'), "#79: 帯タイルからモーダルを開けない");
 	assert.ok(head.includes('id="deladd"'), "#79: 帯に + が無い");
+	assert.ok(!head.includes('data-move="deliverable"'), "#82: カードモーダルに成果物への移動ボタンが残っている");
 });
 
 if (failures.length > 0) {

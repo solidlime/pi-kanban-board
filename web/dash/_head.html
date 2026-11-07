@@ -117,17 +117,17 @@
       <button class="ghost" id="cm-close" title="Esc">閉じる</button>
     </div>
     <label class="f"><span>本文</span><input id="cm-text" type="text"></label>
-    <div class="row2">
+    <div class="row2 cardonly">
       <label class="f"><span>project（空で解除）</span><input id="cm-project" type="text"></label>
       <label class="f"><span>labels（, 区切り / 空で解除）</span><input id="cm-labels" type="text"></label>
     </div>
-    <div class="row2">
+    <div class="row2 cardonly">
       <label class="f"><span>due（表示のみ）</span><input id="cm-due" type="date" disabled></label>
       <label class="f"><span>estimate（表示のみ）</span><input id="cm-estimate" type="number" disabled></label>
     </div>
-    <label class="f"><span>blocked（空で解除）</span><input id="cm-blocked" type="text"></label>
-    <label class="f"><span>実行予約 at（+30m / +2h / +1d / ISO8601 / 空で解除）</span><input id="cm-at" type="text"></label>
-    <div class="cmprio">
+    <label class="f cardonly"><span>blocked（空で解除）</span><input id="cm-blocked" type="text"></label>
+    <label class="f cardonly"><span>実行予約 at（+30m / +2h / +1d / ISO8601 / 空で解除）</span><input id="cm-at" type="text"></label>
+    <div class="cmprio cardonly">
       <span>priority</span>
       <button type="button" data-prio="10" title="autoPick で先に拾う">10 中</button>
       <button type="button" data-prio="5" title="中より後">5 低</button>
@@ -145,11 +145,10 @@
     </div>
     <div class="cmact">
       <button type="button" id="cm-save">保存</button>
-      <button type="button" id="cm-sched">実行予約</button>
-      <button type="button" data-move="todo">TODO へ</button>
-      <button type="button" data-move="doing">DOING へ</button>
-      <button type="button" data-move="done">DONE へ</button>
-      <button type="button" data-move="deliverable">成果物 へ</button>
+      <button type="button" id="cm-sched" class="cardonly">実行予約</button>
+      <button type="button" data-move="todo" class="cardonly">TODO へ</button>
+      <button type="button" data-move="doing" class="cardonly">DOING へ</button>
+      <button type="button" data-move="done" class="cardonly">DONE へ</button>
       <button type="button" id="cm-del">削除</button>
     </div>
   </div>

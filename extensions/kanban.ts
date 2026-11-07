@@ -125,7 +125,9 @@ type Card = {
 	 */
 	mine?: boolean;
 };
-type Board = { cards: Card[]; nextId: number };
+/** #82: 成果物は card ではない（col を持たない納品物）。id 空間は card と別。 */
+export type Deliv = { id: number; text: string; img?: string; at: number };
+type Board = { cards: Card[]; nextId: number; deliverables: Deliv[]; delivNextId: number };
 // Automatic loop modes, keyed by (scope, session). The legacy flat doingLoop/autoPick
 // are the DEFAULT for any (scope, sid) with no explicit entry; keep them on every write.
 // stuckLimit is a settle COUNT (not minutes): intervalMin and stuckLimit are both
@@ -486,7 +488,7 @@ export function readBoardOrNull(path: string): Board | null {
  * reading as empty: that would persist a wipe on the next write.
  */
 export function readBoard(path: string): Board {
-	return readBoardOrNull(path) ?? { cards: [], nextId: 1 };
+	return readBoardOrNull(path) ?? { cards: [], nextId: 1, deliverables: [], delivNextId: 1 };
 }
 /**
  * #36: the spelling a project board is STORED under, or the given slug when it has no board
@@ -1383,6 +1385,8 @@ export function renderInjectionText(b: Board): string | null {
 		"A card is a promise to finish something. Keep going without waiting:",
 		"if the user goes quiet, the board is what tells the next turn what is",
 		"owed. Move it to DONE only when the thing actually works.",
+		// #82: output has its own table, so a model that reaches for col=deliverable is told why not.
+		"Deliverables are not cards: a deliverable is a `deliv` row (/api/deliv/add|edit|remove), and no column is called deliverable.",
 		"=== END KANBAN ===",
 	].join("\n");
 }
@@ -2047,6 +2051,10 @@ function isWritePath(pathname: string, method: string): boolean {
 		case "/api/project":
 		case "/api/decision":
 		case "/api/attach/del":
+		// #82: the deliverables' three write routes.
+		case "/api/deliv/add":
+		case "/api/deliv/edit":
+		case "/api/deliv/remove":
 			return true;
 		default:
 			return false;
@@ -3202,8 +3210,10 @@ function serveFileOpts(abs: string, st: Stats): FileServeOpts {
 	};
 }
 
+/** #82: a write may only name a phase. "deliverable" is not one (deliv has its own table), so
+ * /api/add and a fresh upload can no longer mint a row; old rows are still READ as-is. */
 function parseCol(value: string | null): Col | undefined {
-	return value === "todo" || value === "doing" || value === "done" || value === "deliverable" ? value : undefined;
+	return value === "todo" || value === "doing" || value === "done" ? value : undefined;
 }
 
 /** #80-⑪: total bytes under MEDIA_DIR. Missing directory = 0, unreadable entry = skipped. */
@@ -3234,6 +3244,28 @@ function isSafeMediaName(name: string): boolean {
 /** 8 hex chars. Math.random is fine here: names only need per-card uniqueness. */
 function randHex8(): string {
 	return Math.random().toString(16).slice(2, 10).padEnd(8, "0");
+}
+
+/** #82: which row an upload / attach touches. `deliv=<id>` means a deliverable, never a card;
+ * without it the old `id=` path is unchanged (and `new` = /api/upload's "no id" card). */
+type MediaTarget =
+	| { kind: "card"; card: Card }
+	| { kind: "deliv"; deliv: Deliv }
+	| { kind: "new" }
+	| { kind: "missing"; error: string };
+
+function mediaTarget(q: URLSearchParams, b: Board): MediaTarget {
+	const delivRaw = q.get("deliv");
+	if (delivRaw !== null) {
+		const deliv = b.deliverables.find((d) => d.id === Number(delivRaw));
+		if (deliv === undefined) return { kind: "missing", error: `no deliverable with id ${delivRaw}` };
+		return { kind: "deliv", deliv };
+	}
+	const idParam = q.get("id");
+	if (idParam === null) return { kind: "new" };
+	const card = b.cards.find((c) => c.id === Number(idParam));
+	if (card === undefined) return { kind: "missing", error: `no card with id ${idParam}` };
+	return { kind: "card", card };
 }
 
 /** Write bytes as a card's media file; returns the stored filename, or null on failure. */
@@ -3527,9 +3559,8 @@ export function projectRollup(
 	}
 	return [...slugs].sort().map((slug) => {
 		const mine = cards.filter((e) => e.scope === "project" && e.sid === slug);
-		// #67: deliverable（成果物）は進捗の分子・分母に入れない。総数・完了・ポイント・期限超過は
-		// todo/doing/done だけで数える（成果物は「やること」ではなく、終わったもの）。
-		const counted = mine.filter((e) => e.card.col !== "deliverable");
+		// #82: 成果物は card ではないので、進捗の総数・完了・ポイント・期限超過には入らない。
+		const counted = mine;
 		const done = counted.filter((e) => e.card.col === "done");
 		const points = (list: { card: RollupCard }[]) => list.reduce((n, e) => n + (e.card.estimate ?? 0), 0);
 		const at = (e: { card: RollupCard; scope: string; sid: string }) => ({ scope: e.scope, sid: e.sid });
@@ -3590,8 +3621,29 @@ function projectBoardsOf(entries: RollupEntry[]): { slug: string; cards: Card[] 
  * GLOBAL_JSON cards stay in the sum for pre-migration rows and for tests that seed it.
  * #28: the sum itself is allRollupCards() — one expression, so the four supply paths cannot drift.
  */
-function aggregateGlobal(): { cards: (Card & { sid: string })[]; nextId: number } {
-	return { cards: allRollupCards().map(({ sid, card }) => ({ ...card, sid })), nextId: 1 };
+/** #82: 機械全体の成果物（cross-project）。sid = その行が属するプロジェクト。 */
+function aggregateDelivs(): (Deliv & { sid: string })[] {
+	return [
+		...readBoard(GLOBAL_JSON).deliverables.map((d) => ({ ...d, sid: "" })),
+		...kanbanDb()
+			.listProjectDeliverables()
+			.flatMap(({ slug, deliverables }) => deliverables.map((d) => ({ ...d, sid: slug }))),
+	];
+}
+
+function aggregateGlobal(): {
+	cards: (Card & { sid: string })[];
+	nextId: number;
+	deliverables: (Deliv & { sid: string })[];
+	delivNextId: number;
+} {
+	return {
+		cards: allRollupCards().map(({ sid, card }) => ({ ...card, sid })),
+		nextId: 1,
+		deliverables: aggregateDelivs(),
+		// Aggregate view: nothing is ever numbered here (a write goes to a real board).
+		delivNextId: 1,
+	};
 }
 
 /**
@@ -3728,9 +3780,9 @@ function projectReport(
 	return {
 		id: slug,
 		counts: countCols(pb),
-		// #67: 4列目「成果物」の見出しの数字。counts は 3 キーのままなので別フィールドで出す。
-		// todo/doing/done しか数えないのは仕様: deliverable は進捗の対象外。
-		deliverableCount: pb.cards.filter((c) => c.col === "deliverable").length,
+		// #82: 成果物は deliv テーブルの件数。counts は 3 キーのまま。
+		deliverableCount: pb.deliverables.length,
+		deliverables: pb.deliverables,
 		cards: showOthers ? tagged : tagged.filter((c) => c.col !== "todo" || todoMineOrUnowned(c, sidActor)),
 		hiddenTodoCount: others.length,
 		next: nextTodo(pb.cards, "project", sidActor) ?? null,
@@ -3749,7 +3801,7 @@ async function dashboardPayload(): Promise<unknown> {
 	// counts. Summing this process's project board on top of it (the old shape) counted
 	// the same card twice.
 	const agg = aggregateGlobal();
-	const aggBoard: Board = { cards: agg.cards, nextId: agg.nextId };
+	const aggBoard: Board = agg;
 	const globalCounts = countCols(aggBoard);
 	// The GLOBAL board's switches live under scope=global, keyed by the active session.
 	const f = readModesFile();
@@ -3809,6 +3861,8 @@ async function dashboardPayload(): Promise<unknown> {
 		global: {
 			counts: globalCounts,
 			cards: agg.cards,
+			// #82: 横断ビューの成果物（sid = その行のプロジェクト）。
+			deliverables: agg.deliverables,
 			// #26: no modes - global is not a board and owns no switches. `loops`/`halted` stay
 			// as the measured values of a board that never drives (always 0 / false).
 			loops: loopCountOf(sidActor, "global"),
@@ -3959,10 +4013,14 @@ function handleUpload(req: IncomingMessage, res: ServerResponse, q: URLSearchPar
 			return;
 		}
 		const b = readBoard(path);
-		const idParam = q.get("id");
-		let card: Card;
-		if (idParam === null) {
-			card = { id: b.nextId++, text: "", col: parseCol(q.get("col")) ?? "todo" };
+		const t = mediaTarget(q, b);
+		if (t.kind === "missing") {
+			sendJson(res, 404, { ok: false, error: t.error });
+			return;
+		}
+		let owner: { id: number; img?: string };
+		if (t.kind === "new") {
+			const card: Card = { id: b.nextId++, text: "", col: parseCol(q.get("col")) ?? "todo" };
 			stampMove(card, actorOf(q));
 			card.text = `#${card.id} (${ext === "html" ? "html" : MIME_BY_EXT[ext].startsWith("video/") ? "video" : "image"})`;
 			const projectRaw = q.get("project");
@@ -3974,25 +4032,24 @@ function handleUpload(req: IncomingMessage, res: ServerResponse, q: URLSearchPar
 			}
 			if (project !== "") card.project = project;
 			b.cards.push(card);
+			owner = card;
+		} else if (t.kind === "deliv") {
+			// #82: a deliverable's attachment. No project label, no card id space.
+			owner = t.deliv;
 		} else {
 			// Uploading to an existing card leaves its project label alone (the dashboard only sends project for a new card).
-			const found = b.cards.find((c) => c.id === Number(idParam));
-			if (found === undefined) {
-				sendJson(res, 404, { ok: false, error: `no card with id ${idParam}` });
-				return;
-			}
 			// #53: an upload ADDS to the card: dropping the old file on every upload made a
 			// second attachment impossible. Removal is per card (delete trashes them all).
-			card = found;
+			owner = t.card;
 		}
-		const name = writeMedia(card.id, ext, buf);
+		const name = writeMedia(owner.id, ext, buf);
 		if (name === null) {
 			sendJson(res, 500, { ok: false, error: "media write failed" });
 			return;
 		}
-		card.img = card.img ? `${card.img},${name}` : name;
+		owner.img = owner.img ? `${owner.img},${name}` : name;
 		writeBoard(path, b);
-		sendJson(res, 200, { ok: true, card });
+		sendJson(res, 200, t.kind === "deliv" ? { ok: true, deliverable: owner } : { ok: true, card: owner });
 	});
 }
 
@@ -4056,18 +4113,18 @@ function handleUpload2(req: IncomingMessage, res: ServerResponse, q: URLSearchPa
 		sendJson(res, 400, { ok: false, error: target.error });
 		return;
 	}
-	const idRaw = q.get("id");
-	const id = Number(idRaw);
-	if (idRaw === null || !Number.isInteger(id) || id <= 0) {
+	const b = readBoard(target.path);
+	const t = mediaTarget(q, b);
+	if (t.kind === "missing") {
+		sendJson(res, 404, { ok: false, error: t.error });
+		return;
+	}
+	// This route never creates a row: "no id and no deliv" is the caller's mistake.
+	if (t.kind === "new") {
 		sendJson(res, 400, { ok: false, error: "id required" });
 		return;
 	}
-	const b = readBoard(target.path);
-	const card = b.cards.find((c) => c.id === id);
-	if (card === undefined) {
-		sendJson(res, 404, { ok: false, error: `no card with id ${idRaw}` });
-		return;
-	}
+	const owner: { id: number; img?: string } = t.kind === "deliv" ? t.deliv : t.card;
 	if (parsed.bytes.length === 0) {
 		sendJson(res, 400, { ok: false, error: "empty payload" });
 		return;
@@ -4077,15 +4134,15 @@ function handleUpload2(req: IncomingMessage, res: ServerResponse, q: URLSearchPa
 		sendJson(res, 413, { ok: false, error: `media budget exceeded (max ${fmtMB(MEDIA_DIR_MAX_BYTES)})` });
 		return;
 	}
-	const name = writeMedia(card.id, parsed.ext, parsed.bytes);
+	const name = writeMedia(owner.id, parsed.ext, parsed.bytes);
 	if (name === null) {
 		sendJson(res, 500, { ok: false, error: "media write failed" });
 		return;
 	}
 	// #53: add, do not replace (a card can hold several attachments).
-	card.img = card.img ? `${card.img},${name}` : name;
+	owner.img = owner.img ? `${owner.img},${name}` : name;
 	writeBoard(target.path, b);
-	sendJson(res, 200, { ok: true, card });
+	sendJson(res, 200, t.kind === "deliv" ? { ok: true, deliverable: owner } : { ok: true, card: owner });
 }
 
 const MEDIA_PREFIX = "/api/media/";
@@ -4288,7 +4345,7 @@ function projectBoard(b: Board, keys: string[]): Board {
 		}
 		return out as unknown as Card;
 	});
-	return { cards, nextId: b.nextId };
+	return { cards, nextId: b.nextId, deliverables: b.deliverables, delivNextId: b.delivNextId };
 }
 
 
@@ -4803,9 +4860,14 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 			return;
 		}
 		case "/api/move": {
+			// #82: a deliverable is output, not a phase. Its rows live in deliv.
+			if (colParam === "deliverable") {
+				sendJson(res, 400, { ok: false, error: "deliverable is not a phase" });
+				return;
+			}
 			const col = parseCol(colParam);
 			if (col === undefined) {
-				sendJson(res, 400, { ok: false, error: "col must be todo|doing|done|deliverable" });
+				sendJson(res, 400, { ok: false, error: "col must be todo|doing|done" });
 				return;
 			}
 			const card = b.cards.find((c) => c.id === Number(idParam));
@@ -5032,17 +5094,71 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 			sendJson(res, 200, { ok: true, cards: b.cards });
 			return;
 		}
+		// #82: the deliverables' own routes. They are not cards: no col, no phase, no nextId.
+		// `p=` (writeBoardPath) decides the board; the id sequence is delivNextId.
+		case "/api/deliv/add": {
+			const text = (q.get("text") ?? "").trim();
+			if (text.length === 0) {
+				sendJson(res, 400, { ok: false, error: "text required" });
+				return;
+			}
+			const deliverable: Deliv = { id: b.delivNextId++, text, at: Date.now() };
+			b.deliverables.push(deliverable);
+			writeBoard(path, b);
+			sendJson(res, 200, { ok: true, deliverable });
+			return;
+		}
+		case "/api/deliv/edit": {
+			const text = (q.get("text") ?? "").trim();
+			if (text.length === 0) {
+				sendJson(res, 400, { ok: false, error: "text required" });
+				return;
+			}
+			const deliverable = b.deliverables.find((d) => d.id === Number(idParam));
+			if (deliverable === undefined) {
+				sendJson(res, 404, { ok: false, error: `no deliverable with id ${idParam}` });
+				return;
+			}
+			deliverable.text = text;
+			writeBoard(path, b);
+			sendJson(res, 200, { ok: true, deliverable });
+			return;
+		}
+		case "/api/deliv/remove": {
+			const deliverable = b.deliverables.find((d) => d.id === Number(idParam));
+			if (deliverable === undefined) {
+				sendJson(res, 404, { ok: false, error: `no deliverable with id ${idParam}` });
+				return;
+			}
+			// Same rule as a card: only our own media names, and only when nothing else shows them.
+			for (const gone of (deliverable.img ?? "").split(",").map((s) => s.trim()).filter(Boolean)) {
+				if (gone.startsWith("file:") || !isSafeMediaName(gone)) continue;
+				const kept = [...b.cards.map((c) => c.img), ...b.deliverables.filter((d) => d.id !== deliverable.id).map((d) => d.img)];
+				if (!kept.some((img) => (img ?? "").split(",").map((s) => s.trim()).includes(gone))) {
+					trashMedia(join(MEDIA_DIR, gone));
+				}
+			}
+			b.deliverables = b.deliverables.filter((d) => d.id !== deliverable.id);
+			writeBoard(path, b);
+			sendJson(res, 200, { ok: true });
+			return;
+		}
 		// #61: drop ONE attachment entry (the deliverables tile's ×). `n` is the index after
 		// the dashboard's csv split. A reference (`file:<abs>`) leaves its file alone - only
 		// the csv entry is ours; a media name is trashed unless another card still shows it.
 		// Removing the last entry drops `img` itself, so the card stops being a deliverable.
 		case "/api/attach/del": {
-			const card = b.cards.find((c) => c.id === Number(idParam));
-			if (card === undefined) {
-				sendJson(res, 404, { ok: false, error: `no card with id ${idParam}` });
+			const t = mediaTarget(q, b);
+			if (t.kind === "missing") {
+				sendJson(res, 404, { ok: false, error: t.error });
 				return;
 			}
-			const list = (card.img ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+			if (t.kind === "new") {
+				sendJson(res, 400, { ok: false, error: "id required" });
+				return;
+			}
+			const owner: { id: number; img?: string } = t.kind === "deliv" ? t.deliv : t.card;
+			const list = (owner.img ?? "").split(",").map((s) => s.trim()).filter(Boolean);
 			const nRaw = q.get("n");
 			const n = Number(nRaw);
 			// nRaw empty/null first: Number("") and Number(null) are both 0, which would
@@ -5053,15 +5169,18 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 			}
 			const gone = list.splice(n, 1)[0];
 			if (!gone.startsWith("file:") && isSafeMediaName(gone)) {
-				const shared = b.cards.some(
-					(c) => c.id !== card.id && (c.img ?? "").split(",").map((s) => s.trim()).includes(gone),
-				);
+				// #82: cards AND deliverables hold media now; a file anyone else still shows stays.
+				const kept = [
+					...b.cards.filter((c) => t.kind !== "card" || c.id !== owner.id).map((c) => c.img),
+					...b.deliverables.filter((d) => t.kind !== "deliv" || d.id !== owner.id).map((d) => d.img),
+				];
+				const shared = kept.some((img) => (img ?? "").split(",").map((s) => s.trim()).includes(gone));
 				if (!shared) trashMedia(join(MEDIA_DIR, gone));
 			}
-			if (list.length === 0) delete card.img;
-			else card.img = list.join(",");
+			if (list.length === 0) delete owner.img;
+			else owner.img = list.join(",");
 			writeBoard(path, b);
-			sendJson(res, 200, { ok: true, cards: b.cards });
+			sendJson(res, 200, { ok: true, cards: b.cards, deliverables: b.deliverables });
 			return;
 		}
 		default:
@@ -6145,7 +6264,9 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 			};
 			// #16: global is a read-only projection of every project board; GLOBAL_JSON is always empty.
 			const drillBoard = (): Board =>
-				scope === "global" ? { cards: aggregateGlobal().cards, nextId: 1 } : readBoard(boardPath(scope, projKey));
+				scope === "global"
+					? aggregateGlobal()
+					: readBoard(boardPath(scope, projKey));
 			// Every dialog of this drilldown runs under the guard, so auto-tick stays off
 			// while the user is reading a menu (A3). withMenuGuard clears it in `finally`.
 			return withMenuGuard(uiGuard, async () => {
@@ -6301,7 +6422,7 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 		name: "kanban",
 		label: "Kanban board",
 		description:
-			"Manage a 3-column kanban board (todo/doing/done). action=list shows the board, add creates a card, move changes its column, remove deletes it, edit rewrites a card's text (column and ownership stay), check runs the board/media/modes self-test and returns its JSON, resume clears a doing-loop halt (same reset as /kanban loop on: budget back to 10, doingLoop ON in all three scopes — session, global and this project) — the GUI's loop switch cannot clear it, because the halt lives in the extension process, not in modes.json. scope selects the board: 'project' (default, the board of this working directory's git root - every session in the same repo shares it), 'session' (this conversation's own board) or 'global' (a read-only aggregate of every project's cards; writes there are rejected). Card IDs are unique only within one board — global #7 and project #7 are different cards, so an id seen in a global listing cannot be passed to move/remove/edit: those always act on the selected scope's own board (default: this project's). url returns the token-bearing dashboard URL to open in a browser. img copies a local file into media/ and attaches it to the card named by id (pass its path in `image`; ~/ works). ref attaches the same way but by REFERENCE: nothing is copied, the card stores `file:<absolute path>` and the dashboard reads it back through /api/ref, which serves only paths under the serve allowlist (~/workspace by default) and refuses anything bigger than the upload cap. Attachments live on the card, not on a served path: images and video show as thumbnails, and .html is opened in a sandboxed iframe preview (so a three.js page works; it loads its CDN modules itself). The board is shared with the user's GUI and persisted under ~/.pi/kanban/. project is an optional slug ([A-Za-z0-9._-], case kept, max 24 chars) naming the project a card belongs to; add and edit set it, an empty value clears it, an unnormalizable value is an error, and it never affects the loop or auto-pick. session and commit are optional conversation tags: add and edit set them, an empty value clears them, and commit must be 7-40 hex characters (it is stored lowercase).",
+			"Manage a 3-column kanban board (todo/doing/done). Deliverables are not cards: a deliverable is a `deliv` row (/api/deliv/add|edit|remove), and no column is called deliverable. action=list shows the board, add creates a card, move changes its column, remove deletes it, edit rewrites a card's text (column and ownership stay), check runs the board/media/modes self-test and returns its JSON, resume clears a doing-loop halt (same reset as /kanban loop on: budget back to 10, doingLoop ON in all three scopes — session, global and this project) — the GUI's loop switch cannot clear it, because the halt lives in the extension process, not in modes.json. scope selects the board: 'project' (default, the board of this working directory's git root - every session in the same repo shares it), 'session' (this conversation's own board) or 'global' (a read-only aggregate of every project's cards; writes there are rejected). Card IDs are unique only within one board — global #7 and project #7 are different cards, so an id seen in a global listing cannot be passed to move/remove/edit: those always act on the selected scope's own board (default: this project's). url returns the token-bearing dashboard URL to open in a browser. img copies a local file into media/ and attaches it to the card named by id (pass its path in `image`; ~/ works). ref attaches the same way but by REFERENCE: nothing is copied, the card stores `file:<absolute path>` and the dashboard reads it back through /api/ref, which serves only paths under the serve allowlist (~/workspace by default) and refuses anything bigger than the upload cap. Attachments live on the card, not on a served path: images and video show as thumbnails, and .html is opened in a sandboxed iframe preview (so a three.js page works; it loads its CDN modules itself). The board is shared with the user's GUI and persisted under ~/.pi/kanban/. project is an optional slug ([A-Za-z0-9._-], case kept, max 24 chars) naming the project a card belongs to; add and edit set it, an empty value clears it, an unnormalizable value is an error, and it never affects the loop or auto-pick. session and commit are optional conversation tags: add and edit set them, an empty value clears them, and commit must be 7-40 hex characters (it is stored lowercase).",
 		parameters: Type.Object({
 			action: Type.Union([
 				Type.Literal("list"),
@@ -6327,14 +6448,7 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 			),
 			text: Type.Optional(Type.String()),
 			id: Type.Optional(Type.Number()),
-			col: Type.Optional(
-				Type.Union([
-					Type.Literal("todo"),
-					Type.Literal("doing"),
-					Type.Literal("done"),
-					Type.Literal("deliverable"),
-				]),
-			),
+			col: Type.Optional(Type.Union([Type.Literal("todo"), Type.Literal("doing"), Type.Literal("done")])),
 			// Same fields as the card editor: the agent must be able to arm a card too.
 			// nextFireAt takes ISO 8601 or +90m/+3h/+1d; it is resolved to absolute
 			// before saving. "" clears either field.

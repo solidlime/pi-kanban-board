@@ -34,11 +34,11 @@ test("#58: _app.js に renderDeliverables() があり render() から呼ばれ�
 	assert.ok(r.includes("renderDeliverables()"), "render() が renderDeliverables を呼んでいない");
 });
 
-test("#58: 添付の有無は imgsOf、横断は global.cards、proj は project.cards", () => {
-	const src = APP.slice(APP.indexOf("function delCards()"), APP.indexOf("function renderRail()"));
+test("#82: 帯のデータは deliv（card の col ではない）", () => {
+	const src = APP.slice(APP.indexOf("function delItems()"), APP.indexOf("function renderRail()"));
 	assert.ok(src.includes("imgsOf("), "添付の有無は imgsOf で判定する（csv の any entry）");
-	assert.ok(src.includes("state.payload.global"), "横断ビューは global.cards を使う");
-	assert.ok(src.includes("projReport()"), "proj ビューは project.cards を使う");
+	assert.ok(src.includes("state.payload.global.deliverables"), "横断ビューは global.deliverables を使う");
+	assert.ok(src.includes("rep.deliverables"), "proj ビューは project.deliverables を使う");
 	// 画像/html のサムネは既存 thumbBody（media path と .thumb クリック面）を使う。
 	assert.ok(src.includes("thumbBody("), "サムネは thumbBody を使う");
 	// #60: allow-forms が interactive 添付（アンケート）の submit を通す。
@@ -48,7 +48,8 @@ test("#58: 添付の有無は imgsOf、横断は global.cards、proj は project
 	assert.ok(src.includes("srcOf("), "URL は srcOf（/api/media と /api/ref）を使う");
 	// #72/#79: この帯は成果物だけ。TODO/DOING/DONE のカードを混ぜない。
 	// 添付の有無は問わない（#79: 添付なしの成果物も帯に出す）。
-	assert.ok(APP.includes('.filter(function (c) { return c.col === "deliverable"; })'), "成果物帯の絞り込みが無い");
+	assert.ok(!APP.includes('c.col === "deliverable"'), "成果物帯に card の col フィルタが残っている");
+	assert.ok(!APP.includes('data-move="deliverable"'), "カードモーダルに deliverable への移動ボタンが残っている");
 });
 
 test("#58: 畳める（details + localStorage 記憶）", () => {
