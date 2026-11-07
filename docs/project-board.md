@@ -4,9 +4,12 @@
 その形は完成している。足りないのは**横断**と**時間軸**の2つだけで、どちらも
 データモデルの変更1回で入る。
 
+> **状況**: 本文は起票時の提案。`projects タブ` / `scope 分離` / `SQLite 化` / `成果物の分離` は実装済み。
+> 未実装は「履歴」「依存」「SSE」「グラフ」。データの実体は `boards.sqlite` で、JSON パスの記述は当時のもの。
+
 ## いま出来ること
 
-- プロジェクト単位のボード（`~/.pi/kanban/projects/<slug>.json`）と、全プロジェクトを集約する読み取り専用の GLOBAL（`global.json`）
+- プロジェクト単位のボード（`~/.pi/kanban/boards.sqlite` の `board`/`card` 行）と、全プロジェクトを集約する読み取り専用の GLOBAL（同じ DB から都度集約）
 - カード = `id` / `text` / `col`（TODO|DOING|DONE）/ `project` ラベル。1枚に1状態、履歴なし
 - 自動 doing ループ（`AUTO_TICK_MS`、飢餓検出、停止理由の公開）
 - 配信（`serve`）とメディア添付、1画面ダッシュボード、5秒ポーリング + ETag

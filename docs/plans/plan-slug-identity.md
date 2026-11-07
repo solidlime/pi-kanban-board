@@ -97,4 +97,4 @@ const projectSid = projectSlugOf(cwdOfSidSync(sid));
   `sessionInfoCache` の中身を外から観測する手段が無いため、Slice 2 は「キャッシュに頼らない経路を足す」
   という回避で進める。**根本原因（キャッシュが温まらない理由）は別カードで追う**
 - `/api/projects` が空（`project` テーブルが 0 行）なのは #33 の設計変更（declared 廃止）と整合する。
-  Slice 2 のプロジェクト一覧は `listProjectBoards()` を供給元にする（既存計画 `docs/plan-projects-tab.md` Slice 1 と同じ）
+  Slice 2 のプロジェクト一覧は `listProjectBoards()` を供給元にする（既存計画 `docs/plans/plan-projects-tab.md` Slice 1 と同じ）
