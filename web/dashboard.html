@@ -1088,7 +1088,14 @@ __KB_MD_JS__
     var g = (state.payload.global && state.payload.global.counts) || {};
     all.appendChild(el("span", "num", (g.todo || 0) + (g.doing || 0) + " 未完"));
     nav.appendChild(all);
-    boards().forEach(function (slug, i) {
+    // #54: 現在のボードを「すべて」の次（左から2番目）へ。並べ替えは表示だけの話なので、
+    // 数字キーと `key` バッジは payload の並び（i）のまま。sort は stable、他は元の順。
+    var slugs = boards();
+    var order = slugs.slice().sort(function (a, b) {
+      return (a === state.cur ? 0 : 1) - (b === state.cur ? 0 : 1);
+    });
+    order.forEach(function (slug) {
+      var i = slugs.indexOf(slug);
       var s = summaryOf(slug), b = el("button", "ptab");
       b.dataset.p = slug;
       b.title = String(i + 1);
@@ -1729,10 +1736,8 @@ __KB_MD_JS__
     $("#cm-drop").classList.toggle("busy", on);
     $("#cm-attstatus").textContent = on ? "送信中…" : "";
   }
-  function uploadOne(id, file) {
-    return fetch("/api/upload" + qsOf({ p: state.cur, id: id, ext: upExtOf(file.name) }), {
-      method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: file,
-    }).then(function (r) {
+  function upFetch(url, init) {
+    return fetch(url, init).then(function (r) {
       if (r.status === 401) authFail();
       return r.json().then(function (b) {
         // 失敗はサーバの文面をそのまま返す（415 拡張子 / 413 容量 / 400 板）。
@@ -1741,6 +1746,60 @@ __KB_MD_JS__
       }, function () { throw new Error("http " + r.status); });
     });
   }
+  function uploadOne(id, file) {
+    return upFetch("/api/upload" + qsOf({ p: state.cur, id: id, ext: upExtOf(file.name) }), {
+      method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: file,
+    });
+  }
+  // ---- #55: ペーストで画像を貼る ----
+  // クリップボードの File は POST body ではなく dataURL にして /api/upload2 の query へ
+  // （iframe 由来の小さい payload と同じ形。サーバの上限も 128KB）。
+  // 添付先: モーダルのカード > 選択中（矢印キーで選ぶ state.sel）のカード > TODO に受け皿。
+  var PASTE_MAX_FILE = 96 * 1024; // base64 にすると 4/3 倍 = 128KB（サーバの同じ上限）
+  function pasteOne(id, file) {
+    return new Promise(function (ok, ng) {
+      var r = new FileReader();
+      r.onload = function () { ok(String(r.result || "")); };
+      r.onerror = function () { ng(new Error("クリップボードを読めない")); };
+      r.readAsDataURL(file);
+    }).then(function (data) {
+      return upFetch("/api/upload2" + qsOf({ p: state.cur, id: id, data: data }));
+    });
+  }
+  function pasteTo(id, file) {
+    return pasteOne(id, file).then(function () {
+      toast("画像を #" + id + " に添付");
+      return refresh();
+    }, function (e) { toast("添付できず: " + (e && e.message ? e.message : e)); });
+  }
+  function pasteImage(file) {
+    if (!file) return;
+    if (file.size > PASTE_MAX_FILE) { toast("大きすぎる画像（base64 で 128KB 超）"); return; }
+    var c = state.modal ? modalCard() : null;
+    if (c) { pasteTo(c.id, file); return; }
+    if (state.allview || !state.cur || state.cur === "__all__") { toast("ボードを選んでからペーストして"); return; }
+    var sel = state.sel >= 0 ? visibleCards()[state.sel] : null;
+    if (sel) { pasteTo(Number(sel.dataset.id), file); return; }
+    // 選択が無いときは受け皿を 1 枚作る（ペーストだけで完結させる）。
+    act("/api/add", { text: "ペースト画像", col: "todo" }).then(function (r) {
+      var cards = (r && r.cards) || [];
+      if (!cards.length) throw new Error("カードを作れない");
+      var id = Math.max.apply(null, cards.map(function (x) { return x.id; }));
+      return pasteTo(id, file);
+    }).then(null, function (e) { toast("添付できず: " + (e && e.message ? e.message : e)); });
+  }
+  document.addEventListener("paste", function (e) {
+    var items = (e.clipboardData && e.clipboardData.items) || [], i;
+    for (i = 0; i < items.length; i++) {
+      // kind==='file' の image/* だけ拾う（テキストのペーストはそのまま通す）。
+      // MIME の検証はサーバ（MIME_BY_EXT）が持つ。
+      if (items[i].kind === "file" && String(items[i].type).indexOf("image/") === 0) {
+        e.preventDefault();
+        pasteImage(items[i].getAsFile());
+        return;
+      }
+    }
+  });
   // モーダルを閉じても送信は止めない（完了後の refresh は state.cur の盤にしか触らない）。
   function uploadFiles(files) {
     var c = state.modal ? modalCard() : null;

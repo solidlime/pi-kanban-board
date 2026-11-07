@@ -2024,7 +2024,7 @@ function crossOriginWriteRefusal(req: IncomingMessage): string | null {
  * check would let the whole write surface through.
  */
 function isWritePath(pathname: string, method: string): boolean {
-	if (pathname === "/api/upload" || pathname === "/api/selftest") return true;
+	if (pathname === "/api/upload" || pathname === "/api/upload2" || pathname === "/api/selftest") return true;
 	// #13: DB の診断と VACUUM も「読むだけの GET」では踏ませない（VACUUM は書き込み）。
 	if (pathname === "/api/db/diagnose" || pathname === "/api/db/vacuum") return true;
 	if (pathname === "/api/host" || pathname === "/api/serve") return true;
@@ -3996,6 +3996,98 @@ function handleUpload(req: IncomingMessage, res: ServerResponse, q: URLSearchPar
 	});
 }
 
+/**
+ * #55: a pasted image arrives as a base64 dataURL in the QUERY, not as a POST body.
+ * Same shape as /api/ehr and for the same reason: a clipboard File cannot be uploaded
+ * from the sandboxed iframe path the dashboard already uses, and a small screenshot
+ * (a 640x360 png is 10-30KB base64) fits the 128KB request line /api/ehr established.
+ * The cap is the dataURL string, so it bounds the request line before anything is decoded.
+ */
+const UPLOAD2_PATH = "/api/upload2";
+const UPLOAD2_MAX_BYTES = 128 * 1024; // 128KB, the same request-line budget QUIZ_EHR_MAX_BYTES set
+const DATA_URL_RE = /^data:([^;,]+);base64,([A-Za-z0-9+/=\s]+)$/;
+
+/** dataURL -> `{ ext, bytes }`, or null when the shape or the MIME is not one we store. */
+function dataUrlOf(raw: string): { ext: string; bytes: Buffer } | null {
+	const m = DATA_URL_RE.exec(raw.trim());
+	if (m === null) return null;
+	const mime = m[1].toLowerCase();
+	// The MIME decides the stored extension. MIME_BY_EXT is the one table, so an ext that
+	// /api/media will not serve can never be written here either.
+	const ext = Object.keys(MIME_BY_EXT).find((k) => MIME_BY_EXT[k] === mime);
+	if (ext === undefined) return null;
+	return { ext, bytes: Buffer.from(m[2].replace(/\s+/g, ""), "base64") };
+}
+
+/**
+ * GET /api/upload2?p=&id=&data=<dataURL>[&ext=] : a paste -> media file on an EXISTING card.
+ * Deliberately not a clone of /api/upload: no new card (the dashboard decides which card
+ * receives the paste), and the payload is inline.
+ */
+function handleUpload2(req: IncomingMessage, res: ServerResponse, q: URLSearchParams): void {
+	req.resume();
+	const raw = q.get("data") ?? "";
+	if (raw.length > UPLOAD2_MAX_BYTES) {
+		sendJson(res, 413, { ok: false, error: `data too large (max ${fmtMB(UPLOAD2_MAX_BYTES)} as base64)` });
+		return;
+	}
+	const parsed = dataUrlOf(raw);
+	if (parsed === null) {
+		// Two different mistakes: not a dataURL at all (400) vs a dataURL we do not store (415).
+		if (!raw.trim().startsWith("data:")) {
+			sendJson(res, 400, { ok: false, error: "data must be a dataURL (data:image/png;base64,...)" });
+			return;
+		}
+		sendJson(res, 415, {
+			ok: false,
+			error: `data must be a base64 dataURL of: ${Object.values(MIME_BY_EXT).join(", ")}`,
+		});
+		return;
+	}
+	// An `ext` the caller added must agree with the MIME: two sources for one decision is
+	// how a png ends up stored as .webp and served as the wrong type.
+	const declared = (q.get("ext") ?? "").toLowerCase();
+	if (declared !== "" && declared !== parsed.ext) {
+		sendJson(res, 415, { ok: false, error: `ext ${declared} does not match ${MIME_BY_EXT[parsed.ext]}` });
+		return;
+	}
+	const target = writeBoardPath(q);
+	if (!target.ok) {
+		sendJson(res, 400, { ok: false, error: target.error });
+		return;
+	}
+	const idRaw = q.get("id");
+	const id = Number(idRaw);
+	if (idRaw === null || !Number.isInteger(id) || id <= 0) {
+		sendJson(res, 400, { ok: false, error: "id required" });
+		return;
+	}
+	const b = readBoard(target.path);
+	const card = b.cards.find((c) => c.id === id);
+	if (card === undefined) {
+		sendJson(res, 404, { ok: false, error: `no card with id ${idRaw}` });
+		return;
+	}
+	if (parsed.bytes.length === 0) {
+		sendJson(res, 400, { ok: false, error: "empty payload" });
+		return;
+	}
+	// Same budget as /api/upload, checked before the write so a refusal leaves the card alone.
+	if (mediaDirBytes() + parsed.bytes.length > MEDIA_DIR_MAX_BYTES) {
+		sendJson(res, 413, { ok: false, error: `media budget exceeded (max ${fmtMB(MEDIA_DIR_MAX_BYTES)})` });
+		return;
+	}
+	const name = writeMedia(card.id, parsed.ext, parsed.bytes);
+	if (name === null) {
+		sendJson(res, 500, { ok: false, error: "media write failed" });
+		return;
+	}
+	// #53: add, do not replace (a card can hold several attachments).
+	card.img = card.img ? `${card.img},${name}` : name;
+	writeBoard(target.path, b);
+	sendJson(res, 200, { ok: true, card });
+}
+
 const MEDIA_PREFIX = "/api/media/";
 
 // #60/#64: an interactive attachment (a quiz/wizard/paint html in the sandboxed iframe)
@@ -4295,6 +4387,13 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 	}
 
 	const q = url.searchParams;
+
+	// #55: a paste rides the query as a dataURL (GET+query, like the write routes below), so
+	// it sits here rather than next to POST /api/upload.
+	if (url.pathname === UPLOAD2_PATH && req.method === "GET") {
+		handleUpload2(req, res, q);
+		return;
+	}
 
 	// #56: a card attachment may be a reference (file:<abs>). Same GET/HEAD shape as
 	// /api/media, the allowlist is inside handleRef.
