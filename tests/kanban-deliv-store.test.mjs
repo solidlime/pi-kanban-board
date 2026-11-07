@@ -211,6 +211,16 @@ await check("#82 deliv= の不明 id は 404（新規カードを作らない）
 	assert.equal(readBoardAt(BOARD).cards.length, before, "カードが増えた");
 });
 
+await check("#82 /api/upload?col=deliverable は 400（旧形式の行を作らない）", async () => {
+	const before = readBoardAt(BOARD);
+	const up = await upload({ col: "deliverable", ext: "png" }, PNG);
+	assert.equal(up.status, 400, `status ${up.status}`);
+	assert.equal((await json(up)).error, "deliverable is not a phase");
+	const after = readBoardAt(BOARD);
+	assert.equal(after.cards.length, before.cards.length, "カードが増えた");
+	assert.equal(after.nextId, before.nextId, "id が焼かれた");
+});
+
 await check("#82 deliv= で 1 枚だけ外せる（/api/attach/del）", async () => {
 	const r = await get("/api/attach/del", { deliv: "1", n: "0" });
 	await ok200(r);
@@ -247,6 +257,37 @@ await check("#82 col=deliverable への move は 400、旧行の退出は通る"
 	const out = await tf(`${BASE}/api/move?${new URLSearchParams({ p: SLUG, id: "2", col: "done", sid: SID })}`);
 	assert.equal(out.status, 200, `旧行の退出: status ${out.status} ${await out.text()}`);
 	assert.equal(readBoardAt(BOARD).cards.find((c) => c.id === 2).col, "done");
+});
+
+// --- 9. cards だけの Board を write しても deliv を消さない（読める値は残す） --------
+await check("#82 cards だけの Board を write しても deliv は消えない", async () => {
+	seed();
+	const add = await json(await get("/api/deliv/add", { text: "残るべき成果物" }));
+	assert.equal(add.ok, true);
+	const b = mod.readBoard(BOARD);
+	assert.equal(b.deliverables.length, 1);
+	const err = mod.writeBoard(BOARD, { cards: b.cards, nextId: b.nextId });
+	assert.equal(err, null, String(err));
+	const after = readBoardAt(BOARD);
+	assert.equal(after.deliverables.length, 1, "deliv 行が消えた");
+	assert.equal(after.delivNextId, 2, "採番が巻き戻った");
+});
+
+// --- 10. 行だけ渡しても採番が生きた id を追い越す -------------------------------
+await check("#82 delivNextId を省いた write でも採番は生きた id を踏まない", async () => {
+	seed();
+	const b = mod.readBoard(BOARD);
+	assert.equal(b.delivNextId, 1);
+	const err = mod.writeBoard(BOARD, {
+		cards: b.cards,
+		nextId: b.nextId,
+		deliverables: [{ id: 9, text: "手で置いた行", at: 1 }],
+	});
+	assert.equal(err, null, String(err));
+	assert.equal(readBoardAt(BOARD).delivNextId, 10, "採番が 9 を踏む");
+	const add = await json(await get("/api/deliv/add", { text: "次の成果物" }));
+	assert.equal(add.ok, true);
+	assert.equal(add.deliverable.id, 10, JSON.stringify(add));
 });
 
 if (failures.length > 0) {

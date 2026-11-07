@@ -88,7 +88,11 @@ export type Decision = {
 
 export type KanbanDb = {
 	readBoard(key: BoardKey): Board | null;
-	writeBoard(key: BoardKey, b: Board): void;
+	/** #82: a caller that never read the board may omit the deliv half - see writeBoard(). */
+	writeBoard(
+		key: BoardKey,
+		b: Pick<Board, "cards" | "nextId"> & Partial<Pick<Board, "deliverables" | "delivNextId">>,
+	): void;
 	/** Monotonic per-board counter: the diskSnapshot signal now that there is no inode. */
 	revOf(key: BoardKey): number;
 	/** #36: the spelling this board is stored under; every sid match is COLLATE NOCASE, so the caller's spelling is not the board's. */
@@ -457,16 +461,28 @@ export function openKanbanDb(file: string): KanbanDb {
 		// removed card cannot come back on the next read.
 		writeBoard(key, b) {
 			const now = Date.now();
-			// #82: a caller that only speaks cards (an old seed, a scratch board) means "no
-			// deliverables" rather than a crash on the bind below.
-			const delivs = b.deliverables ?? [];
-			const delivNext = b.delivNextId ?? 1;
 			// #34: a board that already exists keeps the spelling it was created with, so a
 			// write under another case cannot split its cards into a twin board.
 			const head = selectBoard.get(key.scope, key.sid) as Row | undefined;
 			const sid = head === undefined ? key.sid : String(head.sid);
+			// #82: a Board built without readBoard() (a test, a seed, a scratch board) may carry
+			// no deliverables at all. That means "leave the deliv table alone" - never "delete
+			// them": a wipe would also rewind the counter, and the next add would re-issue a
+			// live id for INSERT OR REPLACE to eat. Nothing is read before the lock.
+			const delivs: Deliv[] | undefined = b.deliverables;
 			db.exec("BEGIN IMMEDIATE");
 			try {
+				// Inside the lock, or a concurrent /api/deliv/add would be counted out. The rows
+				// and their counter are one unit: given only one half, the sequence can rewind and
+				// INSERT OR REPLACE would then eat a live row - so clamp past every id we write.
+				const cur = head === undefined ? undefined : (selectBoard.get(key.scope, key.sid) as Row | undefined);
+				let delivNext =
+					delivs === undefined
+						? (cur === undefined ? 1 : Number(cur.deliv_next_id))
+						: Number(b.delivNextId ?? 1);
+				if (delivs !== undefined) {
+					for (const d of delivs) if (d.id >= delivNext) delivNext = d.id + 1;
+				}
 				if (head === undefined) {
 					insertBoard.run(key.scope, sid, b.nextId, delivNext, now);
 				} else {
@@ -499,7 +515,7 @@ export function openKanbanDb(file: string): KanbanDb {
 					);
 				}
 				writeDeps(key.scope, sid, b.cards);
-				writeDelivs(key.scope, sid, delivs);
+				if (delivs !== undefined) writeDelivs(key.scope, sid, delivs);
 				db.exec("COMMIT");
 			} catch (err) {
 				db.exec("ROLLBACK");

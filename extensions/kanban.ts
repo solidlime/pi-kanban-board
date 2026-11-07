@@ -4020,6 +4020,11 @@ function handleUpload(req: IncomingMessage, res: ServerResponse, q: URLSearchPar
 		}
 		let owner: { id: number; img?: string };
 		if (t.kind === "new") {
+			// #82: same rule as /api/add - never create a legacy col=deliverable row.
+			if (q.get("col") === "deliverable") {
+				sendJson(res, 400, { ok: false, error: "deliverable is not a phase" });
+				return;
+			}
 			const card: Card = { id: b.nextId++, text: "", col: parseCol(q.get("col")) ?? "todo" };
 			stampMove(card, actorOf(q));
 			card.text = `#${card.id} (${ext === "html" ? "html" : MIME_BY_EXT[ext].startsWith("video/") ? "video" : "image"})`;
@@ -4773,6 +4778,11 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 			const text = (q.get("text") ?? "").trim();
 			if (text.length === 0) {
 				sendJson(res, 400, { ok: false, error: "text required" });
+				return;
+			}
+			// #82: a deliverable is not a phase. Say so instead of quietly making a TODO card.
+			if (colParam === "deliverable") {
+				sendJson(res, 400, { ok: false, error: "deliverable is not a phase" });
 				return;
 			}
 			const col = parseCol(colParam) ?? "todo";

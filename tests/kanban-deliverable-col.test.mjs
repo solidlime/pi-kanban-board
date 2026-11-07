@@ -199,14 +199,15 @@ await check("#82 hiddenTodoCount は旧 deliverable 行を隠さない", async (
 });
 
 // --- 7. /api/add はもう deliverable を作れない ----------------------------------
-await check("#82 /api/add?col=deliverable は新規の旧形式行を作らない（todo に落ちる）", async () => {
+await check("#82 /api/add?col=deliverable は 400（move と同じ答え）", async () => {
 	seed();
 	const q = new URLSearchParams({ p: SLUG, col: "deliverable", text: "新しい成果物", sid: A });
 	const r = await tf(`${BASE}/api/add?${q}`);
-	assert.equal(r.status, 200, `status ${r.status}`);
+	assert.equal(r.status, 400, `status ${r.status}`);
 	const b = readBoardAt(BOARD);
-	assert.equal(b.cards.find((c) => c.text === "新しい成果物").col, "todo", "parseCol が deliverable を通した");
+	assert.equal(b.cards.find((c) => c.text === "新しい成果物"), undefined, "カードが作られた");
 	assert.equal(b.cards.filter((c) => c.col === "deliverable").length, 1, "旧形式の行が増えた");
+	assert.equal(b.deliverables.length, 0, "deliv 行が増えた");
 });
 
 // --- 8. UI 構造（ブラウザ実機は #057 の担当。ここは配線だけ） --------------------
