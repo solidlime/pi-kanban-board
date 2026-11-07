@@ -108,7 +108,7 @@ test("dashboard: DOING のボードを左、溢れタブは +N に畳む（#84�
 	assert.match(app, /state\.ptabsOpen = !state\.ptabsOpen/);
 	assert.match(app, /ptabsOpen: false/);
 	// 折り畳みと CSS
-	assert.match(app, /function foldTabs\(nav, all, tabs\)/);
+	assert.match(app, /function foldTabs\(nav, all, tabs, b\)/);
 	assert.match(app, /classList\.add\("over"\)/);
 	assert.match(app, /full \|\| used \+ ws\[i\] > avail/, "一度畳んだら以降も畳む");
 	assert.match(app, /tabs\[i\]\.dataset\.p === state\.cur\) \{ used \+= ws\[i\]; continue; \}/, "選択中のボードは畳まない");
@@ -116,4 +116,25 @@ test("dashboard: DOING のボードを左、溢れタブは +N に畳む（#84�
 	assert.match(css, /\.ptabs\.open\{[^}]*flex-wrap:wrap/);
 	assert.match(css, /\.ptab-more\{/);
 	// shortcut: 文字列一致のみで foldTabs の幅計算は守っていない。ブラウザ DOM テストを入れる時に置換。
+});
+
+test("dashboard: #ptabs は poll ごとに作り直さない（#85）", () => {
+	const app = read("web/dash/_app.js");
+	const i = app.indexOf("function renderPtabs()");
+	const fn = app.slice(i, app.indexOf("function foldTabs(", i));
+	assert.ok(i > 0 && fn.length > 0, "renderPtabs が読めない");
+	assert.ok(!fn.includes('clear($("#ptabs"))'), "#ptabs を毎回 clear している");
+	assert.ok(fn.includes("keep["), "既存ノードの使い回しが無い");
+	assert.ok(fn.includes("nav.scrollLeft = sl"), "scrollLeft を戻していない");
+	assert.ok(fn.includes("focused.focus()"), "フォーカスを戻していない");
+});
+
+test("dashboard: 列ヘッダの sticky top は実測の --topbar-h（#88）", () => {
+	const app = read("web/dash/_app.js");
+	const css = read("web/dash/_b.css");
+	assert.match(app, /new ResizeObserver\(put\)\.observe\(tb\)/);
+	assert.match(app, /setProperty\("--topbar-h"/);
+	assert.match(css, /\.colhead\{position:sticky; top:var\(--topbar-h,56px\)/);
+	// 決め打ちが残っていたら、モバイルの折り返しでまたズレる
+	assert.ok(!/top:56px/.test(css), "56px の決め打ちが残っている");
 });

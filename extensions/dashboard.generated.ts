@@ -452,7 +452,8 @@ html.allview .layout{grid-template-columns:1fr}
   .stat{flex:0 0 118px; scroll-snap-align:start}
   .layout{padding:10px 12px 20px}
   .col{min-height:0; padding:8px}
-  .colhead{position:sticky; top:56px; background:var(--bg1); z-index:2; padding:4px 0}
+  /* #88: top は topbar の実高（_app.js が ResizeObserver で --topbar-h に入れる） */
+  .colhead{position:sticky; top:var(--topbar-h,56px); background:var(--bg1); z-index:2; padding:4px 0}
   .card{padding:12px}
   .card:active{border-color:var(--accent)}
   .donefold{padding:10px 4px; font-size:12px}
@@ -1111,16 +1112,28 @@ function esc(s){return String(s).replace(/[&<>"]/g,function(c){return {"&":"&amp
 
   // ---- render: ptabs / strip / swline ----
   function renderPtabs() {
-    var nav = clear($("#ptabs"));
+    // #85: poll ごとに作り直すと、タブのフォーカスと scrollLeft が飛ぶ。
+    // #78 の renderBoard と同じで、同じ slug のタブは既存ノードを使い回して中身（num/dot/aria）
+    // だけ書き換え、並びが変わった分だけ動かす。動かすと focus は落ちるので最後に戻す。
+    var nav = $("#ptabs");
+    var focused = document.activeElement, sl = nav.scrollLeft;
     nav.classList.toggle("open", state.ptabsOpen === true); // #84
-    var all = el("button", "ptab");
-    all.dataset.p = "__all__";
-    all.setAttribute("aria-pressed", String(state.cur === "__all__"));
-    all.appendChild(el("span", "dot"));
-    all.appendChild(el("b", null, "すべて"));
+    var keep = {}, more = null;
+    Array.prototype.forEach.call(nav.children, function (n) {
+      if (n.classList.contains("ptab-more")) more = n;   // 畳みボタンも使い回す
+      else if (n.dataset.p) keep[n.dataset.p] = n;
+    });
     var g = (state.payload.global && state.payload.global.counts) || {};
-    all.appendChild(el("span", "num", (g.todo || 0) + (g.doing || 0) + " 未完"));
-    nav.appendChild(all);
+    var all = keep["__all__"] || el("button", "ptab");
+    if (!all.dataset.p) {
+      all.dataset.p = "__all__";
+      all.appendChild(el("span", "dot"));
+      all.appendChild(el("b", null, "すべて"));
+      all.appendChild(el("span", "num"));
+    }
+    all.setAttribute("aria-pressed", String(state.cur === "__all__"));
+    all.querySelector(".num").textContent = (g.todo || 0) + (g.doing || 0) + " 未完";
+    var want = [all];
     // #84: DOING のあるボードを左へ。#54 の「選択中を2番目」はその次に回す。
     // 並べ替えは表示だけの話なので、数字キーと \`key\` バッジは payload の並び（i）のまま。
     // sort は stable、同 rank は元の順。
@@ -1134,40 +1147,61 @@ function esc(s){return String(s).replace(/[&<>"]/g,function(c){return {"&":"&amp
     var tabs = [];
     order.forEach(function (slug) {
       var i = slugs.indexOf(slug);
-      var s = summaryOf(slug), b = el("button", "ptab");
-      b.dataset.p = slug;
+      var s = summaryOf(slug), b = keep[slug] || el("button", "ptab");
+      if (!b.dataset.p) {
+        b.dataset.p = slug;
+        b.appendChild(el("span", "dot"));
+        b.appendChild(document.createTextNode(slug));
+        b.appendChild(el("span", "num"));
+      }
+      var live = !!(s && s.counts.doing > 0), fin = !!(s && s.total > 0 && s.done === s.total);
       b.title = String(i + 1);
+      b.classList.toggle("doing", live);
+      b.classList.remove("over"); // #84: 畳みは毎回引き直す
       b.setAttribute("aria-pressed", String(state.cur === slug));
-      if (s && s.counts.doing > 0) b.classList.add("doing");
-      var dot = el("span", "dot");
-      if (s && s.total > 0 && s.done === s.total) dot.classList.add("done");
-      else if (s && s.counts.doing > 0) dot.classList.add("live");
-      b.appendChild(dot);
-      b.appendChild(document.createTextNode(slug));
-      b.appendChild(el("span", "num", s ? (s.counts.todo ? "TODO " + s.counts.todo : s.done + "/" + s.total) : "—"));
-      if (i < 9) b.appendChild(el("span", "key", String(i + 1)));
-      nav.appendChild(b);
+      var dot = b.querySelector(".dot");
+      dot.classList.toggle("done", fin);
+      dot.classList.toggle("live", !fin && live);
+      b.querySelector(".num").textContent = s ? (s.counts.todo ? "TODO " + s.counts.todo : s.done + "/" + s.total) : "—";
+      var kb = b.querySelector(".key");
+      if (i < 9) { if (!kb) b.appendChild(kb = el("span", "key")); kb.textContent = String(i + 1); }
+      else if (kb) b.removeChild(kb);
       tabs.push(b);
+      want.push(b);
     });
-    // #84: 溢れの折り畳み。開いている時は折り返して全部出し「−」、閉じている時は入らない分を +N に。
-    if (state.ptabsOpen === true) {
-      var minus = el("button", "ptab-more", "−"); minus.type = "button";
-      minus.setAttribute("aria-controls", "ptabs"); minus.setAttribute("aria-expanded", "true");
-      minus.setAttribute("aria-label", "タブ列を畳む");
-      nav.appendChild(minus); return;
+    // #85: 差分がある時だけ DOM を触る（無変化の poll ではノードもスクロールも動かさない）。
+    var cur = Array.prototype.slice.call(nav.children), dirty = false, j;
+    for (j = 0; !dirty && j < want.length; j++) if (cur[j] !== want[j]) dirty = true;
+    for (j = want.length; !dirty && j < cur.length; j++) if (cur[j] !== more) dirty = true;
+    if (dirty) {
+      want.forEach(function (n, k) { if (nav.children[k] !== n) nav.insertBefore(n, nav.children[k] || null); });
+      // want の後ろに残るのは .ptab-more だけ（畳みボタンは foldTabs の位置に任せる）
+      Array.prototype.slice.call(nav.children, want.length).forEach(function (n) { if (n !== more) nav.removeChild(n); });
+      nav.scrollLeft = sl;
     }
-    var more = foldTabs(nav, all, tabs);
-    if (more) nav.appendChild(more);
+    // #84: 溢れの折り畳み。開いている時は折り返して全部出し「−」、閉じている時は入らない分を +N に。
+    if (!more) more = el("button", "ptab-more");
+    more.type = "button";
+    more.setAttribute("aria-controls", "ptabs");
+    if (state.ptabsOpen === true) {
+      more.textContent = "−";
+      more.setAttribute("aria-expanded", "true");
+      more.setAttribute("aria-label", "タブ列を畳む");
+      if (nav.lastChild !== more) nav.appendChild(more);
+    } else {
+      foldTabs(nav, all, tabs, more);
+    }
+    // #85: 並べ替えで落ちたフォーカスを戻す（消えたタブなら何もしない）。
+    if (focused && focused !== nav && nav.contains(focused) && focused !== document.activeElement) focused.focus();
   }
 
-  // #84: 幅に入らないタブに .over（display:none）を付けて、「+N」ボタンを返す。
-  // .ptab とは別クラス（pick の分岐に拾わせない）。0 件なら null。
-  function foldTabs(nav, all, tabs) {
+  // #84: 幅に入らないタブに .over（display:none）を付けて、「+N」を nav の末尾に置く。
+  // .ptab とは別クラス（pick の分岐に拾わせない）。隠れた数は b の textContent に入る（0 件なら外す）。
+  function foldTabs(nav, all, tabs, b) {
     // 幅は「+99」で測る（実際は +N で 1〜2 桁。広めに測ればはみ出さない）。
-    var b = el("button", "ptab-more", "+99"), cs, i, hid = 0, gap, avail, used = 0, ws = [], full = false;
-    b.type = "button";
-    b.setAttribute("aria-controls", "ptabs");
-    nav.appendChild(b);
+    var cs, i, hid = 0, gap, avail, used = 0, ws = [], full = false;
+    b.textContent = "+99";
+    if (nav.lastChild !== b) nav.appendChild(b);
     // 計測できない局面（payload 無し / 幅 0 / 未レイアウト）は今まで通り何も隠さない。
     try { cs = getComputedStyle(nav); } catch (e) { cs = null; }
     if (!state.payload || !cs || !nav.clientWidth) { nav.removeChild(b); return null; }
@@ -2300,6 +2334,20 @@ function esc(s){return String(s).replace(/[&<>"]/g,function(c){return {"&":"&amp
     // 編集を抜けたら 1 度だけ描き直す（render 側で編集を検知したら止めている）。
     setTimeout(function () { if (state.dirty && !isEditing()) render(); }, 0);
   });
+
+  // #88: sticky な列ヘッダの top を topbar の実高に合わせる。56px 決め打ちは折り返しでズレる
+  // （モバイルの .toprow は 2 段に折り返し、タブ列の高さもボード数や折り畳みで変わる）。
+  (function measureTopbar() {
+    var tb = document.querySelector(".topbar"), put;
+    if (!tb) return;
+    put = function () {
+      document.documentElement.style.setProperty("--topbar-h", tb.getBoundingClientRect().height + "px");
+    };
+    put();
+    // 高さが変わった瞬間に測り直す（resize では tab 列の開閉を拾えない）
+    if (window.ResizeObserver) { new ResizeObserver(put).observe(tb); }
+    else { window.addEventListener("resize", put); }
+  })();
 
   refresh().then(function () { schedule(); });
 })();

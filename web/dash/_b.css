@@ -305,7 +305,8 @@ html.allview .layout{grid-template-columns:1fr}
   .stat{flex:0 0 118px; scroll-snap-align:start}
   .layout{padding:10px 12px 20px}
   .col{min-height:0; padding:8px}
-  .colhead{position:sticky; top:56px; background:var(--bg1); z-index:2; padding:4px 0}
+  /* #88: top は topbar の実高（_app.js が ResizeObserver で --topbar-h に入れる） */
+  .colhead{position:sticky; top:var(--topbar-h,56px); background:var(--bg1); z-index:2; padding:4px 0}
   .card{padding:12px}
   .card:active{border-color:var(--accent)}
   .donefold{padding:10px 4px; font-size:12px}
