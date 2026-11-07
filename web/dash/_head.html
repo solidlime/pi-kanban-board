@@ -94,9 +94,9 @@
     <div id="groups"></div>
   </section>
   <aside class="rail" aria-label="サマリ" id="rail"></aside>
-  <!-- #58: 第4帯『成果物』。grid-column:1/-1 で全幅、DOM は rail の後ろ（rail を押し下げない） -->
-  <details class="deliverables" id="deliverables" open hidden aria-label="成果物">
-    <summary class="delhead"><h2>成果物</h2><span class="delcount" id="delcount"></span></summary>
+  <!-- #79: 3 列化で成果物はこの帯だけ。ページ下部の全幅 -->
+  <details class="deliverables" id="deliverables" open aria-label="成果物">
+    <summary class="delhead"><h2>成果物</h2><span class="delcount" id="delcount"></span><button type="button" class="add" id="deladd" title="成果物を追加（phase を持たない）">+</button></summary>
     <div class="del-grid" id="delgrid"></div>
   </details>
 </main>

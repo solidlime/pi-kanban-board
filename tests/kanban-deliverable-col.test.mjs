@@ -35,8 +35,7 @@ process.env.KANBAN_PORT = String(
 );
 const BASE = `http://127.0.0.1:${process.env.KANBAN_PORT}`;
 
-const require = createRequire(import.meta.url);
-const mod = require("../extensions/kanban.ts");
+const mod = createRequire(import.meta.url)("../extensions/kanban.ts");
 useKanban(mod);
 
 const failures = [];
@@ -197,16 +196,27 @@ await check("#67 /api/add?col=deliverable は 200 で deliverable に置かれ�
 // --- 8. UI 構造（ブラウザ実機は #057 の担当。ここは配線だけ） --------------------
 const read = (rel) => readFileSync(fileURLToPath(new URL(`../${rel}`, import.meta.url)), "utf8");
 
-await check("#67 _app.js の board は 4 列（deliverable を含む）", () => {
+await check("#67/#79 _app.js の board は 3 列（deliverable は列ではない）", () => {
 	const app = read("web/dash/_app.js");
-	assert.match(app, /\["todo", "doing", "done", "deliverable"\]\.forEach/, "4 列の forEach が無い");
-	assert.ok(app.includes('el("h2", null, "成果物")') || app.includes('col === "deliverable"'), "成果物ヘッドが無い");
+	assert.match(app, /\["todo", "doing", "done"\]\.forEach/, "3 列の forEach が無い");
+	assert.ok(!app.includes('["todo", "doing", "done", "deliverable"].forEach'), "#79: 4 列目は撤去");
+	assert.ok(app.includes('col === "deliverable"'), "成果物の扱い（colName / 帯）が無い");
 });
 
-await check("#67 _b.css の .cols は 4 列、狭い時は 1 列", () => {
+await check("#67/#79 _b.css の .cols は 3 列、狭い時は 1 列", () => {
 	const css = read("web/dash/_b.css");
-	assert.match(css, /\.cols\{display:grid; grid-template-columns:repeat\(4,minmax\(0,1fr\)\)/, "4 列グリッドが無い");
+	assert.match(css, /\.cols\{display:grid; grid-template-columns:repeat\(3,minmax\(0,1fr\)\)/, "3 列グリッドが無い");
 	assert.match(css, /@media \(max-width:[\d]+px\)\{ ?\.cols\{grid-template-columns:1fr\}/, "1 列フォールバックが無い");
+});
+
+await check("#77/#78/#79 UI の配線（ブラウザ実機は #057 の担当）", () => {
+	const app = read("web/dash/_app.js");
+	const head = read("web/dash/_head.html");
+	assert.ok(app.includes('"del-nobody"'), "#79: 添付なしの成果物が帯に出ない");
+	assert.ok(app.includes("p.innerHTML === d.innerHTML"), "#78: 列ノードの再利用が無い");
+	assert.ok(app.includes('e.key === "Escape" && $("#cm").hasAttribute("open")'), "#77: Esc でモーダルが閉じない");
+	assert.ok(app.includes('t.closest(".del-cap")'), "#79: 帯タイルからモーダルを開けない");
+	assert.ok(head.includes('id="deladd"'), "#79: 帯に + が無い");
 });
 
 if (failures.length > 0) {

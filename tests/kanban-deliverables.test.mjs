@@ -46,8 +46,9 @@ test("#58: 添付の有無は imgsOf、横断は global.cards、proj は project
 	assert.ok(/setAttribute\("sandbox", "[^"]*allow-forms[^"]*"\)/.test(APP), "sandbox に allow-forms が無い");
 	assert.ok(!/setAttribute\("sandbox",[^)]*allow-same-origin/.test(APP), "allow-same-origin を足してはいけない");
 	assert.ok(src.includes("srcOf("), "URL は srcOf（/api/media と /api/ref）を使う");
-	// #72: この帯は成果物だけ。TODO/DOING/DONE のカードを混ぜない。
-	assert.ok(APP.includes('c.col === "deliverable" && imgsOf(c).length'), "成果物帯の絞り込みが無い");
+	// #72/#79: この帯は成果物だけ。TODO/DOING/DONE のカードを混ぜない。
+	// 添付の有無は問わない（#79: 添付なしの成果物も帯に出す）。
+	assert.ok(APP.includes('.filter(function (c) { return c.col === "deliverable"; })'), "成果物帯の絞り込みが無い");
 });
 
 test("#58: 畳める（details + localStorage 記憶）", () => {

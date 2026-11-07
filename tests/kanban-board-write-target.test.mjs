@@ -129,7 +129,7 @@ await check("/api/kanban?p= の project は /api/dashboard と同じ 9 キーを
 	const dash = (await get("/api/dashboard")).body.project;
 	const one = (await get(`/api/kanban?p=${cwdSlug}`)).body;
 	assert.equal(keys(one.project), keys(dash), `形が違う: ${keys(one.project)} != ${keys(dash)}`);
-	// #67: deliverableCount（4列目「成果物」の見出しの数字）が 9 個目。
+	// #67: deliverableCount（成果物の帯の見出しの数字）が 9 個目。
 	assert.equal(
 		keys(one.project),
 		"cards,counts,deliverableCount,halted,hiddenTodoCount,id,loops,modes,next",

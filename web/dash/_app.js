@@ -191,7 +191,8 @@
     var a = el("article", "card" + (bad ? " overdue" : ""));
     a.dataset.id = c.id;
     // #46: ボード表示のときだけ掴める（すべてタブでは移動先の板が定まらない）。
-    if (!showProject) {
+    // #79: 成果物は phase を持たないので DnD の対象にしない。
+    if (!showProject && c.col !== "deliverable") {
       a.draggable = true;
       a.addEventListener("dragstart", function (e) {
         e.dataTransfer.setData("text/plain", String(c.id));
@@ -375,9 +376,13 @@
   // ---- render: 4 columns (#67: 成果物 = deliverable, TODO/DOING/DONE の外) ----
   function colName(col) { return col === "deliverable" ? "成果物" : col.toUpperCase(); }
   function renderBoard() {
-    var box = clear($("#board"));
+    // #78: poll のたびに #board を作り直すと img が再デコードされてチカチカする。
+    // 列の中身（innerHTML）が前回と同じなら、その列のノードはそのまま残して DOM を触らない。
+    var board = $("#board");
+    var prev = Array.prototype.slice.call(board.children);
+    var out = [];
     var rep = projReport(), cards = (rep && rep.cards) || [];
-    ["todo", "doing", "done", "deliverable"].forEach(function (col) {
+    ["todo", "doing", "done"].forEach(function (col) {
       var list = inCol(cards, col);
       var d = el("div", "col");
       var head = el("div", "colhead");
@@ -440,8 +445,15 @@
         fold.onclick = function () { state.doneOpen = !state.doneOpen; render(); };
         d.appendChild(fold);
       }
-      box.appendChild(d);
+      d.dataset.col = col;
+      var p = prev[out.length];
+      // #78: applySel() がレンダ後に付ける .sel は markup に出ないので、比較前に落とす（直後に付け直される）。
+      if (p) Array.prototype.forEach.call(p.querySelectorAll(".card.sel"), function (n) { n.classList.remove("sel"); });
+      out.push(p && p.dataset.col === col && p.innerHTML === d.innerHTML ? p : d);
     });
+    var same = out.length === prev.length;
+    for (var i = 0; same && i < out.length; i++) if (out[i] !== prev[i]) same = false;
+    if (!same) board.replaceChildren.apply(board, out);
   }
 
   // ---- render: 横断 ----
@@ -548,57 +560,62 @@
   function delTile(c) {
     var imgs = imgsOf(c), name = imgs[0];
     var t = el("div", "del-tile");
+    t.dataset.id = c.id; // #79: 帯のタイルからモーダルを開くための id
     // 動画はタイル内で再生できるので lightbox には載せない（.thumb を付けない）。
-    if (!VID.test(name)) { t.classList.add("thumb"); t.dataset.lb = name; }
+    if (imgs.length && !VID.test(name)) { t.classList.add("thumb"); t.dataset.lb = name; }
     var cap = el("div", "del-cap");
     cap.appendChild(el("span", "id", "#" + c.id));
     cap.appendChild(document.createTextNode(c.text || ""));
     if (state.allview && c.sid) cap.appendChild(el("span", "del-sid", c.sid));
     cap.title = c.text || "";
     t.appendChild(cap);
-    t.appendChild(delBody(name, c.text));
+    // #79: 添付なしでも成果物として帯に出す（本文だけのタイル）。
+    if (imgs.length) t.appendChild(delBody(name, c.text));
+    else t.appendChild(el("div", "del-nobody", "添付なし"));
     // #56: 参照型（file:）の添付があるカードは右上に 1 バッジ。
-    if (imgs.some(function (n) { return refOf(n); })) t.lastChild.appendChild(el("span", "del-ref", "\u2750"));
+    if (imgs.length && imgs.some(function (n) { return refOf(n); })) t.lastChild.appendChild(el("span", "del-ref", "\u2750"));
     // #61: hover で右上に ×。csv の index をそのまま送るので、外れるのはこの 1 枚だけ。
-    var at = imgs.indexOf(name);
-    var x = el("span", "del-x", "\u00d7");
-    x.title = "この添付を外す";
-    x.onclick = function (ev) {
-      // tile 自身が .thumb（クリックで lightbox）なので、ここで止めないと両方走る。
-      ev.stopPropagation();
-      // 横断ビューは c.sid、ボード表示は state.cur が書き先の slug。
-      var p = c.sid || state.cur;
-      if (!p || p === "__all__") { toast("添付を外す先のボードが定まらない"); return; }
-      fetch("/api/attach/del" + qsOf({ p: p, id: c.id, n: at })).then(function (r) {
-        if (r.status === 401) authFail();
-        return r.json().then(function (j) {
-          if (!r.ok || !j || !j.ok) throw new Error((j && j.error) || "http " + r.status);
-          toast("#" + c.id + " から添付 " + name + " を外した");
-          refresh();
-        });
-      }, fail).catch(fail);
-    };
-    t.appendChild(x);
+    if (imgs.length) {
+      var at = imgs.indexOf(name);
+      var x = el("span", "del-x", "\u00d7");
+      x.title = "この添付を外す";
+      x.onclick = function (ev) {
+        // tile 自身が .thumb（クリックで lightbox）なので、ここで止めないと両方走る。
+        ev.stopPropagation();
+        // 横断ビューは c.sid、ボード表示は state.cur が書き先の slug。
+        var p = c.sid || state.cur;
+        if (!p || p === "__all__") { toast("添付を外す先のボードが定まらない"); return; }
+        fetch("/api/attach/del" + qsOf({ p: p, id: c.id, n: at })).then(function (r) {
+          if (r.status === 401) authFail();
+          return r.json().then(function (j) {
+            if (!r.ok || !j || !j.ok) throw new Error((j && j.error) || "http " + r.status);
+            toast("#" + c.id + " から添付 " + name + " を外した");
+            refresh();
+          });
+        }, fail).catch(fail);
+      };
+      t.appendChild(x);
+    }
     return t;
   }
   function renderDeliverables() {
     var box = $("#deliverables"), grid = $("#delgrid");
-    // #72: この帯は成果物だけ。TODO/DOING/DONE のカードは第4列と列側で見る。
-    var cards = delCards().filter(function (c) { return c.col === "deliverable" && imgsOf(c).length; });
-    // 添付が 1 枚も無い看板では帯ごと消す（空箱を置かない）。
-    box.hidden = !cards.length;
-    if (!cards.length) { clear(grid); $("#delcount").textContent = ""; box.dataset.sig = ""; return; }
-    // 3 秒 poll の度に作り直すと iframe プレビューが再読込される。中身が同じなら触らない。
-    var sig = cards.map(function (c) { return c.id + "|" + c.img + "|" + (c.sid || "") + "|" + c.text; }).join("\n");
+    // #79: 3 列化したので成果物の置き場はこの帯だけ。添付の有無に関わらず deliverable を全部出す。
+    var cards = delCards().filter(function (c) { return c.col === "deliverable"; });
+    // 打ちかけ（state.addCol）も署名に含める。含めないと + を押しても入力欄が出ない。
+    var sig = String(state.addCol) + "\n" + cards.map(function (c) { return c.id + "|" + c.img + "|" + (c.sid || "") + "|" + c.text; }).join("\n");
     if (box.dataset.sig === sig) return;
     box.dataset.sig = sig;
     clear(grid);
+    if (state.addCol === "deliverable") grid.appendChild(addRow("deliverable"));
     var refs = 0;
     cards.forEach(function (c) {
       if (imgsOf(c).some(function (n) { return refOf(n); })) refs += 1;
       grid.appendChild(delTile(c));
     });
-    $("#delcount").textContent = "成果物 " + cards.length + " 枚 / 参照型 " + refs + " 枚";
+    $("#delcount").textContent = cards.length
+      ? "成果物 " + cards.length + " 枚 / 参照型 " + refs + " 枚"
+      : "成果物 0 枚 — ＋ で追加";
   }
 
   // ---- render: rail ----
@@ -646,12 +663,12 @@
 
   function renderFoot() {
     var p = state.payload || {};
-    $("#footright").textContent = "API " + (p.version || "?") + " · " + (state.offline ? "接続断" : "3秒ポーリング") + " · dashboard v2.5";
+    $("#footright").textContent = "API " + (p.version || "?") + " · " + (state.offline ? "接続断" : "5秒ポーリング") + " · dashboard v2.5";
   }
 
-  // #70: 打鍵を受け付ける入力にフォーカスがある間は再描画しない（3 秒 poll で入力が消える）。
+  // #70: 打鍵を受け付ける入力にフォーカスがある間は再描画しない（5 秒 poll で入力が消える）。
   var NO_TYPE_INPUT = /^(text|search|tel|url|email|password|number|date|datetime-local|time|month|week)$/;
-  var EDIT_ZONE = "#addbar, #swline, #board, #rail, .modal";
+  var EDIT_ZONE = "#addbar, #swline, #board, #delgrid, #rail, .modal";
   function isEditing() {
     var a = document.activeElement;
     if (!a || !a.tagName) return false;
@@ -718,6 +735,7 @@
     state.cur = slug;
     state.allview = slug === "__all__";
     state.sel = -1;
+    state.addCol = null; // #75: 打ちかけの追加行は板ごとの状態。切替で持ち越さない
     state.board = null;
     closeModal();
     var jobs = [getJSON("/api/projects").then(function (p) { if (p) state.projects = p; })];
@@ -742,7 +760,7 @@
     if (!needProj()) return;
     state.addCol = col;
     render();
-    var i = document.querySelector("#board .addin");
+    var i = document.querySelector("#board .addin, #delgrid .addin");
     if (i) i.focus();
   }
   // #75: その場追加の打ちかけは再描画で消さない。閉じる（state.addCol）と破棄（draft）を分ける。
@@ -773,7 +791,8 @@
   function submitAdd(col, text) {
     var body = text || "";
     if (!body.trim()) { state.addCol = null; render(); return; }
-    var multi = body.indexOf("\n") >= 0 || QA_RE.test(body);
+    // #79: 成果物は quickadd を使わない（quickadd は col を取れず TODO 行きになる）。1 枚のカードとして足す。
+    var multi = col !== "deliverable" && (body.indexOf("\n") >= 0 || QA_RE.test(body));
     var req = multi
       ? act("/api/quickadd", { text: body })
       : act("/api/add", { text: body.trim(), col: col });
@@ -908,6 +927,10 @@
     state.modal = id;
     var c = modalCard();
     if (!c) { state.modal = null; return; }
+    // #79: 成果物は phase を持たない。移動先ボタンを出さない（横断ビューからモーダルを開いても同じ）。
+    Array.prototype.forEach.call(document.querySelectorAll("#cm [data-move]"), function (b) {
+      b.style.display = c.col === "deliverable" ? "none" : "";
+    });
     $("#cm-id").textContent = "#" + c.id;
     $("#cm-text").value = c.text || "";
     $("#cm-project").value = c.project || "";
@@ -1107,6 +1130,10 @@
 
   document.addEventListener("click", function (e) {
     var t = e.target;
+    // #77: 背景（#cm 自身）をクリックしたら閉じる。箱の中のクリックは target が子になるので閉じない。
+    if (t.id === "cm") { closeModal(); return; }
+    // #79: 帯の + 。summary の中なので既定の開閉を止めてから入力欄を出す。
+    if (t.id === "deladd") { e.preventDefault(); addCard("deliverable"); return; }
     var ptab = t.closest && t.closest(".ptab");
     if (ptab) { pick(ptab.dataset.p); return; }
     var sw = t.closest && t.closest(".sw");
@@ -1157,6 +1184,9 @@
       }
       return; // モーダル内の他のクリックは下へ流さない
     }
+    // #79: 帯タイルは見出し（.del-cap）だけが編集モーダル。サムネは lightbox、添付なしは入口にしない。
+    var dt = t.closest && t.closest(".del-tile");
+    if (dt && t.closest(".del-cap")) { openModal(Number(dt.dataset.id)); return; }
     var th = t.closest && t.closest(".thumb");
     if (th) { showLb(lbList().indexOf(th)); return; }
     if (t.id === "lb" || t.id === "lbimg") closeLb();
@@ -1223,6 +1253,8 @@
   document.addEventListener("keydown", function (e) {
     // Ctrl/Cmd+K は検索欄からでも開く（入力中の打鍵は下で捨てる）
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); openPal(); return; }
+    // #77: #cm の入力欄にフォーカスがあっても Esc で閉じる（下の input/textarea 分岐が blur で消費するため先に処理する）。
+    if (e.key === "Escape" && $("#cm").hasAttribute("open")) { closeModal(); return; }
     var tag = (e.target.tagName || "").toLowerCase();
     if (tag === "input" || tag === "textarea") {
       if (e.key === "Escape") { e.target.blur(); if (e.target.id === "palq") closePal(); }
@@ -1233,10 +1265,7 @@
       else $("#palq").focus();
       return;
     }
-    if ($("#cm").hasAttribute("open")) {
-      if (e.key === "Escape") closeModal();
-      return;
-    }
+    if ($("#cm").hasAttribute("open")) return; // #77: 開いている間は他のキーを盤面へ流さない
     if ($("#lb").hasAttribute("open")) {
       if (e.key === "Escape") closeLb();
       else if (e.key === "ArrowRight") showLb(lbAt + 1);

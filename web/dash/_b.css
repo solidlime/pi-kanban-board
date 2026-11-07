@@ -6,8 +6,8 @@
 }
 @media (max-width:980px){ .layout{grid-template-columns:1fr} }
 
-/* ── kanban 4列 (#67: 4列目 = 成果物 deliverable) ── */
-.cols{display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:var(--gap)}
+/* ── kanban 3列 (#79: 成果物は下部の帯) ── */
+.cols{display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:var(--gap)}
 @media (max-width:1100px){ .cols{grid-template-columns:repeat(2,minmax(0,1fr))} }
 @media (max-width:700px){ .cols{grid-template-columns:1fr} }
 .col{
@@ -22,11 +22,12 @@
   color:var(--muted);
 }
 .colhead .n{font-family:var(--font-mono); font-size:11px; color:var(--muted)}
-.colhead .add{
+.colhead .add,.delhead .add{
   margin-left:auto; border:0; background:none; color:var(--muted);
   font:16px/1 var(--font-mono); cursor:pointer;
 }
-.colhead .add:hover{color:var(--accent)}
+.colhead .add:hover,.delhead .add:hover{color:var(--accent)}
+.delhead .add{align-self:center}
 /* #52: 他セッションの TODO 集計バッジ。hiddenTodoCount>0 のときだけ DOM に出る。 */
 .othertodos{margin-bottom:8px}
 .othertodos button{
@@ -157,6 +158,8 @@ html[data-density="compact"] .chips,html[data-density="compact"] .meta{display:n
   gap:6px; padding:0 10px; font-family:var(--font-mono); font-size:11px; color:var(--muted);
   text-align:center; overflow:hidden;
 }
+/* #79: 添付なしの成果物タイルの本文 */
+.del-nobody{height:140px; display:flex; align-items:center; justify-content:center; border-top:1px solid var(--line); background:var(--bg0); font-family:var(--font-mono); font-size:11px; color:var(--muted)}
 .del-ref{
   position:absolute; top:4px; right:4px; font-family:var(--font-mono); font-size:10px;
   color:var(--text); background:color-mix(in srgb,var(--bg0) 80%, transparent);
