@@ -178,13 +178,13 @@ writeFileSync(SRC_IMG, PNG);
 	check("~ 展開: card.img が入る", () => assert.match(imgOf(4), /^4-[0-9a-f]{8}\.png$/));
 }
 
-// --- 7: 置き換えで旧ファイルが消える -----------------------------------------
+// --- 7: 添付追加 (#53: 旧ファイルは消えない) ------------------------------------
 {
 	const before = imgOf(3);
 	const out = await kbCmd(`img 3 ${SRC_IMG}`);
-	check("置き換え: 成功 notify", () => assert.match(out, /#3 に画像を添付/));
-	check("置き換え: 旧 media は removeMedia で消える", () => assert.equal(existsSync(`${MEDIA}/${before}`), false));
-	check("置き換え: 新 media は残る", () => assert.equal(existsSync(`${MEDIA}/${imgOf(3)}`), true));
+	check("追加: 成功 notify", () => assert.match(out, /#3 に画像を添付/));
+	check("追加: 旧 media は消えない (#53 追加型)", () => assert.equal(existsSync(`${MEDIA}/${before}`), true));
+	check("追加: card.img は csv で旧新の 2 ファイル", () => { const now = imgOf(3); assert.match(now, /,/, "csv"); const parts = now.split(","); assert.equal(parts.length, 2, "2 files"); parts.forEach(p => assert.equal(existsSync(`${MEDIA}/${p}`), true)); });
 }
 
 // --- 8: `kanban` ツールの img アクション (runImgCommand と同じ attachImage) ------
@@ -202,9 +202,10 @@ const runTool = (params) => tool.execute("c", { scope: "project", ...params }, u
 	const before = imgOf(3);
 	const r = await runTool({ action: "img", id: 3, image: SRC_IMG });
 	check("tool img: attached <id>-<8hex>.png を返す", () => assert.match(r.content[0].text, /^attached 3-[0-9a-f]{8}\.png to #3$/));
-	check("tool img: card.img が置き換わり実体がある", () => {
-		assert.notEqual(imgOf(3), before);
-		assert.equal(existsSync(`${MEDIA}/${imgOf(3)}`), true);
+	check("tool img: card.img に追加され実体がある", () => {
+		const now = imgOf(3);
+		assert.match(now, /,/, "csv");
+		now.split(",").forEach(p => assert.equal(existsSync(`${MEDIA}/${p}`), true));
 	});
 }
 {

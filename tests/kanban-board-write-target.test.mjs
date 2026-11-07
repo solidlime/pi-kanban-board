@@ -124,12 +124,17 @@ await check("/api/projects はカードのあるボードを全部返す（タ�
 });
 
 // #35: 形が違うと、選んだ看板は「次にやる」も残数も再開ボタンも無い板として描かれる。
-await check("/api/kanban?p= の project は /api/dashboard と同じ 7 キーを返す", async () => {
+await check("/api/kanban?p= の project は /api/dashboard と同じ 9 キーを返す", async () => {
 	const keys = (o) => Object.keys(o || {}).sort().join(",");
 	const dash = (await get("/api/dashboard")).body.project;
 	const one = (await get(`/api/kanban?p=${cwdSlug}`)).body;
 	assert.equal(keys(one.project), keys(dash), `形が違う: ${keys(one.project)} != ${keys(dash)}`);
-	assert.equal(keys(one.project), "cards,counts,halted,id,loops,modes,next", "7 キーではない");
+	// #67: deliverableCount（4列目「成果物」の見出しの数字）が 9 個目。
+	assert.equal(
+		keys(one.project),
+		"cards,counts,deliverableCount,halted,hiddenTodoCount,id,loops,modes,next",
+		"9 キーではない",
+	);
 	assert.equal(one.projectId, one.project.id, "projectId と project.id が食い違う");
 });
 

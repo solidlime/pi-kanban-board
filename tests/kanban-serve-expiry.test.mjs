@@ -8,6 +8,7 @@ import { createServer as netServer } from "node:net";
 import { createRequire } from "node:module";
 import { authFetch } from "./helpers/token.mjs";
 import { useKanban } from "./helpers/board.mjs";
+import { serveCall } from "./helpers/serve-registry.mjs";
 
 // #83b: HTTP routes need the server token now; tf = fetch + the kb_auth cookie.
 const tf = (input, init) => authFetch(input, init);
@@ -86,8 +87,9 @@ for (let i = 0; i < 40; i++) {
 }
 
 const base = `http://127.0.0.1:${PORT}`;
-const serve = tools.get("serve");
-const call = (args) => serve.execute("t", args, null, () => {});
+const KB_DIR = `${HOME_DIR}/.pi/kanban`;
+// #53: serve ツールは廃止。/serve/* の HTTP 面は残るので登録だけ helper で作る。
+const call = (args) => serveCall(KB_DIR, args);
 
 check("起動時 sweep が期限切れを実削除する", () => {
 	const now = entriesOnDisk();
@@ -159,23 +161,9 @@ check("期限切れは 410 Gone", () => {
 	});
 }
 
-{
-	const dash = await (await tf(`${base}/api/dashboard`)).json();
-	check("dashboard の serve は期限切れも残し permanent/expiresAt を返す", () => {
-		const e = dash.serve.find((s) => s.id === EXPIRED_ID);
-		assert.ok(e, "期限切れが dashboard から消えている");
-		const p = dash.serve.find((s) => s.id === PERM_ID);
-		assert.equal(p.permanent, true);
-		assert.equal(p.expiresAt, "");
-		const f = dash.serve.find((s) => s.id === FRESH_ID);
-		assert.equal(f.permanent, false);
-		assert.equal(f.expiresAt, new Date(Date.parse(FRESH) + 7 * DAY).toISOString());
-		const n = dash.serve.find((s) => s.id === NOCT_ID);
-		assert.equal(n.expiresAt, "");
-	});
-	// v2.5（#42）で serve のパネルは UI から消えた。ここは API 側だけを固定する
-	// （表示の復活は別カードで扱う）。
-}
+// #53: dashboard payload の serve フィールドは空配列になったので、ここでは API の
+// 期限計算までは追わない（/serve/* の 410 と list の隠蔽は下のブロックで固定する）。
+
 
 // --- 3. /api/serve の永久トグル ----------------------------------------------
 {

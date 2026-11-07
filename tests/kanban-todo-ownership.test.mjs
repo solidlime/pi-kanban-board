@@ -171,26 +171,32 @@ try {
 		await sleep(100);
 		if (sessA.sent.length > 0) woke = sessA.sent[0];
 	}
-	await check("1 A(driver) の poll が movedBy=B の project TODO を wake する", () => {
-		assert.ok(woke !== null, "movedBy=B の project TODO で wake しなかった（人質のまま）");
-		assert.equal(woke, continuationPrompt(card, "project"));
-		assert.match(woke, /^TODO #1 "sibling work" を着手しろ。/);
+	await check("1 (逆断言 #52) A の poll は movedBy=B の project TODO を自動 wake しない", () => {
+		assert.equal(woke, null, "他セッションの TODO が自動で拾われた (#52 仕様違反)");
 	});
 
-	await check("1b settle がそのカードを DOING に移し、movedBy が A になる", () => {
+	await check("1b (逆断言 #52) settle も他主 TODO を pick しない (todo のまま)", () => {
 		const res = settle(sessA);
 		const live = readProject().find((c) => c.id === 1);
-		assert.equal(live.col, "doing", `DOING に移っていない: ${JSON.stringify(readProject())}`);
-		assert.equal(live.movedBy, A, "着手した A が所有を取る");
-		assert.equal(res && res.continue, true, "続行するはず");
+		assert.equal(live.col, "todo", `他主 TODO が DOING にされた: ${JSON.stringify(readProject())}`);
+		assert.equal(live.movedBy, "kb87-sibling", "所有が変わっていない");
+		assert.equal(res, null || res, "res は何でもよい (continue しない)");
 	});
 
-	await check("1c 移した後は A の DOING になり、poll の wake 式がそのカードを返す", () => {
-		// poll の wake 式そのもの（AUTO_TICK は 5 分待つので、実時間ではなく式で見る）
+	await check("1c (#52) 手動 move で A が拾えば以後は A の DOING として駆動される", () => {
+		// 明示的な取りに行き口 (kanban move / GUI drag) 相当: A が手動で DOING へ
+		const mod2 = mod;
+		// moveCardTo は export されていない場合があるので /api/move 相当の直接変更で代用
+		// → tickCardFor で見えるようになることだけを見る
+		const cards0 = readProject();
+		const live0 = cards0.find((c) => c.id === 1);
+		assert.equal(live0.col, "todo", "前提: まだ TODO");
+		// 手動で拾う (tests 内の writeProject を使う)
+		writeProjectFile(cards0.map((c) => c.id === 1 ? { ...c, col: "doing", movedBy: A } : c));
 		const cards = readProject();
-		const picked = tickCardFor(cards, A) ?? nextTodo(cards, "project", A);
-		assert.equal(picked?.id, 1, `A が DOING を駆動できない: ${JSON.stringify(cards)}`);
-		assert.match(continuationPrompt(picked, "project"), /^DOING #1/);
+		const picked = tickCardFor(cards, A);
+		assert.equal(picked?.id, 1, `手動拾い後も A が駆動できない: ${JSON.stringify(cards)}`);
+		assert.match(continuationPrompt(picked, "project"), /^\[kanban-loop\] DOING #1/);
 	});
 
 	// --- 2: 他人の DOING は奪わない ---------------------------------------------

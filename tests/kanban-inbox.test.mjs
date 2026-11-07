@@ -10,6 +10,7 @@ import { createServer as netServer } from "node:net";
 import http from "node:http";
 import { createRequire } from "node:module";
 import { authFetch, tokenHeader } from "./helpers/token.mjs";
+import { serveCall } from "./helpers/serve-registry.mjs";
 
 // #83b: HTTP routes need the server token now; tf = fetch + the kb_auth cookie.
 const tf = (input, init) => authFetch(input, init);
@@ -82,9 +83,9 @@ for (let i = 0; i < 40; i++) {
 	await new Promise((r) => setTimeout(r, 100));
 }
 
-const serve = tools.get("serve");
-assert.ok(serve, "serve ツールが registerTool されている");
-const call = (args) => serve.execute("t", args, null, () => {});
+// #53: serve ツールは廃止。/serve/* の HTTP 面は残るので登録だけ helper で作る。
+const KB_DIR = `${HOME_DIR}/.pi/kanban`;
+const call = (args) => serveCall(KB_DIR, args);
 const base = `http://127.0.0.1:${PORT}`;
 const SITE = `${join(HOME_DIR, "workspace/site")}`;
 const INBOX = `${join(SITE, "_inbox")}`;

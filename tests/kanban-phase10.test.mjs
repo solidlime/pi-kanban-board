@@ -97,15 +97,15 @@ check("TODO が無ければ nextTodo は undefined", () => {
 // ---------------------------------------------------------------------------
 const doingCard = { id: 1, text: "x", col: "doing" };
 const todoCard = { id: 3, text: "買い物", col: "todo" };
-check("DOING 用プロンプト（session）は従来の文字列のまま", () =>
+check("DOING 用プロンプト（session）は従来の文字列 + #51 の識別子", () =>
 	assert.equal(
 		continuationPrompt(doingCard, "session"),
-		'DOING #1 "x" を完了させろ。終わったら kanban ツール で DONE に移せ。',
+		'[kanban-loop] DOING #1 "x" を完了させろ。終わったら kanban ツール で DONE に移せ。',
 	));
-check("DOING 用プロンプト（global）は従来の文字列のまま", () =>
+check("DOING 用プロンプト（global）は従来の文字列 + #51 の識別子", () =>
 	assert.equal(
 		continuationPrompt(doingCard, "global"),
-		'GLOBAL DOING #1 "x" を完了させろ。終わったら kanban ツール (scope=global) で DONE に移せ。',
+		'[kanban-loop] GLOBAL DOING #1 "x" を完了させろ。終わったら kanban ツール (scope=global) で DONE に移せ。',
 	));
 check("TODO 用プロンプトは DOING 用と異なる", () =>
 	assert.notEqual(continuationPrompt(todoCard, "session"), continuationPrompt(doingCard, "session")));
@@ -121,10 +121,12 @@ check("TODO 用プロンプト（global）は scope=global を名乗る", () => 
 	assert.match(p, /scope=global/);
 	assert.match(p, /#3/);
 });
-check("TODO 用でも本文は 80 文字で切られる", () => {
+check("TODO 用でも本文は 80 文字で切られ、全文の場所を言う（#51-⑤(a)）", () => {
 	const long = { id: 9, text: "あ".repeat(200), col: "todo" };
-	assert.equal(Array.from(continuationPrompt(long, "session")).length < 160, true);
-	assert.match(continuationPrompt(long, "session"), /…/);
+	const p = continuationPrompt(long, "session");
+	assert.equal(Array.from(p).length < 200, true, `実長 ${Array.from(p).length}`);
+	assert.match(p, /…/);
+	assert.match(p, /全文は kanban ツールで確認/, "切ったことを黙ってはいけない");
 });
 
 // ---------------------------------------------------------------------------
@@ -245,7 +247,7 @@ try {
 		continuationPrompt({ id: 1, text: "first task", col: "todo" }, "session"),
 		"wake 対象は pickFirstTodo と同じ #1",
 	);
-	assert.match(sessA.sent[0], /^TODO #1 "first task" を着手しろ。/);
+	assert.match(sessA.sent[0], /^\[kanban-loop\] TODO #1 "first task" を着手しろ。/);
 	const afterWake = readCards(A);
 	assert.equal(afterWake.find((c) => c.id === 1).col, "todo", "poll は盤面を書かない（移すのは agent）");
 	passed += 1;
@@ -271,7 +273,7 @@ try {
 	take();
 	await sleep(2000);
 	assert.equal(sessA.sent.length, sentA + 1, `DOING ありは 1 回 wake: ${JSON.stringify(sessA.sent)}`);
-	assert.match(sessA.sent.at(-1), /^DOING #1 "doing work" を完了させろ/);
+	assert.match(sessA.sent.at(-1), /^\[kanban-loop\] DOING #1 "doing work" を完了させろ/);
 	assert.doesNotMatch(sessA.sent.at(-1), /TODO/);
 	assert.equal(readCards(A).find((c) => c.id === 2).col, "todo", "TODO は二重に拾わない");
 	passed += 1;

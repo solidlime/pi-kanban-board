@@ -1,6 +1,7 @@
 // kanban Phase 11 の自己検証。フレームワーク無しで `node tests/kanban-phase11.test.mjs`。
-// 対象: TODO の所有判定。DOING は headOwnedDoing で movedBy===sid に絞っているが、
-// TODO は「まだ誰も着手していない」ので movedBy 無しも、他者のスタンプも拾える。
+// 対象: TODO の所有判定。DOING は headOwnedDoing で movedBy===sid に絞っている。
+// #52: TODO も同じく、自分のもの（movedBy === sid）と無主（movedBy 無し）だけを拾う。
+// 他セッションが触った TODO は既定で見えず、autoPick の対象でもない（手動 move は自由）。
 // #26: 駆動するのは cwd の project ボード 1 枚。global は読み取り専用の集約ビューなので、
 // global.json に何を置いても poll も settle も動かない（それをここで固定する）。
 // HOME と KANBAN_PORT を差し替えるので、本番の ~/.pi/kanban と 8789 には触れない。
@@ -85,9 +86,12 @@ check("1 GLOBAL TODO: movedBy 無し -> 拾える", () =>
 	eq(nextTodo([{ id: 1, text: "free", col: "todo" }], "global", S)?.id, 1));
 check("2 GLOBAL TODO: movedBy === sid -> 拾える", () =>
 	eq(nextTodo([{ id: 1, text: "mine", col: "todo", movedBy: S }], "global", S)?.id, 1));
-check("3 #87 GLOBAL TODO: movedBy === 他者でも拾う（TODO は所有を持たない）", () =>
-	eq(nextTodo([{ id: 1, text: "theirs", col: "todo", movedBy: OTHER, priority: 9 }], "global", S)?.id, 1));
-check("4 #87 GLOBAL: 所有でなく priority 順で選ぶ（他者スタンプが先頭）", () =>
+check("3 #87 整合 GLOBAL TODO: movedBy === 他者でも拾う (aggregate は sid 区分が無意味)", () =>
+	eq(
+		nextTodo([{ id: 1, text: "theirs", col: "todo", movedBy: OTHER, priority: 9 }], "global", S)?.id,
+		1,
+	));
+check("4 #87 整合 GLOBAL: 他者スタンプ高priorityが priority 順で先頭に来る", () =>
 	eq(
 		nextTodo(
 			[
@@ -99,7 +103,7 @@ check("4 #87 GLOBAL: 所有でなく priority 順で選ぶ（他者スタンプ�
 		)?.id,
 		1,
 	));
-check("4b #87 GLOBAL: 他者所有の TODO だけでも拾う", () =>
+check("4b #87 整合 GLOBAL: 他者所有の TODO しか無ければ拾う (aggregate)", () =>
 	eq(
 		nextTodo(
 			[
@@ -113,8 +117,8 @@ check("4b #87 GLOBAL: 他者所有の TODO だけでも拾う", () =>
 	));
 check("5 SESSION TODO: movedBy 無しでも拾える（既存挙動）", () =>
 	eq(nextTodo([{ id: 1, text: "t", col: "todo" }], "session", S)?.id, 1));
-check("5b SESSION TODO: movedBy === 他者でも拾える（自分の看板。既存挙動）", () =>
-	eq(nextTodo([{ id: 1, text: "t", col: "todo", movedBy: OTHER }], "session", S)?.id, 1));
+check("5b #52: scope は関係ない — 他者スタンプは session でも拾わない", () =>
+	eq(nextTodo([{ id: 1, text: "t", col: "todo", movedBy: OTHER }], "session", S), undefined));
 
 // ---------------------------------------------------------------------------
 // ライブ経路: 実タイマー poll -> sendUserMessage / agent_before_settle -> 実ファイル
@@ -177,15 +181,16 @@ try {
 	assert.equal(readGlobal().find((c) => c.id === 2).col, "todo", "settle は global を書かない");
 	passed += 1;
 
-	// --- (B) 7: project ボードの他者スタンプ TODO も settle が拾って DOING にする --------
+	// --- (B) 7: #52 project ボードの他者スタンプ TODO は settle が拾わない -----------
 	const B = "phase11-b";
 	const sessB = startSession(B);
 	setModes(B, "project", true, true);
 	writeBoardFile(B, [{ id: 5, text: "theirs", col: "todo", movedBy: OTHER, priority: 9 }]);
 	const resB = settle(sessB);
-	assert.equal(readCards(B).find((c) => c.id === 5).col, "doing", `settle が他者スタンプ TODO を拾わなかった: ${JSON.stringify(readCards(B))}`);
-	assert.equal(readCards(B).find((c) => c.id === 5).movedBy, B, "拾った B が所有を取る");
-	assert.ok(resB && resB.continue === true, "拾った以上 settle は続行する");
+	const keptB = readCards(B).find((c) => c.id === 5);
+	assert.equal(keptB.col, "todo", `#52: 他セッションの TODO を自動で拾った: ${JSON.stringify(readCards(B))}`);
+	assert.equal(keptB.movedBy, OTHER, "所有が移った");
+	assert.equal(resB, undefined, `拾っていないのに settle が続行した: ${JSON.stringify(resB)}`);
 	passed += 1;
 
 	// --- (C) 陽性対照: 同じ経路で movedBy 無し TODO は settle が拾う ---------------
@@ -202,17 +207,21 @@ try {
 	assert.equal(readCards(B).find((c) => c.id === 7).col, "doing", "movedBy===sid は拾える");
 	passed += 1;
 
-	// --- (E) project は TODO の所有フィルタを持たない（#26: 駆動するのは project 1 枚） --
+	// --- (E) #52: 無主の TODO が混じっていれば、他者スタンプを飛ばしてそちらを拾う ------
 	const E = "phase11-e";
 	const sessE = startSession(E);
 	setModes(E, "project", true, true);
-	writeBoardFile(E, [{ id: 3, text: "theirs-in-project", col: "todo", movedBy: OTHER, priority: 9 }]);
+	writeBoardFile(E, [
+		{ id: 3, text: "theirs-in-project", col: "todo", movedBy: OTHER, priority: 9 },
+		{ id: 4, text: "free-in-project", col: "todo" },
+	]);
 	const resE = settle(sessE);
-	assert.equal(readCards(E).find((c) => c.id === 3).col, "doing", "project 看板は movedBy に関係なく拾う");
+	assert.equal(readCards(E).find((c) => c.id === 3).col, "todo", "他セッションの TODO が動いた");
+	assert.equal(readCards(E).find((c) => c.id === 4).col, "doing", "無主の TODO が拾われていない");
 	assert.ok(resE && resE.continue === true, "project TODO 経由の settle は続行する");
 	passed += 1;
 
-	// --- (F) 純関数の poll と同じ式の一致（TODO に所有フィルタは無い） -------------
+	// --- (F) 純関数の poll と同じ式の一致（#52: 他者スタンプは対象外） ----------------
 	// #17: tickCardFor(cards, sid) — 所有権は movedBy === sid だけ。scope は nextTodo 側だけ。
 	const pollPick = (cards, sid, scope) => tickCardFor(cards, sid) ?? nextTodo(cards, scope, sid);
 	check("6 純関数: poll の wake 選定 = nextTodo（GLOBAL 他者スタンプあり）", () => {
@@ -221,7 +230,7 @@ try {
 			{ id: 2, text: "theirs", col: "todo", movedBy: OTHER, priority: 9 },
 		];
 		eq(pollPick(cards, S, "global")?.id, nextTodo(cards, "global", S)?.id);
-		eq(pollPick(cards, S, "global")?.id, 2); // #87: priority 9 の他者スタンプが先頭
+		eq(pollPick(cards, S, "global")?.id, 2); // #87 整合: GLOBAL は aggregate で sid 区分無意味 → priority 9 の他者スタンプが priority 順で先頭
 	});
 
 	// --- (G) 8: 旧 global エントリの予算を project に付け替えない ----------------------

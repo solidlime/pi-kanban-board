@@ -18,7 +18,10 @@ import { createRequire } from "node:module";
 // make every one of them async.
 const req = createRequire(import.meta.url);
 
-export type Col = "todo" | "doing" | "done";
+// #67: "deliverable" is the 4th column - a place for output (cards with attachments), outside
+// TODO/DOING/DONE. The sqlite `col` column is plain TEXT with no CHECK, so widening this
+// union is the whole schema story.
+export type Col = "todo" | "doing" | "done" | "deliverable";
 
 export type Card = {
 	id: number;

@@ -19,8 +19,10 @@
 .addrow .addin{
   width:100%; background:var(--bg2); color:var(--text); font:inherit;
   border:1px dashed var(--accent); border-radius:var(--radius); padding:6px 8px;
+  resize:vertical; min-height:0;
 }
-.addrow .addin:focus{outline:1px solid var(--accent); outline-offset:0}
+/* #50: 普段は1行、フォーカスで4行に伸びる（blur で戻る） */
+.addrow .addin:focus{outline:1px solid var(--accent); outline-offset:0; height:calc(4 * 1.5em + 12px)}
 /* 401（トークン無し/失効）の常報。沈黙させない */
 .banner{
   background:#7f1d1d; color:#fff; padding:8px 14px; font-size:13px;
@@ -92,6 +94,11 @@
     <div id="groups"></div>
   </section>
   <aside class="rail" aria-label="サマリ" id="rail"></aside>
+  <!-- #58: 第4帯『成果物』。grid-column:1/-1 で全幅、DOM は rail の後ろ（rail を押し下げない） -->
+  <details class="deliverables" id="deliverables" open hidden aria-label="成果物">
+    <summary class="delhead"><h2>成果物</h2><span class="delcount" id="delcount"></span></summary>
+    <div class="del-grid" id="delgrid"></div>
+  </details>
 </main>
 
 <div class="pal" id="pal" role="dialog" aria-modal="true" aria-label="コマンドパレット">
@@ -126,12 +133,23 @@
       <button type="button" data-prio="5" title="中より後">5 低</button>
       <button type="button" data-prio="0" title="既定">0 普通</button>
     </div>
+    <!-- #49: 添付。/api/upload へ 1 ファイル 1 リクエスト。accept はサーバの OK_EXTS と同じ並び -->
+    <div class="cmatt">
+      <div class="cmatthead">
+        <span>添付</span>
+        <input type="file" id="cm-file" multiple accept=".png,.jpg,.gif,.webp,.avif,.mp4,.webm">
+        <span id="cm-attstatus" aria-live="polite"></span>
+      </div>
+      <div class="cmdrop" id="cm-drop">ここにドロップ（png / jpg / gif / webp / avif / mp4 / webm）</div>
+      <div class="cmthumbs" id="cm-thumbs"></div>
+    </div>
     <div class="cmact">
       <button type="button" id="cm-save">保存</button>
       <button type="button" id="cm-sched">実行予約</button>
       <button type="button" data-move="todo">TODO へ</button>
       <button type="button" data-move="doing">DOING へ</button>
       <button type="button" data-move="done">DONE へ</button>
+      <button type="button" data-move="deliverable">成果物 へ</button>
       <button type="button" id="cm-del">削除</button>
     </div>
   </div>
@@ -147,8 +165,9 @@
   <span class="right" id="footright">API · dashboard v2.5</span>
 </footer>
 
-<div class="lb" id="lb" role="dialog" aria-modal="true" aria-label="添付画像プレビュー">
+<div class="lb" id="lb" role="dialog" aria-modal="true" aria-label="添付プレビュー">
   <img id="lbimg" alt="">
+  <iframe id="lbif" sandbox="allow-scripts allow-forms" title="添付 HTML プレビュー" hidden></iframe>
   <div class="cap" id="lbcap"></div>
 </div>
 

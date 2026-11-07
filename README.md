@@ -53,11 +53,13 @@ pi -e npm:pi-kanban-board
 
 ### The `kanban` tool
 
-The model calls this directly. Actions include `list`, `add`, `move`, `remove`, `schedule`, `blocked`, `priority`, and `check` (a self-diagnosis of the board, serve registry, media directory, and mode files).
+The model calls this directly. Actions include `list`, `add`, `move`, `remove`, `schedule`, `blocked`, `priority`, `img` (attach a file to a card) and `check` (a self-diagnosis of the board, media directory, and mode files).
 
 `add` and `edit` take an optional `project` slug (`[A-Za-z0-9._-]`, case kept, cut to 24 chars) that tags a card. Slugs match case-insensitively (`Repos/App` and `repos/app` are one project), so the spelling you first wrote is the one on the board. An empty value clears it; anything else unnormalizable is rejected. To relabel a card, use `edit` with `project`, or `/api/schedule?project=`. `/api/upload` only reads `project` when it creates a card; uploading to an existing `id` leaves that card's label alone. A card project is only a label — the auto-pick loop never reads it.
 
 `/api/add` also takes the board-metadata trio: `due=YYYY-MM-DD` (a date, never a time), `estimate=<integer >= 0>` (points), and `blocks=<id,id,...>` (cards this one blocks). Invalid values are a 400, never silently dropped. Dependencies are stored in their own `card_dep` table and rewritten with the board on every write; a self-reference or a cycle (`a blocks b blocks a`) is a 400.
+
+`card.col` has a fourth value, `deliverable` (#67) — the 「成果物」 column the board draws to the right of DONE. It holds output, not work: a card there sits outside TODO/DOING/DONE, so `counts` keeps its three keys and does not include it, a project's `total`/`done`/`progress`/`overdue` do not count it, and the loop never picks or drives it (`nextTodo` reads TODO only, `doingHeadOf`/`tickCardFor` read DOING only). `/api/move`, `/api/add` and the `kanban` tool's `move` all accept `col=deliverable`; the project payload adds `deliverableCount` for that column's heading. The 「成果物」 band (`#58`) is unchanged: it lists every card that has attachments, whichever column the card is in.
 
 `project` and `decision` are global tables keyed by slug (a card's `project` is that slug). A decision keeps `why`, because a decision log without the reason is just a diary. Deleting a project takes its decisions with it in one transaction. Milestones and phases are not tables: a milestone is a card with a `due`, and a phase is a label that #7 decides how to attach.
 
@@ -75,17 +77,55 @@ The 検索 box (`/` focuses, `Esc` clears) looks at these and nothing else: 本�
 
 The 週次 tab is the weekly summary — nothing is asked of a model. When `poll()` notices the ISO week changed it writes one row for that week: the cards that finished (moved to DONE), the cards that went stale, and the cards that are `blocked`, grouped by project slug. `STALE_DAY_MS` decides stale, and the day count in the row is that same number, not a second opinion. The same sweep runs hourly, so a card moved after the last tick of a week is still counted in that week, and the week that just ended is finalized within the hour of the week change rather than at the boundary itself. `/api/weekly` returns the current week computed on the spot (so the tab never waits for a tick) plus the weeks that are stored; `/api/weekly?week=2026-W30` returns one stored week, and a value that is not a real ISO week (`2026-W54`) is a 400. A week with no stored row says so — it is not the same thing as a week with no cards.
 
-### Serve
+### 添付（カードのファイル）
 
-Files can be published through the board and fetched over the same server:
+A card carries its own files (`card.img`, a comma-separated list of names under `~/.pi/kanban/media/`). Nothing is published by path any more: attach the file to the card it belongs to and it is fetched over the same server through `/api/media/<name>`.
 
 ```
-/kanban serve <path>       publish a file or directory
+/kanban img <id> <path>    attach a local file to card <id>
 ```
 
-Served entries expire after 7 days by default. Mark one `permanent` to keep it. Expired entries answer `410 Gone` rather than `404`, so a client can tell "removed" from "never existed".
+The dashboard upload button posts to `/api/upload` (`?id=<card>&ext=<ext>`); each upload **adds** to the card instead of replacing what is already there, so one card can hold several images, videos and `.html` pages. Hover a tile in the 成果物 band and click the `×` to drop **one** entry: `/api/attach/del?p=<board>&id=<card>&n=<index>` removes that csv entry only. A referenced file (`file:<abs>`) stays where it is; a media name is moved to `.trash` unless another card still shows the same file. Removing the last entry clears `card.img`, so the card leaves the band. Media is trashed wholesale when the card itself is deleted (`/api/remove`, 7-day grace period, see below).
 
-The `serve` tool also takes an optional `title`, which the dashboard shows above the URL. It is free-form and may be omitted — an entry without one renders as URL only.
+Accepted extensions are `png jpg gif webp avif mp4 webm html`. The per-file cap is 8MB (`KANBAN_MEDIA_MAX_BYTES` overrides it, videos get 64MB), and the whole `media/` directory has a 1GiB budget; over either limit `/api/upload` answers `413` and leaves the card untouched.
+
+An `.html` attachment opens in the dashboard's lightbox as an iframe preview. The server serves it with `Content-Security-Policy: sandbox allow-scripts allow-forms` and no `X-Frame-Options`, and the iframe itself carries `sandbox="allow-scripts allow-forms"` — no `allow-same-origin`, so the page cannot reach the dashboard's cookie or its origin. Inside that sandbox a three.js page loads its modules from a CDN the normal way, and `allow-forms` lets an interactive page (a questionnaire) submit **inside the frame**. Images and videos keep the thumbnail/video treatment they had.
+
+### 双方向の添付（アンケート）
+
+An attachment can talk back. `/api/ehr` is the only route that answers without the token, because the sandboxed iframe has an opaque origin and therefore no cookie. The old name `/api/quiz` stays as an alias to the same handler, so a page already attached under it keeps working (new rows land under `ehr:<card>`; answers written to `quiz:<card>` before the rename are still read):
+
+```
+GET  /api/ehr?id=<card>[&key=<name>]                  -> [{"at":..,"key":..,"value":..}, ...]
+POST /api/ehr?id=<card>&key=<name>&value=<text>      -> {"ok":true,"count":N}
+```
+
+`value` is capped at 128KB (#63: a paint demo posts `canvas.toDataURL('image/png')` here, and a 640x360 png is 10-30KB base64 — 4KB could not carry a drawing), the card keeps the newest 50 answers (older ones drop), and both routes return `Access-Control-Allow-Origin: *` so the iframe can call them. The value travels in the query string, so the server raises node's 16KB request-line default to 4x the cap; a value over the cap is a `413`, and anything past that line budget is a `431` from node itself. The agent reads the answers with the same GET (`curl` with the token or without — this route only needs the host to be right).
+
+Write the page so its `fetch` names the card, attach it by reference, and the dashboard shows it:
+
+```html
+<script>
+document.getElementById('f').addEventListener('submit', async function (ev) {
+  ev.preventDefault();
+  await fetch('/api/ehr?id=42&key=q1&value=' + encodeURIComponent(JSON.stringify({ q1: this.q1.value })),
+              { method: 'POST' });
+  document.getElementById('ok').textContent = '送信済み ✓';
+});
+</script>
+```
+
+```
+/kanban ref 42 ~/workspace/quiz.html    attach the page (nothing is copied)
+```
+
+After a `pi-web` restart, open the dashboard, click the tile (the lightbox carries the same sandbox), fill the form and submit: the answers are then visible through `GET /api/ehr?id=42`.
+
+Two worked examples live in `~/workspace/kanban-demo/` (not in this repo): `wizard.html` keeps its three steps in page state and sends one `JSON` under `key=wizard`, and `paint.html` draws on a 640x360 canvas and posts the png dataURL under `key=paint`. An agent turns that answer back into a file with `curl '.../api/ehr?id=66&key=paint' | jq -r '.[-1].value' | sed 's/^data:image\/png;base64,//' | base64 -d > /tmp/paint.png`.
+
+**The restart is what matters**: the running `pi-web` keeps the code it started with, so a payload bigger than the *old* limits still fails with `431`/`413` until `pi-web` is restarted. Restart it, wait for `GET /api/ehr?id=<card>` to answer `200` again (that route needs no token), then submit from the tile — not before, or you are testing the previous build.
+
+`/serve/<id>/...` still answers for entries already in `serve.json` (old links keep working, expiry and `410 Gone` included), but the `serve` tool that registered them is gone: cards are the only way to show a file now.
 
 ## Where state lives
 
@@ -94,7 +134,7 @@ The `serve` tool also takes an optional `title`, which the dashboard shows above
 ├── global.json          global view (read-only; no cards of its own)
 ├── projects/<slug>.json per-project board (where cards live)
 ├── modes.json           per-board loop/pick/interval settings
-├── serve.json           published files
+├── serve.json           legacy served paths (no registration path since #53)
 ├── media/               images attached to cards
 ├── token                the secret every HTTP route requires (0600)
 ├── server.log           HTTP server log
@@ -108,6 +148,8 @@ Since #17 there is no per-session board: a pi session ID is only an *actor* (it 
 ## Debugging the loop
 
 The autonomous loop decides once every 1.5s whether to wake the agent. Set `KANBAN_DEBUG=1` to get one `kanban: poll ... => fire|skip:<reason>` line per tick on stderr; unset, the loop stays silent. `~/.pi/kanban/server.log` keeps the HTTP side (bind, reuse, API down); a rejected wake shows up there as `wake rejected: ...`.
+
+The interval is measured from **the last injection** (the last poll wake, or the last continuation the settle chain pushed), not from the last board revision: a board nobody touches still gets its continuation every interval, and a `nextFireAt` wake that pi rejected does not count as injected, so the schedule stays armed. With auto-pick on, keep the interval comfortably above one turn — the poll cannot tell "my own continuation is still being processed" from "the user is idle", so a very short interval stacks a wake behind the turn you are already running (the wake re-fires once pi is idle again).
 
 ## Security notes
 

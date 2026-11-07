@@ -20,6 +20,7 @@ import { createServer as netServer } from "node:net";
 import { createRequire } from "node:module";
 import { authFetch, tokenHeader } from "./helpers/token.mjs";
 import { useKanban } from "./helpers/board.mjs";
+import { serveCall } from "./helpers/serve-registry.mjs";
 
 const tf = (input, init) => authFetch(input, init);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -62,6 +63,10 @@ async function check(name, fn) {
 		failures.push(`${name}: ${err.message}`);
 	}
 }
+
+const KB_DIR = `${HOME_DIR}/.pi/kanban`;
+// #53: serve ツールは廃止。/serve/* の HTTP 面は残るので登録だけ helper で作る。
+const call = (args) => serveCall(KB_DIR, args);
 
 const tools = new Map();
 const api = mod.default({
@@ -250,7 +255,7 @@ await check("GET /api/media/<通常ファイル> は今も 200（塞ぎすぎて
 // --- 5. .trash もディスク総量に数える (#80-⑪ の mediaDirBytes) -----------------
 // mediaDirBytes を呼ぶのは _inbox への POST だけなので、そちらで測る。
 await check("総量計算は .trash を含む（1GiB を .trash に置くと _inbox POST が 413）", async () => {
-	const add = await tools.get("serve").execute("t", { action: "add", path: `${join(HOME_DIR, "workspace/site")}` }, null, () => {});
+	const add = await call({ action: "add", path: `${join(HOME_DIR, "workspace/site")}` });
 	const sid = add.details.id;
 	assert.ok(sid, `serve add が id を返す: ${JSON.stringify(add.details)}`);
 

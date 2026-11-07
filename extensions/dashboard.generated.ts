@@ -150,8 +150,9 @@ a{color:inherit;text-decoration:none}
 }
 @media (max-width:980px){ .layout{grid-template-columns:1fr} }
 
-/* ── kanban 3列 ─────────────────────────── */
-.cols{display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:var(--gap)}
+/* ── kanban 4列 (#67: 4列目 = 成果物 deliverable) ── */
+.cols{display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:var(--gap)}
+@media (max-width:1100px){ .cols{grid-template-columns:repeat(2,minmax(0,1fr))} }
 @media (max-width:700px){ .cols{grid-template-columns:1fr} }
 .col{
   background:var(--bg1); border:1px solid var(--line); border-radius:var(--radius);
@@ -170,6 +171,16 @@ a{color:inherit;text-decoration:none}
   font:16px/1 var(--font-mono); cursor:pointer;
 }
 .colhead .add:hover{color:var(--accent)}
+/* #52: 他セッションの TODO 集計バッジ。hiddenTodoCount>0 のときだけ DOM に出る。 */
+.othertodos{margin-bottom:8px}
+.othertodos button{
+  width:100%; text-align:left; cursor:pointer;
+  background:var(--bg2); color:var(--muted);
+  border:1px dashed var(--line); border-radius:6px; padding:3px 8px;
+  font-family:var(--font-mono); font-size:11px;
+}
+.othertodos button:hover{border-color:var(--accent); color:var(--accent)}
+.othertodos button[aria-pressed="true"]{border-style:solid; color:var(--accent)}
 
 .card{
   background:var(--bg2); border:1px solid var(--line); border-radius:var(--radius);
@@ -192,6 +203,13 @@ a{color:inherit;text-decoration:none}
 .chip.dep{color:var(--warn); border-style:dashed}
 .chip.session{color:var(--ok); border-color:color-mix(in srgb,var(--ok) 40%,transparent)}
 .chip.commit{color:var(--muted); text-decoration:underline dotted}
+/* #52: 他セッションの TODO は薄く出す（showOthers で取りに行った時だけ存在する）。 */
+.chip.other{color:var(--muted); border-style:dashed}
+/* #56: 参照型の添付（コピーせずパスだけ持つ）。*/
+.chip.ref{color:var(--accent); border-style:dashed}
+/* #52: DOING の所有者。誰が掴んでいるかを列の中で見分けるための静かな行。 */
+.chip.owner{color:var(--muted); border-style:dotted}
+.card.other{opacity:.55; background:var(--bg1); border-style:dashed}
 .meta{
   display:flex; gap:10px; margin-top:6px;
   font-family:var(--font-mono); font-size:10px; color:var(--muted);
@@ -226,6 +244,10 @@ html[data-density="compact"] .chips,html[data-density="compact"] .meta{display:n
   aspect-ratio:16/9; background:var(--bg0);
 }
 .thumb img{width:100%; height:100%; object-fit:cover; display:block}
+/* #56: 参照先が消えている画像は alt の「不在」を薄く出す。*/
+.thumb img.refbad{object-fit:contain; font-size:11px; color:var(--muted)}
+/* #53: html 添付の mini プレビュー。操作は lightbox で行うので thumb 内は触れなくする。 */
+.thumb .htmb{width:100%; height:100%; border:0; display:block; pointer-events:none; background:var(--bg0)}
 .thumb .more{
   position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
   background:color-mix(in srgb,var(--bg0) 55%,transparent);
@@ -238,6 +260,68 @@ html[data-density="compact"] .chips,html[data-density="compact"] .meta{display:n
 }
 .attline:hover{border-color:var(--accent); color:var(--text)}
 
+/* ── #58: 第4帯『成果物』(全幅) ─────────────── */
+.deliverables{
+  grid-column:1/-1; padding:0;
+  border:1px solid var(--line); border-radius:var(--radius); background:var(--bg1);
+}
+.deliverables[hidden]{display:none} /* details の display:block を hidden 属性で確実に消す */
+.delhead{
+  display:flex; align-items:baseline; gap:8px; padding:8px 12px; cursor:pointer;
+  list-style:none;
+}
+.delhead::-webkit-details-marker{display:none}
+.delhead h2{margin:0; font-size:11px; font-weight:600; letter-spacing:.14em; color:var(--muted)}
+.delcount{margin-left:auto; font-family:var(--font-mono); font-size:10px; color:var(--muted)}
+.deliverables[open] .delhead{border-bottom:1px solid var(--line)}
+.del-grid{
+  display:grid; grid-template-columns:repeat(auto-fill, minmax(230px, 1fr));
+  gap:var(--gap); padding:10px 12px 12px;
+}
+.del-tile{
+  border:1px solid var(--line); border-radius:var(--radius); overflow:hidden;
+  cursor:pointer; background:var(--bg2); position:relative;
+  /* .thumb（lightbox のクリック面）を兼ねるので、thumb の 16/9 は打ち消す（中身は 140px 固定） */
+  aspect-ratio:auto;
+}
+.del-tile:hover{border-color:var(--accent)}
+.del-cap{
+  display:block; padding:5px 8px; font-size:11px;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.del-cap .id{font-family:var(--font-mono); font-size:10px; color:var(--muted); margin-right:5px}
+.del-cap .del-sid{margin-left:6px; font-family:var(--font-mono); font-size:9px; color:var(--accent)}
+.del-body{position:relative; height:140px; border-top:1px solid var(--line); background:var(--bg0)}
+.del-body img{width:100%; height:100%; object-fit:cover; display:block}
+.del-body video{width:100%; height:100%; object-fit:cover; display:block}
+/* html / 参照型のプレビューは触らせない（クリックは lightbox が取る） */
+.del-body iframe{width:100%; height:100%; border:0; display:block; pointer-events:none; background:var(--bg0)}
+.del-body .delfile{
+  height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center;
+  gap:6px; padding:0 10px; font-family:var(--font-mono); font-size:11px; color:var(--muted);
+  text-align:center; overflow:hidden;
+}
+.del-ref{
+  position:absolute; top:4px; right:4px; font-family:var(--font-mono); font-size:10px;
+  color:var(--text); background:color-mix(in srgb,var(--bg0) 80%, transparent);
+  border:1px solid var(--line); border-radius:4px; padding:0 4px;
+}
+/* #61: 添付を 1 枚外す ×。hover でだけ出す（タイルのクリックは lightbox が取る）。 */
+.del-x{
+  position:absolute; top:3px; right:3px; z-index:1; line-height:1.2;
+  font-family:var(--font-mono); font-size:13px; padding:0 5px;
+  color:var(--muted); background:color-mix(in srgb,var(--bg0) 80%, transparent);
+  border:1px solid var(--line); border-radius:4px;
+  opacity:0; transition:opacity .12s; cursor:pointer;
+}
+.del-tile:hover .del-x{opacity:1}
+.del-x:hover{color:var(--text); border-color:var(--accent)}
+.del-tile .refbad{
+  position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+  font-family:var(--font-mono); font-size:11px; color:var(--muted);
+  background:color-mix(in srgb,var(--bg0) 70%, transparent);
+}
+
 /* ── lightbox ───────────────────────────── */
 .lb{
   position:fixed; inset:0; z-index:50; display:none;
@@ -247,6 +331,7 @@ html[data-density="compact"] .chips,html[data-density="compact"] .meta{display:n
 }
 .lb[open]{display:flex}
 .lb img{max-width:100%; max-height:80vh; border-radius:var(--radius); border:1px solid var(--line)}
+.lb iframe{width:min(92vw,1100px); height:80vh; border-radius:var(--radius); border:1px solid var(--line); background:var(--bg0)}
 .lb .cap{font-family:var(--font-mono); font-size:11px; color:var(--muted)}
 
 /* ── switch (v2.3) ──────────────────────── */
@@ -370,6 +455,7 @@ html.allview .layout{grid-template-columns:1fr}
   .foot{display:none}
   .lb{padding:10px}
   .lb img{max-height:70vh}
+  .lb iframe{height:70vh}
 }
 
 /* ── v2.4: スイッチ with 説明 / WIP / 未読 / foldbar ── */
@@ -502,6 +588,19 @@ html.halt .swline .sw[data-sw="pause"]{ border-color:var(--bad); }
 .modal .cmprio button[aria-pressed="true"]{border-color:var(--accent); color:var(--accent)}
 .modal #cm-del{border-color:var(--bad); color:var(--bad)}
 
+/* ══ #49: モーダルの添付（選択 / ドロップ / 現在のサムネ） ══ */
+.modal .cmatt{display:flex; flex-direction:column; gap:6px; font-size:11px; color:var(--muted)}
+.modal .cmatthead{display:flex; align-items:center; gap:8px; flex-wrap:wrap}
+.modal .cmatthead input[type="file"]{font:inherit; font-size:11px; color:var(--muted); max-width:100%}
+.modal .cmdrop{
+  border:1px dashed var(--line); border-radius:var(--radius); padding:10px 12px;
+  text-align:center; font-size:11px; color:var(--muted);
+}
+.modal .cmdrop.over{border-color:var(--accent); color:var(--accent); background:var(--bg2)}
+.modal .cmdrop.busy{opacity:.55}
+.modal .cmthumbs{display:flex; gap:6px; flex-wrap:wrap}
+.modal .cmthumbs .thumb{width:56px; aspect-ratio:1/1; margin:0}
+
 /* #46: DnD の面。列は出すだけ、カードは掴める */
 .card[draggable="true"]{cursor:grab}
 .card.dragging{opacity:.45}
@@ -540,8 +639,10 @@ html.halt .swline .sw[data-sw="pause"]{ border-color:var(--bad); }
 .addrow .addin{
   width:100%; background:var(--bg2); color:var(--text); font:inherit;
   border:1px dashed var(--accent); border-radius:var(--radius); padding:6px 8px;
+  resize:vertical; min-height:0;
 }
-.addrow .addin:focus{outline:1px solid var(--accent); outline-offset:0}
+/* #50: 普段は1行、フォーカスで4行に伸びる（blur で戻る） */
+.addrow .addin:focus{outline:1px solid var(--accent); outline-offset:0; height:calc(4 * 1.5em + 12px)}
 /* 401（トークン無し/失効）の常報。沈黙させない */
 .banner{
   background:#7f1d1d; color:#fff; padding:8px 14px; font-size:13px;
@@ -613,6 +714,11 @@ html.halt .swline .sw[data-sw="pause"]{ border-color:var(--bad); }
     <div id="groups"></div>
   </section>
   <aside class="rail" aria-label="サマリ" id="rail"></aside>
+  <!-- #58: 第4帯『成果物』。grid-column:1/-1 で全幅、DOM は rail の後ろ（rail を押し下げない） -->
+  <details class="deliverables" id="deliverables" open hidden aria-label="成果物">
+    <summary class="delhead"><h2>成果物</h2><span class="delcount" id="delcount"></span></summary>
+    <div class="del-grid" id="delgrid"></div>
+  </details>
 </main>
 
 <div class="pal" id="pal" role="dialog" aria-modal="true" aria-label="コマンドパレット">
@@ -647,12 +753,23 @@ html.halt .swline .sw[data-sw="pause"]{ border-color:var(--bad); }
       <button type="button" data-prio="5" title="中より後">5 低</button>
       <button type="button" data-prio="0" title="既定">0 普通</button>
     </div>
+    <!-- #49: 添付。/api/upload へ 1 ファイル 1 リクエスト。accept はサーバの OK_EXTS と同じ並び -->
+    <div class="cmatt">
+      <div class="cmatthead">
+        <span>添付</span>
+        <input type="file" id="cm-file" multiple accept=".png,.jpg,.gif,.webp,.avif,.mp4,.webm">
+        <span id="cm-attstatus" aria-live="polite"></span>
+      </div>
+      <div class="cmdrop" id="cm-drop">ここにドロップ（png / jpg / gif / webp / avif / mp4 / webm）</div>
+      <div class="cmthumbs" id="cm-thumbs"></div>
+    </div>
     <div class="cmact">
       <button type="button" id="cm-save">保存</button>
       <button type="button" id="cm-sched">実行予約</button>
       <button type="button" data-move="todo">TODO へ</button>
       <button type="button" data-move="doing">DOING へ</button>
       <button type="button" data-move="done">DONE へ</button>
+      <button type="button" data-move="deliverable">成果物 へ</button>
       <button type="button" id="cm-del">削除</button>
     </div>
   </div>
@@ -668,8 +785,9 @@ html.halt .swline .sw[data-sw="pause"]{ border-color:var(--bad); }
   <span class="right" id="footright">API · dashboard v2.5</span>
 </footer>
 
-<div class="lb" id="lb" role="dialog" aria-modal="true" aria-label="添付画像プレビュー">
+<div class="lb" id="lb" role="dialog" aria-modal="true" aria-label="添付プレビュー">
   <img id="lbimg" alt="">
+  <iframe id="lbif" sandbox="allow-scripts allow-forms" title="添付 HTML プレビュー" hidden></iframe>
   <div class="cap" id="lbcap"></div>
 </div>
 
@@ -708,7 +826,10 @@ function esc(s){return String(s).replace(/[&<>"]/g,function(c){return {"&":"&amp
     payload: null, projects: null, board: null,
     cur: "", allview: false, query: "", sel: -1,
     cards: {}, open: {}, doneOpen: false, projDoneOpen: false, offline: false, addCol: null,
-    modal: null,
+    modal: null, uploading: false,
+    // #52: false = 他セッションの TODO は畳んで「他 N 件」だけ出す。押した時だけ true にして
+    // showOthers=1 で取りに行く（既定の見え方を自動挙動に合わせない）。
+    showOthers: false,
   };
   var etags = {};
 
@@ -782,8 +903,10 @@ function esc(s){return String(s).replace(/[&<>"]/g,function(c){return {"&":"&amp
     if (state.cur && state.cur !== "__all__") ps.p = state.cur;
     return fetch(path + qsOf(ps)).then(function (r) {
       if (r.status === 401) authFail();
-      if (!r.ok) throw new Error("http " + r.status);
-      etags = {}; // 書き込み後は 304 で古い対面を掴まない
+      // #50: サーバの error 文面を toast に出す（失敗理由が "http 400" だけだと分からない）。
+      if (!r.ok) return r.json().then(function (j) {
+        throw new Error((j && j.error) || "http " + r.status);
+      }, function () { throw new Error("http " + r.status); });
       return r.json();
     });
   }
@@ -843,6 +966,16 @@ function esc(s){return String(s).replace(/[&<>"]/g,function(c){return {"&":"&amp
     return c.img.split(",").map(function (s) { return s.trim(); }).filter(Boolean);
   }
   var VID = /\\.(mp4|webm|mp3|wav|m4a|ogg)$/i;
+  // #56: card.img の 1 エントリが file:<絶対パス> なら「参照型」— コピーせず、その場所を読む。
+  var REF = "file:";
+  function refOf(n) { return n.slice(0, REF.length) === REF ? n.slice(REF.length) : ""; }
+  // 添付 1 エントリの実 URL。media 名は /api/media、参照型は /api/ref（allowlist はサーバ側）。
+  function srcOf(n) {
+    var p = refOf(n);
+    return p ? "/api/ref?f=" + encodeURIComponent(p) : MEDIA + encodeURIComponent(n);
+  }
+  // #53: .html の添付はサンドボックス iframe で読む（three.js は CDN から自分で読む）。
+  var HTML = /\\.html?$/i;
   function sortCol(list, col) {
     var a = list.slice();
     if (col === "todo") a.sort(function (x, y) { return (prioOf(y) - prioOf(x)) || (x.id - y.id); });
@@ -850,6 +983,10 @@ function esc(s){return String(s).replace(/[&<>"]/g,function(c){return {"&":"&amp
     return a;
   }
   function inCol(cards, col) { return sortCol(cards.filter(function (c) { return c.col === col && cardHit(c); }), col); }
+  // #52: 自分のボードは showOthers を引き回して取り直す（トグルもこの 1 か所を使う）。
+  function boardGet(slug) { return getJSON("/api/kanban", { p: slug, showOthers: state.showOthers ? 1 : 0 }); }
+  // #52: DOING の所有者表示。長い sid は最初の 8 文字（s- 接頭辞は落とす）。
+  function shortSid(s) { return String(s || "").replace(/^s-/, "").slice(0, 8) || "?"; }
 
   // ---- widgets ----
   var toastTimer;
@@ -891,23 +1028,27 @@ function esc(s){return String(s).replace(/[&<>"]/g,function(c){return {"&":"&amp
       sr.appendChild(el("span", "spin"));
       sr.lastChild.setAttribute("aria-hidden", "true");
       sr.appendChild(el("span", "spinlabel", "実行中"));
+      // #52: DOING は誰が掴んでいるかを見せる（c.mine はサーバが sidActor で立てる）。
+      if (c.movedBy) sr.appendChild(el("span", "chip owner", "👤 " + (c.mine ? "あなた" : shortSid(c.movedBy))));
       if (stalled(c)) sr.appendChild(chip("due-warn", Math.floor((Date.now() - c.movedAt) / DAY) + "日停滞"));
       a.appendChild(sr);
     }
+    // #52: showOthers で出した他セッションの TODO は薄く + 他バッジ（自分のものと見分ける）。
+    if (c.col === "todo" && c.movedBy && !c.mine) {
+      a.classList.add("other");
+      a.appendChild(el("span", "chip other", "他"));
+    }
     var imgs = imgsOf(c);
-    var pics = imgs.filter(function (n) { return !VID.test(n); });
     var vids = imgs.filter(function (n) { return VID.test(n); });
+    // html も thumb に並べる（img ではなく mini iframe）。
+    var pics = imgs.filter(function (n) { return !VID.test(n); });
     if (pics.length) {
       var th = el("div", "thumbs");
       pics.slice(0, 4).forEach(function (name, i) {
         var f = el("figure", "thumb");
         f.dataset.lb = name;
         f.dataset.i = lbList().length;
-        var im = document.createElement("img");
-        im.alt = c.text;
-        im.loading = "lazy";
-        im.src = MEDIA + encodeURIComponent(name);
-        f.appendChild(im);
+        f.appendChild(thumbBody(name, c.text));
         if (i === 3 && pics.length > 4) f.appendChild(el("figcaption", "more", "+" + (pics.length - 4)));
         th.appendChild(f);
       });
@@ -921,7 +1062,7 @@ function esc(s){return String(s).replace(/[&<>"]/g,function(c){return {"&":"&amp
         var im = document.createElement("video");
         im.controls = true;
         im.preload = "metadata";
-        im.src = MEDIA + encodeURIComponent(name);
+        im.src = srcOf(name);
         im.className = "vthumb";
         al.appendChild(im);
       } else {
@@ -932,6 +1073,8 @@ function esc(s){return String(s).replace(/[&<>"]/g,function(c){return {"&":"&amp
       a.appendChild(al);
     });
     var chips = el("div", "chips");
+    // #56: 参照型の添付があるカードはその旨を 1 バッジで示す（中身は thumb 側で見える）。
+    if (imgs.some(function (n) { return refOf(n); })) chips.appendChild(chip("ref", "\\u2750 \\u30ea\\u30f3\\u30af"));
     (c.labels || []).forEach(function (l) {
       var k = l === "bug" ? "bug" : l === "feature" ? "feat" : l === "chore" ? "chore" : "";
       chips.appendChild(chip(k, l));
@@ -1038,16 +1181,18 @@ function esc(s){return String(s).replace(/[&<>"]/g,function(c){return {"&":"&amp
     if (note) note.hidden = !halted();
   }
 
-  // ---- render: 3 columns ----
+  // ---- render: 4 columns (#67: 成果物 = deliverable, TODO/DOING/DONE の外) ----
+  function colName(col) { return col === "deliverable" ? "成果物" : col.toUpperCase(); }
   function renderBoard() {
     var box = clear($("#board"));
     var rep = projReport(), cards = (rep && rep.cards) || [];
-    ["todo", "doing", "done"].forEach(function (col) {
+    ["todo", "doing", "done", "deliverable"].forEach(function (col) {
       var list = inCol(cards, col);
       var d = el("div", "col");
       var head = el("div", "colhead");
-      head.appendChild(el("h2", null, col.toUpperCase()));
-      head.appendChild(el("span", "n", list.length));
+      head.appendChild(el("h2", null, colName(col)));
+      // 見出しの数字は 4 列目だけ payload の deliverableCount（counts は 3 キーのまま）。
+      head.appendChild(el("span", "n", col === "deliverable" ? ((rep && rep.deliverableCount) || 0) : list.length));
       if (col === "doing") {
         var wip = el("span", "wipbad");
         var n = (rep && rep.counts && rep.counts.doing) || 0;
@@ -1063,6 +1208,21 @@ function esc(s){return String(s).replace(/[&<>"]/g,function(c){return {"&":"&amp
         head.appendChild(add);
       }
       d.appendChild(head);
+      // #52: 他セッションの TODO は既定で出さない。集計行だけを TODO 列の上に置き、
+      // 押した時だけ showOthers=1 で取りに行く（0 件なら行ごと出さない）。
+      if (col === "todo") {
+        var rep0 = projReport(), hid = (rep0 && rep0.hiddenTodoCount) || 0;
+        if (hid > 0) {
+          var ow = el("div", "othertodos");
+          ow.id = "othertodos";
+          var ob = el("button", null, (state.showOthers ? "▾ " : "▸ ") + "他 " + hid + " 件（他セッション）");
+          ob.setAttribute("aria-pressed", String(!!state.showOthers));
+          ob.title = state.showOthers ? "他セッションの TODO を隠す" : "他セッションの TODO を表示する";
+          ob.onclick = function () { state.showOthers = !state.showOthers; reload(); };
+          ow.appendChild(ob);
+          d.appendChild(ow);
+        }
+      }
       if (state.addCol === col) d.appendChild(addRow(col));
       // #46: HTML5 DnD。列は受けるだけ、POST は既存の moveCard。
       d.addEventListener("dragover", function (e) {
@@ -1076,7 +1236,7 @@ function esc(s){return String(s).replace(/[&<>"]/g,function(c){return {"&":"&amp
         e.preventDefault();
         d.classList.remove("drop");
         var id = Number(e.dataTransfer.getData("text/plain"));
-        if (id) moveCard(id, col).then(function () { toast("#" + id + " を " + col.toUpperCase() + " へ"); }, fail);
+        if (id) moveCard(id, col).then(function () { toast("#" + id + " を " + colName(col) + " へ"); }, fail);
       });
       var shown = col === "done" && !state.doneOpen ? list.slice(0, 2) : list;
       shown.forEach(function (c) { d.appendChild(cardEl(c, false)); });
@@ -1158,6 +1318,97 @@ function esc(s){return String(s).replace(/[&<>"]/g,function(c){return {"&":"&amp
     }, function () { return null; });
   }
 
+  // ---- render: 第4帯『成果物』(#58) ----
+  // 添付(img)を持つカードだけを大きなタイルで並べる。proj は board.project.cards、
+  // 横断は payload.global.cards（サーバが全プロジェクトを sid 付きで集約したもの）。
+  function delCards() {
+    if (state.allview) return (state.payload.global && state.payload.global.cards) || [];
+    var rep = projReport();
+    return (rep && rep.cards) || [];
+  }
+  // 1 カード 1 タイル。プレビューは最初の添付（html/ref は mini iframe、動画は <video>）。
+  function delBody(name, alt) {
+    var body = el("div", "del-body");
+    var ext = (name.split(".").pop() || "").toLowerCase();
+    if (ext === "mp4" || ext === "webm") {
+      var v = document.createElement("video");
+      v.controls = true;
+      v.preload = "metadata";
+      v.src = srcOf(name);
+      body.appendChild(v);
+    } else if (VID.test(name)) {
+      // 音声など再生できないものは attline と同じ「アイコン + 名前」。
+      var f = el("div", "delfile");
+      f.appendChild(el("span", null, "▸"));
+      f.appendChild(el("span", null, name.length > 28 ? name.slice(0, 27) + "…" : name));
+      f.appendChild(el("span", null, ext));
+      body.appendChild(f);
+    } else {
+      body.appendChild(thumbBody(name, alt));
+      // #56: 参照先が消えている場合はサムネの上に「不在」を出す（thumbBody の alt 差し替えでは
+      // スレートの上に文字が出ないため、ここだけオーバーレイを自前で置く）。
+      var im = body.firstChild;
+      if (im && im.tagName === "IMG") {
+        im.onerror = function () { if (!body.querySelector(".refbad")) body.appendChild(el("div", "refbad", "不在")); };
+      }
+    }
+    return body;
+  }
+  function delTile(c) {
+    var imgs = imgsOf(c), name = imgs[0];
+    var t = el("div", "del-tile");
+    // 動画はタイル内で再生できるので lightbox には載せない（.thumb を付けない）。
+    if (!VID.test(name)) { t.classList.add("thumb"); t.dataset.lb = name; }
+    var cap = el("div", "del-cap");
+    cap.appendChild(el("span", "id", "#" + c.id));
+    cap.appendChild(document.createTextNode(c.text || ""));
+    if (state.allview && c.sid) cap.appendChild(el("span", "del-sid", c.sid));
+    cap.title = c.text || "";
+    t.appendChild(cap);
+    t.appendChild(delBody(name, c.text));
+    // #56: 参照型（file:）の添付があるカードは右上に 1 バッジ。
+    if (imgs.some(function (n) { return refOf(n); })) t.lastChild.appendChild(el("span", "del-ref", "\\u2750"));
+    // #61: hover で右上に ×。csv の index をそのまま送るので、外れるのはこの 1 枚だけ。
+    var at = imgs.indexOf(name);
+    var x = el("span", "del-x", "\\u00d7");
+    x.title = "この添付を外す";
+    x.onclick = function (ev) {
+      // tile 自身が .thumb（クリックで lightbox）なので、ここで止めないと両方走る。
+      ev.stopPropagation();
+      // 横断ビューは c.sid、ボード表示は state.cur が書き先の slug。
+      var p = c.sid || state.cur;
+      if (!p || p === "__all__") { toast("添付を外す先のボードが定まらない"); return; }
+      fetch("/api/attach/del" + qsOf({ p: p, id: c.id, n: at })).then(function (r) {
+        if (r.status === 401) authFail();
+        return r.json().then(function (j) {
+          if (!r.ok || !j || !j.ok) throw new Error((j && j.error) || "http " + r.status);
+          toast("#" + c.id + " から添付 " + name + " を外した");
+          refresh();
+        });
+      }, fail).catch(fail);
+    };
+    t.appendChild(x);
+    return t;
+  }
+  function renderDeliverables() {
+    var box = $("#deliverables"), grid = $("#delgrid");
+    var cards = delCards().filter(function (c) { return imgsOf(c).length; });
+    // 添付が 1 枚も無い看板では帯ごと消す（空箱を置かない）。
+    box.hidden = !cards.length;
+    if (!cards.length) { clear(grid); $("#delcount").textContent = ""; box.dataset.sig = ""; return; }
+    // 3 秒 poll の度に作り直すと iframe プレビューが再読込される。中身が同じなら触らない。
+    var sig = cards.map(function (c) { return c.id + "|" + c.img + "|" + (c.sid || "") + "|" + c.text; }).join("\\n");
+    if (box.dataset.sig === sig) return;
+    box.dataset.sig = sig;
+    clear(grid);
+    var refs = 0;
+    cards.forEach(function (c) {
+      if (imgsOf(c).some(function (n) { return refOf(n); })) refs += 1;
+      grid.appendChild(delTile(c));
+    });
+    $("#delcount").textContent = "添付付きカード " + cards.length + " 枚 / 参照型 " + refs + " 枚";
+  }
+
   // ---- render: rail ----
   function renderRail() {
     var rail = clear($("#rail"));
@@ -1186,7 +1437,7 @@ function esc(s){return String(s).replace(/[&<>"]/g,function(c){return {"&":"&amp
       var ev = el("div", "ev");
       ev.appendChild(el("time", null, ago(c.movedAt)));
       ev.appendChild(el("b", null, "#" + c.id));
-      ev.appendChild(document.createTextNode(" を " + c.col.toUpperCase() + " へ"));
+      ev.appendChild(document.createTextNode(" を " + colName(c.col) + " へ"));
       p2.appendChild(ev);
     });
     rail.appendChild(p2);
@@ -1231,6 +1482,7 @@ function esc(s){return String(s).replace(/[&<>"]/g,function(c){return {"&":"&amp
     if (state.allview) $("#allview").setAttribute("open", ""); else $("#allview").removeAttribute("open");
     renderPtabs(); renderStrip(); renderSw();
     if (state.allview) renderGroups(); else renderBoard();
+    renderDeliverables();
     renderRail(); renderFoot();
     applySel();
   }
@@ -1251,7 +1503,7 @@ function esc(s){return String(s).replace(/[&<>"]/g,function(c){return {"&":"&amp
       getJSON("/api/projects").then(function (p) { if (p) state.projects = p; }),
     ];
     if (state.cur && state.cur !== "__all__") {
-      jobs.push(getJSON("/api/kanban", { p: state.cur }).then(function (b) { if (b) state.board = b; }));
+      jobs.push(boardGet(state.cur).then(function (b) { if (b) state.board = b; }));
     } else if (state.cur === "__all__") {
       Object.keys(state.open).forEach(function (s) { if (state.open[s]) jobs.push(fetchGroup(s)); });
     }
@@ -1284,7 +1536,7 @@ function esc(s){return String(s).replace(/[&<>"]/g,function(c){return {"&":"&amp
     } else {
       // 切り替え中に古い板が返ってきたら捨てる（state.cur を後で書き換えている）。
       var want = slug;
-      jobs.push(getJSON("/api/kanban", { p: slug }).then(function (b) { if (b && state.cur === want) state.board = b; }));
+      jobs.push(boardGet(slug).then(function (b) { if (b && state.cur === want) state.board = b; }));
     }
     return Promise.all(jobs).then(render, function (e) { fail(e); });
   }
@@ -1303,30 +1555,43 @@ function esc(s){return String(s).replace(/[&<>"]/g,function(c){return {"&":"&amp
   }
   // #75: その場追加の打ちかけは再描画で消さない。閉じる（state.addCol）と破棄（draft）を分ける。
   var addDraft = {};
+  // #50: 入力欄は textarea。単行・トークン無しは従来どおり /api/add、それ以外は /api/quickadd。
+  // 行頭のタブ/2 スペースは親へのインデントなので、trim せずにサーバへ渡す。
+  var QA_RE = /(^|\\s)(#[A-Za-z0-9._-]+|![0-9]{1,3}|due:\\S+)/;
   function addRow(col) {
     var f = document.createElement("form");
     f.className = "addrow";
-    var inp = document.createElement("input");
+    var inp = document.createElement("textarea");
     inp.className = "addin";
-    inp.placeholder = "新規カード → Enter (Esc で取消)";
+    inp.rows = 1;
+    inp.placeholder = "#proj !2 due:2026-12-01 本文　複数行可（インデントで子カード）· Ctrl+Enter で追加 · Esc で取消";
     if (addDraft[col] != null) inp.value = addDraft[col];
     inp.addEventListener("input", function () { addDraft[col] = inp.value; });
     // 空で離れたら捨てる。値が入っていれば残す（打ちかけを失わない）。
     inp.addEventListener("blur", function () { if (!inp.value.trim()) delete addDraft[col]; });
     inp.addEventListener("keydown", function (e) {
       if (e.key === "Escape") { state.addCol = null; delete addDraft[col]; render(); }
+      // Enter は改行。送信は Ctrl/Cmd+Enter。
+      else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); submitAdd(col, inp.value); }
     });
     f.onsubmit = function (e) { e.preventDefault(); submitAdd(col, inp.value); };
     f.appendChild(inp);
     return f;
   }
   function submitAdd(col, text) {
-    if (!text || !text.trim()) { state.addCol = null; render(); return; }
-    act("/api/add", { text: text.trim(), col: col }).then(function () {
+    var body = text || "";
+    if (!body.trim()) { state.addCol = null; render(); return; }
+    var multi = body.indexOf("\\n") >= 0 || QA_RE.test(body);
+    var req = multi
+      ? act("/api/quickadd", { text: body })
+      : act("/api/add", { text: body.trim(), col: col });
+    req.then(function (r) {
       state.addCol = null;
       delete addDraft[col];
       refresh();
-      toast("#" + (col === "todo" ? "TODO" : col.toUpperCase()) + " に追加");
+      var added = (multi && r && r.added) || [];
+      toast(added.length ? added.map(function (c) { return "#" + c.id; }).join(" ") + " を追加"
+        : "#" + colName(col) + " に追加");
     }, fail);
   }
   function moveCard(id, col) {
@@ -1385,6 +1650,28 @@ function esc(s){return String(s).replace(/[&<>"]/g,function(c){return {"&":"&amp
   function openPal() { $("#pal").setAttribute("open", ""); $("#palq").value = ""; palSel = 0; renderPal(); $("#palq").focus(); }
   function closePal() { $("#pal").removeAttribute("open"); }
 
+  // thumb の中身: 画像は img、html は読み込まない mini iframe（クリックで lightbox が本開）。
+  function thumbBody(name, alt) {
+    if (HTML.test(name)) {
+      var fr = document.createElement("iframe");
+      fr.className = "htmb";
+      fr.setAttribute("sandbox", "allow-scripts allow-forms");
+      fr.setAttribute("loading", "lazy");
+      fr.setAttribute("title", alt || name);
+      fr.src = srcOf(name);
+      return fr;
+    }
+    var im = document.createElement("img");
+    im.alt = alt || name;
+    im.loading = "lazy";
+    im.src = srcOf(name);
+    // #56: 参照先が消えていたらサムネは空になる。クリック（lightbox）は残す。
+    // shortcut: iframe は error を持たないので html の「不在」は空枠のまま、必要になったら
+    // サーバに HEAD を投げて判定する。
+    im.onerror = function () { im.alt = "不在"; im.classList.add("refbad"); };
+    return im;
+  }
+
   // ---- lightbox ----
   var lbList = function () { return Array.prototype.slice.call(document.querySelectorAll(".thumb")); };
   var lbAt = 0;
@@ -1392,12 +1679,31 @@ function esc(s){return String(s).replace(/[&<>"]/g,function(c){return {"&":"&amp
     var th = lbList();
     if (!th.length) return;
     lbAt = (i + th.length) % th.length;
-    var im = th[lbAt].querySelector("img");
-    $("#lbimg").src = im.src;
-    $("#lbcap").textContent = (th[lbAt].dataset.lb || im.alt || "") + "  (" + (lbAt + 1) + "/" + th.length + ")";
+    var name = th[lbAt].dataset.lb || "";
+    var img = $("#lbimg"), fr = $("#lbif");
+    if (HTML.test(name)) {
+      // sandbox="allow-scripts" のみ。allow-same-origin を足すと dashboard と同一 origin に
+      // なり、添付 html が cookie を読めてしまう（サーバも CSP: sandbox で二重に閉じる）。
+      img.removeAttribute("src");
+      img.hidden = true;
+      fr.hidden = false;
+      fr.src = srcOf(name);
+    } else {
+      var el0 = th[lbAt].querySelector("img");
+      fr.removeAttribute("src");
+      fr.hidden = true;
+      img.hidden = false;
+      img.onerror = function () { $("#lbcap").textContent = name + "  (不在)"; };
+      img.src = el0 ? el0.src : srcOf(name);
+    }
+    $("#lbcap").textContent = name + "  (" + (lbAt + 1) + "/" + th.length + ")";
     $("#lb").setAttribute("open", "");
   }
-  function closeLb() { $("#lb").removeAttribute("open"); $("#lbimg").src = ""; }
+  function closeLb() {
+    $("#lb").removeAttribute("open");
+    $("#lbimg").removeAttribute("src");
+    $("#lbif").removeAttribute("src");
+  }
 
   // ---- card modal (#45) ----
   function modalCard() {
@@ -1419,6 +1725,7 @@ function esc(s){return String(s).replace(/[&<>"]/g,function(c){return {"&":"&amp
     $("#cm-blocked").value = c.blocked || "";
     $("#cm-at").value = c.nextFireAt || "";
     renderPrio(c);
+    renderAtt(c);
     $("#cm").setAttribute("open", "");
     $("#cm-text").focus();
   }
@@ -1429,6 +1736,96 @@ function esc(s){return String(s).replace(/[&<>"]/g,function(c){return {"&":"&amp
       b.setAttribute("aria-pressed", String(Number(b.dataset.prio) === n));
     });
   }
+  // ---- 添付 (#49)。/api/upload は body が生バイナリで、戻りは act() と同じ {ok,cards} ----
+  // 許可拡張子はサーバの OK_EXTS（extensions/kanban.ts:328）と同じ並び。ここに無いものは
+  // 送る前に断る（415 を往復させない）。サーバ側を増やしたらここも増やす。
+  var UP_EXTS = ["png", "jpg", "gif", "webp", "avif", "mp4", "webm"];
+  function upExtOf(name) {
+    var m = /\\.([A-Za-z0-9]+)$/.exec(String(name || ""));
+    return m ? m[1].toLowerCase() : "";
+  }
+  function attBusy(on) {
+    state.uploading = on;
+    $("#cm-file").disabled = on;
+    $("#cm-drop").classList.toggle("busy", on);
+    $("#cm-attstatus").textContent = on ? "送信中…" : "";
+  }
+  function uploadOne(id, file) {
+    return fetch("/api/upload" + qsOf({ p: state.cur, id: id, ext: upExtOf(file.name) }), {
+      method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: file,
+    }).then(function (r) {
+      if (r.status === 401) authFail();
+      return r.json().then(function (b) {
+        // 失敗はサーバの文面をそのまま返す（415 拡張子 / 413 容量 / 400 板）。
+        if (!r.ok || !b || b.ok === false) throw new Error((b && b.error) || "http " + r.status);
+        return b;
+      }, function () { throw new Error("http " + r.status); });
+    });
+  }
+  // モーダルを閉じても送信は止めない（完了後の refresh は state.cur の盤にしか触らない）。
+  function uploadFiles(files) {
+    var c = state.modal ? modalCard() : null;
+    if (!c) return;
+    if (state.uploading) { toast("送信中… 終わるまで待って"); return; }
+    var id = c.id, go = [], bad = [];
+    Array.prototype.forEach.call(files || [], function (f) {
+      if (UP_EXTS.indexOf(upExtOf(f.name)) >= 0) go.push(f); else bad.push(f.name);
+    });
+    if (bad.length) toast("未対応の拡張子: " + bad.join(", "));
+    if (!go.length) return;
+    attBusy(true);
+    var sent = [], err = null, chain = Promise.resolve();
+    // 1 ファイル 1 リクエスト。直列にしてサーバの総量判定を並列で揺らさない。
+    go.forEach(function (f) {
+      chain = chain.then(function () {
+        return uploadOne(id, f).then(function () { sent.push(f.name); }, function (e) { err = e; });
+      });
+    });
+    chain.then(function () {
+      attBusy(false);
+      if (sent.length) toast("#" + id + " に " + sent.join(", ") + " を添付");
+      if (err) toast("添付失敗: " + (err.message || err));
+      refresh().then(function () {
+        if (state.modal !== id) return;
+        var c1 = modalCard();
+        if (c1) renderAtt(c1);
+      }, fail);
+    });
+  }
+  // モーダル内の現在のサムネ。class は .thumb を使う（クリックは既存 lightbox が拾う）。
+  function renderAtt(c) {
+    var box = clear($("#cm-thumbs")), imgs = imgsOf(c), i;
+    for (i = 0; i < imgs.length; i++) {
+      var f = el("figure", "thumb");
+      f.dataset.lb = imgs[i];
+      if (VID.test(imgs[i])) f.appendChild(el("span", "more", "▸"));
+      else f.appendChild(thumbBody(imgs[i], imgs[i]));
+      box.appendChild(f);
+    }
+  }
+  // ゾーン外に落とすとブラウザがファイルを開いて盤面が消えるので、モーダル全体で default を止める。
+  function wireAttach() {
+    var cm = $("#cm"), zone = $("#cm-drop"), file = $("#cm-file");
+    file.addEventListener("change", function () { uploadFiles(file.files); file.value = ""; });
+    cm.addEventListener("dragover", function (e) { if (state.modal) e.preventDefault(); });
+    cm.addEventListener("drop", function (e) {
+      if (!state.modal) return;
+      e.preventDefault();
+      zone.classList.remove("over");
+      if (e.target === zone || (zone.contains && zone.contains(e.target))) {
+        uploadFiles(e.dataTransfer && e.dataTransfer.files);
+      }
+    });
+    zone.addEventListener("dragover", function (e) {
+      if (!state.modal) return;
+      e.preventDefault();
+      e.stopPropagation();
+      zone.classList.add("over");
+    });
+    zone.addEventListener("dragleave", function () { zone.classList.remove("over"); });
+  }
+  wireAttach();
+
   // 本文は /api/rename、残り（at/blocked/project/labels）は 1 本の /api/schedule。
   // due/estimate を更新する端点は無いので、この面では表示のみ（v1）。
   function saveModal() {
@@ -1494,9 +1891,11 @@ function esc(s){return String(s).replace(/[&<>"]/g,function(c){return {"&":"&amp
       }
       if (mv && c0) {
         var col = mv.dataset.move;
-        act("/api/move", { id: c0.id, col: col }).then(function () { closeModal(); refresh(); toast("#" + c0.id + " を " + col.toUpperCase() + " へ"); }, fail);
+        act("/api/move", { id: c0.id, col: col }).then(function () { closeModal(); refresh(); toast("#" + c0.id + " を " + colName(col) + " へ"); }, fail);
         return;
       }
+      var th0 = t.closest(".thumb");
+      if (th0) { showLb(lbList().indexOf(th0)); return; }
       if (t.id === "cm-close") { closeModal(); return; }
       if (t.id === "cm-save") { saveModal(); return; }
       if (t.id === "cm-sched" && c0) {
@@ -1635,6 +2034,15 @@ function esc(s){return String(s).replace(/[&<>"]/g,function(c){return {"&":"&amp
     if (th === "light") { document.documentElement.setAttribute("data-theme", "light"); $("#themeBtn").textContent = "テーマ: 明"; }
     if (localStorage.getItem("kb-density") === "compact") { document.documentElement.setAttribute("data-density", "compact"); $("#densityBtn").textContent = "密度: コンパクト"; }
   } catch (err) { void err; }
+
+  // #58: 第4帯の開閉は覚える（既定は開）。toggle は summary クリックで飛ぶ。
+  (function () {
+    var box = $("#deliverables");
+    try { if (localStorage.getItem("deliverables-open") === "0") box.removeAttribute("open"); } catch (err) { void err; }
+    box.addEventListener("toggle", function () {
+      try { localStorage.setItem("deliverables-open", box.open ? "1" : "0"); } catch (err) { void err; }
+    });
+  })();
 
   // #85: ポーリングは setTimeout 1 本。隠れているタブでは張らず、復帰で 1 回だけ取り直す。
   var timer = null;

@@ -9,6 +9,7 @@ import http from "node:http";
 import { hostname } from "node:os";
 import { createRequire } from "node:module";
 import { authFetch, tokenHeader } from "./helpers/token.mjs";
+import { serveCall } from "./helpers/serve-registry.mjs";
 
 // #83b: HTTP routes need the server token now; tf = fetch + the kb_auth cookie.
 const tf = (input, init) => authFetch(input, init);
@@ -74,9 +75,9 @@ for (let i = 0; i < 40; i++) {
 	await new Promise((r) => setTimeout(r, 100));
 }
 
-const serve = tools.get("serve");
-assert.ok(serve, "serve ツールが registerTool されている");
-const call = (args) => serve.execute("t", args, null, () => {});
+// #53: serve ツールは廃止。/serve/* の HTTP 面は残るので登録だけ helper で作る。
+const KB_DIR = `${HOME_DIR}/.pi/kanban`;
+const call = (args) => serveCall(KB_DIR, args);
 
 const HOST_JSON = `${HOME_DIR}/.pi/kanban/serve-host.json`;
 const SITE = `${HOME_DIR}/workspace/site`;
@@ -124,14 +125,15 @@ function rawHead(head) {
 	});
 }
 
-// 学習前の `serve add` はフォールバック + hint になる
+// 学習前の `serve add` は hostname フォールバックになる（#53: hint 行は serve ツールと一緒に消えた）
 const firstAdd = await call({ action: "add", path: SITE });
 const id = firstAdd.details.id;
 const urlText = (res) => res.content.map((c) => c.text).join("\n");
 
-check("8a 未学習の serve add は hint 行を返す", () => {
+check("8a 未学習の serve add は hostname フォールバックの URL を返す", () => {
 	assert.equal(readHost(), null, "まだ学習していない");
-	assert.match(urlText(firstAdd), /^hint: open http:\/\/[^/]+:\d+\/serve\/ once in your browser so the board learns your host\.$/m);
+	assert.equal(new URL(firstAdd.content[0].text).host, `${hostname().toLowerCase()}:${PORT}`);
+	assert.doesNotMatch(urlText(firstAdd), /hint:/, "hint 行は廃止された");
 });
 
 // --- 6: /api/* では学習しない --------------------------------------------------
@@ -167,18 +169,15 @@ check("8a 未学習の serve add は hint 行を返す", () => {
 // --- 7 / 8b: 学習後は serve add の URL に効き、hint は消える --------------------
 {
 	const add = await call({ action: "add", path: SITE });
+	const list = await call({ action: "list" });
 	const url = new URL(add.details.url);
 	check("7 学習したホストが serve add の URL になる", () => {
 		assert.equal(url.hostname, "myhost.ts.net", add.details.url);
 		assert.equal(url.port, String(PORT), add.details.url);
 		assert.match(add.content[0].text, /^http:\/\/myhost\.ts\.net:\d+\/serve\/[0-9a-f]{16}\/$/);
 	});
-	check("8b 学習済みの serve add に hint は出ない", () => {
-		assert.doesNotMatch(urlText(add), /hint:/);
-	});
-	const list = await call({ action: "list" });
-	check("8b 学習済みの serve list にも hint は出ない", () => {
-		assert.doesNotMatch(urlText(list), /hint:/);
+	check("8b add と list の URL が一致する（hint 行なし）", () => {
+		assert.doesNotMatch(urlText(add) + urlText(list), /hint:/);
 		assert.equal(list.details.entries.find((e) => e.id === id).url, add.details.url);
 	});
 }
@@ -230,12 +229,12 @@ check("8a 未学習の serve add は hint 行を返す", () => {
 	});
 }
 
-// --- 未学習 (ホスト未報告 + allowlist の baseUrl) では hint を出さない ---------
+// --- 未学習 (ホスト未報告 + allowlist の baseUrl) は baseUrl を使う ----------
 {
 	rmSync(HOST_JSON, { force: true });
 	writeFileSync(`${HOME_DIR}/.pi/kanban/serve-allow.json`, JSON.stringify({ baseUrl: "http://km.example:9000" }));
 	const add = await call({ action: "add", path: SITE });
-	check("8c baseUrl 明示時は未学習でも hint を出さない", () => {
+	check("8c baseUrl 明示時は未学習でも baseUrl が勝つ", () => {
 		assert.equal(new URL(add.content[0].text).host, "km.example:9000");
 		assert.doesNotMatch(urlText(add), /hint:/);
 	});

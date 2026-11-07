@@ -508,6 +508,9 @@ gate.handlers.get("session_start")({ type: "session_start" }, ctxGate);
 // 「書かれない」は markFired の早期 return でも成立してしまい、`if (!folding)` を
 // 消しても緑のままになる（移行窓のガードを検査しないテストになる）。
 tGate.poll();
+// #51-①: firedFor は wake の promise の成功側で刻む（reject で刻まないため）。
+// 同期の右直後にはまだ無いので、マイクロタスクを 1 回回してから見る。
+await new Promise((r) => setTimeout(r, 20));
 check("対照: 移行待ちでなければ poll は firedFor を書く", () => {
 	const b = readBoardAt(gateFile);
 	assert.equal(b.cards[0].firedFor, dueIso, JSON.stringify(b.cards));
@@ -540,6 +543,10 @@ check("移行待ちの間は poll が firedFor を書かない（wake は送る�
 	const b = readBoardAt(gateFile);
 	assert.equal(b.cards[0].firedFor, undefined, JSON.stringify(b.cards));
 });
+// #51-①: 上の wake の成功側はマイクロタスクで走る。先に回収しないと、この後の
+// seedBoard に firedFor を書き戻して次の poll を沈黙させる。
+await new Promise((r) => setTimeout(r, 20));
+assert.equal(readBoardAt(gateFile).cards[0].firedFor, undefined, "移行中は wake が成功しても刻まない");
 tGate.setMigrationPending(null);
 releaseGate();
 {

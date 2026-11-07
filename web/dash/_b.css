@@ -6,8 +6,9 @@
 }
 @media (max-width:980px){ .layout{grid-template-columns:1fr} }
 
-/* ── kanban 3列 ─────────────────────────── */
-.cols{display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:var(--gap)}
+/* ── kanban 4列 (#67: 4列目 = 成果物 deliverable) ── */
+.cols{display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:var(--gap)}
+@media (max-width:1100px){ .cols{grid-template-columns:repeat(2,minmax(0,1fr))} }
 @media (max-width:700px){ .cols{grid-template-columns:1fr} }
 .col{
   background:var(--bg1); border:1px solid var(--line); border-radius:var(--radius);
@@ -26,6 +27,16 @@
   font:16px/1 var(--font-mono); cursor:pointer;
 }
 .colhead .add:hover{color:var(--accent)}
+/* #52: 他セッションの TODO 集計バッジ。hiddenTodoCount>0 のときだけ DOM に出る。 */
+.othertodos{margin-bottom:8px}
+.othertodos button{
+  width:100%; text-align:left; cursor:pointer;
+  background:var(--bg2); color:var(--muted);
+  border:1px dashed var(--line); border-radius:6px; padding:3px 8px;
+  font-family:var(--font-mono); font-size:11px;
+}
+.othertodos button:hover{border-color:var(--accent); color:var(--accent)}
+.othertodos button[aria-pressed="true"]{border-style:solid; color:var(--accent)}
 
 .card{
   background:var(--bg2); border:1px solid var(--line); border-radius:var(--radius);
@@ -48,6 +59,13 @@
 .chip.dep{color:var(--warn); border-style:dashed}
 .chip.session{color:var(--ok); border-color:color-mix(in srgb,var(--ok) 40%,transparent)}
 .chip.commit{color:var(--muted); text-decoration:underline dotted}
+/* #52: 他セッションの TODO は薄く出す（showOthers で取りに行った時だけ存在する）。 */
+.chip.other{color:var(--muted); border-style:dashed}
+/* #56: 参照型の添付（コピーせずパスだけ持つ）。*/
+.chip.ref{color:var(--accent); border-style:dashed}
+/* #52: DOING の所有者。誰が掴んでいるかを列の中で見分けるための静かな行。 */
+.chip.owner{color:var(--muted); border-style:dotted}
+.card.other{opacity:.55; background:var(--bg1); border-style:dashed}
 .meta{
   display:flex; gap:10px; margin-top:6px;
   font-family:var(--font-mono); font-size:10px; color:var(--muted);
@@ -82,6 +100,10 @@ html[data-density="compact"] .chips,html[data-density="compact"] .meta{display:n
   aspect-ratio:16/9; background:var(--bg0);
 }
 .thumb img{width:100%; height:100%; object-fit:cover; display:block}
+/* #56: 参照先が消えている画像は alt の「不在」を薄く出す。*/
+.thumb img.refbad{object-fit:contain; font-size:11px; color:var(--muted)}
+/* #53: html 添付の mini プレビュー。操作は lightbox で行うので thumb 内は触れなくする。 */
+.thumb .htmb{width:100%; height:100%; border:0; display:block; pointer-events:none; background:var(--bg0)}
 .thumb .more{
   position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
   background:color-mix(in srgb,var(--bg0) 55%,transparent);
@@ -94,6 +116,68 @@ html[data-density="compact"] .chips,html[data-density="compact"] .meta{display:n
 }
 .attline:hover{border-color:var(--accent); color:var(--text)}
 
+/* ── #58: 第4帯『成果物』(全幅) ─────────────── */
+.deliverables{
+  grid-column:1/-1; padding:0;
+  border:1px solid var(--line); border-radius:var(--radius); background:var(--bg1);
+}
+.deliverables[hidden]{display:none} /* details の display:block を hidden 属性で確実に消す */
+.delhead{
+  display:flex; align-items:baseline; gap:8px; padding:8px 12px; cursor:pointer;
+  list-style:none;
+}
+.delhead::-webkit-details-marker{display:none}
+.delhead h2{margin:0; font-size:11px; font-weight:600; letter-spacing:.14em; color:var(--muted)}
+.delcount{margin-left:auto; font-family:var(--font-mono); font-size:10px; color:var(--muted)}
+.deliverables[open] .delhead{border-bottom:1px solid var(--line)}
+.del-grid{
+  display:grid; grid-template-columns:repeat(auto-fill, minmax(230px, 1fr));
+  gap:var(--gap); padding:10px 12px 12px;
+}
+.del-tile{
+  border:1px solid var(--line); border-radius:var(--radius); overflow:hidden;
+  cursor:pointer; background:var(--bg2); position:relative;
+  /* .thumb（lightbox のクリック面）を兼ねるので、thumb の 16/9 は打ち消す（中身は 140px 固定） */
+  aspect-ratio:auto;
+}
+.del-tile:hover{border-color:var(--accent)}
+.del-cap{
+  display:block; padding:5px 8px; font-size:11px;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.del-cap .id{font-family:var(--font-mono); font-size:10px; color:var(--muted); margin-right:5px}
+.del-cap .del-sid{margin-left:6px; font-family:var(--font-mono); font-size:9px; color:var(--accent)}
+.del-body{position:relative; height:140px; border-top:1px solid var(--line); background:var(--bg0)}
+.del-body img{width:100%; height:100%; object-fit:cover; display:block}
+.del-body video{width:100%; height:100%; object-fit:cover; display:block}
+/* html / 参照型のプレビューは触らせない（クリックは lightbox が取る） */
+.del-body iframe{width:100%; height:100%; border:0; display:block; pointer-events:none; background:var(--bg0)}
+.del-body .delfile{
+  height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center;
+  gap:6px; padding:0 10px; font-family:var(--font-mono); font-size:11px; color:var(--muted);
+  text-align:center; overflow:hidden;
+}
+.del-ref{
+  position:absolute; top:4px; right:4px; font-family:var(--font-mono); font-size:10px;
+  color:var(--text); background:color-mix(in srgb,var(--bg0) 80%, transparent);
+  border:1px solid var(--line); border-radius:4px; padding:0 4px;
+}
+/* #61: 添付を 1 枚外す ×。hover でだけ出す（タイルのクリックは lightbox が取る）。 */
+.del-x{
+  position:absolute; top:3px; right:3px; z-index:1; line-height:1.2;
+  font-family:var(--font-mono); font-size:13px; padding:0 5px;
+  color:var(--muted); background:color-mix(in srgb,var(--bg0) 80%, transparent);
+  border:1px solid var(--line); border-radius:4px;
+  opacity:0; transition:opacity .12s; cursor:pointer;
+}
+.del-tile:hover .del-x{opacity:1}
+.del-x:hover{color:var(--text); border-color:var(--accent)}
+.del-tile .refbad{
+  position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+  font-family:var(--font-mono); font-size:11px; color:var(--muted);
+  background:color-mix(in srgb,var(--bg0) 70%, transparent);
+}
+
 /* ── lightbox ───────────────────────────── */
 .lb{
   position:fixed; inset:0; z-index:50; display:none;
@@ -103,6 +187,7 @@ html[data-density="compact"] .chips,html[data-density="compact"] .meta{display:n
 }
 .lb[open]{display:flex}
 .lb img{max-width:100%; max-height:80vh; border-radius:var(--radius); border:1px solid var(--line)}
+.lb iframe{width:min(92vw,1100px); height:80vh; border-radius:var(--radius); border:1px solid var(--line); background:var(--bg0)}
 .lb .cap{font-family:var(--font-mono); font-size:11px; color:var(--muted)}
 
 /* ── switch (v2.3) ──────────────────────── */
@@ -226,4 +311,5 @@ html.allview .layout{grid-template-columns:1fr}
   .foot{display:none}
   .lb{padding:10px}
   .lb img{max-height:70vh}
+  .lb iframe{height:70vh}
 }

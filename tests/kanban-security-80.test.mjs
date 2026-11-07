@@ -8,6 +8,7 @@ import { createServer as netServer } from "node:net";
 import http from "node:http";
 import { createRequire } from "node:module";
 import { authFetch, tokenHeader } from "./helpers/token.mjs";
+import { serveCall } from "./helpers/serve-registry.mjs";
 
 const tf = (input, init) => authFetch(input, init);
 
@@ -77,9 +78,9 @@ for (let i = 0; i < 40; i++) {
 	await new Promise((r) => setTimeout(r, 100));
 }
 
-const serve = tools.get("serve");
-assert.ok(serve, "serve ツールが registerTool されている");
-const call = (args) => serve.execute("t", args, null, () => {});
+// #53: serve ツールは廃止。/serve/* の HTTP 面は残るので登録だけ helper で作る。
+const KB_DIR = `${HOME_DIR}/.pi/kanban`;
+const call = (args) => serveCall(KB_DIR, args);
 const base = `http://127.0.0.1:${PORT}`;
 const SITE = `${HOME_DIR}/workspace/site`;
 const MEDIA = `${HOME_DIR}/.pi/kanban/media`;
@@ -111,15 +112,10 @@ writeFileSync(`${SITE}/x.png`, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
 	const data = JSON.parse(text);
 	await checkAsync("⑦ dashboard の応答に HOME 配下の絶対パスが現れない", async () =>
 		assert.ok(!text.includes(HOME_DIR), `絶対パスが漏れている: ${text.slice(0, 200)}`));
-	await checkAsync("⑦ serve 行に path フィールドが無い (#80-⑦)", async () => {
-		const row = data.serve.find((x) => x.id === id);
-		assert.ok(row, "登録した serve 行が無い");
-		assert.equal(row.path, undefined, `path=${row.path}`);
-	});
-	await checkAsync("⑦ 代わりに name (最終セグメント) が乗る", async () => {
-		const row = data.serve.find((x) => x.id === id);
-		assert.equal(row.name, "site");
-	});
+	// #53: dashboard payload の serve 行は廃止（空配列）。行の中身は /serve の HTML 一覧が
+	// 持つので、絶対パス漏れの検査はそちらで続ける。
+	await checkAsync("⑦ dashboard の serve は空配列 (#53)", async () =>
+		assert.deepEqual(data.serve, [], `serve=${JSON.stringify(data.serve).slice(0, 120)}`));
 }
 {
 	// /serve のレジストリ HTML も同じ扱い。CORS は same-host Origin を reflect するので、

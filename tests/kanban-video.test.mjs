@@ -8,6 +8,7 @@ import { createServer as netServer } from "node:net";
 import http from "node:http";
 import { createRequire } from "node:module";
 import { authFetch, tokenHeader } from "./helpers/token.mjs";
+import { serveCall } from "./helpers/serve-registry.mjs";
 
 // #83b: HTTP routes need the server token now; tf = fetch + the kb_auth cookie.
 const tf = (input, init) => authFetch(input, init);
@@ -172,9 +173,9 @@ writeFileSync(`${HOME_DIR}/.pi/kanban/media/clip.webm`, CLIP);
 }
 
 // --- 8: /serve の配信でも動画の Content-Type が正しい --------------------------
-const serve = tools.get("serve");
-assert.ok(serve, "serve ツールが registerTool されている");
-const call = (args) => serve.execute("t", args, null, () => {});
+// #53: serve ツールは廃止。/serve/* の HTTP 面は残るので登録だけ helper で作る。
+const KB_DIR = `${HOME_DIR}/.pi/kanban`;
+const call = (args) => serveCall(KB_DIR, args);
 writeFileSync(`${HOME_DIR}/workspace/site/clip.mp4`, CLIP);
 const add = await call({ action: "add", path: `${HOME_DIR}/workspace/site` });
 const serveId = add.details.id;

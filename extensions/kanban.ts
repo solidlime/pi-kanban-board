@@ -79,7 +79,9 @@ import type { BoardKey, Decision, KanbanDb } from "./db.ts";
 // share. "global" is a read-only aggregate. #17: no "session" scope - a pi session id is
 // the actor (movedBy) only, never a board.
 type Scope = "global" | "project";
-type Col = "todo" | "doing" | "done";
+// #67: "deliverable" = 成果物. The 4th column, OUTSIDE todo/doing/done: the loop never drives
+// it (nextTodo reads todo, tickCardFor/doingHeadOf read doing) and the counts keep 3 keys.
+type Col = "todo" | "doing" | "done" | "deliverable";
 // movedAt/movedBy are optional on purpose: boards written before they existed still
 // load. movedBy = the session id that last changed this card's COLUMN. A rename or
 // an image swap does not transfer ownership, so those paths leave it untouched.
@@ -117,6 +119,11 @@ type Card = {
 	blocks?: number[];
 	/** #22: whole-set replacement, always a non-empty subset of LABELS. Absent = no labels. */
 	labels?: string[];
+	/**
+	 * #52: view-only, never written. Set by projectReport when THIS card's movedBy is the
+	 * asking session, so the dashboard can say "あなた" without knowing its own sid.
+	 */
+	mine?: boolean;
 };
 type Board = { cards: Card[]; nextId: number };
 // Automatic loop modes, keyed by (scope, session). The legacy flat doingLoop/autoPick
@@ -155,8 +162,8 @@ type LoopState = {
 const COLS: Col[] = ["todo", "doing", "done"];
 // #18: the TUI move menu labels, index-aligned with COLS so the mapping cannot drift.
 const MOVE_LABELS = COLS.map((c) => `${c.toUpperCase()} へ移動`);
-// 7-char labels so the card bodies line up.
-const COL_LABELS: Record<Col, string> = { todo: "TODO   ", doing: "DOING  ", done: "DONE   " };
+// 7-char labels so the card bodies line up. deliverable is padded to 7 by the GUI, not here.
+const COL_LABELS: Record<Col, string> = { todo: "TODO   ", doing: "DOING  ", done: "DONE   ", deliverable: "DELIV  " };
 const WIDGET_KEY = "kanban";
 const MAX_SHOWN = 4; // a column over this many cards shows 3 + "…ほかN件"
 const INJECT_DONE = 3; // injected DONE keeps only the newest N (long sessions would grow otherwise)
@@ -306,7 +313,11 @@ const SERVE_ALLOW_JSON = join(KANBAN_DIR, "serve-allow.json"); // optional allow
 const SERVE_HOST_JSON = join(KANBAN_DIR, "serve-host.json"); // #20: host reported by the board page
 const INBOX_SEEN_JSON = join(KANBAN_DIR, "inbox-seen.json"); // ack watermarks, per entry id
 const INBOX = "_inbox"; // the one writable subdirectory of a served path
-const MAX_UPLOAD = 8 * 1024 * 1024; // images and inbox files
+// #53: KANBAN_MEDIA_MAX_BYTES overrides the per-file cap (8MB default) for uploads.
+const MAX_UPLOAD = (() => {
+	const n = Number(process.env.KANBAN_MEDIA_MAX_BYTES);
+	return Number.isFinite(n) && n > 0 ? Math.floor(n) : 8 * 1024 * 1024;
+})(); // images, html and inbox files
 const MAX_UPLOAD_VIDEO = 64 * 1024 * 1024; // a video needs room the image budget cannot give
 const INBOX_NUDGE_NAMES = 3; // filenames per INBOX row before collapsing to `+N more`
 // #80-⑪: the _inbox extension policy is an ALLOWLIST, not a denylist. A denylist has to
@@ -325,7 +336,8 @@ const INBOX_NAME_MAX = 128; // chars, one path segment; longer names only help a
 // 8MB images — enough for one board, small enough that an unattended upload loop with a
 // dropped card reference (media files are only removed when a card is) cannot fill it.
 const MEDIA_DIR_MAX_BYTES = 1024 * 1024 * 1024;
-const OK_EXTS = ["png", "jpg", "gif", "webp", "avif", "mp4", "webm"];
+// #53: html is an attachment too - the dashboard reads it in a sandboxed iframe.
+const OK_EXTS = ["png", "jpg", "gif", "webp", "avif", "mp4", "webm", "html"];
 const MIME_BY_EXT: Record<string, string> = {
 	png: "image/png",
 	jpg: "image/jpeg",
@@ -334,6 +346,7 @@ const MIME_BY_EXT: Record<string, string> = {
 	avif: "image/avif",
 	mp4: "video/mp4",
 	webm: "video/webm",
+	html: "text/html",
 };
 
 /** The one place the image/video upload split lives: 8MB for images, 64MB for video. */
@@ -793,6 +806,60 @@ export function parseLabels(raw: string | null): string[] | null {
 		if (!out.includes(s)) out.push(s);
 	}
 	return out;
+}
+
+/** #50: quickadd の text は GET query に乗る（/api/add と同じ制約）。上限はデコード後 8KB。 */
+export const QUICKADD_MAX_BYTES = 8192;
+
+/** #50: 1 行ぶんのトークン。`#slug`=project / `!N`=estimate(1..5 に clamp) / `due:YYYY-MM-DD`=due。 */
+const QA_TOKEN_RE = /^(#[A-Za-z0-9._-]+|![0-9]{1,3}|due:\S+)$/;
+const QA_INDENT_RE = /^(\t| {2})/;
+
+export type QuickAddResult = { ok: true; cards: Card[] } | { ok: false; error: string };
+
+/**
+ * #50: Quick Add 行パーサ。「1 行 = 1 カード、インデントした行は直前の非子行の子」。
+ * id は書き込み側と同じく baseId から詰めて振るので、子の blocks は生成時に確定する
+ * （新しい id は既存カードから指されていない＝循環しない）。
+ * トークンは行頭から続く間だけ消費し、残りが本文。トークンだけの行は捨てる。
+ */
+export function parseQuickAdd(text: string, baseId = 1): QuickAddResult {
+	if (Buffer.byteLength(text, "utf8") > QUICKADD_MAX_BYTES) {
+		return { ok: false, error: `text must be at most ${QUICKADD_MAX_BYTES / 1024}KB` };
+	}
+	const cards: Card[] = [];
+	let nextId = baseId;
+	let parentId: number | undefined;
+	for (const raw of text.split(/\r?\n/)) {
+		if (raw.trim() === "" || raw.trim().startsWith("//")) continue;
+		const words = raw.trim().split(/\s+/);
+		let project = "";
+		let estimate: number | undefined;
+		let due: string | undefined;
+		let i = 0;
+		for (; i < words.length; i++) {
+			const w = words[i];
+			if (!QA_TOKEN_RE.test(w)) break;
+			if (w.startsWith("#")) {
+				if (project === "") project = normalizeProject(w.slice(1));
+			} else if (w.startsWith("!")) {
+				if (estimate === undefined) estimate = Math.min(5, Math.max(1, Number(w.slice(1))));
+			} else if (due === undefined) {
+				due = parseDue(w.slice(4)) ?? undefined;
+				if (due === undefined) return { ok: false, error: "due must be YYYY-MM-DD" };
+			}
+		}
+		const body = words.slice(i).join(" ");
+		if (body === "") continue; // トークンだけの行は無視する
+		const card: Card = { id: nextId++, text: body, col: "todo" };
+		if (project !== "") card.project = project;
+		if (due !== undefined) card.due = due;
+		if (estimate !== undefined) card.estimate = estimate;
+		if (QA_INDENT_RE.test(raw) && parentId !== undefined) card.blocks = [parentId];
+		else parentId = card.id; // 子は親を更新しない。子だけの行は独立カード
+		cards.push(card);
+	}
+	return { ok: true, cards };
 }
 
 /**
@@ -1331,6 +1398,13 @@ export function renderInjectionText(b: Board): string | null {
 // ---------------------------------------------------------------------------
 
 const CARD_TEXT_MAX = 80; // card text lands in a prompt: keep it one flowable line
+// #51-③: every injection we generate starts with this, so a wake we sent is never mistaken
+// for a user steer (both arrive as role "user").
+export const LOOP_PROMPT_PREFIX = "[kanban-loop] ";
+// #51-⑤(a): when the 80-char bound cut the text, say where the whole thing is.
+const TRUNCATED_NOTE = "（本文は省略。全文は kanban ツールで確認）";
+// #51-⑤(b): from the second strike on, the prompt says which settle this is.
+const STUCK_NOTE_FROM = 2;
 
 /**
  * Bound a card's text without splitting a UTF-16 pair.
@@ -1344,18 +1418,39 @@ function cardTextForPrompt(text: string | undefined): string {
 	return chars.length > CARD_TEXT_MAX ? `${chars.slice(0, CARD_TEXT_MAX).join("")}…` : src;
 }
 
-export function continuationPrompt(card: Card, scope: Scope): string {
+/** #51-⑤: the two situations worth one extra clause, both optional (absent = old text). */
+export type ContinuationExtra = {
+	/** the settle count for this card (1 = first). Shown from the second strike on. */
+	stuck?: { count: number; limit: number };
+	/** why the halt was just lifted: said once, on the first injection after a resume. */
+	resumeNote?: "stuck" | "limit";
+};
+
+export function continuationPrompt(card: Card, scope: Scope, extra: ContinuationExtra = {}): string {
 	// A global card and a session card can share an id, so the prompt must name the board.
 	const body = `#${card.id} "${cardTextForPrompt(card.text)}" を完了させろ。終わったら kanban ツール`;
 	// Phase 10: a TODO wake must ask for the move first. The DOING wording is unchanged.
+	let out: string;
+	// ⑤(a): a cut card body is only readable on the board, so point at it.
+	const clipped = Array.from(typeof card.text === "string" ? card.text : "").length > CARD_TEXT_MAX;
 	if (card.col === "todo") {
 		const head = scope === "global" ? `GLOBAL TODO #${card.id}` : `TODO #${card.id}`;
 		const tail = scope === "global" ? " (scope=global) で DOING" : " で DOING";
-		return `${head} "${cardTextForPrompt(card.text)}" を着手しろ。kanban ツール${tail} に移してから作業しろ。`;
+		out = `${head} "${cardTextForPrompt(card.text)}" を着手しろ。kanban ツール${tail} に移してから作業しろ。`;
+	} else {
+		out =
+			scope === "global"
+				? `GLOBAL DOING ${body} (scope=global) で DONE に移せ。`
+				: `DOING ${body} で DONE に移せ。`;
 	}
-	return scope === "global"
-		? `GLOBAL DOING ${body} (scope=global) で DONE に移せ。`
-		: `DOING ${body} で DONE に移せ。`;
+	if (clipped) out += TRUNCATED_NOTE;
+	const notes: string[] = [];
+	if (extra.resumeNote !== undefined) notes.push(`停止理由 halted:${extra.resumeNote} は解除済み`);
+	if (extra.stuck !== undefined && extra.stuck.count >= STUCK_NOTE_FROM) {
+		notes.push(`stuck ${extra.stuck.count}/${extra.stuck.limit}（上限で halt）`);
+	}
+	if (notes.length > 0) out += `（${notes.join(" / ")}）`;
+	return LOOP_PROMPT_PREFIX + out;
 }
 
 /**
@@ -1403,6 +1498,10 @@ export function autoTickVerdict(i: {
 	card: Card | undefined;
 	halted: LoopState["halted"];
 	lastTickAt: number;
+	// #51-②: the settle chain's own last injection. The chain never touches lastTickAt (the
+	// poll owns that clock), so without this a loop that keeps settling looks 5 minutes old
+	// forever and the starvation guard below could never open. 0/absent = never.
+	lastChainAt?: number;
 	lastActivityAt?: number; // undefined = no activity recorded: treat as "just active"
 	now: number;
 	intervalMs?: number; // omit -> AUTO_TICK_MS (legacy entries)
@@ -1411,13 +1510,17 @@ export function autoTickVerdict(i: {
 	const interval = i.intervalMs ?? AUTO_TICK_MS;
 	// Starvation guard: lastActivityAt is a heuristic. If something keeps stamping it,
 	// the quiet gate below would never open and the loop would stall forever. Silence
-	// on lastTickAt for STARVATION_FACTOR intervals overrides the activity clock.
-	const starved = i.now - i.lastTickAt >= interval * STARVATION_FACTOR;
+	// on BOTH injection clocks for STARVATION_FACTOR intervals overrides the activity clock.
+	// #51-②: whichever clock spoke last decides, so a live settle chain (which only stamps
+	// lastChainAt) keeps the guard closed instead of starving on a stale lastTickAt.
+	const starved = i.now - Math.max(i.lastTickAt, i.lastChainAt ?? Number.NEGATIVE_INFINITY) >= interval * STARVATION_FACTOR;
 	// Unknown activity means the user may be right here: skipping one wake is far
 	// cheaper than talking over them, so an absent clock never fires (unless starved).
 	const quiet = starved || (i.lastActivityAt !== undefined && i.now - i.lastActivityAt >= interval);
 	// Both clocks must be silent for a full interval. lastTickAt alone only proves the
 	// last injection is old; a user message a second ago would still pass it.
+	// #51-②: whichever injection clock (poll / settle chain) spoke last is what "old" means.
+	const lastInjected = Math.max(i.lastTickAt, i.lastChainAt ?? Number.NEGATIVE_INFINITY);
 	const reason =
 		i.menuOpen === true
 			? "menu"
@@ -1429,7 +1532,7 @@ export function autoTickVerdict(i: {
 						? "busy"
 						: i.halted !== null
 							? `halted:${i.halted}`
-							: i.now - i.lastTickAt < interval
+							: i.now - lastInjected < interval
 								? "interval"
 								: !quiet
 									? "not-quiet"
@@ -1453,7 +1556,37 @@ export function shouldAutoTick(i: Parameters<typeof autoTickVerdict>[0]): boolea
  * Head-only on purpose: scanning the whole history would let one old prompt freeze the
  * loop for the rest of the session, and no settle would ever bump the loop count.
  */
-export function isUserInputHead(messages: unknown[] | undefined): boolean {
+/** Text of an AgentMessage whose content is a string or a content array. */
+function messageText(m: unknown): string {
+	if (typeof m !== "object" || m === null) return "";
+	const content = (m as { content?: unknown }).content;
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content
+		.map((part) => (typeof part === "object" && part !== null && typeof (part as { text?: unknown }).text === "string" ? (part as { text: string }).text : ""))
+		.join("");
+}
+
+/**
+ * #51-③: is this queued message the USER steering, rather than a wake we sent ourselves?
+ * Our own wake also lands as role "user" (sendUserMessage), so the `[kanban-loop]` prefix is
+ * the only thing that tells them apart; without it every poll wake would look like a steer.
+ */
+function isUserSteer(m: unknown): boolean {
+	if (typeof m !== "object" || m === null) return false;
+	if ((m as { role?: unknown }).role !== "user") return false;
+	return !messageText(m).startsWith(LOOP_PROMPT_PREFIX);
+}
+
+/**
+ * Pure: is the run the user's? True when the head message is the user's, or when the user
+ * still has a message QUEUED (pi exposes it as `event.context.pendingMessages` =
+ * peekQueuedMessages + pending custom messages). A steer that has not run yet is the user
+ * speaking; injecting over it is the same noise as injecting into their own prompt.
+ * Unknowable input returns false = inject: a loop that silently stops is the worse failure.
+ */
+export function isUserInputHead(messages: unknown[] | undefined, pending?: unknown[]): boolean {
+	if (Array.isArray(pending) && pending.some(isUserSteer)) return true;
 	if (!Array.isArray(messages) || messages.length === 0) return false;
 	const last = messages[messages.length - 1];
 	return typeof last === "object" && last !== null && (last as { role?: unknown }).role === "user";
@@ -1613,21 +1746,32 @@ function setLoopTag(sessionId: string, scope: Scope, tag: string): void {
 }
 
 /**
- * #87: TODO (not started) carries NO ownership. `movedBy` on a TODO is only the record
- * of who last touched the card -- filtering on it here is what turned a sibling's GLOBAL
- * TODO into a card nobody could pick: the only poller reads its own sid's board, and the
- * stamp said "not yours". Ownership lives in DOING alone (headOwnedDoing / tickCardFor),
- * so "do not steal someone's work in progress" is still enforced.
+ * #52: TODO ownership, for the dashboard view and for autoPick. A TODO's owner is the
+ * session that last touched it (`movedBy`), because nobody has claimed it as work yet.
+ * Absent/"" means unowned: the first card a session drops in belongs to nobody, so every
+ * session may see and pick it. An empty sid (a curl, a process with no driver session)
+ * keeps the old "everything is visible" answer - there is no viewer to hide it from.
+ */
+export function todoMineOrUnowned(c: Card, sid: string, scope: Scope = "project"): boolean {
+	if (!sid) return true;
+	if (scope === "global") return true; // #87: GLOBAL は sid 区分が意味を持たない (aggregate)。無主判定をしない
+	return !c.movedBy || c.movedBy === sid;
+}
+
+/**
  * Pure: the TODO autoPick would move next, without moving it. `pickFirstTodo` uses
  * this too, so the poll's wake card is the same card the settle will pick.
  * scope/sid stay in the signature: they are the poll/settle call convention, and every
- * caller (and test) passes them; the pick itself no longer depends on either.
+ * caller (and test) passes them.
+ * #52: another session's TODO is no longer picked automatically - it stops a sibling's
+ * half-started card being dragged into this session's turn. Picking it stays possible by
+ * hand (dashboard drag / `kanban` move), which is the explicit door the spec asks for.
  */
-export function nextTodo(cards: Card[], _scope: Scope, _sid: string, now: number = Date.now()): Card | undefined {
+export function nextTodo(cards: Card[], _scope: Scope, sid: string, now: number = Date.now()): Card | undefined {
 	// orderTodos: priority descending, then id ascending (the old rule at equal priority).
 	// Silent cards are dropped before ordering, so a blocked/scheduled head cannot
 	// starve the pickable card behind it (autoPick as a whole stays alive).
-	return orderTodos(cards.filter((c) => c.col === "todo" && !isSilent(c, now)))[0];
+	return orderTodos(cards.filter((c) => c.col === "todo" && !isSilent(c, now) && todoMineOrUnowned(c, sid, _scope)))[0];
 }
 
 /**
@@ -1644,11 +1788,14 @@ export function nextTodo(cards: Card[], _scope: Scope, _sid: string, now: number
  */
 export function pickFirstTodo(sessionId: string, scope: Scope, actor: string = sessionId): Card | null {
 	const path = boardPath(scope, sessionId);
-	const target = nextTodo(readBoard(path).cards, scope, sessionId);
+	// The claim is the ACTOR, never the board key (a project key is a slug), so the pick
+	// filter and the CAS below both look through the session that will own the card.
+	const target = nextTodo(readBoard(path).cards, scope, actor);
 	if (target === undefined) return null;
 	const b = readBoard(path); // CAS: re-read, do not trust the snapshot we chose from
 	const live = b.cards.find((c) => c.id === target.id);
-	if (live === undefined || live.col !== "todo" || isSilent(live)) return null; // lost the race
+	// #52: a sibling that stamped it between our read and this re-read now owns it.
+	if (live === undefined || live.col !== "todo" || isSilent(live) || !todoMineOrUnowned(live, actor, scope)) return null;
 	// The claim is the SESSION, not the board key: a project board's key is a slug, and
 	// the poll's ownership filter compares movedBy against the session.
 	moveCardTo(live, "doing", actor);
@@ -1667,9 +1814,9 @@ export function pickFirstTodo(sessionId: string, scope: Scope, actor: string = s
  * pre-write would turn a failed wake into permanent silence.
  * 同じ nextFireAt の再設定では再発火しない（firedFor と等値）。再点火したいなら値をずらす。
  */
-function markFired(card: Card, sid: string, scope: Scope): void {
+function markFired(card: Card, key: string, scope: Scope): void {
 	if (fireAtMs(card) === null) return;
-	const path = boardPath(scope, sid);
+	const path = boardPath(scope, key);
 	const b = readBoard(path);
 	const live = b.cards.find((c) => c.id === card.id);
 	if (live === undefined || fireAtMs(live) === null || live.firedFor === live.nextFireAt) return;
@@ -1885,6 +2032,7 @@ function isWritePath(pathname: string, method: string): boolean {
 	if (method !== "GET") return false;
 	switch (pathname) {
 		case "/api/add":
+		case "/api/quickadd":
 		case "/api/move":
 		case "/api/remove":
 		case "/api/rename":
@@ -1898,6 +2046,7 @@ function isWritePath(pathname: string, method: string): boolean {
 		case "/api/schedule":
 		case "/api/project":
 		case "/api/decision":
+		case "/api/attach/del":
 			return true;
 		default:
 			return false;
@@ -2324,16 +2473,6 @@ function learnServeHostFromHeader(raw: string | undefined): void {
 }
 
 /**
- * #23: the last resort in serveBaseUrl() is the container id, which no browser reaches.
- * Say so once, and only while it is actually the answer: an explicit env/baseUrl or a
- * learned host means there is nothing for the user to teach.
- */
-function serveHostFallbackHint(): string | null {
-	if (serveBaseUrl() !== `http://${hostname()}:${PORT}`) return null;
-	return `hint: open http://${hostname()}:${PORT}${SERVE_PREFIX}/ once in your browser so the board learns your host.`;
-}
-
-/**
  * POST /api/host { host }: the one trusted source, because a page sent it.
  * #24: the loopback priority rule of learnServeHostFromHeader() deliberately does NOT
  * apply here. A page names the host it is running on, so a reported 127.0.0.1 IS the
@@ -2622,35 +2761,6 @@ function inboxNudgeLine(): string | null {
 	return `INBOX  ${total} unread (${parts.join("; ")})`;
 }
 
-type AckResult = { ok: true; acked: number } | { ok: false; status: number; error: string };
-
-/**
- * ack = move a watermark. It never deletes: removing a file stays an `rm` decision.
- * The watermark is one timestamp per entry id, so acking one name also marks the other
- * files already in that entry's `_inbox` as read — the granularity the spec fixes.
- */
-function serveAck(id: string | undefined, name: string | undefined): AckResult {
-	if (name !== undefined && id === undefined) return { ok: false, status: 400, error: "name requires id" };
-	const registered = readServeFile();
-	const entries = id === undefined ? registered : registered.filter((e) => e.id === id);
-	if (id !== undefined && entries.length === 0) return { ok: false, status: 404, error: `no served path with id ${id}` };
-	if (name !== undefined) {
-		const rejected = inboxRejection(realOrSelf(entries[0].path), name);
-		if (rejected !== null) return { ok: false, ...rejected };
-	}
-	const seen = readSeen();
-	const now = Date.now();
-	let acked = 0;
-	for (const e of entries) {
-		const unread = inboxUnread(e, seen);
-		acked += name === undefined ? unread.length : unread.filter((u) => u.name === name).length;
-		seen[e.id] = now;
-	}
-	const err = writeSeen(seen);
-	if (err !== null) return { ok: false, status: 500, error: `write failed: ${err}` };
-	return { ok: true, acked };
-}
-
 // --- content type / caching / listing -------------------------------------------------
 
 const SERVE_MIME: Record<string, string> = {
@@ -2780,7 +2890,14 @@ function serve416(res: ServerResponse, size: number): void {
  * (serveMimeOf vs MIME_BY_EXT) and Cache-Control rule (serveCacheOf vs no-store).
  * Last-Modified stays optional so media keeps the headers it had before.
  */
-type FileServeOpts = { contentType: string; cacheControl: string; lastModified?: string; download?: boolean };
+type FileServeOpts = {
+	contentType: string;
+	cacheControl: string;
+	lastModified?: string;
+	download?: boolean;
+	/** #53: extra response headers (the html attachment's sandbox CSP). */
+	headers?: Record<string, string>;
+};
 
 /**
  * One byte-range serve shared by /serve and /api/media. Single range only; a
@@ -2795,6 +2912,7 @@ function serveFile(req: IncomingMessage, res: ServerResponse, abs: string, st: S
 	};
 	if (opts.lastModified !== undefined) headers["Last-Modified"] = opts.lastModified;
 	if (opts.download === true) headers["Content-Disposition"] = "attachment";
+	if (opts.headers !== undefined) Object.assign(headers, opts.headers);
 	let status = 200;
 	let start = 0;
 	let end = size - 1;
@@ -3085,7 +3203,7 @@ function serveFileOpts(abs: string, st: Stats): FileServeOpts {
 }
 
 function parseCol(value: string | null): Col | undefined {
-	return value === "todo" || value === "doing" || value === "done" ? value : undefined;
+	return value === "todo" || value === "doing" || value === "done" || value === "deliverable" ? value : undefined;
 }
 
 /** #80-⑪: total bytes under MEDIA_DIR. Missing directory = 0, unreadable entry = skipped. */
@@ -3189,10 +3307,87 @@ function trashMedia(absPath: string): string | null {
 	}
 }
 
-/** Best-effort delete of a card's media file. Missing file is not an error. */
+/** Best-effort delete of a card's media files. Missing file is not an error. */
 function removeMedia(card: Card): void {
-	if (!card.img || !isSafeMediaName(card.img)) return;
-	trashMedia(join(MEDIA_DIR, card.img));
+	if (!card.img) return;
+	// #53: a card holds a comma-separated list now; every entry is trashed, not just the first.
+	for (const name of card.img.split(",")) {
+		const n = name.trim();
+		if (isSafeMediaName(n)) trashMedia(join(MEDIA_DIR, n));
+	}
+}
+
+/** The extension (lowercase, no dot) of a path, or "" when it has none. */
+function extOfPath(abs: string): string {
+	const b = basename(abs);
+	const dot = b.lastIndexOf(".");
+	return dot < 0 ? "" : b.slice(dot + 1).toLowerCase();
+}
+
+/**
+ * #56: one file on disk -> one response. /api/media (a name under MEDIA_DIR) and /api/ref
+ * (an absolute path under the serve allowlist) share this, so the MIME table, the size cap
+ * and the html sandbox CSP cannot drift apart. The caller owns the allowlist/naming checks;
+ * this only decides what the bytes are.
+ */
+function serveRefAbs(req: IncomingMessage, res: ServerResponse, abs: string, limit?: number): void {
+	let st: Stats;
+	try {
+		st = statSync(abs);
+	} catch {
+		sendJson(res, 404, { ok: false, error: "not found" });
+		return;
+	}
+	if (!st.isFile()) {
+		sendJson(res, 404, { ok: false, error: "not found" });
+		return;
+	}
+	if (limit !== undefined && st.size > limit) {
+		sendJson(res, 413, { ok: false, error: `too large (max ${fmtMB(limit)})` });
+		return;
+	}
+	// #53: an html attachment is opened by the dashboard in a sandboxed iframe. The CSP is
+	// the load-bearing part (it applies even if the iframe's sandbox attribute is lost) and
+	// it deliberately sets no X-Frame-Options - being framed is the whole point. No
+	// script-src restriction either: a three.js page loads its modules from a CDN.
+	// #60: allow-forms lets an interactive attachment (a questionnaire) submit inside the
+	// frame; allow-same-origin stays out, so the page keeps an opaque origin and no cookie.
+	const type = MIME_BY_EXT[extOfPath(abs)] ?? "application/octet-stream";
+	const html = type === "text/html";
+	serveFile(req, res, abs, st, {
+		contentType: type,
+		cacheControl: "no-store",
+		...(html
+			? {
+					headers: {
+						"Content-Security-Policy": "sandbox allow-scripts allow-forms",
+						"Content-Disposition": "inline",
+					},
+				}
+			: {}),
+	});
+}
+
+/**
+ * #56: /api/ref?f=<absolute path> - view a file where it lives instead of copying it into
+ * media/. The allowlist is the whole guard: this route is an arbitrary-file read for anyone
+ * who holds the board token, so it is checked on the realpath before the file is touched and
+ * an outside path is refused the same way /serve refuses one.
+ */
+function handleRef(req: IncomingMessage, res: ServerResponse, rawF: string | null): void {
+	// URLSearchParams already decoded `f` once; decoding again would break a path with %41 in it.
+	const input = (rawF ?? "").trim();
+	if (input === "") {
+		sendJson(res, 400, { ok: false, error: "f is required (an absolute path)" });
+		return;
+	}
+	const abs = realOrSelf(resolve(input));
+	if (!isUnder(abs, serveAllowRoots())) {
+		sendJson(res, 403, { ok: false, error: `outside the serve allowlist: ${abs}` });
+		return;
+	}
+	// Same cap /api/upload applies to a copy of the same file: 8MB, 64MB for video.
+	serveRefAbs(req, res, abs, uploadLimitOf(extOfPath(abs)));
 }
 
 function serveMedia(req: IncomingMessage, res: ServerResponse, rawName: string): void {
@@ -3207,25 +3402,13 @@ function serveMedia(req: IncomingMessage, res: ServerResponse, rawName: string):
 		sendJson(res, 400, { ok: false, error: "bad filename" });
 		return;
 	}
-	const type = MIME_BY_EXT[name.slice(name.lastIndexOf(".") + 1).toLowerCase()];
-	if (type === undefined) {
+	// The name policy stays here (400/415 before the filesystem); the response itself is
+	// serveRefAbs, so a media html and a ref html get the same CSP.
+	if (MIME_BY_EXT[extOfPath(name)] === undefined) {
 		sendJson(res, 415, { ok: false, error: "unsupported media type" });
 		return;
 	}
-	const abs = join(MEDIA_DIR, name);
-	let st: Stats;
-	try {
-		st = statSync(abs);
-	} catch {
-		sendJson(res, 404, { ok: false, error: "not found" });
-		return;
-	}
-	if (!st.isFile()) {
-		sendJson(res, 404, { ok: false, error: "not found" });
-		return;
-	}
-	// Same byte-range core as /serve; media keeps its own MIME rule and no-store.
-	serveFile(req, res, abs, st, { contentType: type, cacheControl: "no-store" });
+	serveRefAbs(req, res, join(MEDIA_DIR, name));
 }
 
 /** Collect a raw request body up to `limit`. Calls done(null) after sending 413/400. */
@@ -3344,7 +3527,10 @@ export function projectRollup(
 	}
 	return [...slugs].sort().map((slug) => {
 		const mine = cards.filter((e) => e.scope === "project" && e.sid === slug);
-		const done = mine.filter((e) => e.card.col === "done");
+		// #67: deliverable（成果物）は進捗の分子・分母に入れない。総数・完了・ポイント・期限超過は
+		// todo/doing/done だけで数える（成果物は「やること」ではなく、終わったもの）。
+		const counted = mine.filter((e) => e.card.col !== "deliverable");
+		const done = counted.filter((e) => e.card.col === "done");
 		const points = (list: { card: RollupCard }[]) => list.reduce((n, e) => n + (e.card.estimate ?? 0), 0);
 		const at = (e: { card: RollupCard; scope: string; sid: string }) => ({ scope: e.scope, sid: e.sid });
 		return {
@@ -3356,11 +3542,11 @@ export function projectRollup(
 				doing: mine.filter((e) => e.card.col === "doing").length,
 				done: done.length,
 			},
-			total: mine.length,
+			total: counted.length,
 			done: done.length,
-			points: { total: points(mine), done: points(done) },
-			progress: mine.length === 0 ? 0 : Math.round((done.length / mine.length) * 100),
-			overdue: mine.filter((e) => e.card.col !== "done" && e.card.due !== undefined && e.card.due < today).length,
+			points: { total: points(counted), done: points(done) },
+			progress: counted.length === 0 ? 0 : Math.round((done.length / counted.length) * 100),
+			overdue: counted.filter((e) => e.card.col !== "done" && e.card.due !== undefined && e.card.due < today).length,
 			milestones: mine
 				.filter((e) => e.card.due !== undefined)
 				.map((e) => ({ id: e.card.id, text: e.card.text, due: e.card.due as string, col: e.card.col, ...at(e) }))
@@ -3519,20 +3705,34 @@ async function dbMaintenance(pathname: string, res: ServerResponse): Promise<voi
  *
  * #19: 次にやる 1 枚。nextTodo の規則（priority 降順 → id 昇順、blocked/予約済みを除く）を
  * そのまま使い、無ければ null（undefined は JSON から消えて UI が「空」と区別できない）。
- * 第 2/3 引数（scope/sid）は呼び出し規約: nextTodo の中では絞り込みに使わない。
+ * 第 2/3 引数（scope/sid）は呼び出し規約。
  * この値は request 時点のスナップショット。sigOf は now を除外しているので、時刻だけで
  * 変わる候補（予約が発火しなかった等）は次の payload 変化まで古いまま。
+ *
+ * #52: another session's TODO is hidden by default (it polluted the board with work that is
+ * not this session's). `hiddenTodoCount` says how many were withheld so the UI can offer
+ * "他 N 件" as the explicit door; `showOthers` (from ?showOthers=1) hands them back. Only the
+ * cards are filtered - `counts` stays the whole board, so nothing silently loses a number.
  */
 function projectReport(
 	slug: string,
 	pb: Board,
 	f: ReturnType<typeof readModesFile>,
 	sidActor: string,
+	showOthers = false,
 ) {
+	// `mine` is view-only (Card.mine): the dashboard has no sid of its own, so the server
+	// decides whose card this is and which TODOs are somebody else's.
+	const tagged = pb.cards.map((c) => (sidActor !== "" && c.movedBy === sidActor ? { ...c, mine: true } : c));
+	const others = tagged.filter((c) => c.col === "todo" && !todoMineOrUnowned(c, sidActor));
 	return {
 		id: slug,
 		counts: countCols(pb),
-		cards: pb.cards,
+		// #67: 4列目「成果物」の見出しの数字。counts は 3 キーのままなので別フィールドで出す。
+		// todo/doing/done しか数えないのは仕様: deliverable は進捗の対象外。
+		deliverableCount: pb.cards.filter((c) => c.col === "deliverable").length,
+		cards: showOthers ? tagged : tagged.filter((c) => c.col !== "todo" || todoMineOrUnowned(c, sidActor)),
+		hiddenTodoCount: others.length,
 		next: nextTodo(pb.cards, "project", sidActor) ?? null,
 		modes: modesFor(f, slug, "project"),
 		loops: loopCountOf(sidActor, "project"),
@@ -3574,21 +3774,10 @@ async function dashboardPayload(): Promise<unknown> {
 	// failed and byId is empty.
 	const slug = storedProjectKey(projectSlugOf(cwdOfSidSync(null)));
 	const pb = readBoard(boardPath("project", slug));
-	// Dead registrations stay listed; `exists` is the flag that tells the UI.
-	// 期限切れも残す: dashboard が「期限切れ」と出し、そこから解除できるようにする。
-	const serve = readServeFile().map((e) => ({
-		id: e.id,
-		url: serveUrlFor(e),
-		// #80-⑦: `path` (absolute, server-side) is no longer in the payload. The
-		// dashboard only ever needed something to recognise the entry by.
-		name: serveDisplayName(e),
-		title: e.title ?? "",
-		createdAt: e.createdAt ?? "",
-		permanent: e.permanent === true,
-		expiresAt: serveExpiresAtIso(e),
-		exists: existsSync(e.path),
-	}));
 	return {
+		// #53: the serve pane is gone - cards carry their files now. The field keeps its
+		// shape for anything still reading it, and /serve/* routes stay for old links.
+		serve: [] as unknown[],
 		host: learnedServeHost() ?? hostname(),
 		// #66: identity, so the dashboard can name a stale server instead of rendering
 		// whatever answers the port.
@@ -3603,7 +3792,7 @@ async function dashboardPayload(): Promise<unknown> {
 			todo: totals.todo,
 			doing: totals.doing,
 			done: totals.done,
-			serve: serve.length,
+			serve: 0,
 			media: mediaFileCount(),
 		},
 		// #11: 設定タブの「保存データ」。絶対パスは出さない（#80-⑦）。
@@ -3628,7 +3817,6 @@ async function dashboardPayload(): Promise<unknown> {
 		// Phase 0: the board of the active session's cwd (#27: one server can host several cwds).
 		// global stays above for the un-migrated rows the tests and the UI still read.
 		project: projectReport(slug, pb, f, sidActor),
-		serve,
 	};
 }
 
@@ -3776,7 +3964,7 @@ function handleUpload(req: IncomingMessage, res: ServerResponse, q: URLSearchPar
 		if (idParam === null) {
 			card = { id: b.nextId++, text: "", col: parseCol(q.get("col")) ?? "todo" };
 			stampMove(card, actorOf(q));
-			card.text = `#${card.id} (${MIME_BY_EXT[ext].startsWith("video/") ? "video" : "image"})`;
+			card.text = `#${card.id} (${ext === "html" ? "html" : MIME_BY_EXT[ext].startsWith("video/") ? "video" : "image"})`;
 			const projectRaw = q.get("project");
 			const project = normalizeProject(projectRaw);
 			// Only an exact empty string clears (a fresh upload card only); anything else unnormalizable is a typo.
@@ -3793,7 +3981,8 @@ function handleUpload(req: IncomingMessage, res: ServerResponse, q: URLSearchPar
 				sendJson(res, 404, { ok: false, error: `no card with id ${idParam}` });
 				return;
 			}
-			removeMedia(found); // replacing media drops the old file
+			// #53: an upload ADDS to the card: dropping the old file on every upload made a
+			// second attachment impossible. Removal is per card (delete trashes them all).
 			card = found;
 		}
 		const name = writeMedia(card.id, ext, buf);
@@ -3801,13 +3990,102 @@ function handleUpload(req: IncomingMessage, res: ServerResponse, q: URLSearchPar
 			sendJson(res, 500, { ok: false, error: "media write failed" });
 			return;
 		}
-		card.img = name;
+		card.img = card.img ? `${card.img},${name}` : name;
 		writeBoard(path, b);
 		sendJson(res, 200, { ok: true, card });
 	});
 }
 
 const MEDIA_PREFIX = "/api/media/";
+
+// #60/#64: an interactive attachment (a quiz/wizard/paint html in the sandboxed iframe)
+// posts its payload back here. The iframe's origin is null and it carries no cookie, so
+// this route is the one place that answers without the token and allows any origin.
+// #64: the route is the generic /api/ehr now; /api/quiz stays as an alias so an already
+// attached html written against the old name keeps posting to the same handler.
+const EHR_PATH = "/api/ehr";
+const EHR_ALIAS_PATH = "/api/quiz";
+// #63: 128KB, because a paint demo posts canvas PNG dataURLs here and a 640x360 png is
+// 10-30KB base64. The value still travels in the query, so the request LINE is that big -
+// node's 16KB default would answer 431, hence the maxHeaderSize in listenLoop.
+const QUIZ_EHR_MAX_BYTES = 131072;
+const QUIZ_EHR_MAX_RECORDS = 50;
+type EhrRecord = { at: number; key: string; value: string };
+
+/** #64: true for the canonical route and the old alias alike. */
+function isEhrPath(pathname: string): boolean {
+	return pathname === EHR_PATH || pathname === EHR_ALIAS_PATH;
+}
+
+/**
+ * Answers stored for one card. `meta` is a plain k/v table and this is a value nobody
+ * else reads, so it needs no schema of its own.
+ * shortcut: keyed by card id alone, so two boards with the same id share answers; add the
+ * board key here if the dashboard ever needs them separated.
+ */
+function ehrRecords(id: number): EhrRecord[] {
+	const db = kanbanDb();
+	// #64: `ehr:<id>` is the new key; the old `quiz:<id>` is read only when the new one was
+	// never written, so the answers collected before the rename stay readable.
+	const raw = db.getMeta(`ehr:${id}`) ?? db.getMeta(`quiz:${id}`);
+	if (raw === null) return [];
+	try {
+		const v = JSON.parse(raw) as unknown;
+		return Array.isArray(v) ? (v as EhrRecord[]) : [];
+	} catch {
+		return [];
+	}
+}
+
+/**
+ * #60/#64: GET lists answers (optionally one `key`), POST appends {at, key, value}.
+ * The iframe posts with a plain URL, so every field is in the query and no body is read.
+ */
+function handleEhr(req: IncomingMessage, res: ServerResponse, q: URLSearchParams): void {
+	res.setHeader("Access-Control-Allow-Origin", "*");
+	if (req.method === "OPTIONS") {
+		res.writeHead(204);
+		res.end();
+		return;
+	}
+	req.resume();
+	const idRaw = q.get("id");
+	const id = Number(idRaw);
+	if (idRaw === null || !Number.isInteger(id) || id <= 0) {
+		sendJson(res, 400, { ok: false, error: "id must be a positive integer" });
+		return;
+	}
+	const key = (q.get("key") ?? "").trim().slice(0, 64);
+	if (req.method === "GET") {
+		const rows = ehrRecords(id);
+		sendJson(res, 200, key === "" ? rows : rows.filter((r) => r.key === key));
+		return;
+	}
+	if (req.method !== "POST") {
+		sendJson(res, 405, { ok: false, error: "method not allowed" });
+		return;
+	}
+	const value = q.get("value");
+	if (key === "") {
+		sendJson(res, 400, { ok: false, error: "key is required" });
+		return;
+	}
+	if (value === null || value === "") {
+		sendJson(res, 400, { ok: false, error: "value is required" });
+		return;
+	}
+	if (Buffer.byteLength(value, "utf8") > QUIZ_EHR_MAX_BYTES) {
+		sendJson(res, 413, { ok: false, error: `value too large (max ${QUIZ_EHR_MAX_BYTES} bytes)` });
+		return;
+	}
+	// New rows go to the new key: a POST through the alias migrates the record set.
+	const rows = ehrRecords(id);
+	rows.push({ at: Date.now(), key, value });
+	// Newest last; the cap drops the oldest answers first.
+	while (rows.length > QUIZ_EHR_MAX_RECORDS) rows.shift();
+	kanbanDb().setMeta(`ehr:${id}`, JSON.stringify(rows));
+	sendJson(res, 200, { ok: true, count: rows.length });
+}
 
 // ---------------------------------------------------------------------------
 // #38-1 selftest: name the layer that is broken instead of guessing
@@ -3962,7 +4240,8 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 		url.pathname === SERVE_PREFIX ||
 		url.pathname.startsWith(`${SERVE_PREFIX}/`) ||
 		url.pathname === "/api" ||
-		url.pathname.startsWith("/api/");
+		// #60: the interactive attachment has no cookie to present (origin null). #64: alias too.
+		(url.pathname.startsWith("/api/") && !isEhrPath(url.pathname));
 	if (gated && req.method !== "OPTIONS" && url.pathname !== "/favicon.ico" && !isAuthorized(req, url.searchParams)) {
 		// The 401 body is a constant: it must never echo the token the caller tried.
 		sendJson(res, 401, { ok: false, error: "unauthorized" });
@@ -3994,6 +4273,13 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 		}
 	}
 
+	// #60: the ehr route answers its own OPTIONS and CORS, so it sits before the shared
+	// gates - a sandboxed iframe's preflight carries Origin: null and would be refused.
+	if (isEhrPath(url.pathname)) {
+		handleEhr(req, res, url.searchParams);
+		return;
+	}
+
 	if (req.method === "OPTIONS") {
 		// #76: preflight answers on the same rule as everything else, so a cross-origin page
 		// is told nothing it could use. Unconditional 204 used to advertise the API to any
@@ -4010,6 +4296,17 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 
 	const q = url.searchParams;
 
+	// #56: a card attachment may be a reference (file:<abs>). Same GET/HEAD shape as
+	// /api/media, the allowlist is inside handleRef.
+	if (url.pathname === "/api/ref") {
+		if (req.method !== "GET" && req.method !== "HEAD") {
+			sendJson(res, 405, { ok: false, error: "method not allowed" });
+			req.resume();
+			return;
+		}
+		handleRef(req, res, q.get("f"));
+		return;
+	}
 	// Path-based route: switch() cannot match it.
 	if (url.pathname.startsWith(MEDIA_PREFIX)) {
 		if (req.method !== "GET" && req.method !== "HEAD") {
@@ -4137,13 +4434,22 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 		// #36: `?p=` is the caller spelling, not the board; boardKeyOfP answers the stored one.
 		const storedSid = p.named ? p.key : storedProjectKey(projectSlugOf(cwdOfSidSync(sid)));
 		const pb = readBoard(boardPath("project", storedSid));
+		// #52: whose eyes is this? ?sid= names the session explicitly; without it the driver
+		// stands in (the dashboard sends none, and it is the driver's board it draws). "" = no
+		// viewer (a curl, a process with no session): every TODO is shown, hiddenTodoCount 0.
+		const viewer = sid ?? ""; // #52-fix: 暗黙 fallback (activeSessionId) は最近の subagent に化け得るので外す。sid 無し = 全 TODO 見せ。
+		// ?showOthers=1 = the explicit "go get the other sessions' TODOs" mode behind the badge.
+		const showOthers = q.get("showOthers") === "1";
 		sendJson(res, 200, {
 			ok: true,
 			projectId: storedSid,
 			global: keys === null ? global : projectBoard(global, keys),
 			// `fields=` still wins: a projected answer stays a bare Board (the callers that
-			// ask for it want cards only). Without it, answer the same 7 keys as /api/dashboard.
-			project: keys === null ? projectReport(storedSid, pb, f, activeSessionId ?? "") : projectBoard(pb, keys),
+			// ask for it want cards only). Without it, answer the same keys as /api/dashboard.
+			project:
+				keys === null
+					? projectReport(storedSid, pb, f, viewer, showOthers)
+					: projectBoard(pb, keys),
 			// #26: global is an aggregate view with no switches, so the panel has one row.
 			// Kept for the callers that read it from here instead of project.modes.
 			modes: { project: modesFor(f, storedSid, "project") },
@@ -4375,10 +4681,32 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 			sendJson(res, 200, { ok: true, cards: b.cards });
 			return;
 		}
+		// #50: 複数行の一括追加。パースは parseQuickAdd が持ち、ここは id を詰めて 1 回だけ書く。
+		case "/api/quickadd": {
+			const parsed = parseQuickAdd(q.get("text") ?? "", b.nextId);
+			if (!parsed.ok) {
+				sendJson(res, 400, { ok: false, error: parsed.error });
+				return;
+			}
+			const sid = actorOf(q);
+			for (const card of parsed.cards) {
+				// 新しい id は既存カードの blocks から指され得るので、/api/add と同じ検査を通す。
+				if (card.blocks !== undefined && wouldCycle(b.cards, card.id, card.blocks)) {
+					sendJson(res, 400, { ok: false, error: "blocks must not form a cycle" });
+					return;
+				}
+				stampMove(card, sid);
+				b.cards.push(card);
+			}
+			b.nextId += parsed.cards.length;
+			writeBoard(path, b);
+			sendJson(res, 200, { ok: true, cards: b.cards, added: parsed.cards });
+			return;
+		}
 		case "/api/move": {
 			const col = parseCol(colParam);
 			if (col === undefined) {
-				sendJson(res, 400, { ok: false, error: "col must be todo|doing|done" });
+				sendJson(res, 400, { ok: false, error: "col must be todo|doing|done|deliverable" });
 				return;
 			}
 			const card = b.cards.find((c) => c.id === Number(idParam));
@@ -4605,6 +4933,38 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 			sendJson(res, 200, { ok: true, cards: b.cards });
 			return;
 		}
+		// #61: drop ONE attachment entry (the deliverables tile's ×). `n` is the index after
+		// the dashboard's csv split. A reference (`file:<abs>`) leaves its file alone - only
+		// the csv entry is ours; a media name is trashed unless another card still shows it.
+		// Removing the last entry drops `img` itself, so the card stops being a deliverable.
+		case "/api/attach/del": {
+			const card = b.cards.find((c) => c.id === Number(idParam));
+			if (card === undefined) {
+				sendJson(res, 404, { ok: false, error: `no card with id ${idParam}` });
+				return;
+			}
+			const list = (card.img ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+			const nRaw = q.get("n");
+			const n = Number(nRaw);
+			// nRaw empty/null first: Number("") and Number(null) are both 0, which would
+			// silently mean "the first one" instead of a 400.
+			if (nRaw === null || nRaw.trim() === "" || !Number.isInteger(n) || n < 0 || n >= list.length) {
+				sendJson(res, 400, { ok: false, error: `n out of range (0..${list.length - 1})` });
+				return;
+			}
+			const gone = list.splice(n, 1)[0];
+			if (!gone.startsWith("file:") && isSafeMediaName(gone)) {
+				const shared = b.cards.some(
+					(c) => c.id !== card.id && (c.img ?? "").split(",").map((s) => s.trim()).includes(gone),
+				);
+				if (!shared) trashMedia(join(MEDIA_DIR, gone));
+			}
+			if (list.length === 0) delete card.img;
+			else card.img = list.join(",");
+			writeBoard(path, b);
+			sendJson(res, 200, { ok: true, cards: b.cards });
+			return;
+		}
 		default:
 			sendJson(res, 404, { ok: false, error: "not found" });
 	}
@@ -4794,7 +5154,11 @@ async function startListening(): Promise<void> {
 
 async function listenLoop(): Promise<void> {
 	for (let attempt = 1; attempt <= LISTEN_ATTEMPTS; attempt++) {
-		const s = createServer(handle);
+		// #63: /api/ehr carries its value in the query, so the request line alone can pass
+		// node's 16KB header default (a 128KB value is refused with 431, not 413). The cap
+		// stays local: this budget is per incoming request, and the route is the one that
+		// answers without a token.
+		const s = createServer({ maxHeaderSize: QUIZ_EHR_MAX_BYTES * 4 }, handle);
 		try {
 			await new Promise<void>((resolve, reject) => {
 				s.once("error", reject);
@@ -4956,9 +5320,34 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 	// Auto-tick state for THIS session: module scope made siblings share one 5-minute
 	// window. lastTickAt = 0 means "never fired", so a fresh loop ON fires next poll.
 	let lastTickAt = 0;
+	// #51-②: when the settle chain last injected. A chain never touches lastTickAt (that clock
+	// is the poll's pacing), so the starvation guard needs this to see a loop that is alive.
+	// Per session like lastTickAt: one closure per session; module scope would let a sibling's
+	// settle silence this session's starvation escape (the same bug lastTickAt is per-session for).
+	let lastChainAt = 0;
 	let tickInFlight = false;
 	// True only while a /kanban dialog is on screen: a menu must never be talked over.
 	const uiGuard = { menuOpen: false };
+	/** #51-④: the one menu test, read by the poll gate and by the settle gate. */
+	const menuOpen = (): boolean => uiGuard.menuOpen;
+	// #51-⑤(c): the halt reason is worth one sentence, once, on the first injection after a resume.
+	let resumeNote: "stuck" | "limit" | null = null;
+
+	/**
+	 * Build one injection and spend the one-shot extras. `limit` is the driving board's stuck
+	 * threshold; without it the `(n/3)` note is omitted rather than guessed.
+	 */
+	const injectPrompt = (card: Card, scope: Scope, limit: number | undefined): string => {
+		const note = resumeNote;
+		resumeNote = null; // one shot: the injection after this one must not repeat it
+		return continuationPrompt(card, scope, {
+			resumeNote: note ?? undefined,
+			stuck:
+				limit !== undefined && loop.stuckCount >= STUCK_NOTE_FROM
+					? { count: loop.stuckCount, limit }
+					: undefined,
+		});
+	};
 
 	const persistLoop = (): void => {
 		pi.appendEntry(LOOP_CUSTOM_TYPE, loop);
@@ -5046,8 +5435,11 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 	const resetLoopForResume = (): { was: string; oldCount: number } => {
 		const was = loop.halted === null ? "なし" : `halted:${loop.halted}`;
 		const oldCount = loop.count;
+		// #51-⑤(c): remember what was lifted while it is still known; injectPrompt spends it.
+		resumeNote = loop.halted;
 		loop = { count: 0, halted: null, scope: null, stuckId: null, stuckCount: 0, lastActivityAt: 0 };
 		lastTickAt = 0; // resume must fire on the next poll, not after the interval
+		lastChainAt = 0; // #51-②: the chain clock belongs to the halted loop it measured
 		pollSnapshot = null; // force the next poll to redraw
 		warnedDeadCtx = false;
 		deadCtxStrikes = 0;
@@ -5213,11 +5605,38 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 		} catch {
 			return { ok: false, error: `ファイルが無い / 読めない: ${abs}` };
 		}
-		removeMedia(card); // replacing media drops the old file
+		// #53: /api/upload と対称 — 追加で、置換ではない。既存添付は消さない
 		const name = writeMedia(card.id, ext, bytes);
 		if (name === null) return { ok: false, error: "media への書き込みに失敗" };
-		card.img = name;
+		card.img = card.img ? `${card.img},${name}` : name;
 		return { ok: true, card, name, basename: basename(abs) };
+	};
+
+	/**
+	 * #56: attach a REFERENCE. The file stays where it is; card.img gets `file:<abs>`.
+	 * The allowlist is checked here too - /api/ref refuses an outside path, so writing one
+	 * would only give the card a thumbnail that never loads.
+	 */
+	const attachRef = (
+		b: Board,
+		id: number,
+		input: string,
+	): { ok: true; card: Card; abs: string } | { ok: false; error: string } => {
+		const card = b.cards.find((c) => c.id === id);
+		if (card === undefined) return { ok: false, error: `その id は無い: #${id}` };
+		const sized = input.startsWith("~/") ? join(homedir(), input.slice(2)) : input;
+		if (!isAbsolute(sized) && sized !== "~") return { ok: false, error: `絶対パスで渡す: ${sized}` };
+		const abs = realOrSelf(resolve(sized === "~" ? homedir() : sized));
+		if (!isUnder(abs, serveAllowRoots())) return { ok: false, error: `allowlist の外: ${abs}` };
+		try {
+			if (!statSync(abs).isFile()) return { ok: false, error: `通常ファイルではない: ${abs}` };
+		} catch {
+			return { ok: false, error: `ファイルが無い / 読めない: ${abs}` };
+		}
+		// shortcut: a path containing a comma splits into two csv entries, upgrade if a
+		// referenced filename ever needs one.
+		card.img = card.img ? `${card.img},file:${abs}` : `file:${abs}`;
+		return { ok: true, card, abs };
 	};
 
 	/**
@@ -5458,11 +5877,12 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 					card,
 					halted: loop.halted,
 					lastTickAt,
+					lastChainAt,
 					// undefined (never active) stays undefined: 0 would read as "long ago".
 					lastActivityAt: loop.lastActivityAt || undefined,
 					now,
 					intervalMs: intervalMsOf(m),
-					menuOpen: uiGuard.menuOpen,
+					menuOpen: menuOpen(),
 				});
 				if (pollDebugEnabled()) {
 					const why = v.fire ? "fire" : `skip:${v.reason}`;
@@ -5478,15 +5898,18 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 				tickInFlight = true;
 				lastTickAt = now;
 				try {
-					// The declared return is void, but every runtime hands back a promise: without
-					// a catch, a rejected wake ("Agent is already processing...") vanished.
-					void Promise.resolve(pi.sendUserMessage(continuationPrompt(card, scope)) as unknown).catch(
-						(err: unknown) => logServer(`wake rejected: ${err instanceof Error ? err.message : String(err)}`),
-					);
-					// firedFor goes in AFTER the dispatch returned: a throw leaves the schedule
-					// unfired so the next settle retries, instead of going silent forever.
-					// A failed writeBoard here only buys one extra wake - loud beats a hole.
-					if (!folding) markFired(card, key, scope);
+					// #51-①: firedFor is stamped only once the wake actually LEFT. Stamping it next to
+					// the dispatch marked a rejected wake ("Agent is already processing...") as delivered,
+					// and that schedule could never fire again. lastTickAt above stays here on purpose:
+					// it is the poll's pacing clock, not a delivery receipt, so a rejection still costs
+					// exactly one interval instead of re-dispatching inside the same one.
+					// The catch is not `void`: a rejected wake is logged, never swallowed.
+					Promise.resolve(pi.sendUserMessage(injectPrompt(card, scope, stuckLimitOf(m))) as unknown)
+						.then(() => {
+							// A failed writeBoard here only buys one extra wake - loud beats a hole.
+							if (!folding) markFired(card, key, scope);
+						})
+						.catch((err: unknown) => logServer(`wake rejected: ${err instanceof Error ? err.message : String(err)}`));
 				} catch (err) {
 					// A throw out of a setInterval callback reaches uncaughtException: log it and
 					// let the next interval try again instead of taking the process down.
@@ -5779,7 +6202,7 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 		name: "kanban",
 		label: "Kanban board",
 		description:
-			"Manage a 3-column kanban board (todo/doing/done). action=list shows the board, add creates a card, move changes its column, remove deletes it, edit rewrites a card's text (column and ownership stay), check runs the board/serve/media/modes self-test and returns its JSON, resume clears a doing-loop halt (same reset as /kanban loop on: budget back to 10, doingLoop ON in all three scopes — session, global and this project) — the GUI's loop switch cannot clear it, because the halt lives in the extension process, not in modes.json. scope selects the board: 'project' (default, the board of this working directory's git root - every session in the same repo shares it), 'session' (this conversation's own board) or 'global' (a read-only aggregate of every project's cards; writes there are rejected). Card IDs are unique only within one board — global #7 and project #7 are different cards, so an id seen in a global listing cannot be passed to move/remove/edit: those always act on the selected scope's own board (default: this project's). url returns the token-bearing dashboard URL to open in a browser. img copies a local image into media/ and attaches it to the card named by id (pass its path in `image`; ~/ works). The board is shared with the user's GUI and persisted under ~/.pi/kanban/. project is an optional slug ([A-Za-z0-9._-], case kept, max 24 chars) naming the project a card belongs to; add and edit set it, an empty value clears it, an unnormalizable value is an error, and it never affects the loop or auto-pick. session and commit are optional conversation tags: add and edit set them, an empty value clears them, and commit must be 7-40 hex characters (it is stored lowercase).",
+			"Manage a 3-column kanban board (todo/doing/done). action=list shows the board, add creates a card, move changes its column, remove deletes it, edit rewrites a card's text (column and ownership stay), check runs the board/media/modes self-test and returns its JSON, resume clears a doing-loop halt (same reset as /kanban loop on: budget back to 10, doingLoop ON in all three scopes — session, global and this project) — the GUI's loop switch cannot clear it, because the halt lives in the extension process, not in modes.json. scope selects the board: 'project' (default, the board of this working directory's git root - every session in the same repo shares it), 'session' (this conversation's own board) or 'global' (a read-only aggregate of every project's cards; writes there are rejected). Card IDs are unique only within one board — global #7 and project #7 are different cards, so an id seen in a global listing cannot be passed to move/remove/edit: those always act on the selected scope's own board (default: this project's). url returns the token-bearing dashboard URL to open in a browser. img copies a local file into media/ and attaches it to the card named by id (pass its path in `image`; ~/ works). ref attaches the same way but by REFERENCE: nothing is copied, the card stores `file:<absolute path>` and the dashboard reads it back through /api/ref, which serves only paths under the serve allowlist (~/workspace by default) and refuses anything bigger than the upload cap. Attachments live on the card, not on a served path: images and video show as thumbnails, and .html is opened in a sandboxed iframe preview (so a three.js page works; it loads its CDN modules itself). The board is shared with the user's GUI and persisted under ~/.pi/kanban/. project is an optional slug ([A-Za-z0-9._-], case kept, max 24 chars) naming the project a card belongs to; add and edit set it, an empty value clears it, an unnormalizable value is an error, and it never affects the loop or auto-pick. session and commit are optional conversation tags: add and edit set them, an empty value clears them, and commit must be 7-40 hex characters (it is stored lowercase).",
 		parameters: Type.Object({
 			action: Type.Union([
 				Type.Literal("list"),
@@ -5797,6 +6220,8 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 				// The tool had no way to attach an image; /kanban img was the only door.
 				// Same validation and same media/ layout through attachImage.
 				Type.Literal("img"),
+				// #56: attach by reference - the path is stored on the card, not copied.
+				Type.Literal("ref"),
 			]),
 			scope: Type.Optional(
 				Type.Union([Type.Literal("global"), Type.Literal("project")]),
@@ -5804,7 +6229,12 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 			text: Type.Optional(Type.String()),
 			id: Type.Optional(Type.Number()),
 			col: Type.Optional(
-				Type.Union([Type.Literal("todo"), Type.Literal("doing"), Type.Literal("done")]),
+				Type.Union([
+					Type.Literal("todo"),
+					Type.Literal("doing"),
+					Type.Literal("done"),
+					Type.Literal("deliverable"),
+				]),
 			),
 			// Same fields as the card editor: the agent must be able to arm a card too.
 			// nextFireAt takes ISO 8601 or +90m/+3h/+1d; it is resolved to absolute
@@ -5819,6 +6249,7 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 			// #22: comma-separated. Allowed: bug, feature, chore, 調査. "" clears.
 			labels: Type.Optional(Type.String()),
 			// img: a local image path. Absolute, or ~/ prefixed. Copied, not referenced.
+			// ref: a local path (image/video/html/anything). Absolute, or ~/ prefixed. Referenced, not copied.
 			image: Type.Optional(Type.String()),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -5847,7 +6278,7 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 			const fail = (text: string) => ({ ...done(text), isError: true });
 			// Phase 0 D5: global is a read-only aggregate. The HTTP routes already 400 it
 			// (writeBoardPath); without this the in-process tool is the one back door.
-			if (scope === "global" && (["add", "move", "remove", "edit", "img"] as readonly string[]).includes(params.action)) {
+			if (scope === "global" && (["add", "move", "remove", "edit", "img", "ref"] as readonly string[]).includes(params.action)) {
 				return fail("global board is read-only");
 			}
 
@@ -5994,6 +6425,18 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 					message = `attached ${r.name} to #${r.card.id}`;
 					break;
 				}
+				case "ref": {
+					const id = params.id;
+					if (id === undefined || !Number.isInteger(id) || id < 1) return fail("ref requires id (an integer 1 or more)");
+					const input = (params.image ?? "").trim();
+					if (input === "") return fail("ref requires image (an absolute file path)");
+					// attachRef validates before the write, so a refused path leaves the card alone.
+					const r = attachRef(b, id, input);
+					if (!r.ok) return fail(r.error);
+					persistError = writeBoard(path, b);
+					message = `referenced ${r.abs} on #${r.card.id}`;
+					break;
+				}
 				case "url": {
 					// The board is token-gated; hand over the one URL that opens it.
 					message = boardUrl();
@@ -6008,98 +6451,6 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 		},
 	});
 
-	// Separate tool on purpose: serving local paths is a read surface plus one narrow
-	// write drop box (_inbox) and unrelated to board mutations, so the agent gets one
-	// obvious verb instead of a kanban action.
-	pi.registerTool({
-		name: "serve",
-		label: "Serve local path",
-		description:
-			"Expose a local file or directory over the existing kanban HTTP server (port 8789) as /serve/<id>/, and return the URL to hand to the user. add takes one absolute path; the path is referenced, not copied, so files created after registration are visible immediately. remove accepts the id or the path, list shows what is currently served. add takes permanent=true to opt a path out of the default 7-day expiry (registration without it now expires 7 days after createdAt), plus an optional title that the dashboard shows above the URL. A served page can POST raw bytes to /serve/<id>/_inbox/<name> (one path segment) and ack marks those files read for the per-turn INBOX line: id+name acks one file, id alone acks that path's inbox, no arguments acks everything. ack never deletes. Only paths under the allowlist (default ~/workspace and ~/.pi/kanban) can be added.",
-		parameters: Type.Object({
-			action: Type.Union([
-				Type.Literal("add"),
-				Type.Literal("remove"),
-				Type.Literal("list"),
-				Type.Literal("ack"),
-			]),
-			path: Type.Optional(Type.String()),
-			id: Type.Optional(Type.String()),
-			name: Type.Optional(Type.String()),
-			title: Type.Optional(Type.String()),
-			permanent: Type.Optional(Type.Boolean()),
-		}),
-		async execute(_toolCallId, params) {
-			type ServeDetails = {
-				ok: boolean;
-				id?: string;
-				path?: string;
-				url?: string;
-				status?: number;
-				error?: string;
-				acked?: number;
-				entries?: { id: string; path: string; url: string }[];
-			};
-			// #23: the hint is a second block so the URL itself stays a clean first line.
-			const done = (text: string, details: ServeDetails, hint: string | null = null) => ({
-				content:
-					hint === null
-						? [{ type: "text" as const, text }]
-						: [{ type: "text" as const, text }, { type: "text" as const, text: hint }],
-				details,
-			});
-			const fail = (text: string, details: ServeDetails) => ({ ...done(text, details), isError: true });
-
-			if (params.action === "add") {
-				const input = (params.path ?? "").trim();
-				if (input.length === 0) return fail("serve add failed: path is required", { ok: false, error: "path is required" });
-				const result = serveAdd(input, params.permanent === true, params.title);
-				if (!result.ok) {
-					return fail(`serve add failed (${result.status}): ${result.error}`, {
-						ok: false,
-						status: result.status,
-						error: result.error,
-					});
-				}
-				const url = serveUrlFor(result.entry);
-				return done(url, { ok: true, id: result.entry.id, path: result.entry.path, url }, serveHostFallbackHint());
-			}
-			if (params.action === "remove") {
-				const input = (params.id ?? params.path ?? "").trim();
-				if (input.length === 0) {
-					return fail("serve remove failed: id or path is required", { ok: false, error: "id or path is required" });
-				}
-				const removed = serveRemove(input);
-				if (removed === null) {
-					return fail(`serve remove failed: not registered: ${input}`, {
-						ok: false,
-						error: `not registered: ${input}`,
-					});
-				}
-				return done(`removed ${removed.path}`, { ok: true, id: removed.id, path: removed.path });
-			}
-			if (params.action === "ack") {
-				const result = serveAck(params.id?.trim() || undefined, params.name?.trim() || undefined);
-				if (!result.ok) {
-					return fail(`serve ack failed (${result.status}): ${result.error}`, {
-						ok: false,
-						status: result.status,
-						error: result.error,
-					});
-				}
-				return done(`acked ${result.acked} file(s)`, { ok: true, acked: result.acked });
-			}
-			// Same watermark as /serve, so the agent reads the badge the browser shows.
-			const seen = readSeen();
-			const rows = serveLiveEntries().map((e) => ({ ...e, url: serveUrlFor(e), unread: inboxUnread(e, seen).length }));
-			const text =
-				rows.length === 0
-					? "no served paths"
-					: rows.map((r) => `${r.url}\t${r.path}${r.unread > 0 ? ` (${r.unread} unread)` : ""}`).join("\n");
-			return done(text, { ok: true, entries: rows }, serveHostFallbackHint());
-		},
-	});
-
 	// Auto-loop. Off by default (modes.json), and it never blocks input: this
 	// handler only decides whether the settled run gets one more request.
 	pi.on("agent_before_settle", (event, ctx) => {
@@ -6107,6 +6458,9 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 		// write would overwrite it. Dropping the continuation is the safe outcome (the next
 		// settle resumes the loop), and staying sync keeps every other caller's result a value.
 		if (migrationPending !== null) return;
+		// #51-④: a /kanban dialog is on screen. Same guard object the poll reads (menuOpen()),
+		// so a menu cannot be talked over by one path and not the other.
+		if (menuOpen()) return;
 		const sid = sidOf(ctx);
 		const f = readModesFile();
 		// `key` names the board (modes, boardPath); `sid` stays the actor (movedBy, paint,
@@ -6136,8 +6490,9 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 		// A settle whose head message is the user's is the user's run, not the board's: that is
 		// exactly the steer noise. contextMessages keeps our own custom_message continuations
 		// at role "custom", and a completed turn leaves role "assistant" last, so only a real
-		// prompt at the head flips this.
-		if (isUserInputHead(event.context.contextMessages)) return;
+		// prompt at the head flips this. #51-③: a message still QUEUED from the user counts too
+		// (pi's event.context.pendingMessages) - steering and injection must not share a turn.
+		if (isUserInputHead(event.context.contextMessages, event.context.pendingMessages)) return;
 
 		// autoPick: this cwd's PROJECT board. WIP=1: a board that already holds one of THIS
 		// session's DOING cards does not pick another. A board whose DOING is empty and whose
@@ -6184,8 +6539,12 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 		// firedFor goes in only AFTER the continuation content is built: a malformed card
 		// throws here, before the wake is recorded, so the next settle retries instead of
 		// going silent forever. A failed writeBoard only means one extra wake next settle.
-		const prompt = continuationPrompt(card, scope);
+		const prompt = injectPrompt(card, scope, stuckLimitOf(modesFor(f, projectKey, scope)));
 		markFired(card, projectKey, scope);
+		// #51-②: the chain just spoke, so its clock moves with it. lastTickAt stays untouched
+		// on purpose (see the #88 relapse comment above): the poll's pacing must not be reset
+		// by our own continuations, only the starvation guard reads both.
+		lastChainAt = Date.now();
 		return {
 			continue: true,
 			// A continuation needs a trailing non-assistant message; this entry is also

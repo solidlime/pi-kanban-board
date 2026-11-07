@@ -82,3 +82,15 @@ test("dashboard: ラベル・遷移・モーダル・DnD の骨（#44/#45/#46）
 	assert.ok(app.includes("draggable"), "DnD が無い");
 	assert.ok(app.includes('dataset.slug'), "group の slug が無い");
 });
+
+test("dashboard: カードモーダルから添付できる（#49）", () => {
+	// 面（input/ドロップ領域/サムネ入れ）と、送信先・事前拒否の骨だけを見る。
+	const app = read("web/dash/_app.js");
+	for (const id of ["cm-file", "cm-drop", "cm-thumbs", "cm-attstatus"]) {
+		assert.ok(HTML.includes(`id="${id}"`), `id="${id}" が無い`);
+	}
+	assert.ok(HTML.includes('id="cm-file" multiple accept="'), "multiple + accept が無い");
+	assert.ok(app.includes('"/api/upload"'), "アップロードを叩いていない");
+	assert.ok(app.includes("UP_EXTS"), "accept 外の事前拒否が無い");
+	assert.ok(app.includes('"Content-Type": "application/octet-stream"'), "生バイナリで送っていない");
+});

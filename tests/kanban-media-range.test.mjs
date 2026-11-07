@@ -8,6 +8,7 @@ import { createServer as netServer } from "node:net";
 import http from "node:http";
 import { createRequire } from "node:module";
 import { authFetch } from "./helpers/token.mjs";
+import { serveCall } from "./helpers/serve-registry.mjs";
 
 // #83b: HTTP routes need the server token now; tf = fetch + the kb_auth cookie.
 const tf = (input, init) => authFetch(input, init);
@@ -148,9 +149,9 @@ const MEDIA_URL = `${base}/api/media/clip.png`;
 }
 
 // --- 7/8: /serve も同じコアを通り、Range と B4 Cache-Control が退行しない ------
-const serve = tools.get("serve");
-assert.ok(serve, "serve ツールが registerTool されている");
-const call = (args) => serve.execute("t", args, null, () => {});
+// #53: serve ツールは廃止。/serve/* の HTTP 面は残るので登録だけ helper で作る。
+const KB_DIR = `${HOME_DIR}/.pi/kanban`;
+const call = (args) => serveCall(KB_DIR, args);
 writeFileSync(`${HOME_DIR}/workspace/site/clip.txt`, CONTENT);
 writeFileSync(`${HOME_DIR}/workspace/site/data.json`, '{"a":1}');
 const add = await call({ action: "add", path: `${HOME_DIR}/workspace/site` });
