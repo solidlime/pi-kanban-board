@@ -1666,6 +1666,10 @@ const KANBAN_HELP =
 	"/kanban loop on|off|status / pick on|off  自動再開ループ / 自動ピック（このプロジェクトボードのスイッチ）\n" +
 	"/kanban take  auto-tick の駆動元をこのセッションに切り替える\n" +
 	"/kanban url  この看板を開く URL（トークン付き）\n" +
+	// #90: ツールの description から落とした正規化規則の置き場所。既存の行は消さない。
+	"カードの project は [A-Za-z0-9._-]（24 文字まで・大文字小文字は保持）、session は [A-Za-z0-9._:@-]、commit は 7-40 hex（小文字で保存）。空文字は解除\n" +
+	"ref は元ファイルを指すだけ（file:<path>、コピーしない）。ダッシュボードは /api/ref 経由で読み、serve の許可ルート（既定 ~/workspace）の外は開けない\n" +
+	"ボードは project（既定）/ global（読み取り専用）の 2 つ。session ボードは #17 で廃止\n" +
 	"/kanban  メニュー";
 
 /**
@@ -6193,7 +6197,9 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 
 	// Mode A: select/input drilldown. `scope` picks the layer this run edits.
 	pi.registerCommand("kanban", {
-		description: "Open a kanban board (select/input drilldown)",
+		// #90: the main use is "add a card"; the drilldown menu is only what a bare /kanban opens.
+		description:
+			"Add a card to this project's TODO, or run a subcommand: url / loop / pick / take / interval / stuck / maxloops / priority / img / help",
 		handler: async (args, ctx) => {
 		const sid = sidOf(ctx);
 		// #17: project boards are keyed by their cwd slug; the pi session id stays the actor.
@@ -6463,8 +6469,16 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "kanban",
 		label: "Kanban board",
+		// #90: four blocks, in the order a first-time reader needs them - what it is, what each
+		// action does, what it is NOT (deliverables), and which board you are touching. The
+		// normalization rules moved to the per-parameter descriptions and KANBAN_HELP.
 		description:
-			"Manage a 3-column kanban board (todo/doing/done). Deliverables are not cards: a deliverable is a `deliv` row (/api/deliv/add|edit|remove), and no column is called deliverable. action=list shows the board, add creates a card, move changes its column, remove deletes it, edit rewrites a card's text (column and ownership stay), check runs the board/media/modes self-test and returns its JSON, resume clears a doing-loop halt (same reset as /kanban loop on: budget back to 10, doingLoop ON in all three scopes — session, global and this project) — the GUI's loop switch cannot clear it, because the halt lives in the extension process, not in modes.json. scope selects the board: 'project' (default, the board of this working directory's git root - every session in the same repo shares it), 'session' (this conversation's own board) or 'global' (a read-only aggregate of every project's cards; writes there are rejected). Card IDs are unique only within one board — global #7 and project #7 are different cards, so an id seen in a global listing cannot be passed to move/remove/edit: those always act on the selected scope's own board (default: this project's). url returns the token-bearing dashboard URL to open in a browser. img copies a local file into media/ and attaches it to the card named by id (pass its path in `image`; ~/ works). ref attaches the same way but by REFERENCE: nothing is copied, the card stores `file:<absolute path>` and the dashboard reads it back through /api/ref, which serves only paths under the serve allowlist (~/workspace by default) and refuses anything bigger than the upload cap. Attachments live on the card, not on a served path: images and video show as thumbnails, and .html is opened in a sandboxed iframe preview (so a three.js page works; it loads its CDN modules itself). The board is shared with the user's GUI and persisted under ~/.pi/kanban/. project is an optional slug ([A-Za-z0-9._-], case kept, max 24 chars) naming the project a card belongs to; add and edit set it, an empty value clears it, an unnormalizable value is an error, and it never affects the loop or auto-pick. session and commit are optional conversation tags: add and edit set them, an empty value clears them, and commit must be 7-40 hex characters (it is stored lowercase).",
+			"Shared kanban board for this project: columns todo / doing / done, persisted under ~/.pi/kanban and rendered in the user's GUI. Use it to hold work you owe — one card per promise, moved to done only when the thing actually works.\n" +
+			"Actions: list reads the board; add creates a card; move sets its col; edit rewrites its text, project, session, commit or labels only (column and owner stay); remove deletes it; check returns the board/media/modes self-test JSON; resume clears a doing-loop halt (the GUI switch cannot — the halt is process state); url returns the token-bearing dashboard link; img copies a local file into media/ and attaches it to card id; ref attaches by reference instead (the card stores file:<path>, and the dashboard reads it back through /api/ref, which only serves paths under the serve roots).\n" +
+			"Priority (-99..99, bigger goes first) and the loop switches are not tool actions: /kanban priority <id> [n], /kanban loop|interval|stuck|maxloops drive them.\n" +
+			"A deliverable is not a card: it is a deliv row (/api/deliv/add|edit|remove) shown in the belt under the board. No column is called deliverable.\n" +
+			"scope picks the board: project (default — this working directory's repo, shared by every session in it) or global (read-only aggregate; writes are refused). Card ids are per board, so an id from a global listing cannot be used with move/edit/remove. There is no per-session board (#17): boards are project-scoped.\n" +
+			"Attachments live on the card: images and video show as thumbnails, .html opens in a sandboxed iframe (a three.js page works, it loads its CDN modules itself), and md/pdf/txt preview as text or pdf.",
 		parameters: Type.Object({
 			action: Type.Union([
 				Type.Literal("list"),
@@ -6484,28 +6498,40 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 				Type.Literal("img"),
 				// #56: attach by reference - the path is stored on the card, not copied.
 				Type.Literal("ref"),
-			]),
+			], { description: "What to do. See the tool description for each action; add/move/edit/remove act on the selected scope's own board." }),
+			// #17/#90: two boards, not three. There is no per-session board (the HTTP routes answer
+			// scope=session with 400 SESSION_SCOPE_GONE), so the schema must not offer one either.
 			scope: Type.Optional(
-				Type.Union([Type.Literal("global"), Type.Literal("project")]),
+				Type.Union([Type.Literal("global"), Type.Literal("project")], {
+					description: "Which board: project (default, this repo), global (read-only aggregate).",
+				}),
 			),
-			text: Type.Optional(Type.String()),
-			id: Type.Optional(Type.Number()),
-			col: Type.Optional(Type.Union([Type.Literal("todo"), Type.Literal("doing"), Type.Literal("done")])),
+			text: Type.Optional(Type.String({ description: "Card body. Required by add; edit replaces it (empty is an error)." })),
+			id: Type.Optional(Type.Number({ description: "Card id inside the selected board (ids are per board — see list)." })),
+			col: Type.Optional(
+				Type.Union([Type.Literal("todo"), Type.Literal("doing"), Type.Literal("done")], {
+					description: "Target column: todo | doing | done.",
+				}),
+			),
 			// Same fields as the card editor: the agent must be able to arm a card too.
 			// nextFireAt takes ISO 8601 or +90m/+3h/+1d; it is resolved to absolute
 			// before saving. "" clears either field.
-			nextFireAt: Type.Optional(Type.String()),
-			blocked: Type.Optional(Type.String()),
+			nextFireAt: Type.Optional(Type.String({ description: "ISO 8601 or +90m/+3h/+1d; resolved to absolute before saving. \"\" clears it." })),
+			blocked: Type.Optional(Type.String({ description: "Free-text reason the card is blocked. \"\" clears it." })),
 			// A slug, normalized on write ([A-Za-z0-9._-], case kept, max 24 chars). "" clears it.
-			project: Type.Optional(Type.String()),
+			project: Type.Optional(
+				Type.String({ description: "Optional project slug ([A-Za-z0-9._-], max 24 chars, case kept). \"\" clears it. Never affects the loop." }),
+			),
 			// #20: conversation tags. "" clears either one; commit must be 7-40 hex.
-			session: Type.Optional(Type.String()),
-			commit: Type.Optional(Type.String()),
+			session: Type.Optional(Type.String({ description: "Conversation tag on a card ([A-Za-z0-9._:@-]). \"\" clears it." })),
+			commit: Type.Optional(Type.String({ description: "Commit sha, 7-40 hex, stored lowercase. \"\" clears it." })),
 			// #22: comma-separated. Allowed: bug, feature, chore, 調査. "" clears.
-			labels: Type.Optional(Type.String()),
+			labels: Type.Optional(Type.String({ description: "Comma-separated labels. Allowed: bug, feature, chore, 調査. \"\" clears it." })),
 			// img: a local image path. Absolute, or ~/ prefixed. Copied, not referenced.
 			// ref: a local path (image/video/html/anything). Absolute, or ~/ prefixed. Referenced, not copied.
-			image: Type.Optional(Type.String()),
+			image: Type.Optional(
+				Type.String({ description: "Local path for img (copied into media/) or ref (stored as file:<path>, not copied; /api/ref serves it back only under the serve roots, ~/workspace by default). Absolute or ~/ prefixed." }),
+			),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			// Phase 0: the HTTP gate cannot see an in-process write, so the tool waits for the

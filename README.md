@@ -53,7 +53,7 @@ pi -e npm:pi-kanban-board
 
 ### The `kanban` tool
 
-The model calls this directly. Actions include `list`, `add`, `move`, `remove`, `schedule`, `blocked`, `priority`, `img` (attach a file to a card) and `check` (a self-diagnosis of the board, media directory, and mode files).
+The model calls this directly. Actions are `list`, `add`, `move`, `remove`, `edit`, `check` (a self-diagnosis of the board, media directory, and mode files), `resume` (clear a doing-loop halt — the GUI switch cannot), `url` (the token-bearing dashboard link), `img` (copy a local file into `media/` and attach it to a card) and `ref` (attach by reference: the card stores `file:<path>`, nothing is copied). `schedule`, `blocked` and `priority` are parameters or `/kanban` subcommands, not actions.
 
 `add` and `edit` take an optional `project` slug (`[A-Za-z0-9._-]`, case kept, cut to 24 chars) that tags a card. Slugs match case-insensitively (`Repos/App` and `repos/app` are one project), so the spelling you first wrote is the one on the board. An empty value clears it; anything else unnormalizable is rejected. To relabel a card, use `edit` with `project`, or `/api/schedule?project=`. `/api/upload` only reads `project` when it creates a card; uploading to an existing `id` leaves that card's label alone. A card project is only a label — the auto-pick loop never reads it.
 
