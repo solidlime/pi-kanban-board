@@ -87,11 +87,22 @@ A card carries its own files (`card.img`, a comma-separated list of names under 
 
 The dashboard upload button posts to `/api/upload` (`?id=<card>&ext=<ext>`, or `?deliv=<id>&ext=<ext>` for a deliverable — `deliv=` with an unknown id is a `404`, it does not fall back to creating a card); each upload **adds** to the row instead of replacing what is already there, so one card or deliverable can hold several images, videos and `.html` pages. Hover a tile in the 成果物 band and click the `×` to drop **one** entry: `/api/attach/del?p=<board>&deliv=<id>&n=<index>` (`id=<card>` for a card) removes that csv entry only. A referenced file (`file:<abs>`) stays where it is; a media name is moved to `.trash` unless another card **or deliverable** still shows the same file. Removing the last entry clears `img`, so the tile loses its preview (the row itself stays in the band, now without an attachment). Media is trashed wholesale when the row itself is deleted (`/api/remove` for a card, `/api/deliv/remove` for a deliverable, 7-day grace period, see below).
 
-Accepted extensions are `png jpg gif webp avif mp4 webm html`. The per-file cap is 8MB (`KANBAN_MEDIA_MAX_BYTES` overrides it, videos get 64MB), and the whole `media/` directory has a 1GiB budget; over either limit `/api/upload` answers `413` and leaves the card untouched.
+Accepted extensions are `png jpg gif webp avif mp4 webm mov html`. The per-file cap is 8MB (`KANBAN_MEDIA_MAX_BYTES` overrides it, videos get 64MB), and the whole `media/` directory has a 1GiB budget; over either limit `/api/upload` answers `413` and leaves the card untouched.
 
 **Paste is the second way in.** Copy an image (⌘/Ctrl+C on a screenshot), then paste it anywhere on the dashboard: it lands on the card whose menu is open, otherwise on the arrow-key selected card, otherwise on a fresh TODO card named 「ペースト画像」. A clipboard `File` has no body to POST, so the image rides the query as a base64 dataURL — `GET /api/upload2?p=<board>&id=<card>&data=<dataURL>` (`deliv=<id>` for a deliverable) — which caps the payload at 128KB of dataURL (`413`), answers `415` for a MIME outside the list above or an `ext` that disagrees with it, and `404` for an unknown card. The dashboard HTML is generated at startup, so restart pi once after upgrading to get the paste handler.
 
 An `.html` attachment opens in the dashboard's lightbox as an iframe preview. The server serves it with `Content-Security-Policy: sandbox allow-scripts allow-forms` and no `X-Frame-Options`, and the iframe itself carries `sandbox="allow-scripts allow-forms"` — no `allow-same-origin`, so the page cannot reach the dashboard's cookie or its origin. Inside that sandbox a three.js page loads its modules from a CDN the normal way, and `allow-forms` lets an interactive page (a questionnaire) submit **inside the frame**. Images and videos keep the thumbnail/video treatment they had.
+
+A **referenced** attachment (`file:<abs>`) can also be a document, which keeps `mov` in the same video group and shows the rest in the same lightbox:
+
+| extension | `/api/ref` returns | how the lightbox shows it |
+|---|---|---|
+| `html` | `text/html` + `Content-Security-Policy: sandbox allow-scripts allow-forms` | sandboxed iframe |
+| `pdf` | `application/pdf` | iframe, no `sandbox` (a PDF viewer does not paint under it) |
+| `md` `markdown` `txt` `log` `csv` `json` | `text/plain; charset=utf-8` | iframe, no `sandbox` |
+| anything else | `application/octet-stream` | thumbnail and lightbox treat it as an image, so it may not render |
+
+`.md` is served as `text/plain` rather than `text/markdown` because Chrome has no viewer for the latter and would download it; the inline `Content-Disposition` on every line of the table is what keeps the browser showing the file instead of saving it. Only `file:` entries can be documents — `.pdf`/`.md` are not in the upload allowlist, so `/api/media` never serves them.
 
 ### 双方向の添付（アンケート）
 

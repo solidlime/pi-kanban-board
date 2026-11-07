@@ -153,7 +153,7 @@
     if (typeof c.img !== "string" || !c.img) return [];
     return c.img.split(",").map(function (s) { return s.trim(); }).filter(Boolean);
   }
-  var VID = /\.(mp4|webm|mp3|wav|m4a|ogg)$/i;
+  var VID = /\.(mp4|webm|mov|mp3|wav|m4a|ogg)$/i;
   // #56: card.img の 1 エントリが file:<絶対パス> なら「参照型」— コピーせず、その場所を読む。
   var REF = "file:";
   function refOf(n) { return n.slice(0, REF.length) === REF ? n.slice(REF.length) : ""; }
@@ -164,6 +164,9 @@
   }
   // #53: .html の添付はサンドボックス iframe で読む（three.js は CDN から自分で読む）。
   var HTML = /\.html?$/i;
+  // #91: 参照型の文書。サーバ（REF_MIME）が text/plain か application/pdf で返すものだけを
+  // ここに載せる（載せた拡張子は iframe で開く = lightbox で sandbox を外す）。
+  var DOC = /\.(pdf|md|markdown|txt|log|csv|json)$/i;
   function sortCol(list, col) {
     var a = list.slice();
     if (col === "todo") a.sort(function (x, y) { return (prioOf(y) - prioOf(x)) || (x.id - y.id); });
@@ -953,11 +956,14 @@
   function closePal() { $("#pal").removeAttribute("open"); }
 
   // thumb の中身: 画像は img、html は読み込まない mini iframe（クリックで lightbox が本開）。
+  // #91: 文書（pdf/md/txt）も同じ mini iframe。thumb は pointer-events:none で操作できないので
+  // sandbox の出し分けは要らない（lightbox 側で外す）。
   function thumbBody(name, alt) {
-    if (HTML.test(name)) {
+    if (HTML.test(name) || DOC.test(name)) {
       var fr = document.createElement("iframe");
       fr.className = "htmb";
-      fr.setAttribute("sandbox", "allow-scripts allow-forms");
+      // #91: pdf は sandbox 下で描画されないので、html のときだけ sandbox を付ける。
+      if (HTML.test(name)) fr.setAttribute("sandbox", "allow-scripts allow-forms");
       fr.setAttribute("loading", "lazy");
       fr.setAttribute("title", alt || name);
       fr.src = srcOf(name);
@@ -983,12 +989,16 @@
     lbAt = (i + th.length) % th.length;
     var name = th[lbAt].dataset.lb || "";
     var img = $("#lbimg"), fr = $("#lbif");
-    if (HTML.test(name)) {
+    if (HTML.test(name) || DOC.test(name)) {
       // sandbox="allow-scripts" のみ。allow-same-origin を足すと dashboard と同一 origin に
       // なり、添付 html が cookie を読めてしまう（サーバも CSP: sandbox で二重に閉じる）。
+      // #91: pdf/md/txt は文書なので sandbox を外す（pdf ビューアは sandbox 下で描画されない）。
+      // DOC は拡張子で絞ってあり、script を実行する経路にはならない。
       img.removeAttribute("src");
       img.hidden = true;
       fr.hidden = false;
+      if (HTML.test(name)) fr.setAttribute("sandbox", "allow-scripts allow-forms");
+      else fr.removeAttribute("sandbox");
       fr.src = srcOf(name);
     } else {
       var el0 = th[lbAt].querySelector("img");

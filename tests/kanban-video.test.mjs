@@ -124,6 +124,21 @@ const MB = 1024 * 1024;
 	check("webm 9MB のカードは .webm を指す", () => assert.match(card.img, /\.webm$/));
 }
 
+// --- 2b: #91 mov も動画（video/quicktime）として 200 + 64MB 上限 -----------------
+{
+	const res = await post("/api/upload?scope=project&ext=mov", Buffer.alloc(9 * MB, 0x16));
+	const card = res.status === 200 ? JSON.parse(res.body).card : undefined;
+	check("#91 mov 9MB のアップロードは 200", () =>
+		assert.equal(res.status, 200, `status=${res.status} body=${res.body.slice(0, 200)}`));
+	check("#91 mov のカードは .mov を指す", () => assert.match(card.img, /\.mov$/));
+	check("#91 mov の新規カード text は (video)", () => assert.equal(card.text, `#${card.id} (video)`));
+}
+{
+	const res = await post("/api/upload?scope=project&ext=mov", Buffer.alloc(65 * MB, 0x17));
+	check("#91 mov 65MB は 413（動画の上限 64MB が効く）", () =>
+		assert.equal(res.status, 413, `status=${res.status} body=${res.body.slice(0, 200)}`));
+}
+
 // --- 3: 画像は 9MB で 413（8MB 上限が変わっていない） -------------------------
 {
 	const res = await post("/api/upload?scope=project&ext=png", Buffer.alloc(9 * MB, 0x13));
@@ -171,6 +186,13 @@ writeFileSync(`${HOME_DIR}/.pi/kanban/media/clip.webm`, CLIP);
 	check("media の webm は Content-Type: video/webm", () =>
 		assert.equal(res.headers.get("content-type"), "video/webm"));
 }
+// #91: mov は MIME が video/quicktime でも動画上限（64MB）と配信は共通のまま。
+writeFileSync(`${HOME_DIR}/.pi/kanban/media/clip.mov`, CLIP);
+{
+	const res = await tf(`${base}/api/media/clip.mov`);
+	check("#91 media の mov は Content-Type: video/quicktime", () =>
+		assert.equal(res.headers.get("content-type"), "video/quicktime"));
+}
 
 // --- 8: /serve の配信でも動画の Content-Type が正しい --------------------------
 // #53: serve ツールは廃止。/serve/* の HTTP 面は残るので登録だけ helper で作る。
@@ -213,6 +235,11 @@ const serveId = add.details.id;
 	check("動画の拡張子分岐が mp4/webm を見ている", () => {
 		assert.match(src, /mediaExt === "mp4" \|\| mediaExt === "webm"/);
 	});
+	// #91: mov は再生経路ではなく「動画グループ」にだけ載せる（lightbox に流さない）。
+	check("#91 VID 正規表現に mov が載っている", () =>
+		assert.ok(src.includes("var VID = /\\.(mp4|webm|mov|"), "VID に mov が無い"));
+	check("#91 vids/pics の振り分けは VID 1 か所", () =>
+		assert.match(src, /var vids = imgs\.filter\(function \(n\) \{ return VID\.test\(n\); \}\)/));
 }
 
 console.log(`${passed} passed, ${failures.length} failed`);

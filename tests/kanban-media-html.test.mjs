@@ -3,7 +3,7 @@
 // 差し替えるので本番の ~/.pi/kanban と 8789 には触れない。
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer as netServer } from "node:net";
 import { createRequire } from "node:module";
 import { authFetch } from "./helpers/token.mjs";
@@ -181,6 +181,35 @@ const upload = (query, body) => tf(`${base}/api/upload?scope=project&${query}`, 
 		assert.match(desc, /iframe/);
 	});
 	check("#53 serve ツールは登録されていない", () => assert.equal(tools.has("serve"), false));
+}
+
+// --- 6: #91 参照型のプレビュー分岐（静的検証。テンプレートは web/dashboard.html） ---
+{
+	const src = readFileSync(fileURLToPath(new URL("../web/dashboard.html", import.meta.url)), "utf8");
+	check("#91 DOC 正規表現が pdf/md/txt を見ている", () =>
+		assert.ok(src.includes("var DOC = /\\.(pdf|md|markdown|txt|log|csv|json)$/i;"), "DOC が無い"));
+	check("#91 showLb は HTML と DOC を iframe に流す", () =>
+		assert.ok(src.includes("if (HTML.test(name) || DOC.test(name))"), "showLb の分岐が無い"));
+	check("#91 html のときだけ sandbox を付け、DOC では外す", () => {
+		assert.match(src, /if \(HTML\.test\(name\)\) fr\.setAttribute\("sandbox", "allow-scripts allow-forms"\)/);
+		assert.match(src, /else fr\.removeAttribute\("sandbox"\)/);
+	});
+	check("#91 サムネも DOC を iframe にする（thumbBody）", () => {
+		const fn = (src.match(/function thumbBody\(name, alt\) \{[\s\S]{0,400}/) ?? [""])[0];
+		assert.ok(fn.includes("HTML.test(name) || DOC.test(name)"), "thumbBody の iframe 分岐が無い");
+		// thumb は操作できない（.htmb の pointer-events:none）ので sandbox の出し分けは要らない。
+		assert.ok(fn.includes('fr.setAttribute("sandbox", "allow-scripts allow-forms")'), "html サムネの sandbox が消えた");
+	});
+	check("#91 DOC は md/pdf/txt に当たり、html や画像には当たらない", () => {
+		// ページに入っているリテラルをそのまま評価する（テスト側で正規表現を書き直さない）。
+		const lit = (src.match(/var DOC = (\/[^/\n]+\/i);/) ?? [])[1];
+		assert.ok(lit, "DOC のリテラルが取れない");
+		const re = new Function(`return ${lit}`)();
+		for (const n of ["a.md", "a.MD", "x.markdown", "d.pdf", "n.txt", "l.log", "t.csv", "j.json"])
+			assert.ok(re.test(n), `${n} が DOC に当たらない`);
+		for (const n of ["a.html", "a.png", "a.mov", "a.mp4", "a.docx"])
+			assert.ok(!re.test(n), `${n} が DOC に当たってしまう`);
+	});
 }
 
 console.log(`${passed} passed, ${failures.length} failed`);

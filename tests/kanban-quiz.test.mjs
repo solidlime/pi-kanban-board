@@ -137,18 +137,23 @@ const post = (id, key, value, init = {}) =>
 {
 	const g = await fetch(`${base}?id=7`, { headers: { Origin: "null" } });
 	check("CORS/GET: Origin null でもトークン無しで 200", () => assert.equal(g.status, 200));
-	check("CORS/GET: Access-Control-Allow-Origin: *", () =>
-		eq(g.headers.get("access-control-allow-origin"), "*"),
+	// #91(lens): `*` をやめ、opaque origin（サンドボックス iframe の "null"）だけを返す。
+	check("CORS/GET: Access-Control-Allow-Origin: null", () =>
+		eq(g.headers.get("access-control-allow-origin"), "null"),
 	);
 	const p = await fetch(`${base}?id=7&key=q1&value=v`, { method: "POST", headers: { Origin: "null" } });
 	check("CORS/POST: Origin null の追記が通る", () => assert.equal(p.status, 200));
-	check("CORS/POST: Access-Control-Allow-Origin: *", () =>
-		eq(p.headers.get("access-control-allow-origin"), "*"),
+	check("CORS/POST: Access-Control-Allow-Origin: null", () =>
+		eq(p.headers.get("access-control-allow-origin"), "null"),
+	);
+	const other = await fetch(`${base}?id=7`, { headers: { Origin: "https://evil.example" } });
+	check("CORS: 外部 origin には allow-origin を返さない", () =>
+		eq(other.headers.get("access-control-allow-origin"), null),
 	);
 	const o = await fetch(base, { method: "OPTIONS", headers: { Origin: "null" } });
 	check("CORS/OPTIONS: 204 + allow-origin/methods", () => {
 		assert.equal(o.status, 204);
-		assert.equal(o.headers.get("access-control-allow-origin"), "*");
+		assert.equal(o.headers.get("access-control-allow-origin"), "null");
 		assert.match(String(o.headers.get("access-control-allow-methods")), /POST/);
 	});
 }
@@ -176,7 +181,7 @@ const post = (id, key, value, init = {}) =>
 	check("alias: GET も同じ handler（同じ 1 件）", () => assert.equal(viaAlias.length, 1));
 	const o = await fetch(legacyBase, { method: "OPTIONS", headers: { Origin: "null" } });
 	check("alias: OPTIONS も CORS を返す", () =>
-		eq(o.headers.get("access-control-allow-origin"), "*"),
+		eq(o.headers.get("access-control-allow-origin"), "null"),
 	);
 }
 

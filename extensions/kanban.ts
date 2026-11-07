@@ -339,7 +339,7 @@ const INBOX_NAME_MAX = 128; // chars, one path segment; longer names only help a
 // dropped card reference (media files are only removed when a card is) cannot fill it.
 const MEDIA_DIR_MAX_BYTES = 1024 * 1024 * 1024;
 // #53: html is an attachment too - the dashboard reads it in a sandboxed iframe.
-const OK_EXTS = ["png", "jpg", "gif", "webp", "avif", "mp4", "webm", "html"];
+const OK_EXTS = ["png", "jpg", "gif", "webp", "avif", "mp4", "webm", "mov", "html"];
 const MIME_BY_EXT: Record<string, string> = {
 	png: "image/png",
 	jpg: "image/jpeg",
@@ -348,7 +348,26 @@ const MIME_BY_EXT: Record<string, string> = {
 	avif: "image/avif",
 	mp4: "video/mp4",
 	webm: "video/webm",
+	// #91: .mov from a phone/camera. uploadLimitOf() reads the video/ prefix, so the
+	// 64MB video budget comes with it and /api/media serves it without another table.
+	mov: "video/quicktime",
 	html: "text/html",
+};
+
+/**
+ * #91: what /api/ref may serve as a document. Deliberately NOT in MIME_BY_EXT: that table
+ * is the upload allowlist, and these are read where they live, not copied into media/.
+ * text/markdown would be downloaded (Chrome has no viewer for it), and application/json
+ * would be an API response - the point here is to read the bytes as text.
+ */
+const REF_MIME: Record<string, string> = {
+	pdf: "application/pdf",
+	md: "text/plain; charset=utf-8",
+	markdown: "text/plain; charset=utf-8",
+	txt: "text/plain; charset=utf-8",
+	log: "text/plain; charset=utf-8",
+	csv: "text/plain; charset=utf-8",
+	json: "text/plain; charset=utf-8",
 };
 
 /** The one place the image/video upload split lives: 8MB for images, 64MB for video. */
@@ -1024,7 +1043,8 @@ function migrateLegacyBoard(): void {
 // Rendering (widget lines + per-turn injection text)
 // ---------------------------------------------------------------------------
 
-function cardsIn(b: Board, col: Col): Card[] {
+// #82: cards only. Narrowed so callers holding just { cards, nextId } (no deliv half) still pass.
+function cardsIn(b: Pick<Board, "cards">, col: Col): Card[] {
 	return b.cards.filter((c) => c.col === col);
 }
 
@@ -1083,7 +1103,7 @@ export function updatedAtMin(ms: unknown): string | null {
 }
 
 /** The per-column card counts every board view shows. */
-function countCols(b: Board): { todo: number; doing: number; done: number } {
+function countCols(b: Pick<Board, "cards">): { todo: number; doing: number; done: number } {
 	return { todo: cardsIn(b, "todo").length, doing: cardsIn(b, "doing").length, done: cardsIn(b, "done").length };
 }
 
@@ -3384,15 +3404,19 @@ function serveRefAbs(req: IncomingMessage, res: ServerResponse, abs: string, lim
 	// script-src restriction either: a three.js page loads its modules from a CDN.
 	// #60: allow-forms lets an interactive attachment (a questionnaire) submit inside the
 	// frame; allow-same-origin stays out, so the page keeps an opaque origin and no cookie.
-	const type = MIME_BY_EXT[extOfPath(abs)] ?? "application/octet-stream";
+	// #91: a ref may also be a document (REF_MIME). It gets inline - without it the browser
+	// downloads the file instead of showing it - but NOT the CSP: a PDF viewer does not
+	// render under CSP: sandbox.
+	const ext = extOfPath(abs);
+	const type = MIME_BY_EXT[ext] ?? REF_MIME[ext] ?? "application/octet-stream";
 	const html = type === "text/html";
 	serveFile(req, res, abs, st, {
 		contentType: type,
 		cacheControl: "no-store",
-		...(html
+		...(html || REF_MIME[ext] !== undefined
 			? {
 					headers: {
-						"Content-Security-Policy": "sandbox allow-scripts allow-forms",
+						...(html ? { "Content-Security-Policy": "sandbox allow-scripts allow-forms" } : {}),
 						"Content-Disposition": "inline",
 					},
 				}
@@ -4196,7 +4220,15 @@ function ehrRecords(id: number): EhrRecord[] {
  * The iframe posts with a plain URL, so every field is in the query and no body is read.
  */
 function handleEhr(req: IncomingMessage, res: ServerResponse, q: URLSearchParams): void {
-	res.setHeader("Access-Control-Allow-Origin", "*");
+	// #91(lens): was `*`. The answers on this route are token-less (see the #60 note: the
+	// sandboxed iframe has an opaque origin and no cookie), so a wildcard let any page that
+	// found the port read them. The only cross-origin caller is that iframe, whose Origin
+	// is the literal "null" - echo just that. Same-host callers need no header at all.
+	// (corsHeaders() next to isSameHostOrigin is the strict variant for token routes.)
+	if (req.headers.origin === "null") {
+		res.setHeader("Access-Control-Allow-Origin", "null");
+		res.setHeader("Vary", "Origin");
+	}
 	if (req.method === "OPTIONS") {
 		res.writeHead(204);
 		res.end();

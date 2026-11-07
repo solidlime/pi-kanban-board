@@ -90,12 +90,18 @@ for (let i = 0; i < 40; i++) {
 const HTML_ABS = resolve(HOME_DIR, "workspace/pub/page.html");
 const PNG_ABS = resolve(HOME_DIR, "workspace/pub/pic.png");
 const TXT_ABS = resolve(HOME_DIR, "workspace/pub/note.txt");
+const MD_ABS = resolve(HOME_DIR, "workspace/pub/note.md");
+const PDF_ABS = resolve(HOME_DIR, "workspace/pub/doc.pdf");
+const BIN_ABS = resolve(HOME_DIR, "workspace/pub/blob.bin");
 const OUT_ABS = resolve(HOME_DIR, "outside/secret.html");
 const BIG_ABS = resolve(HOME_DIR, "workspace/pub/big.png");
 const MISSING_ABS = resolve(HOME_DIR, "workspace/pub/nope.html");
 writeFileSync(HTML_ABS, "<!doctype html><h1>ref</h1>");
 writeFileSync(PNG_ABS, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
 writeFileSync(TXT_ABS, "plain");
+writeFileSync(MD_ABS, "# md ref\n");
+writeFileSync(PDF_ABS, Buffer.from("%PDF-1.4\n"));
+writeFileSync(BIN_ABS, Buffer.from([0x00, 0x01, 0x02]));
 writeFileSync(OUT_ABS, "<h1>secret</h1>");
 writeFileSync(BIG_ABS, Buffer.alloc(LIMIT + 1, 0x41));
 
@@ -130,12 +136,43 @@ const refUrl = (abs) => `${base}/api/ref?f=${encodeURIComponent(abs)}`;
 
 // --- 3: 未登録拡張子は application/octet-stream -------------------------------
 {
-	const res = await tf(refUrl(TXT_ABS));
+	const res = await tf(refUrl(BIN_ABS));
 	await res.arrayBuffer();
 	check("#56 ref: 未登録拡張子は application/octet-stream", () => {
 		assert.equal(res.status, 200);
 		assert.equal(res.headers.get("content-type"), "application/octet-stream");
 	});
+}
+
+// --- 3b: #91 md/txt は text/plain で返し、ブラウザに落とさせない ----------------
+for (const [label, abs] of [
+	["md", MD_ABS],
+	["txt", TXT_ABS],
+]) {
+	const res = await tf(refUrl(abs));
+	await res.arrayBuffer();
+	check(`#91 ref: ${label} は text/plain + charset=utf-8`, () => {
+		assert.equal(res.status, 200);
+		assert.equal(res.headers.get("content-type"), "text/plain; charset=utf-8");
+	});
+	check(`#91 ref: ${label} は Content-Disposition: inline`, () =>
+		assert.equal(res.headers.get("content-disposition"), "inline"));
+	check(`#91 ref: ${label} に CSP は付けない`, () =>
+		assert.equal(res.headers.get("content-security-policy"), null));
+}
+
+// --- 3c: #91 pdf は application/pdf + inline（iframe で表示する） --------------
+{
+	const res = await tf(refUrl(PDF_ABS));
+	await res.arrayBuffer();
+	check("#91 ref: pdf は application/pdf + inline", () => {
+		assert.equal(res.status, 200);
+		assert.equal(res.headers.get("content-type"), "application/pdf");
+		assert.equal(res.headers.get("content-disposition"), "inline");
+	});
+	// PDF ビューアは CSP: sandbox の下で描画されないので、html の CSP は付けない。
+	check("#91 ref: pdf に CSP sandbox を付けない", () =>
+		assert.equal(res.headers.get("content-security-policy"), null));
 }
 
 // --- 4: allowlist 外は 403（既存の文面を踏襲） --------------------------------
