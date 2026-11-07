@@ -98,13 +98,16 @@ a{color:inherit;text-decoration:none}
   font-family:var(--font-mono); font-size:9px; color:var(--muted);
   border:1px solid var(--line); border-radius:3px; padding:0 4px; opacity:.7;
 }
-.pmore{
+/* #84: 幅に入らないタブは「+N」に畳む（.ptab とは別クラス。pick の分岐に拾わせない） */
+.ptab.over{display:none}
+.ptabs.open{flex-wrap:wrap; overflow:visible; row-gap:6px}
+.ptab-more{
   flex:none; display:flex; align-items:center; gap:6px;
   border:1px dashed var(--line); border-radius:var(--radius);
   background:var(--bg1); color:var(--muted);
   padding:5px 10px; font:inherit; font-size:11px; cursor:pointer;
 }
-.pmore:hover{color:var(--text); border-color:var(--accent)}
+.ptab-more:hover{color:var(--text); border-color:var(--accent)}
 
 /* ── 計数ストリップ ──────────────────────── */
 .strip{

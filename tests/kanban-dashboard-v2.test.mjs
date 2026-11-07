@@ -94,3 +94,26 @@ test("dashboard: カードモーダルから添付できる（#49）", () => {
 	assert.ok(app.includes("UP_EXTS"), "accept 外の事前拒否が無い");
 	assert.ok(app.includes('"Content-Type": "application/octet-stream"'), "生バイナリで送っていない");
 });
+
+test("dashboard: DOING のボードを左、溢れタブは +N に畳む（#84）", () => {
+	const app = read("web/dash/_app.js");
+	const css = read("web/dash/_a.css");
+	// 並び: DOING 有り(0) → 選択中(1) → その他(2)。doing の判定が先。
+	assert.match(app, /counts\.doing > 0\) return 0/);
+	assert.match(app, /return a === state\.cur \? 1 : 2/);
+	// クリック: .ptab-more のトグルが .ptab の pick より前に在る。
+	const more = app.indexOf('closest(".ptab-more")');
+	const pick = app.indexOf('closest(".ptab")');
+	assert.ok(more > 0 && pick > more, ".ptab-more の分岐が pick より前");
+	assert.match(app, /state\.ptabsOpen = !state\.ptabsOpen/);
+	assert.match(app, /ptabsOpen: false/);
+	// 折り畳みと CSS
+	assert.match(app, /function foldTabs\(nav, all, tabs\)/);
+	assert.match(app, /classList\.add\("over"\)/);
+	assert.match(app, /full \|\| used \+ ws\[i\] > avail/, "一度畳んだら以降も畳む");
+	assert.match(app, /tabs\[i\]\.dataset\.p === state\.cur\) \{ used \+= ws\[i\]; continue; \}/, "選択中のボードは畳まない");
+	assert.match(css, /\.ptab\.over\{display:none\}/);
+	assert.match(css, /\.ptabs\.open\{[^}]*flex-wrap:wrap/);
+	assert.match(css, /\.ptab-more\{/);
+	// shortcut: 文字列一致のみで foldTabs の幅計算は守っていない。ブラウザ DOM テストを入れる時に置換。
+});

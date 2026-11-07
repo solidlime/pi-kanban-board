@@ -16,6 +16,8 @@
     // #52: false = 他セッションの TODO は畳んで「他 N 件」だけ出す。押した時だけ true にして
     // showOthers=1 で取りに行く（既定の見え方を自動挙動に合わせない）。
     showOthers: false,
+    // #84: 溢れたタブを「+N」で畳んでいるか（true = 折り返して全部出す）
+    ptabsOpen: false,
   };
   var etags = {};
 
@@ -287,6 +289,7 @@
   // ---- render: ptabs / strip / swline ----
   function renderPtabs() {
     var nav = clear($("#ptabs"));
+    nav.classList.toggle("open", state.ptabsOpen === true); // #84
     var all = el("button", "ptab");
     all.dataset.p = "__all__";
     all.setAttribute("aria-pressed", String(state.cur === "__all__"));
@@ -295,12 +298,17 @@
     var g = (state.payload.global && state.payload.global.counts) || {};
     all.appendChild(el("span", "num", (g.todo || 0) + (g.doing || 0) + " 未完"));
     nav.appendChild(all);
-    // #54: 現在のボードを「すべて」の次（左から2番目）へ。並べ替えは表示だけの話なので、
-    // 数字キーと `key` バッジは payload の並び（i）のまま。sort は stable、他は元の順。
+    // #84: DOING のあるボードを左へ。#54 の「選択中を2番目」はその次に回す。
+    // 並べ替えは表示だけの話なので、数字キーと `key` バッジは payload の並び（i）のまま。
+    // sort は stable、同 rank は元の順。
+    function rank(a) {
+      var s = summaryOf(a);
+      if (s && s.counts && s.counts.doing > 0) return 0;   // #84: 生きているボードを左へ
+      return a === state.cur ? 1 : 2;                      // #54: 選択中はその次
+    }
     var slugs = boards();
-    var order = slugs.slice().sort(function (a, b) {
-      return (a === state.cur ? 0 : 1) - (b === state.cur ? 0 : 1);
-    });
+    var order = slugs.slice().sort(function (a, b) { return rank(a) - rank(b); });
+    var tabs = [];
     order.forEach(function (slug) {
       var i = slugs.indexOf(slug);
       var s = summaryOf(slug), b = el("button", "ptab");
@@ -316,7 +324,47 @@
       b.appendChild(el("span", "num", s ? (s.counts.todo ? "TODO " + s.counts.todo : s.done + "/" + s.total) : "—"));
       if (i < 9) b.appendChild(el("span", "key", String(i + 1)));
       nav.appendChild(b);
+      tabs.push(b);
     });
+    // #84: 溢れの折り畳み。開いている時は折り返して全部出し「−」、閉じている時は入らない分を +N に。
+    if (state.ptabsOpen === true) {
+      var minus = el("button", "ptab-more", "−"); minus.type = "button";
+      minus.setAttribute("aria-controls", "ptabs"); minus.setAttribute("aria-expanded", "true");
+      minus.setAttribute("aria-label", "タブ列を畳む");
+      nav.appendChild(minus); return;
+    }
+    var more = foldTabs(nav, all, tabs);
+    if (more) nav.appendChild(more);
+  }
+
+  // #84: 幅に入らないタブに .over（display:none）を付けて、「+N」ボタンを返す。
+  // .ptab とは別クラス（pick の分岐に拾わせない）。0 件なら null。
+  function foldTabs(nav, all, tabs) {
+    // 幅は「+99」で測る（実際は +N で 1〜2 桁。広めに測ればはみ出さない）。
+    var b = el("button", "ptab-more", "+99"), cs, i, hid = 0, gap, avail, used = 0, ws = [], full = false;
+    b.type = "button";
+    b.setAttribute("aria-controls", "ptabs");
+    nav.appendChild(b);
+    // 計測できない局面（payload 無し / 幅 0 / 未レイアウト）は今まで通り何も隠さない。
+    try { cs = getComputedStyle(nav); } catch (e) { cs = null; }
+    if (!state.payload || !cs || !nav.clientWidth) { nav.removeChild(b); return null; }
+    gap = parseFloat(cs.columnGap) || 6;
+    // 「すべて」は常に残るので、その幅と gap も先に引く。
+    avail = nav.clientWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0) - b.offsetWidth - all.offsetWidth - gap;
+    // 幅は先に全部読む（class を付けるたびに強制レイアウトを起こさない）
+    for (i = 0; i < tabs.length; i++) ws.push(tabs[i].offsetWidth + gap);
+    for (i = 0; i < tabs.length; i++) {
+      // 選択中のボードだけは畳まない。今どこを編集しているか画面から消さないため。
+      if (tabs[i].dataset.p === state.cur) { used += ws[i]; continue; }
+      // 1つでも入らなければ以降は全部畳む（歯抜けにしない）
+      if (full || used + ws[i] > avail) { tabs[i].classList.add("over"); hid += 1; full = true; }
+      else used += ws[i];
+    }
+    if (!hid) { nav.removeChild(b); return null; }
+    b.textContent = "+" + hid;
+    b.setAttribute("aria-expanded", "false");
+    b.setAttribute("aria-label", "残り " + hid + " 件のプロジェクトを表示");
+    return b;
   }
 
   function renderStrip() {
@@ -736,6 +784,7 @@
     state.allview = slug === "__all__";
     state.sel = -1;
     state.addCol = null; // #75: 打ちかけの追加行は板ごとの状態。切替で持ち越さない
+    state.ptabsOpen = false; // #84: 開いたタブ列は切替で閉じる（伸びたヘッダを持ち越さない）
     state.board = null;
     closeModal();
     var jobs = [getJSON("/api/projects").then(function (p) { if (p) state.projects = p; })];
@@ -1198,6 +1247,9 @@
     if (t.id === "cm") { closeModal(); return; }
     // #79: 帯の + 。summary の中なので既定の開閉を止めてから入力欄を出す。
     if (t.id === "deladd") { e.preventDefault(); addCard("deliverable"); return; }
+    // #84: 溢れタブの「+N」/「−」。.ptab の pick より先に拾う。
+    var more = t.closest && t.closest(".ptab-more");
+    if (more) { state.ptabsOpen = !state.ptabsOpen; renderPtabs(); return; }
     var ptab = t.closest && t.closest(".ptab");
     if (ptab) { pick(ptab.dataset.p); return; }
     var sw = t.closest && t.closest(".sw");
@@ -1318,10 +1370,19 @@
     try { localStorage.setItem("kb-density", c ? "normal" : "compact"); } catch (err) { void err; }
   };
 
+  // #84: 幅が変わったら畳み数を測り直す。render() は呼ばない（無限再描画を作らない）。
+  // ドラッグ中に毎フレーム作り直すと scrollLeft とフォーカスが飛ぶので 1 フレーム 1 回に落とす。
+  var ptRaf = 0;
+  window.addEventListener("resize", function () {
+    if (!state.payload || ptRaf) return;
+    ptRaf = requestAnimationFrame(function () { ptRaf = 0; renderPtabs(); });
+  });
+
   // プロジェクトタブ列を縦ホイールで横スクロール (shift 不要)
   document.addEventListener("wheel", function (e) {
     var t = e.target.closest ? e.target.closest(".ptabs") : null;
-    if (!t || Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
+    // #84: 開いて折り返している時は横に流れる先が無い。ページのスクロールを奪わない。
+    if (!t || t.classList.contains("open") || Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
     t.scrollLeft += e.deltaY;
     e.preventDefault();
   }, { passive: false });
