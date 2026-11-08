@@ -171,7 +171,8 @@ const upload = (query, body) => tf(`${base}/api/upload?scope=project&${query}`, 
 // --- 5: ツール記述（serve の説明が消え、img に html が載る） --------------------
 {
 	const kanban = tools.get("kanban");
-	const desc = kanban?.description ?? "";
+	// #96: 添付の細目は説明本文の圧縮のため image パラメータの description へ移した。
+	const desc = (kanban?.description ?? "") + " " + (kanban?.parameters?.properties?.image?.description ?? "");
 	check("#53 kanban ツール記述に serve の機能説明が残っていない", () => {
 		assert.ok(desc.length > 0, "kanban ツールが未登録");
 		assert.doesNotMatch(desc, /board\/serve\/media/);

@@ -6565,13 +6565,12 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 		// #90: four blocks, in the order a first-time reader needs them - what it is, what each
 		// action does, what it is NOT (deliverables), and which board you are touching. The
 		// normalization rules moved to the per-parameter descriptions and KANBAN_HELP.
+		// #96: one fact per clause, <=900 chars. Attachment details live on `image`.
 		description:
-			"Shared kanban board for this project: columns todo / doing / done, persisted under ~/.pi/kanban and rendered in the user's GUI. Use it to hold work you owe — one card per promise, moved to done only when the thing actually works.\n" +
-			"Actions: list reads the board; add creates a card; move sets its col; edit rewrites its text, project, session, commit or labels only (column and owner stay); remove deletes it; check returns the board/media/modes self-test JSON; resume clears a doing-loop halt (the GUI switch cannot — the halt is process state); url returns the token-bearing dashboard link; img copies a local file into media/ and attaches it to card id; ref attaches by reference instead (the card stores file:<path>, and the dashboard reads it back through /api/ref, which only serves paths under the serve roots).\n" +
-			"Priority (-99..99, bigger goes first) and the loop switches are not tool actions: /kanban priority <id> [n], /kanban loop|interval|stuck|maxloops drive them.\n" +
-			"A deliverable is not a card: it is a deliv row (/api/deliv/add|edit|remove) shown in the belt under the board. No column is called deliverable.\n" +
-			"scope picks the board: project (default — this working directory's repo, shared by every session in it) or global (read-only aggregate; writes are refused). Card ids are per board, so an id from a global listing cannot be used with move/edit/remove. There is no per-session board (#17): boards are project-scoped.\n" +
-			"Attachments live on the card: images and video show as thumbnails, .html opens in a sandboxed iframe (a three.js page works, it loads its CDN modules itself), and md/pdf/txt preview as text or pdf.",
+			"Shared kanban board for this project: columns todo / doing / done, persisted in ~/.pi/kanban, shown in the GUI. Holds what you owe — one card per promise; done only when it actually works.\n" +
+			"Actions: list reads; add creates; move sets col; edit rewrites text/project/session/commit/labels (column, owner stay); remove deletes; check self-tests board/media/modes; resume clears a doing-loop halt (GUI cannot); url returns the token link; img copies into media/; ref keeps file:<path>; /api/ref serves it under the serve roots only.\n" +
+			"A deliverable is not a card: it is a deliv row (deliverable tool) in the belt under the board. No column is called deliverable. Priority/loop switches are /kanban subcommands, not tool actions.\n" +
+			"scope picks the board: project (default — this repo, shared by every session in it) or global (read-only aggregate). Ids are per board. There is no per-session board (#17).",
 		parameters: Type.Object({
 			action: Type.Union([
 				Type.Literal("list"),
@@ -6623,7 +6622,7 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 			// img: a local image path. Absolute, or ~/ prefixed. Copied, not referenced.
 			// ref: a local path (image/video/html/anything). Absolute, or ~/ prefixed. Referenced, not copied.
 			image: Type.Optional(
-				Type.String({ description: "Local path for img (copied into media/) or ref (stored as file:<path>, not copied; /api/ref serves it back only under the serve roots, ~/workspace by default). Absolute or ~/ prefixed." }),
+				Type.String({ description: "Local path for img (copied into media/) or ref (stored as file:<path>, not copied; /api/ref serves it back only under the serve roots, ~/workspace by default). Absolute or ~/ prefixed. On the card: images and video show as thumbnails, .html opens in a sandboxed iframe (a three.js page works, it loads its CDN modules itself), md/pdf/txt preview as text or pdf." }),
 			),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
