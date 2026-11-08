@@ -9,6 +9,11 @@
 // open の不変条件は下のロックテストが決定論的に見る。
 // 検証も子プロセスでやる — 親が readBoard すると sqlite のハンドルが残り、
 // Windows では最後の rmSync が EPERM になる。
+// 既知（この管轄外）: この suite を回すと 4 回に 1 回ほど、全テスト pass の後に
+// `Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), src\win\async.c:76` でプロセスが落ちる。
+// nodejs/node#56645 / #64322 の Windows シャットダウンレースで、#61999（2026-07-24 merged）が修正。
+// 24.20.0 と 26.7.0 に入り、25.x は EOL で入らない（v25.2.1 の node_platform.cc にガード無し）。
+// 子プロセス spawn は窓を広げるだけで原因ではない。根治は Node を 24.20+ / 26.7+ へ上げること。
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
