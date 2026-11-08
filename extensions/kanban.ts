@@ -1399,7 +1399,7 @@ export function renderInjectionText(b: Board): string | null {
 		// just turns the board into a log of what was done instead of what is owed.
 		"Use the `kanban` tool to hold what you owe, not what you did.",
 		"",
-		"Open a card when a request needs three or more separate deliverables —",
+		"Open a card when a request needs three or more separate pieces of work —",
 		"three files, three delegations, or a mix. Below that, just do it.",
 		"",
 		"A card is a promise to finish something. Keep going without waiting:",
@@ -3376,6 +3376,11 @@ function mediaNames(img: string | undefined): string[] {
  * media names are, and a name any other row still shows stays. Written out twice before
  * (/api/deliv/remove and /api/attach/del) with the same expression; `owner` names the space
  * being changed, so a card id and a deliverable id can never be confused for each other.
+ *
+ * Not yet the one rule everywhere: the three card-delete paths still call removeMedia(card),
+ * which trashes unconditionally. Harmless today - writeMedia names files with an owner
+ * prefix plus randHex8(), so a card and a deliverable can never share one, and no copy
+ * path exists either - but if a shared name ever becomes possible, those three are the holes.
  */
 function trashUnusedMedia(b: Board, kind: "card" | "deliv", ownerId: number, gone: string[]): void {
 	const kept = [
