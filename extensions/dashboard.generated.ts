@@ -1682,7 +1682,7 @@ function esc(s){return String(s).replace(/[&<>"]/g,function(c){return {"&":"&amp
       if (state.allview) { state.allview = true; }
       // 起動直後は state.cur が dashboard の応答で決まるので、板だけが未取得になる。
       // ここで取り直さないと次の poll（数分後）まで列が空のまま。
-      if (!state.board && state.cur && state.cur !== "__all__") return pick(state.cur);
+      if (!state.board && state.cur && state.cur !== "__all__") return pick(state.cur, true);
       render();
     }, function (e) {
       state.offline = true;
@@ -1691,7 +1691,9 @@ function esc(s){return String(s).replace(/[&<>"]/g,function(c){return {"&":"&amp
     });
   }
 
-  function pick(slug) {
+  // haveProjects: 呼び元が同じ往復で /api/projects を取った直後なら true（起動直後の
+  // refresh → pick が同じ 1.7KB を 2 回取りに行っていた。#104）。
+  function pick(slug, haveProjects) {
     state.cur = slug;
     state.allview = slug === "__all__";
     state.sel = -1;
@@ -1699,7 +1701,7 @@ function esc(s){return String(s).replace(/[&<>"]/g,function(c){return {"&":"&amp
     state.ptabsOpen = false; // #84: 開いたタブ列は切替で閉じる（伸びたヘッダを持ち越さない）
     state.board = null;
     closeModal();
-    var jobs = [getJSON("/api/projects").then(function (p) { if (p) state.projects = p; })];
+    var jobs = haveProjects ? [] : [getJSON("/api/projects").then(function (p) { if (p) state.projects = p; })];
     if (state.allview) {
       ((state.projects && state.projects.projects) || []).forEach(function (p) {
         if (state.open[p.slug]) jobs.push(fetchGroup(p.slug)); // 開いた時だけ取得

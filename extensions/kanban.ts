@@ -64,6 +64,7 @@ import { createServer } from "node:http";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import { homedir, hostname, networkInterfaces } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { brotliCompressSync, constants as zlibConstants, gzipSync } from "node:zlib";
 import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { DASHBOARD_TEMPLATE } from "./dashboard.generated.ts";
@@ -2157,9 +2158,84 @@ function methodNotAllowedOnGet(req: IncomingMessage, pathname: string): boolean 
 	return isWritePath(pathname, "GET");
 }
 
+// ---------------------------------------------------------------------------
+// #104: compression. A hard reload sent 314KB uncompressed while the server spent 12ms
+// building it, so the wire was the whole cost. br first (28.7KB for the dashboard HTML),
+// gzip next, identity as the honest answer to a caller that asked for nothing.
+// ---------------------------------------------------------------------------
+
+type Encoding = "br" | "gzip" | "identity";
+
+/** Below 1KB the gzip/brotli header is a large share of the saving. Not worth it. */
+const COMPRESS_MIN_BYTES = 1024;
+
+/**
+ * `accept-encoding` -> the one encoding to use. The caller's q values decide: a named token
+ * with a higher q wins, and only a tie falls back to our own order (br, 28.7KB for the
+ * dashboard HTML, beats gzip's 33.7KB). `q=0` is "cannot accept" (RFC 9110). `*` answers for
+ * every encoding the caller did not name, so `gzip;q=0, *` still gets br and `*;q=0` gets
+ * identity.
+ *
+ * PROVISIONAL: `identity;q=0` is not honoured with a 406 — every caller that sets it already
+ * speaks br or gzip, and a 406 on the dashboard's own poller would be a worse failure.
+ */
+function pickEncoding(req: IncomingMessage | undefined): Encoding {
+	const raw = req?.headers["accept-encoding"];
+	if (typeof raw !== "string") return "identity";
+	const named = new Map<string, number>();
+	let star: number | undefined;
+	for (const part of raw.split(",")) {
+		const [name = "", ...params] = part.trim().toLowerCase().split(";");
+		const qParam = params.map((p) => p.trim()).find((p) => p.startsWith("q="));
+		const weight = qParam === undefined ? 1 : Number(qParam.slice(2));
+		const q = Number.isFinite(weight) ? weight : 0; // unparseable q is "do not use"
+		if (name.trim() === "*") star = Math.max(star ?? 0, q);
+		else named.set(name.trim(), Math.max(named.get(name.trim()) ?? -1, q));
+	}
+	let best: Encoding = "identity";
+	let bestQ = 0;
+	for (const name of ["br", "gzip"] as const) {
+		const q = named.get(name) ?? star; // an explicit name beats `*`
+		if (q === undefined || q <= 0) continue;
+		if (q > bestQ || (q === bestQ && name === "br")) {
+			best = name;
+			bestQ = q;
+		}
+	}
+	return best;
+}
+
+/**
+ * br quality is explicit and differs by call site, because the cost does too:
+ *  - per request (the JSON APIs): 4. Measured on the live payload, db json 113,709B ->
+ *    33,209B in 1.6ms; q11 would be 90ms on every poll for 2KB less.
+ *  - once per process, on the first `GET /` (the 114KB dashboard HTML, see dashboardHtmlBR):
+ *    11. Measured 28,746B in 105ms; q4 only gets 34,862B, which loses to gzip.
+ * gzip keeps its default level — the difference was not worth a knob.
+ */
+function encodeBody(enc: Encoding, buf: Buffer, brQuality = 4): Buffer {
+	if (enc === "br") return brotliCompressSync(buf, { params: { [zlibConstants.BROTLI_PARAM_QUALITY]: brQuality } });
+	if (enc === "gzip") return gzipSync(buf);
+	return buf;
+}
+
+/** `Vary: Accept-Encoding` without losing the `Vary: Origin` the CORS layer already set. */
+function addVaryEncoding(res: ServerResponse): void {
+	const prev = res.getHeader("Vary");
+	const values = Array.isArray(prev) ? prev.join(", ") : String(prev ?? "");
+	if (values.split(",").some((v) => v.trim().toLowerCase() === "accept-encoding")) return;
+	res.setHeader("Vary", values === "" ? "Accept-Encoding" : `${values}, Accept-Encoding`);
+}
+
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
+	const json = Buffer.from(JSON.stringify(body));
+	// res.req is the request this response belongs to (Node sets it); sendJson has ~60
+	// call sites and none of them need to know compression happened.
+	const enc = json.length >= COMPRESS_MIN_BYTES ? pickEncoding(res.req) : "identity";
+	if (enc !== "identity") res.setHeader("Content-Encoding", enc);
+	addVaryEncoding(res); // the representation depends on accept-encoding, identity included
 	res.writeHead(status, { ...CORS_HEADERS, "Content-Type": "application/json; charset=utf-8" });
-	res.end(JSON.stringify(body));
+	res.end(encodeBody(enc, json));
 }
 
 /**
@@ -2172,20 +2248,30 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
  * alone here; a 304 the browser cannot read is worthless, so they ride along.
  */
 function sendEtagJson(req: IncomingMessage, res: ServerResponse, body: string): void {
-	const etag = `"${createHash("sha1").update(body).digest("hex")}"`;
+	const raw = Buffer.from(body);
+	const enc = raw.length >= COMPRESS_MIN_BYTES ? pickEncoding(req) : "identity";
+	// #104: the hash covers the encoding too. gzip and identity are two representations of
+	// the same board, so one ETag for both would let a 304 lie about which one the caller
+	// has. Strong (no W/) because the body really is byte-identical on a replay.
+	const etag = `"${createHash("sha1").update(enc).update("\n").update(raw).digest("hex")}"`;
 	res.setHeader("ETag", etag);
 	res.setHeader("Cache-Control", "no-cache");
+	// Before the 304 branch: a revalidated identity body is still vary-able, and a 304 that
+	// drops Vary poisons the shared cache for the next caller's encoding.
+	addVaryEncoding(res);
 	const inm = req.headers["if-none-match"];
 	// Weak comparison (RFC 9110): W/ prefixes are the same representation for our purpose.
 	const match =
 		typeof inm === "string" && inm.split(",").some((t) => t.trim().replace(/^W\//, "") === etag);
 	if (match) {
+		// No Content-Encoding here: a 304 has no body to decode.
 		res.writeHead(304);
 		res.end();
 		return;
 	}
+	if (enc !== "identity") res.setHeader("Content-Encoding", enc);
 	res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-	res.end(body);
+	res.end(encodeBody(enc, raw));
 }
 
 // ---------------------------------------------------------------------------
@@ -4652,6 +4738,9 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 			res.end();
 			return;
 		}
+		const enc = pickEncoding(req);
+		if (enc !== "identity") res.setHeader("Content-Encoding", enc);
+		addVaryEncoding(res);
 		res.writeHead(200, {
 			"Content-Type": "text/html; charset=utf-8",
 			// #80-⑩: a cross-origin page must not be able to frame the board and overlay its
@@ -4660,7 +4749,7 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 			"X-Frame-Options": "SAMEORIGIN",
 			"Content-Security-Policy": "frame-ancestors 'self'",
 		});
-		res.end(DASHBOARD_HTML);
+		res.end(enc === "br" ? dashboardHtmlBR() : enc === "gzip" ? DASHBOARD_HTML_GZIP : DASHBOARD_BUF);
 		return;
 	}
 	if (url.pathname === "/api/dashboard") {
@@ -5684,6 +5773,19 @@ async function decideReuse(p: Probe): Promise<void> {
 // __KB_HOST__ is filled in per listening host.
 // ---------------------------------------------------------------------------
 const DASHBOARD_HTML = DASHBOARD_TEMPLATE.replace(/__KB_HOST__/g, hostLabel);
+const DASHBOARD_BUF = Buffer.from(DASHBOARD_HTML);
+// #104: both variants are built once and held for the life of the process; the HTML itself
+// never changes (the board is a fetch). gzip is a few ms, so module load can pay it.
+const DASHBOARD_HTML_GZIP = encodeBody("gzip", DASHBOARD_BUF);
+/**
+ * br q11 on 114KB is 105ms — deferred to the first `GET /` that asks for it (see
+ * dashboardHtmlBR) instead of module load, because ~70 tests import this file and every
+ * spawned child pays the import: a card about startup latency must not add 105ms to it.
+ */
+let dashboardHtmlBRCache: Buffer | null = null;
+function dashboardHtmlBR(): Buffer {
+	return (dashboardHtmlBRCache ??= encodeBody("br", DASHBOARD_BUF, 11));
+}
 
 // ---------------------------------------------------------------------------
 // Extension body
