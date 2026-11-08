@@ -10,3 +10,4 @@ npm-debug.log*
 
 # 作業中の一時ファイル（スクショ・検証スクリプト）
 .tmp/
+scripts/.tmp*
