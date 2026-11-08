@@ -7124,8 +7124,13 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 		} catch {
 			// disposed ctx cannot answer; that session is gone either way
 		}
-		stopPoll();
+		// #100: stopPoll() also releases ownCtx and kills the one timer, so only the death of the
+		// driver may call it - a subagent's or a sibling's teardown used to stop the live driver's
+		// polling and freeze the board until the next session_start / take / resume. An unknown
+		// sid (disposed ctx) keeps the old stop: it cannot be proven not to be the driver.
+		const driverDied = dying === null || activeSessionId === dying;
 		if (dying !== null && activeSessionId === dying) activeSessionId = null;
+		if (driverDied) stopPoll();
 		// #93: the published cwds outlive the pin on purpose - with no driver, the ctx-less
 		// routes keep naming the last board this process drew, which beats an empty one (PID 1
 		// cannot restart us). Only the dead sid's own entry is dropped (not the live driver's), so

@@ -83,7 +83,7 @@ const pi = {
 	},
 	sendUserMessage() {},
 };
-mod.default(pi);
+const t = mod.default(pi).__test;
 // session_start は必ず通る。ここで driver cwd が publish される（sessionInfoById は踏まない）。
 const ctx = {
 	hasUI: false,
@@ -173,6 +173,13 @@ await check("兄弟の shutdown は自分の sid だけを落とす", async () =
 	assert.equal(r.status, 400, `status=${r.status} body=${JSON.stringify(d).slice(0, 200)}`);
 });
 rmSync(OTHER_DIR, { recursive: true, force: true });
+// #100: stopPoll() はタイマー停止と ownCtx 解放を同時に行う。兄弟（または subagent）の
+// teardown で無条件に呼ぶと、生きた driver のポーリングが止まり、次の
+// session_start / take / resume まで盤面が固まる。
+await check("兄弟の shutdown 後も driver の poll タイマーは生きている", () => {
+	assert.equal(t.ownCtx() !== null, true, "兄弟の teardown で driver の ownCtx が解放された");
+	assert.equal(t.hasTimer(), true, "兄弟の teardown で driver の poll タイマーが止まった");
+});
 
 // BLOCKER 1 の回帰: publish の口は session_start だけでなく `/kanban take` にも要る。take 直後に
 // cwdBySid が空だと、ctx を持たない dashboard が旧 repo のボードを返す。
@@ -180,16 +187,23 @@ const TAKE_DIR = mkdtempSync(join(tmpdir(), "kb93-take-"));
 await check("前提: take 先の slug は元の driver と違う", () =>
 	assert.notEqual(mod.projectSlugOf(TAKE_DIR), DRIVER_SLUG, `TAKE=${mod.projectSlugOf(TAKE_DIR)} DRIVER=${DRIVER_SLUG}`),
 );
+const takeCtx = {
+	hasUI: false,
+	isIdle: () => true,
+	ui: { notify() {}, setWidget() {} },
+	sessionManager: { getSessionId: () => "dash-take-sid", getEntries: () => [], getCwd: () => TAKE_DIR },
+};
 await check("/kanban take の後、dashboard は新しい driver の cwd に従う", async () => {
-	await commands.get("kanban").handler("take", {
-		hasUI: false,
-		isIdle: () => true,
-		ui: { notify() {}, setWidget() {} },
-		sessionManager: { getSessionId: () => "dash-take-sid", getEntries: () => [], getCwd: () => TAKE_DIR },
-	});
+	await commands.get("kanban").handler("take", takeCtx);
 	const after = await (await authFetch(`${BASE}/api/dashboard`)).json();
 	assert.equal(after.project.id, mod.projectSlugOf(TAKE_DIR), `project.id=${after.project.id} take=${TAKE_DIR}`);
 });
+// 逆方向の取りこぼし検出: stopPoll を「死んだのが driver の時だけ」に狭めた結果、
+// 本物の driver の teardown でタイマーが残り続けないこと。
+handlers.get("session_shutdown")({ type: "session_shutdown", reason: "quit" }, takeCtx);
+await check("driver 自身の shutdown は poll タイマーを止める", () =>
+	assert.equal(t.hasTimer(), false, "driver の teardown 後もタイマーが生きている"),
+);
 rmSync(TAKE_DIR, { recursive: true, force: true });
 
 console.log(`${passed} passed, ${failures.length} failed (cold /api/dashboard ${ms.toFixed(0)}ms)`);
