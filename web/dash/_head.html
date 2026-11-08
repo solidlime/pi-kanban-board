@@ -167,6 +167,10 @@
 <div class="lb" id="lb" role="dialog" aria-modal="true" aria-label="添付プレビュー">
   <img id="lbimg" alt="">
   <iframe id="lbif" sandbox="allow-scripts allow-forms" title="添付プレビュー" hidden></iframe>
+  <!-- #98: 種別ごとの器。出すのは showLb が 1 つだけ選ぶ。 -->
+  <video id="lbvid" controls playsinline preload="metadata" title="添付プレビュー" hidden></video>
+  <audio id="lbaud" controls title="添付プレビュー" hidden></audio>
+  <pre id="lbtxt" hidden></pre>
   <div class="cap" id="lbcap"></div>
 </div>
 

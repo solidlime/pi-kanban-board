@@ -167,6 +167,12 @@
   // #91: 参照型の文書。サーバ（REF_MIME）が text/plain か application/pdf で返すものだけを
   // ここに載せる（載せた拡張子は iframe で開く = lightbox で sandbox を外す）。
   var DOC = /\.(pdf|md|markdown|txt|log|csv|json)$/i;
+  // #98: lightbox の器の振り分け。DOC/HTML は上で判定済みなので、ここは残りを拾う。
+  var IMG = /\.(png|jpe?g|gif|webp|avif|bmp|svg)$/i;
+  var VIDV = /\.(mp4|webm|mov|m4v)$/i;
+  var AUD = /\.(mp3|wav|m4a|ogg|oga)$/i;
+  // ソースは fetch して #lbtxt に textContent で出す（.js を中で走らせない）。
+  var CODE = /\.(js|mjs|cjs|jsx|ts|tsx|css|scss|less|py|rb|go|rs|java|c|h|cpp|sh|bash|ps1|sql|yaml|yml|toml|ini|cfg|conf|diff|patch|xml)$/i;
   function sortCol(list, col) {
     var a = list.slice();
     if (col === "todo") a.sort(function (x, y) { return (prioOf(y) - prioOf(x)) || (x.id - y.id); });
@@ -645,8 +651,8 @@
     var imgs = imgsOf(c), name = imgs[0];
     var t = el("div", "del-tile");
     t.dataset.deliv = c.id; // #82: 帯のタイル→成果物モーダル（card の id 空間とは別）
-    // 動画はタイル内で再生できるので lightbox には載せない（.thumb を付けない）。
-    if (imgs.length && !VID.test(name)) { t.classList.add("thumb"); t.dataset.lb = name; }
+    // #98: 添付があるタイルは全部 lightbox の面にする（動画・音声も prev/next に載せる）。
+    if (imgs.length) { t.classList.add("thumb"); t.dataset.lb = name; }
     var cap = el("div", "del-cap");
     cap.appendChild(el("span", "id", "#" + c.id));
     cap.appendChild(document.createTextNode(c.text || ""));
@@ -660,6 +666,11 @@
     if (imgs.length && imgs.some(function (n) { return refOf(n); })) t.lastChild.appendChild(el("span", "del-ref", "\u2750"));
     // #61: hover で右上に ×。csv の index をそのまま送るので、外れるのはこの 1 枚だけ。
     if (imgs.length) {
+      // #98: どこを押してもプレビューになったので、編集の入口は右上の鉛筆に残す。
+      var ed = el("span", "del-edit", "\u270e");
+      ed.title = "成果物を編集";
+      ed.onclick = function (ev) { ev.stopPropagation(); openDelivModal(Number(c.id)); };
+      t.appendChild(ed);
       var at = imgs.indexOf(name);
       var x = el("span", "del-x", "\u00d7");
       x.title = "この添付を外す";
@@ -983,38 +994,84 @@
   // ---- lightbox ----
   var lbList = function () { return Array.prototype.slice.call(document.querySelectorAll(".thumb")); };
   var lbAt = 0;
+  var lbTok = 0; // 連打で前の fetch が後から届いても混ざらないようにする番号
+  var LB_BOXES = ["#lbimg", "#lbif", "#lbvid", "#lbaud", "#lbtxt"];
+  // 種別ごとに器を 1 つだけ出す。前の src を必ず外す（音が鳴り続ける・iframe が生き残るのを防ぐ）。
+  function lbReset() {
+    lbTok += 1;
+    LB_BOXES.forEach(function (s) {
+      var n = $(s);
+      n.hidden = true;
+      n.removeAttribute("src");
+      if (s === "#lbtxt") clear(n);
+    });
+    $("#lbimg").onerror = null;
+    return lbTok;
+  }
   function showLb(i) {
     var th = lbList();
     if (!th.length) return;
     lbAt = (i + th.length) % th.length;
     var name = th[lbAt].dataset.lb || "";
-    var img = $("#lbimg"), fr = $("#lbif");
+    var cap = $("#lbcap");
+    var tok = lbReset();
+    var src = srcOf(name);
     if (HTML.test(name) || DOC.test(name)) {
       // sandbox="allow-scripts" のみ。allow-same-origin を足すと dashboard と同一 origin に
       // なり、添付 html が cookie を読めてしまう（サーバも CSP: sandbox で二重に閉じる）。
       // #91: pdf/md/txt は文書なので sandbox を外す（pdf ビューアは sandbox 下で描画されない）。
       // DOC は拡張子で絞ってあり、script を実行する経路にはならない。
-      img.removeAttribute("src");
-      img.hidden = true;
+      var fr = $("#lbif");
       fr.hidden = false;
       if (HTML.test(name)) fr.setAttribute("sandbox", "allow-scripts allow-forms");
       else fr.removeAttribute("sandbox");
-      fr.src = srcOf(name);
-    } else {
-      var el0 = th[lbAt].querySelector("img");
-      fr.removeAttribute("src");
-      fr.hidden = true;
+      fr.src = src;
+    } else if (IMG.test(name)) {
+      var img = $("#lbimg");
       img.hidden = false;
-      img.onerror = function () { $("#lbcap").textContent = name + "  (不在)"; };
-      img.src = el0 ? el0.src : srcOf(name);
+      img.alt = name;
+      img.onerror = function () { cap.textContent = name + "  (不在)"; };
+      img.src = src;
+    } else if (VIDV.test(name)) {
+      // 動画は自動再生しない（音が出る）。metadata だけ先に読む。
+      var vid = $("#lbvid");
+      vid.hidden = false;
+      vid.src = src;
+    } else if (AUD.test(name)) {
+      var aud = $("#lbaud");
+      aud.hidden = false;
+      aud.src = src;
+    } else if (CODE.test(name)) {
+      // textContent のみ。#lbtxt に HTML として解釈させる経路は作らない（.js を走らせない）。
+      var tx = $("#lbtxt");
+      tx.hidden = false;
+      tx.textContent = "読み込み中…";
+      fetch(src).then(function (r) {
+        // /api/ref は拡張子で 415 を返しうる。落とさずステータスを見せる。
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.text();
+      }).then(function (body) {
+        if (tok === lbTok) tx.textContent = body;
+      }, function (e) {
+        if (tok !== lbTok) return;
+        tx.textContent = name + "\n" + (e && e.message ? e.message : "読み込み失敗");
+      });
+    } else {
+      // 未知・バイナリは開く/落とすだけ（中身は解釈しない）。
+      var tx2 = $("#lbtxt");
+      var a = document.createElement("a");
+      a.href = src;
+      a.setAttribute("download", "");
+      a.textContent = "開く / ダウンロード";
+      tx2.hidden = false;
+      tx2.appendChild(a);
     }
-    $("#lbcap").textContent = name + "  (" + (lbAt + 1) + "/" + th.length + ")";
+    cap.textContent = name + "  (" + (lbAt + 1) + "/" + th.length + ")";
     $("#lb").setAttribute("open", "");
   }
   function closeLb() {
     $("#lb").removeAttribute("open");
-    $("#lbimg").removeAttribute("src");
-    $("#lbif").removeAttribute("src");
+    lbReset();
   }
 
   // ---- card modal (#45) ----
@@ -1354,9 +1411,14 @@
       }
       return; // モーダル内の他のクリックは下へ流さない
     }
-    // #82: 帯タイルは見出し（.del-cap）だけが成果物モーダル。サムネは lightbox、添付なしは入口にしない。
+    // #98: 帯タイルはどこを押しても lightbox。添付が無いタイルだけ成果物モーダルに送る。
+    // .del-x / .del-edit は自前の onclick で stopPropagation するのでここへは来ない。
     var dt = t.closest && t.closest(".del-tile");
-    if (dt && t.closest(".del-cap")) { openDelivModal(Number(dt.dataset.deliv)); return; }
+    if (dt) {
+      if (dt.classList.contains("thumb")) showLb(lbList().indexOf(dt));
+      else openDelivModal(Number(dt.dataset.deliv));
+      return;
+    }
     var th = t.closest && t.closest(".thumb");
     if (th) { showLb(lbList().indexOf(th)); return; }
     if (t.id === "lb" || t.id === "lbimg") closeLb();

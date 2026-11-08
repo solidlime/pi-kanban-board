@@ -234,7 +234,9 @@ await check("#77/#78/#79 UI の配線（ブラウザ実機は #057 の担当）"
 	assert.ok(app.includes('"del-nobody"'), "#79: 添付なしの成果物が帯に出ない");
 	assert.ok(app.includes("p.innerHTML === d.innerHTML"), "#78: 列ノードの再利用が無い");
 	assert.ok(app.includes('e.key === "Escape" && $("#cm").hasAttribute("open")'), "#77: Esc でモーダルが閉じない");
-	assert.ok(app.includes('t.closest(".del-cap")'), "#79: 帯タイルからモーダルを開けない");
+	// #98 でタイル全体のクリックはプレビューに変わった。モーダルの入口は「添付なしタイル」と右上の鉛筆。
+	assert.ok(app.includes("openDelivModal(Number(dt.dataset.deliv))"), "#79: 帯タイルからモーダルを開けない");
+	assert.ok(app.includes('ed.title = "成果物を編集"'), "#98: 成果物の編集入口が無い");
 	assert.ok(head.includes('id="deladd"'), "#79: 帯に + が無い");
 	assert.ok(!head.includes('data-move="deliverable"'), "#82: カードモーダルに成果物への移動ボタンが残っている");
 });

@@ -129,6 +129,37 @@ test("dashboard: #ptabs は poll ごとに作り直さない（#85）", () => {
 	assert.ok(fn.includes("focused.focus()"), "フォーカスを戻していない");
 });
 
+test("dashboard: 成果物タイルはどこを押してもプレビュー（#98）", () => {
+	const app = read("web/dash/_app.js");
+	const css = read("web/dash/_b.css");
+	// クリックの入口はタイル全体。見出し限定（.del-cap）の分岐は無い。
+	assert.ok(!app.includes('closest(".del-cap")'), ".del-cap 限定の分岐が残っている");
+	assert.match(app, /closest\("\.del-tile"\)/);
+	assert.match(app, /if \(dt\.classList\.contains\("thumb"\)\) showLb/, "タイル全体が lightbox に行かない");
+	assert.match(app, /else openDelivModal\(Number\(dt\.dataset\.deliv\)\)/, "添付なしタイルのモーダルが死んでいる");
+	// 添付のあるタイルは全部 .thumb + data-lb（動画・音声も prev/next に載る）。
+	assert.match(app, /if \(imgs\.length\) \{ t\.classList\.add\("thumb"\); t\.dataset\.lb = name; \}/);
+	// 編集への入口（鉛筆）が残る。
+	assert.match(app, /el\("span", "del-edit"/);
+	assert.match(app, /ed\.title = "成果物を編集"/);
+	// × は自前の stopPropagation で止める（タイルの lightbox と競合させない）。
+	assert.match(app, /var x = el\("span", "del-x", "\\u00d7"\);/);
+	assert.match(app, /ev\.stopPropagation\(\);/);
+	// 種別ごとの器が HTML に在る。
+	for (const id of ["lbvid", "lbaud", "lbtxt"]) assert.ok(HTML.includes(`id="${id}"`), `id="${id}" が無い`);
+	// ソースは textContent で出す（.js を lightbox で走らせない）。
+	const i = app.indexOf("function showLb(");
+	const showLb = app.slice(i, app.indexOf("function closeLb(", i));
+	assert.ok(i > 0 && showLb.length > 0, "showLb が読めない");
+	assert.match(showLb, /tx\.textContent = body/);
+	assert.ok(!showLb.includes("innerHTML"), "lightbox が innerHTML で書いている");
+	// html だけ sandbox。allow-same-origin は絶対に付けない（コメントでは言及してよい）。
+	assert.ok(!/sandbox="[^"]*allow-same-origin/.test(app + HTML), "allow-same-origin が付いている");
+	// 見切れない。
+	assert.match(css, /object-fit:contain/);
+	assert.match(css, /\.lb pre\{[^}]*overflow:auto/);
+});
+
 test("dashboard: 列ヘッダの sticky top は実測の --topbar-h（#88）", () => {
 	const app = read("web/dash/_app.js");
 	const css = read("web/dash/_b.css");

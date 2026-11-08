@@ -173,8 +173,16 @@ html[data-density="compact"] .chips,html[data-density="compact"] .meta{display:n
   border:1px solid var(--line); border-radius:4px;
   opacity:0; transition:opacity .12s; cursor:pointer;
 }
-.del-tile:hover .del-x{opacity:1}
-.del-x:hover{color:var(--text); border-color:var(--accent)}
+/* #98: タイル全体がプレビューになったので、編集の入口は × の隣に残す。 */
+.del-edit{
+  position:absolute; top:3px; right:34px; z-index:1; line-height:1.2;
+  font-family:var(--font-mono); font-size:13px; padding:0 5px;
+  color:var(--muted); background:color-mix(in srgb,var(--bg0) 80%, transparent);
+  border:1px solid var(--line); border-radius:4px;
+  opacity:0; transition:opacity .12s; cursor:pointer;
+}
+.del-tile:hover .del-x,.del-tile:hover .del-edit{opacity:1}
+.del-x:hover,.del-edit:hover{color:var(--text); border-color:var(--accent)}
 .del-tile .refbad{
   position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
   font-family:var(--font-mono); font-size:11px; color:var(--muted);
@@ -189,8 +197,19 @@ html[data-density="compact"] .chips,html[data-density="compact"] .meta{display:n
   padding:24px;
 }
 .lb[open]{display:flex}
-.lb img{max-width:100%; max-height:80vh; border-radius:var(--radius); border:1px solid var(--line)}
-.lb iframe{width:min(92vw,1100px); height:80vh; border-radius:var(--radius); border:1px solid var(--line); background:var(--bg0)}
+/* #98: どんな添付でも見切れないように、器は全部この枠に収める（contain + スクロール）。 */
+.lb img,.lb video{
+  max-width:94vw; max-height:84vh; object-fit:contain;
+  border-radius:var(--radius); border:1px solid var(--line);
+}
+.lb audio{max-width:min(94vw,520px)}
+.lb iframe{width:min(94vw,1200px); height:84vh; border-radius:var(--radius); border:1px solid var(--line); background:var(--bg0)}
+.lb pre{
+  max-width:min(94vw,1200px); max-height:84vh; overflow:auto; text-align:left; margin:0;
+  padding:12px; border-radius:var(--radius); border:1px solid var(--line); background:var(--bg0);
+  font-family:var(--font-mono); font-size:12px; color:var(--text);
+  white-space:pre-wrap; word-break:break-word;
+}
 .lb .cap{font-family:var(--font-mono); font-size:11px; color:var(--muted)}
 
 /* ── switch (v2.3) ──────────────────────── */
@@ -314,6 +333,7 @@ html.allview .layout{grid-template-columns:1fr}
   .projrow{padding:11px 8px; margin:0 -8px}
   .foot{display:none}
   .lb{padding:10px}
-  .lb img{max-height:70vh}
+  .lb img,.lb video{max-height:70vh}
   .lb iframe{height:70vh}
+  .lb pre{max-height:70vh}
 }
