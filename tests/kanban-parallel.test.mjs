@@ -86,15 +86,20 @@ try {
 `,
 );
 
-const exec = (script, args) =>
+const exec = (script, args, timeoutMs = 30_000) =>
 	new Promise((resolve, reject) => {
 		const p = spawn(process.execPath, [script, ...args], { env: ENV, stdio: ["ignore", "pipe", "pipe"] });
 		let out = "";
 		let errText = "";
+		const killer = setTimeout(() => {
+			p.kill("SIGKILL");
+			reject(new Error("timeout " + timeoutMs + "ms"));
+		}, timeoutMs);
 		p.stdout.on("data", (d) => (out += d));
 		p.stderr.on("data", (d) => (errText += d));
 		p.on("error", reject);
 		p.on("close", (code) => {
+			clearTimeout(killer);
 			if (code !== 0) reject(new Error(`exit ${code}: ${errText.slice(-800)}`));
 			else resolve({ out: JSON.parse(out), errText });
 		});
@@ -119,6 +124,7 @@ const holdAndOpen = (file, holdMs) =>
 			try {
 				resolve({ opened: await exec(OPENER, [DB_EXT, file]), done, errText: () => errText });
 			} catch (err) {
+				holder.kill("SIGKILL");
 				reject(err);
 			}
 		});
@@ -127,6 +133,9 @@ const holdAndOpen = (file, holdMs) =>
 	});
 
 try {
+	// 新規ファイルの初回 open はスキーマ作成で書き込みロックを取る。それを round 0 の
+	// 同時 open に持ち込むと、測りたい「書き込みの直列化」ではなくスキーマ競争を測る。
+	await exec(READER, [EXT, KB + "/projects/warm.json"]);
 	for (let round = 0; round < ROUNDS; round++) {
 		const proj = `${KB}/projects/parallel${round}.json`;
 		const results = await Promise.all(Array.from({ length: N }, (_, i) => exec(CHILD, [EXT, proj, `p${i}`, "40"])));
