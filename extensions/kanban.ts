@@ -1405,8 +1405,9 @@ export function renderInjectionText(b: Board): string | null {
 		"A card is a promise to finish something. Keep going without waiting:",
 		"if the user goes quiet, the board is what tells the next turn what is",
 		"owed. Move it to DONE only when the thing actually works.",
-		// #82: output has its own table, so a model that reaches for col=deliverable is told why not.
-		"Deliverables are not cards: a deliverable is a `deliv` row (/api/deliv/add|edit|remove), and no column is called deliverable.",
+		// #82/#92: output has its own table (and now its own tool), so a model that reaches for
+		// col=deliverable is told why not. One pointer line: the tool description carries the rest.
+		"Output to show the user → the deliverable tool. A card is work you owe.",
 		"=== END KANBAN ===",
 	].join("\n");
 }
@@ -1669,6 +1670,8 @@ const KANBAN_HELP =
 	// #90: ツールの description から落とした正規化規則の置き場所。既存の行は消さない。
 	"カードの project は [A-Za-z0-9._-]（24 文字まで・大文字小文字は保持）、session は [A-Za-z0-9._:@-]、commit は 7-40 hex（小文字で保存）。空文字は解除\n" +
 	"ref は元ファイルを指すだけ（file:<path>、コピーしない）。ダッシュボードは /api/ref 経由で読み、serve の許可ルート（既定 ~/workspace）の外は開けない\n" +
+	// #92: 成果物は別ツール。kanban の img/ref は card 専用（id 空間が別）。
+	"deliverable ツール（add/list/edit/remove/img/ref）は成果物専用。見せたい出力は card ではなくこちらに置く\n" +
 	"ボードは project（既定）/ global（読み取り専用）の 2 つ。session ボードは #17 で廃止\n" +
 	"/kanban  メニュー";
 
@@ -3360,6 +3363,28 @@ function trashMedia(absPath: string): string | null {
 		return dest;
 	} catch {
 		return null;
+	}
+}
+
+/** #92: an `img` csv -> its entries. The split/trim/filter was written out four times. */
+function mediaNames(img: string | undefined): string[] {
+	return (img ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+}
+
+/**
+ * #92: the ONE rule for dropping an attachment: `file:` references are not ours, only bare
+ * media names are, and a name any other row still shows stays. Written out twice before
+ * (/api/deliv/remove and /api/attach/del) with the same expression; `owner` names the space
+ * being changed, so a card id and a deliverable id can never be confused for each other.
+ */
+function trashUnusedMedia(b: Board, kind: "card" | "deliv", ownerId: number, gone: string[]): void {
+	const kept = [
+		...(kind === "card" ? b.cards.filter((c) => c.id !== ownerId) : b.cards),
+		...(kind === "deliv" ? b.deliverables.filter((d) => d.id !== ownerId) : b.deliverables),
+	].flatMap((o) => mediaNames(o.img));
+	for (const name of gone) {
+		if (name.startsWith("file:") || !isSafeMediaName(name)) continue;
+		if (!kept.includes(name)) trashMedia(join(MEDIA_DIR, name));
 	}
 }
 
@@ -5177,13 +5202,7 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 				return;
 			}
 			// Same rule as a card: only our own media names, and only when nothing else shows them.
-			for (const gone of (deliverable.img ?? "").split(",").map((s) => s.trim()).filter(Boolean)) {
-				if (gone.startsWith("file:") || !isSafeMediaName(gone)) continue;
-				const kept = [...b.cards.map((c) => c.img), ...b.deliverables.filter((d) => d.id !== deliverable.id).map((d) => d.img)];
-				if (!kept.some((img) => (img ?? "").split(",").map((s) => s.trim()).includes(gone))) {
-					trashMedia(join(MEDIA_DIR, gone));
-				}
-			}
+			trashUnusedMedia(b, "deliv", deliverable.id, mediaNames(deliverable.img));
 			b.deliverables = b.deliverables.filter((d) => d.id !== deliverable.id);
 			writeBoard(path, b);
 			sendJson(res, 200, { ok: true });
@@ -5214,15 +5233,8 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 				return;
 			}
 			const gone = list.splice(n, 1)[0];
-			if (!gone.startsWith("file:") && isSafeMediaName(gone)) {
-				// #82: cards AND deliverables hold media now; a file anyone else still shows stays.
-				const kept = [
-					...b.cards.filter((c) => t.kind !== "card" || c.id !== owner.id).map((c) => c.img),
-					...b.deliverables.filter((d) => t.kind !== "deliv" || d.id !== owner.id).map((d) => d.img),
-				];
-				const shared = kept.some((img) => (img ?? "").split(",").map((s) => s.trim()).includes(gone));
-				if (!shared) trashMedia(join(MEDIA_DIR, gone));
-			}
+			// #92: one rule, shared with /api/deliv/remove and the deliverable tool.
+			trashUnusedMedia(b, t.kind, owner.id, [gone]);
 			if (list.length === 0) delete owner.img;
 			else owner.img = list.join(",");
 			writeBoard(path, b);
@@ -5834,16 +5846,12 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 		| { ok: true; card: Card; name: string; basename: string }
 		| { ok: false; error: string };
 
-	/**
-	 * The copy local image -> media/ -> `card.img` path, the same shape /api/upload writes
-	 * (basename in `img`, bytes under MEDIA_DIR). Shared by `/kanban img` and the tool's
-	 * `img` action, so both validate identically. Every validation runs before the first
-	 * write: missing / unreadable / not an image / over 8MB only return, so the board can
-	 * never gain a broken image path. writeBoard is the caller's job.
-	 */
-	const attachImage = (b: Board, id: number, input: string): AttachImageResult => {
-		const card = b.cards.find((c) => c.id === id);
-		if (card === undefined) return { ok: false, error: `その id は無い: #${id}` };
+	/** #92: validation only - "may this local file become a media entry?". The owner lookup is
+	 * deliberately NOT here: `attachImage(b, delivId, …)` found the same-numbered CARD and
+	 * attached to it silently, because a card id and a deliverable id are different spaces. */
+	type PrepareImageResult = { ok: true; ext: string; bytes: Buffer; basename: string } | { ok: false; error: string };
+
+	const prepareImage = (input: string): PrepareImageResult => {
 		const sized = input.startsWith("~/") ? join(homedir(), input.slice(2)) : input;
 		const abs = resolve(sized === "~" ? homedir() : sized);
 		const dot = abs.lastIndexOf(".");
@@ -5869,49 +5877,106 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 		} catch {
 			return { ok: false, error: `ファイルが無い / 読めない: ${abs}` };
 		}
-		// #53: /api/upload と対称 — 追加で、置換ではない。既存添付は消さない
-		const name = writeMedia(card.id, ext, bytes);
-		if (name === null) return { ok: false, error: "media への書き込みに失敗" };
-		card.img = card.img ? `${card.img},${name}` : name;
-		return { ok: true, card, name, basename: basename(abs) };
+		return { ok: true, ext, bytes, basename: basename(abs) };
 	};
 
 	/**
-	 * #56: attach a REFERENCE. The file stays where it is; card.img gets `file:<abs>`.
-	 * The allowlist is checked here too - /api/ref refuses an outside path, so writing one
-	 * would only give the card a thumbnail that never loads.
+	 * The copy local image -> media/ -> `card.img` path, the same shape /api/upload writes
+	 * (basename in `img`, bytes under MEDIA_DIR). Shared by `/kanban img` and the tool's
+	 * `img` action, so both validate identically. Every validation runs before the first
+	 * write: missing / unreadable / not an image / over 8MB only return, so the board can
+	 * never gain a broken image path. writeBoard is the caller's job.
 	 */
-	const attachRef = (
+	const attachToCard = (b: Board, id: number, input: string): AttachImageResult => {
+		const card = b.cards.find((c) => c.id === id);
+		if (card === undefined) return { ok: false, error: `その id は無い: #${id}` };
+		const prepared = prepareImage(input);
+		if (!prepared.ok) return prepared;
+		// #53: /api/upload と対称 — 追加で、置換ではない。既存添付は消さない
+		const name = writeMedia(card.id, prepared.ext, prepared.bytes);
+		if (name === null) return { ok: false, error: "media への書き込みに失敗" };
+		card.img = card.img ? `${card.img},${name}` : name;
+		return { ok: true, card, name, basename: prepared.basename };
+	};
+
+	/**
+	 * #92: the same copy, onto a DELIVERABLE. Same validation, same media/ layout - only the
+	 * owner is looked up in b.deliverables, which is why it is a separate function and not a
+	 * flag on attachToCard (`owner=card|deliv` is exactly the shape that mis-filed the file).
+	 */
+	const attachToDeliv = (
 		b: Board,
 		id: number,
 		input: string,
-	): { ok: true; card: Card; abs: string } | { ok: false; error: string } => {
-		const card = b.cards.find((c) => c.id === id);
-		if (card === undefined) return { ok: false, error: `その id は無い: #${id}` };
+	): { ok: true; deliv: Deliv; name: string; basename: string } | { ok: false; error: string } => {
+		const deliv = b.deliverables.find((d) => d.id === id);
+		if (deliv === undefined) return { ok: false, error: `その id は無い: deliverable #${id}` };
+		const prepared = prepareImage(input);
+		if (!prepared.ok) return prepared;
+		const name = writeMedia(deliv.id, prepared.ext, prepared.bytes);
+		if (name === null) return { ok: false, error: "media への書き込みに失敗" };
+		deliv.img = deliv.img ? `${deliv.img},${name}` : name;
+		return { ok: true, deliv, name, basename: prepared.basename };
+	};
+
+	/**
+	 * #56: attach a REFERENCE. The file stays where it is; the owner's img gets `file:<abs>`.
+	 * #92: the allowlist check is shared (prepareRef); only the owner lookup is per space.
+	 */
+	type PrepareRefResult = { ok: true; abs: string } | { ok: false; error: string };
+
+	const prepareRef = (input: string): PrepareRefResult => {
 		const sized = input.startsWith("~/") ? join(homedir(), input.slice(2)) : input;
 		if (!isAbsolute(sized) && sized !== "~") return { ok: false, error: `絶対パスで渡す: ${sized}` };
 		const abs = realOrSelf(resolve(sized === "~" ? homedir() : sized));
+		// The allowlist is checked here too - /api/ref refuses an outside path, so writing one
+		// would only give the tile a thumbnail that never loads (a permanent 403).
 		if (!isUnder(abs, serveAllowRoots())) return { ok: false, error: `allowlist の外: ${abs}` };
 		try {
 			if (!statSync(abs).isFile()) return { ok: false, error: `通常ファイルではない: ${abs}` };
 		} catch {
 			return { ok: false, error: `ファイルが無い / 読めない: ${abs}` };
 		}
-		// shortcut: a path containing a comma splits into two csv entries, upgrade if a
-		// referenced filename ever needs one.
-		card.img = card.img ? `${card.img},file:${abs}` : `file:${abs}`;
-		return { ok: true, card, abs };
+		return { ok: true, abs };
+	};
+
+	/** #92: `shortcut:` a path containing a comma splits into two csv entries. */
+	const refToCard = (
+		b: Board,
+		id: number,
+		input: string,
+	): { ok: true; card: Card; abs: string } | { ok: false; error: string } => {
+		const card = b.cards.find((c) => c.id === id);
+		if (card === undefined) return { ok: false, error: `その id は無い: #${id}` };
+		const prepared = prepareRef(input);
+		if (!prepared.ok) return prepared;
+		card.img = card.img ? `${card.img},file:${prepared.abs}` : `file:${prepared.abs}`;
+		return { ok: true, card, abs: prepared.abs };
+	};
+
+	/** #92: the reference form, onto a deliverable (owner lookup in the deliv space). */
+	const refToDeliv = (
+		b: Board,
+		id: number,
+		input: string,
+	): { ok: true; deliv: Deliv; abs: string } | { ok: false; error: string } => {
+		const deliv = b.deliverables.find((d) => d.id === id);
+		if (deliv === undefined) return { ok: false, error: `その id は無い: deliverable #${id}` };
+		const prepared = prepareRef(input);
+		if (!prepared.ok) return prepared;
+		deliv.img = deliv.img ? `${deliv.img},file:${prepared.abs}` : `file:${prepared.abs}`;
+		return { ok: true, deliv, abs: prepared.abs };
 	};
 
 	/**
-	 * `/kanban img <id> <path>`: attachImage on this cwd's project board, then save.
+	 * `/kanban img <id> <path>`: attachToCard on this cwd's project board, then save.
 	 * A failed attach notifies the same message the tool reports, and writes nothing.
 	 */
 	const runImgCommand = (ctx: ExtensionContext, sid: string, id: number, input: string): void => {
 		// #17: the card lives on this cwd's project board.
 		const path = boardPath("project", boardKeyFor(ctx, sid, "project"));
 		const b = readBoard(path);
-		const r = attachImage(b, id, input);
+		const r = attachToCard(b, id, input);
 		if (!r.ok) {
 			ctx.ui.notify(r.error);
 			return;
@@ -6494,11 +6559,11 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 				// movedAt/movedBy stay (a rename does not transfer ownership), empty text is an error.
 				Type.Literal("edit"),
 				// The tool had no way to attach an image; /kanban img was the only door.
-				// Same validation and same media/ layout through attachImage.
+				// Same validation and same media/ layout through attachToCard.
 				Type.Literal("img"),
 				// #56: attach by reference - the path is stored on the card, not copied.
 				Type.Literal("ref"),
-			], { description: "What to do. See the tool description for each action; add/move/edit/remove act on the selected scope's own board." }),
+			], { description: "What to do. See the tool description for each action; add/move/edit/remove act on the selected scope's own board. img/ref attach to a CARD; for output the user should see, call the deliverable tool." }),
 			// #17/#90: two boards, not three. There is no per-session board (the HTTP routes answer
 			// scope=session with 400 SESSION_SCOPE_GONE), so the schema must not offer one either.
 			scope: Type.Optional(
@@ -6507,7 +6572,7 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 				}),
 			),
 			text: Type.Optional(Type.String({ description: "Card body. Required by add; edit replaces it (empty is an error)." })),
-			id: Type.Optional(Type.Number({ description: "Card id inside the selected board (ids are per board — see list)." })),
+			id: Type.Optional(Type.Number({ description: "Card id inside the selected board (ids are per board — see list). Not a deliverable id: the deliverable tool has its own space." })),
 			col: Type.Optional(
 				Type.Union([Type.Literal("todo"), Type.Literal("doing"), Type.Literal("done")], {
 					description: "Target column: todo | doing | done.",
@@ -6699,8 +6764,8 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 					if (id === undefined || !Number.isInteger(id) || id < 1) return fail("img requires id (an integer 1 or more)");
 					const input = (params.image ?? "").trim();
 					if (input === "") return fail("img requires image (a local file path)");
-					// attachImage validates everything before removeMedia, so a bad path writes nothing.
-					const r = attachImage(b, id, input);
+					// attachToCard validates everything before removeMedia, so a bad path writes nothing.
+					const r = attachToCard(b, id, input);
 					if (!r.ok) return fail(r.error);
 					persistError = writeBoard(path, b);
 					message = `attached ${r.name} to #${r.card.id}`;
@@ -6711,8 +6776,8 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 					if (id === undefined || !Number.isInteger(id) || id < 1) return fail("ref requires id (an integer 1 or more)");
 					const input = (params.image ?? "").trim();
 					if (input === "") return fail("ref requires image (an absolute file path)");
-					// attachRef validates before the write, so a refused path leaves the card alone.
-					const r = attachRef(b, id, input);
+					// refToCard validates before the write, so a refused path leaves the card alone.
+					const r = refToCard(b, id, input);
 					if (!r.ok) return fail(r.error);
 					persistError = writeBoard(path, b);
 					message = `referenced ${r.abs} on #${r.card.id}`;
@@ -6725,6 +6790,148 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 				}
 				default:
 					message = `[${scope}]\n${renderLines(b).join("\n")}`;
+			}
+
+			refresh(ctx, sessionSid);
+			return done(message);
+		},
+	});
+
+	// #92: output the user should SEE is its own tool. It used to be a card with an attachment,
+	// so a screenshot ended up as a TODO row and the board filled with finished work. `kanban`
+	// stays for work, `deliverable` for output: two names, no flag to pick wrong. Registered
+	// AFTER the kanban tool on purpose - tests/kanban-tool-schema.test.mjs cuts the FIRST
+	// `parameters: Type.Object({` out of this file and checks the kanban twelve.
+	pi.registerTool({
+		name: "deliverable",
+		label: "Deliverables",
+		description:
+			"Output you want the user to see: a screenshot, a report, a video, a file. Shown in the belt under the board, not in a column - do not create a TODO card for output.\n" +
+			"Actions: add posts one (text); list shows them; edit rewrites the text; remove deletes it and its unused media; img copies a local image into media/; ref stores file:<path> without copying (the dashboard reads it back through /api/ref, allowlisted to the serve roots).\n" +
+			"A deliverable is a deliv row, not a card: it has no column, no owner and no phase. ids are the deliv space, so #3 here and card #3 are different things.\n" +
+			"scope picks the board: project (default, this repo) or global (read-only aggregate; writes are refused, and a global listing shows the id as <slug>/<id> because ids repeat per board).",
+		parameters: Type.Object({
+			action: Type.Union(
+				[
+					Type.Literal("add"),
+					Type.Literal("list"),
+					Type.Literal("edit"),
+					Type.Literal("remove"),
+					Type.Literal("img"),
+					Type.Literal("ref"),
+				],
+				{ description: "What to do: add posts one, list shows them, edit rewrites the text, remove deletes it and its unused media, img copies a local image, ref points at one in place." },
+			),
+			scope: Type.Optional(
+				Type.Union([Type.Literal("global"), Type.Literal("project")], {
+					description: "Which board: project (default, this repo), global (read-only aggregate; add/edit/remove/img/ref are refused). There is no per-session board.",
+				}),
+			),
+			id: Type.Optional(
+				Type.Number({ description: "Deliverable id (deliv space - not a card id; the same number can exist as a card). Required by edit/remove/img/ref." }),
+			),
+			text: Type.Optional(Type.String({ description: "What the deliverable is. Required by add; edit replaces it (empty is an error)." })),
+			image: Type.Optional(
+				Type.String({ description: "Local path for img (copied into media/) or ref (stored as file:<path>, not copied; /api/ref serves it back only under the serve roots, ~/workspace by default). Absolute or ~/ prefixed." }),
+			),
+		}),
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			// Phase 0: same wait as the kanban tool - the fold's final write would eat ours.
+			if (migrationPending !== null) await migrationPending;
+			const scope: Scope = params.scope ?? "project";
+			const sessionSid = sidOf(ctx);
+			const sid = scope === "project" ? projectSlugOf(cwdOfCtx(ctx)) : sessionSid;
+			const path = boardPath(scope, sid);
+			// #16/#92: global reads the aggregate (GLOBAL_JSON is empty after the migration).
+			const b: Board = scope === "global" ? aggregateGlobal() : readBoard(path);
+			let persistError: string | null = null;
+			const done = (text: string) => ({
+				content: [{ type: "text" as const, text }],
+				details: {
+					scope,
+					deliverables: [...b.deliverables],
+					...(persistError === null ? {} : { persistError }),
+				},
+			});
+			const fail = (text: string) => ({ ...done(text), isError: true });
+			// Same back door as the kanban tool: an in-process write is invisible to the HTTP gate.
+			if (scope === "global" && params.action !== "list") return fail("global board is read-only");
+
+			let message: string;
+			switch (params.action) {
+				case "add": {
+					const text = (params.text ?? "").trim();
+					if (text.length === 0) return fail("add requires a non-empty text");
+					// `at` is part of the row (the band sorts on it). The id is the board's own deliv
+					// sequence; db.ts raises deliv_next_id to max(id)+1 inside its lock anyway.
+					const deliverable: Deliv = { id: b.delivNextId, text, at: Date.now() };
+					b.deliverables.push(deliverable);
+					b.delivNextId += 1;
+					persistError = writeBoard(path, b);
+					message = `added ${text} to deliverable #${deliverable.id} (${scope})`;
+					break;
+				}
+				case "edit": {
+					if (params.id === undefined) return fail("edit requires id");
+					const text = (params.text ?? "").trim();
+					if (text.length === 0) return fail("edit requires a non-empty text");
+					const deliverable = b.deliverables.find((d) => d.id === params.id);
+					if (deliverable === undefined) return fail(`no deliverable with id ${params.id} in the ${scope} board`);
+					deliverable.text = text; // at/img stay: a rewording is not a new row
+					persistError = writeBoard(path, b);
+					message = `edited deliverable #${deliverable.id} (${scope})`;
+					break;
+				}
+				case "remove": {
+					if (params.id === undefined) return fail("remove requires id");
+					const i = b.deliverables.findIndex((d) => d.id === params.id);
+					if (i < 0) return fail(`no deliverable with id ${params.id} in the ${scope} board`);
+					// #92: the same trash rule as /api/deliv/remove. Never removeMedia(): that takes a
+					// Card, so passing a Deliv needs `as Card` - which is how the two spaces got mixed.
+					trashUnusedMedia(b, "deliv", params.id, mediaNames(b.deliverables[i].img));
+					b.deliverables.splice(i, 1);
+					persistError = writeBoard(path, b);
+					message = `removed deliverable #${params.id} (${scope})`;
+					break;
+				}
+				case "img": {
+					const id = params.id;
+					if (id === undefined || !Number.isInteger(id) || id < 1) return fail("img requires id (an integer 1 or more)");
+					const input = (params.image ?? "").trim();
+					if (input === "") return fail("img requires image (a local file path)");
+					// attachToDeliv looks the owner up in b.deliverables: a deliv id can never land on
+					// the same-numbered card.
+					const r = attachToDeliv(b, id, input);
+					if (!r.ok) return fail(r.error);
+					persistError = writeBoard(path, b);
+					message = `attached ${r.name} to deliverable #${r.deliv.id} (${scope})`;
+					break;
+				}
+				case "ref": {
+					const id = params.id;
+					if (id === undefined || !Number.isInteger(id) || id < 1) return fail("ref requires id (an integer 1 or more)");
+					const input = (params.image ?? "").trim();
+					if (input === "") return fail("ref requires image (an absolute file path)");
+					const r = refToDeliv(b, id, input);
+					if (!r.ok) return fail(r.error);
+					persistError = writeBoard(path, b);
+					message = `referenced ${r.abs} on deliverable #${r.deliv.id} (${scope})`;
+					break;
+				}
+				default: {
+					// list. A global row carries `sid` (its project slug) because ids repeat per board.
+					const rows = b.deliverables as (Deliv & { sid?: string })[];
+					message =
+						rows.length === 0
+							? `[${scope}] no deliverables`
+							: [
+									`[${scope}]`,
+									...rows.map(
+										(d) => `${scope === "global" ? `${d.sid === undefined || d.sid === "" ? "global" : d.sid}/${d.id}` : `#${d.id}`}  ${d.text}`,
+									),
+								].join("\n");
+					break;
+				}
 			}
 
 			refresh(ctx, sessionSid);
