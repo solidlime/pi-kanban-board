@@ -84,7 +84,7 @@ serve(id PK, path, title, expires_at, permanent)
 
 ### いまの構成から変える理由
 
-- **JSON 直書き → SQLite** — いまの `writeBoard` は read-modify-write で、プロセスが2つ書くと後勝ちでカードが消える（テストにも「ロックが無いこと」を仕様として固定したものがある）。`node:sqlite` なら同時書き込みの問題ごと消える
+- **JSON 直書き → SQLite**（済）— 起票時は `writeBoard` が read-modify-write で、プロセスが2つ書くと後勝ちでカードが消えた。#17 で SQLite 化、#101 で書き込みが行単位の同じロックの中に入り（`mutateBoard`/db.`mutate`）、別プロセスのカードを巻き添えにしない
 - **拡張内サーバ → hub 分離** — いまは HTTP サーバが拡張プロセスの中で動くので、`kanban.ts` を触るたびに pi の再起動が要る。hub を別プロセスにすると、ボードは動かしたまま拡張だけ差し替えられる
 - **ポーリング → SSE** — 一方向の push で足りる。WebSocket は要らない
 - **バンドラは入れない** — 76KB の連結に esbuild は過剰。`scripts/build-web.mjs`（済）で足りる
@@ -94,7 +94,7 @@ serve(id PK, path, title, expires_at, permanent)
 | 段階 | 内容 | 状態 |
 |------|------|------|
 | 2 | ダッシュボード HTML を `web/` へ、`npm run build` 導入 | 済 |
-| 3 | JSON → SQLite（`cards` + `events`）、既存 JSON を1回インポート | 未 |
+| 3 | JSON → SQLite（`cards` + `events`）、既存 JSON を1回インポート | 一部（`cards` は #17/#101 で済。`events` は未） |
 | 4 | hub を別プロセスに、`extensions/kanban.ts` は HTTP クライアントへ | 未 |
 | 5 | SSE + Projects / Timeline タブ | 未 |
 | 6 | 依存・期限・見積 | 未 |

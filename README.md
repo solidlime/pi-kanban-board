@@ -146,7 +146,8 @@ Two worked examples live in `~/workspace/kanban-demo/` (not in this repo): `wiza
 
 ```
 ~/.pi/kanban/
-├── boards.sqlite        every board, card and deliverable (WAL; the one file that matters)
+├── boards.sqlite        every board, card and deliverable (WAL; one write lock per change,
+│                        so several pi processes can share a board)
 ├── modes.json           per-board loop/pick/interval settings
 ├── serve.json           legacy served paths (no registration path since #53)
 ├── serve-allow.json     path allowlist for /api/ref

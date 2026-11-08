@@ -158,6 +158,23 @@ await check("/api/add: 循環する blocks は 400", async () => {
 	assert.match((await res.json()).error, /cycle/, "エラーが cycle でない");
 });
 
+// #101: abort（コールバックが return false）は書き込みを捨てる。半端な変更が残ると、
+// すべての 400/404 が「盤面は変わるのに 4xx を返す」という嘘の状態を残すことになる。
+await check("/api/add: 循環 400 はカードも採番も残さない", async () => {
+	const before = (await dash()).cards;
+	const a = await add(`text=${q("破棄A")}&col=todo`);
+	const aid = a.body.cards.at(-1).id;
+	const b = await add(`text=${q("破棄B")}&col=todo&blocks=${aid + 2}`);
+	const bid = b.body.cards.at(-1).id;
+	const res = await tf(`${BASE}/api/add?scope=project&text=${q("破棄C")}&col=todo&blocks=${bid}`);
+	assert.equal(res.status, 400, "前提: 循環で 400 にならない");
+	const mid = (await dash()).cards;
+	assert.equal(mid.length, before.length + 2, "abort したのにカードが増えた");
+	assert.ok(!mid.some((c) => c.id > bid), `abort した id が永続化された: ${JSON.stringify(mid.map((c) => c.id))}`);
+	const ok = await add(`text=${q("破棄後")}&col=todo`);
+	assert.equal(ok.body.cards.at(-1).id, bid + 1, "abort したのに採番が進んだ");
+});
+
 // #18 drive-by: 同一列への move は停滞時計をリセットしない（DOING の movedAt を保つ）。
 await check("/api/move: 同じ列への move では movedAt を刻まない", async () => {
 	const r = await add(`text=${q("動かない")}&col=todo`);

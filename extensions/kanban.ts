@@ -1022,9 +1022,26 @@ export function writeBoard(path: string, b: Board): string | null {
 		// best-effort; keep serving from memory, but never silently
 		const e = err as NodeJS.ErrnoException;
 		persistError = `${e.code ?? "error"}: ${e.message}`;
-		process.stderr.write(`kanban: board write failed (${path}): ${persistError}\n`);
+		// #101: 失敗の原因を後から追えるように stack も残す（失敗時のみ）。
+		const where = err instanceof Error && err.stack ? `\n${err.stack}` : "";
+		process.stderr.write(`kanban: board write failed (${path}): ${persistError}${where}\n`);
 	}
 	return persistError;
+}
+
+/** #101: 唯一安全な盤面の変更口。read も write も同じロックの中で起きる。 */
+export function mutateBoard(path: string, fn: (b: Board) => boolean | void): string | null {
+	try {
+		kanbanDb().mutate(boardKeyOf(path), fn);
+		return null;
+	} catch (err) {
+		const e = err as NodeJS.ErrnoException;
+		const persistError = `${e.code ?? "error"}: ${e.message}`;
+		// #101: 失敗の原因を後から追えるように stack も残す（失敗時のみ）。
+		const where = err instanceof Error && err.stack ? `\n${err.stack}` : "";
+		process.stderr.write(`kanban: board write failed (${path}): ${persistError}${where}\n`);
+		return persistError;
+	}
 }
 
 /**
@@ -1834,29 +1851,29 @@ export function nextTodo(cards: Card[], _scope: Scope, sid: string, now: number 
  * TODO left. autoPick keeps a card moving, so the stale warning starts now.
  *
  * #87 CAS: with TODO ownership gone, two sessions may aim at the same card. The move is
- * a read-modify-write, so the card is re-read from disk right before the write and only
- * moved while it is STILL an unclaimed TODO. The claim itself is the write: `movedBy`
- * holds one value, so the winner's name survives and the loser's `headOwnedDoing` no
- * longer matches. There is no file lock to reuse (the session-wide write lock was removed
- * in 2e5d4ca); inside one process the whole read/verify/write block is synchronous, so
- * the only remaining window is another process pre-empting between the two file ops.
+ * a read-modify-write, so the card is re-read inside the write lock and only moved while
+ * it is STILL an unclaimed TODO. The claim itself is the write: `movedBy` holds one value,
+ * so the winner's name survives and the loser's `headOwnedDoing` no longer matches. #101:
+ * that re-read is no longer a separate "CAS" step - mutateBoard() holds the lock across it.
  */
 export function pickFirstTodo(sessionId: string, scope: Scope, actor: string = sessionId): Card | null {
 	const path = boardPath(scope, sessionId);
 	// The claim is the ACTOR, never the board key (a project key is a slug), so the pick
-	// filter and the CAS below both look through the session that will own the card.
+	// filter and the re-check below both look through the session that will own the card.
 	const target = nextTodo(readBoard(path).cards, scope, actor);
 	if (target === undefined) return null;
-	const b = readBoard(path); // CAS: re-read, do not trust the snapshot we chose from
-	const live = b.cards.find((c) => c.id === target.id);
-	// #52: a sibling that stamped it between our read and this re-read now owns it.
-	if (live === undefined || live.col !== "todo" || isSilent(live) || !todoMineOrUnowned(live, actor, scope)) return null;
-	// The claim is the SESSION, not the board key: a project board's key is a slug, and
-	// the poll's ownership filter compares movedBy against the session.
-	moveCardTo(live, "doing", actor);
-	writeBoard(path, b);
-	// Read back: if a sibling wrote between our verify and our rename, its movedBy is what
-	// survived and this session must not go on working as if it owned the card.
+	const persisted = mutateBoard(path, (b) => {
+		const live = b.cards.find((c) => c.id === target.id);
+		// #52: a sibling that moved it before us already owns it.
+		if (live === undefined || live.col !== "todo" || isSilent(live) || !todoMineOrUnowned(live, actor, scope))
+			return false;
+		// The claim is the SESSION, not the board key: a project board's key is a slug, and
+		// the poll's ownership filter compares movedBy against the session.
+		moveCardTo(live, "doing", actor);
+	});
+	if (persisted !== null) return null;
+	// Read back: a write that failed here must not let this session go on working as if it
+	// owned the card.
 	const claimed = readBoard(path).cards.find((c) => c.id === target.id);
 	if (claimed === undefined || claimed.movedBy !== actor) return null;
 	return claimed;
@@ -1872,12 +1889,14 @@ export function pickFirstTodo(sessionId: string, scope: Scope, actor: string = s
 function markFired(card: Card, key: string, scope: Scope): void {
 	if (fireAtMs(card) === null) return;
 	const path = boardPath(scope, key);
-	const b = readBoard(path);
-	const live = b.cards.find((c) => c.id === card.id);
-	if (live === undefined || fireAtMs(live) === null || live.firedFor === live.nextFireAt) return;
-	live.firedFor = live.nextFireAt;
-	writeBoard(path, b);
-	card.firedFor = live.firedFor;
+	let fired: string | undefined;
+	mutateBoard(path, (b) => {
+		const live = b.cards.find((c) => c.id === card.id);
+		if (live === undefined || fireAtMs(live) === null || live.firedFor === live.nextFireAt) return false;
+		live.firedFor = live.nextFireAt;
+		fired = live.firedFor;
+	});
+	if (fired !== undefined) card.firedFor = fired;
 }
 
 // ---------------------------------------------------------------------------
@@ -3892,11 +3911,10 @@ async function dashboardPayload(): Promise<unknown> {
 		// whatever answers the port.
 		version: SERVER_VERSION,
 		startedAt: serverStartedAt,
-		// #65: 分単位に丸める。クライアントの再描画 sig が毎ポーリングで変わり、編集中の
-		// textarea を DOM ごと捨てていた（形は ISO 文字列のまま。相対時刻の粒度は 1 分）。
-		// #74: クライアントはもうこの値を描画に使わない（sigOf が除外する）。API の形と
-		// この丸めはそのまま（他が読んでいる。消すと毎ポーリングで sig が変わる）。
-		now: new Date(Math.floor(Date.now() / 60000) * 60000).toISOString(),
+		// #65/#74/#101: ここには分粒度の now があった。クライアントはもう描画に使わず（sigOf が除外）、
+		// 読み手も無い。一方で本文は sendEtagJson が sha1 するので、分境界を跨ぐと ETag が動き、
+		// 内容が同じでも 304 が 200 に化ける（tests/kanban-etag の 4b が 4 回に 1 回落ちていた原因）。
+		// 分粒度の時計を本文に載せないこと自体が #65 の趣旨。
 		stats: {
 			todo: totals.todo,
 			doing: totals.doing,
@@ -4070,49 +4088,54 @@ function handleUpload(req: IncomingMessage, res: ServerResponse, q: URLSearchPar
 			});
 			return;
 		}
-		const b = readBoard(path);
-		const t = mediaTarget(q, b);
-		if (t.kind === "missing") {
-			sendJson(res, 404, { ok: false, error: t.error });
-			return;
-		}
-		let owner: { id: number; img?: string };
-		if (t.kind === "new") {
-			// #82: same rule as /api/add - never create a legacy col=deliverable row.
-			if (q.get("col") === "deliverable") {
-				sendJson(res, 400, { ok: false, error: "deliverable is not a phase" });
-				return;
+		// #101: mediaTarget() が読む盤面も、書き戻す盤面も同じロックの中。owner の id も
+		// ここで採るので、別プロセスと id がぶつからない。
+		let reply: { status: number; body: unknown } = { status: 500, body: { ok: false, error: "media write failed" } };
+		const persistError = mutateBoard(path, (b) => {
+			const t = mediaTarget(q, b);
+			if (t.kind === "missing") {
+				reply = { status: 404, body: { ok: false, error: t.error } };
+				return false;
 			}
-			const card: Card = { id: b.nextId++, text: "", col: parseCol(q.get("col")) ?? "todo" };
-			stampMove(card, actorOf(q));
-			card.text = `#${card.id} (${ext === "html" ? "html" : MIME_BY_EXT[ext].startsWith("video/") ? "video" : "image"})`;
-			const projectRaw = q.get("project");
-			const project = normalizeProject(projectRaw);
-			// Only an exact empty string clears (a fresh upload card only); anything else unnormalizable is a typo.
-			if (project === "" && (projectRaw ?? "") !== "") {
-				sendJson(res, 400, { ok: false, error: "project must match [A-Za-z0-9._-]" });
-				return;
+			let owner: { id: number; img?: string };
+			if (t.kind === "new") {
+				// #82: same rule as /api/add - never create a legacy col=deliverable row.
+				if (q.get("col") === "deliverable") {
+					reply = { status: 400, body: { ok: false, error: "deliverable is not a phase" } };
+					return false;
+				}
+				const card: Card = { id: b.nextId++, text: "", col: parseCol(q.get("col")) ?? "todo" };
+				stampMove(card, actorOf(q));
+				card.text = `#${card.id} (${ext === "html" ? "html" : MIME_BY_EXT[ext].startsWith("video/") ? "video" : "image"})`;
+				const projectRaw = q.get("project");
+				const project = normalizeProject(projectRaw);
+				// Only an exact empty string clears (a fresh upload card only); anything else unnormalizable is a typo.
+				if (project === "" && (projectRaw ?? "") !== "") {
+					reply = { status: 400, body: { ok: false, error: "project must match [A-Za-z0-9._-]" } };
+					return false;
+				}
+				if (project !== "") card.project = project;
+				b.cards.push(card);
+				owner = card;
+			} else if (t.kind === "deliv") {
+				// #82: a deliverable's attachment. No project label, no card id space.
+				owner = t.deliv;
+			} else {
+				// Uploading to an existing card leaves its project label alone (the dashboard only sends project for a new card).
+				// #53: an upload ADDS to the card: dropping the old file on every upload made a
+				// second attachment impossible. Removal is per card (delete trashes them all).
+				owner = t.card;
 			}
-			if (project !== "") card.project = project;
-			b.cards.push(card);
-			owner = card;
-		} else if (t.kind === "deliv") {
-			// #82: a deliverable's attachment. No project label, no card id space.
-			owner = t.deliv;
-		} else {
-			// Uploading to an existing card leaves its project label alone (the dashboard only sends project for a new card).
-			// #53: an upload ADDS to the card: dropping the old file on every upload made a
-			// second attachment impossible. Removal is per card (delete trashes them all).
-			owner = t.card;
-		}
-		const name = writeMedia(owner.id, ext, buf);
-		if (name === null) {
-			sendJson(res, 500, { ok: false, error: "media write failed" });
-			return;
-		}
-		owner.img = owner.img ? `${owner.img},${name}` : name;
-		writeBoard(path, b);
-		sendJson(res, 200, t.kind === "deliv" ? { ok: true, deliverable: owner } : { ok: true, card: owner });
+			// shortcut: writeMedia のファイル書き込みも BEGIN IMMEDIATE の中にある。巨大な multipart では
+			// busy_timeout(3000ms) を超え得るので、アップロードが重くなったら mediaDir を外へ出す。
+			const name = writeMedia(owner.id, ext, buf);
+			if (name === null) return false;
+			owner.img = owner.img ? `${owner.img},${name}` : name;
+			reply = { status: 200, body: t.kind === "deliv" ? { ok: true, deliverable: owner } : { ok: true, card: owner } };
+		});
+		// #101: 書き込み自体が throw した（BEGIN/COMMIT 失敗）なら success を返さない。
+		if (persistError !== null) reply = { status: 500, body: { ok: false, error: persistError } };
+		sendJson(res, reply.status, reply.body);
 	});
 }
 
@@ -4176,36 +4199,39 @@ function handleUpload2(req: IncomingMessage, res: ServerResponse, q: URLSearchPa
 		sendJson(res, 400, { ok: false, error: target.error });
 		return;
 	}
-	const b = readBoard(target.path);
-	const t = mediaTarget(q, b);
-	if (t.kind === "missing") {
-		sendJson(res, 404, { ok: false, error: t.error });
-		return;
-	}
-	// This route never creates a row: "no id and no deliv" is the caller's mistake.
-	if (t.kind === "new") {
-		sendJson(res, 400, { ok: false, error: "id required" });
-		return;
-	}
-	const owner: { id: number; img?: string } = t.kind === "deliv" ? t.deliv : t.card;
-	if (parsed.bytes.length === 0) {
-		sendJson(res, 400, { ok: false, error: "empty payload" });
-		return;
-	}
-	// Same budget as /api/upload, checked before the write so a refusal leaves the card alone.
-	if (mediaDirBytes() + parsed.bytes.length > MEDIA_DIR_MAX_BYTES) {
-		sendJson(res, 413, { ok: false, error: `media budget exceeded (max ${fmtMB(MEDIA_DIR_MAX_BYTES)})` });
-		return;
-	}
-	const name = writeMedia(owner.id, parsed.ext, parsed.bytes);
-	if (name === null) {
-		sendJson(res, 500, { ok: false, error: "media write failed" });
-		return;
-	}
-	// #53: add, do not replace (a card can hold several attachments).
-	owner.img = owner.img ? `${owner.img},${name}` : name;
-	writeBoard(target.path, b);
-	sendJson(res, 200, t.kind === "deliv" ? { ok: true, deliverable: owner } : { ok: true, card: owner });
+	// #101: 宛先の決定から書き戻しまで同じロックの中（別プロセスが同じカードを触っていても消さない）。
+	// ディレクトリの全走査は重いのでロックの外で測り、比較だけ中で行う（404/400 の判定順を変えない）。
+	const mediaUsed = mediaDirBytes();
+	let reply: { status: number; body: unknown } = { status: 500, body: { ok: false, error: "media write failed" } };
+	const persistError = mutateBoard(target.path, (b) => {
+		const t = mediaTarget(q, b);
+		if (t.kind === "missing") {
+			reply = { status: 404, body: { ok: false, error: t.error } };
+			return false;
+		}
+		// This route never creates a row: "no id and no deliv" is the caller's mistake.
+		if (t.kind === "new") {
+			reply = { status: 400, body: { ok: false, error: "id required" } };
+			return false;
+		}
+		const owner: { id: number; img?: string } = t.kind === "deliv" ? t.deliv : t.card;
+		if (parsed.bytes.length === 0) {
+			reply = { status: 400, body: { ok: false, error: "empty payload" } };
+			return false;
+		}
+		// Same budget as /api/upload, checked before the write so a refusal leaves the card alone.
+		if (mediaUsed + parsed.bytes.length > MEDIA_DIR_MAX_BYTES) {
+			reply = { status: 413, body: { ok: false, error: `media budget exceeded (max ${fmtMB(MEDIA_DIR_MAX_BYTES)})` } };
+			return false;
+		}
+		const name = writeMedia(owner.id, parsed.ext, parsed.bytes);
+		if (name === null) return false;
+		// #53: add, do not replace (a card can hold several attachments).
+		owner.img = owner.img ? `${owner.img},${name}` : name;
+		reply = { status: 200, body: t.kind === "deliv" ? { ok: true, deliverable: owner } : { ok: true, card: owner } };
+	});
+	if (persistError !== null) reply = { status: 500, body: { ok: false, error: persistError } };
+	sendJson(res, reply.status, reply.body);
 }
 
 const MEDIA_PREFIX = "/api/media/";
@@ -4844,7 +4870,6 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 		return;
 	}
 	const path = target.path;
-	const b = readBoard(path);
 
 	switch (url.pathname) {
 		case "/api/add": {
@@ -4859,8 +4884,6 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 				return;
 			}
 			const col = parseCol(colParam) ?? "todo";
-			const card: Card = { id: b.nextId++, text, col };
-			stampMove(card, actorOf(q));
 			const projectRaw = q.get("project");
 			const project = normalizeProject(projectRaw);
 			// Only an exact empty string clears; anything else unnormalizable is a typo.
@@ -4868,7 +4891,6 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 				sendJson(res, 400, { ok: false, error: "project must match [A-Za-z0-9._-]" });
 				return;
 			}
-			if (project !== "") card.project = project;
 			const sessionRaw = q.get("session");
 			const sessionId = normalizeSessionId(sessionRaw);
 			// Same rule as project: only an exact empty string means "no session".
@@ -4905,48 +4927,69 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 				sendJson(res, 400, { ok: false, error: `labels must be a comma-separated list of: ${LABELS.join(", ")}` });
 				return;
 			}
-			if (blocks.length > 0 && wouldCycle(b.cards, card.id, blocks)) {
-				sendJson(res, 400, { ok: false, error: "blocks must not form a cycle" });
-				return;
-			}
-			if (due !== undefined) card.due = due;
-			if (estimate !== undefined) card.estimate = estimate;
-			if (sessionId !== "") card.sessionId = sessionId;
-			if (commit !== "") card.commit = commit;
-			if (blocks.length > 0) card.blocks = blocks;
-			if (labels.length > 0) card.labels = labels;
-			b.cards.push(card);
+			// #101: nextId と cycle 検査は同じロックの中で読む（別プロセスと id がぶつからない）。
+			let reply: { status: number; body: unknown } = { status: 500, body: { ok: false, error: "board write failed" } };
+			// ロックの中で「保存まで到達した」ことを立てる。#94 の合図はこれと戻り値の両方で判定する。
+			let writeOk = false;
+			const persistError = mutateBoard(path, (b) => {
+				const card: Card = { id: b.nextId++, text, col };
+				stampMove(card, actorOf(q));
+				if (blocks.length > 0 && wouldCycle(b.cards, card.id, blocks)) {
+					reply = { status: 400, body: { ok: false, error: "blocks must not form a cycle" } };
+					return false;
+				}
+				if (project !== "") card.project = project;
+				if (due !== undefined) card.due = due;
+				if (estimate !== undefined) card.estimate = estimate;
+				if (sessionId !== "") card.sessionId = sessionId;
+				if (commit !== "") card.commit = commit;
+				if (blocks.length > 0) card.blocks = blocks;
+				if (labels.length > 0) card.labels = labels;
+				b.cards.push(card);
+				writeOk = true;
+				reply = { status: 200, body: { ok: true, cards: b.cards } };
+			});
 			// #94: ダッシュボードの「+」はユーザーの意思なので、次の poll は 5 分待たない。
 			// slug は書き込み先から取る（route がボードを特定したのと同じ値。sid から引き直すと
 			// storedProjectKey の揺れで poll の key とズレ、永久に発火しなくなる）。
-			// 合図は永続化が通ったときだけ: writeBoard は失敗を戻り値で返す（throw しない）。
-			// TODO 以外（doing/done 直行）はループの仕事ではない。
-			if (writeBoard(path, b) === null && col === "todo") userPickAt.set(storedProjectKey(boardKeyOf(path).sid), Date.now());
-			sendJson(res, 200, { ok: true, cards: b.cards });
+			// 合図は永続化が通ったときだけ。TODO 以外（doing/done 直行）はループの仕事ではない。
+			if (persistError === null && writeOk && col === "todo") userPickAt.set(storedProjectKey(boardKeyOf(path).sid), Date.now());
+			if (persistError !== null) reply = { status: 500, body: { ok: false, error: persistError } };
+			sendJson(res, reply.status, reply.body);
 			return;
 		}
 		// #50: 複数行の一括追加。パースは parseQuickAdd が持ち、ここは id を詰めて 1 回だけ書く。
 		case "/api/quickadd": {
-			const parsed = parseQuickAdd(q.get("text") ?? "", b.nextId);
-			if (!parsed.ok) {
-				sendJson(res, 400, { ok: false, error: parsed.error });
-				return;
-			}
 			const sid = actorOf(q);
-			for (const card of parsed.cards) {
-				// 新しい id は既存カードの blocks から指され得るので、/api/add と同じ検査を通す。
-				if (card.blocks !== undefined && wouldCycle(b.cards, card.id, card.blocks)) {
-					sendJson(res, 400, { ok: false, error: "blocks must not form a cycle" });
-					return;
+			// #101: 採番と cycle 検査を同じロックの中で。
+			let reply: { status: number; body: unknown } = { status: 500, body: { ok: false, error: "board write failed" } };
+			let added = 0;
+			let writeOk = false;
+			const persistError = mutateBoard(path, (b) => {
+				const parsed = parseQuickAdd(q.get("text") ?? "", b.nextId);
+				if (!parsed.ok) {
+					reply = { status: 400, body: { ok: false, error: parsed.error } };
+					return false;
 				}
-				stampMove(card, sid);
-				b.cards.push(card);
-			}
-			b.nextId += parsed.cards.length;
+				for (const card of parsed.cards) {
+					// 新しい id は既存カードの blocks から指され得るので、/api/add と同じ検査を通す。
+					if (card.blocks !== undefined && wouldCycle(b.cards, card.id, card.blocks)) {
+						reply = { status: 400, body: { ok: false, error: "blocks must not form a cycle" } };
+						return false;
+					}
+					stampMove(card, sid);
+					b.cards.push(card);
+				}
+				b.nextId += parsed.cards.length;
+				added = parsed.cards.length;
+				writeOk = true;
+				reply = { status: 200, body: { ok: true, cards: b.cards, added: parsed.cards } };
+			});
 			// #94: /api/quickadd も入力欄の + の経路（複数行・トークン付き）で、作るカードは常に todo。
 			// /api/add と同じく「ユーザーが今足した」合図を置く。
-			if (parsed.cards.length > 0 && writeBoard(path, b) === null) userPickAt.set(storedProjectKey(boardKeyOf(path).sid), Date.now());
-			sendJson(res, 200, { ok: true, cards: b.cards, added: parsed.cards });
+			if (persistError === null && writeOk && added > 0) userPickAt.set(storedProjectKey(boardKeyOf(path).sid), Date.now());
+			if (persistError !== null) reply = { status: 500, body: { ok: false, error: persistError } };
+			sendJson(res, reply.status, reply.body);
 			return;
 		}
 		case "/api/move": {
@@ -4960,45 +5003,53 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 				sendJson(res, 400, { ok: false, error: "col must be todo|doing|done" });
 				return;
 			}
-			const card = b.cards.find((c) => c.id === Number(idParam));
-			if (!card) {
-				sendJson(res, 404, { ok: false, error: `no card with id ${idParam}` });
-				return;
-			}
-			// #18: same-column moves are a no-op (moveCardTo). The save stays unconditional.
-			moveCardTo(card, col, actorOf(q));
-			writeBoard(path, b);
-			sendJson(res, 200, { ok: true, cards: b.cards });
+			let reply: { status: number; body: unknown } = { status: 404, body: { ok: false, error: `no card with id ${idParam}` } };
+			const persistError = mutateBoard(path, (b) => {
+				const card = b.cards.find((c) => c.id === Number(idParam));
+				if (!card) return false;
+				// #18: same-column moves are a no-op (moveCardTo). The save stays unconditional.
+				moveCardTo(card, col, actorOf(q));
+				reply = { status: 200, body: { ok: true, cards: b.cards } };
+			});
+			if (persistError !== null) reply = { status: 500, body: { ok: false, error: persistError } };
+			sendJson(res, reply.status, reply.body);
 			return;
 		}
 		case "/api/remove": {
 			const id = Number(idParam);
-			const card = b.cards.find((c) => c.id === id);
-			if (!card) {
-				sendJson(res, 404, { ok: false, error: `no card with id ${idParam}` });
-				return;
-			}
-			removeMedia(card);
-			// A removed card must not stay in anyone's blocks: the card that would clear
-			// it is gone, so the dependent would wait forever for nothing.
-			for (const c of b.cards) {
-				if (c.blocks && c.blocks.includes(id)) c.blocks = c.blocks.filter((x) => x !== id);
-			}
-			b.cards = b.cards.filter((c) => c.id !== id);
-			writeBoard(path, b);
-			sendJson(res, 200, { ok: true, cards: b.cards });
+			// #101: 他プロセスが今入れたカードを巻き添えにしないよう、削除もロックの中で。
+			let reply: { status: number; body: unknown } = { status: 404, body: { ok: false, error: `no card with id ${idParam}` } };
+			const persistError = mutateBoard(path, (b) => {
+				const card = b.cards.find((c) => c.id === id);
+				if (!card) return false;
+				removeMedia(card);
+				// A removed card must not stay in anyone's blocks: the card that would clear
+				// it is gone, so the dependent would wait forever for nothing.
+				for (const c of b.cards) {
+					if (c.blocks && c.blocks.includes(id)) c.blocks = c.blocks.filter((x) => x !== id);
+				}
+				b.cards = b.cards.filter((c) => c.id !== id);
+				reply = { status: 200, body: { ok: true, cards: b.cards } };
+			});
+			if (persistError !== null) reply = { status: 500, body: { ok: false, error: persistError } };
+			sendJson(res, reply.status, reply.body);
 			return;
 		}
 		case "/api/rename": {
 			const text = (q.get("text") ?? "").trim();
-			const card = b.cards.find((c) => c.id === Number(idParam));
-			if (!card || text.length === 0) {
+			if (text.length === 0) {
 				sendJson(res, 400, { ok: false, error: "id and text required" });
 				return;
 			}
-			card.text = text;
-			writeBoard(path, b);
-			sendJson(res, 200, { ok: true, cards: b.cards });
+			let reply: { status: number; body: unknown } = { status: 400, body: { ok: false, error: "id and text required" } };
+			const persistError = mutateBoard(path, (b) => {
+				const card = b.cards.find((c) => c.id === Number(idParam));
+				if (!card) return false;
+				card.text = text;
+				reply = { status: 200, body: { ok: true, cards: b.cards } };
+			});
+			if (persistError !== null) reply = { status: 500, body: { ok: false, error: persistError } };
+			sendJson(res, reply.status, reply.body);
 			return;
 		}
 		case "/api/modes": {
@@ -5092,16 +5143,17 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 				sendJson(res, 400, { ok: false, error: `n must be an integer ${MIN_PRIORITY}..${MAX_PRIORITY}` });
 				return;
 			}
-			const card = b.cards.find((c) => c.id === Number(idParam));
-			if (!card) {
-				sendJson(res, 404, { ok: false, error: `no card with id ${idParam}` });
-				return;
-			}
-			// 0 is the default: store nothing rather than an explicit 0.
-			if (n === 0) delete card.priority;
-			else card.priority = n;
-			writeBoard(path, b);
-			sendJson(res, 200, { ok: true, cards: b.cards });
+			let reply: { status: number; body: unknown } = { status: 404, body: { ok: false, error: `no card with id ${idParam}` } };
+			const persistError = mutateBoard(path, (b) => {
+				const card = b.cards.find((c) => c.id === Number(idParam));
+				if (!card) return false;
+				// 0 is the default: store nothing rather than an explicit 0.
+				if (n === 0) delete card.priority;
+				else card.priority = n;
+				reply = { status: 200, body: { ok: true, cards: b.cards } };
+			});
+			if (persistError !== null) reply = { status: 500, body: { ok: false, error: persistError } };
+			sendJson(res, reply.status, reply.body);
 			return;
 		}
 		case "/api/schedule": {
@@ -5111,77 +5163,82 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 				sendJson(res, 400, { ok: false, error: "at, blocked, project, session, commit or labels is required" });
 				return;
 			}
-			const card = b.cards.find((c) => c.id === Number(idParam));
-			if (!card) {
-				sendJson(res, 404, { ok: false, error: `no card with id ${idParam}` });
-				return;
-			}
-			// Validate every parameter before mutating: a 400 must not leave half the change applied.
-			const at = q.get("at");
-			const atIso = at === null ? null : normalizeFireAt(at);
-			// Non-empty but unparseable is a user mistake, not a clear.
-			if (at !== null && atIso === null && at.trim().length > 0) {
-				sendJson(res, 400, { ok: false, error: "at must be ISO 8601 or +Nm/+Nh/+Nd" });
-				return;
-			}
-			const blocked = q.get("blocked");
-			const projectParam = q.get("project");
-			const p = projectParam === null ? null : normalizeProject(projectParam);
-			// Only an exact empty string clears; anything else unnormalizable (incl. spaces) is a typo.
-			if (p !== null && p.length === 0 && projectParam !== "") {
-				sendJson(res, 400, { ok: false, error: "project must match [A-Za-z0-9._-]" });
-				return;
-			}
-			const sessionParam = q.get("session");
-			const sess = sessionParam === null ? null : normalizeSessionId(sessionParam);
-			if (sess !== null && sess.length === 0 && sessionParam !== "") {
-				sendJson(res, 400, { ok: false, error: "session must match [A-Za-z0-9._:@-]" });
-				return;
-			}
-			const commitParam = q.get("commit");
-			const sha = commitParam === null ? null : normalizeCommit(commitParam);
-			if (sha !== null && sha.length === 0 && commitParam !== "") {
-				sendJson(res, 400, { ok: false, error: "commit must be 7-40 hex characters" });
-				return;
-			}
-			// #22: whole-set replacement, like project/session/commit - labels=bug clears 調査.
-			// undefined = 未指定（触らない）, null = 不正な値。ここを null 一つで兼ねると
-			// labels を渡さない全呼び出しが 400 になる。
-			const labelsParam = q.get("labels");
-			const labs = labelsParam === null ? undefined : parseLabels(labelsParam);
-			if (labs === null) {
-				sendJson(res, 400, { ok: false, error: `labels must be a comma-separated list of: ${LABELS.join(", ")}` });
-				return;
-			}
-			if (at !== null) {
-				if (atIso === null) {
-					delete card.nextFireAt;
-					delete card.firedFor;
-				} else card.nextFireAt = atIso;
-			}
-			if (blocked !== null) {
-				const t = blocked.trim();
-				if (t.length === 0) delete card.blocked;
-				else card.blocked = t;
-			}
-			if (p !== null) {
-				if (p.length === 0) delete card.project;
-				else card.project = p;
-			}
-			if (sess !== null) {
-				if (sess.length === 0) delete card.sessionId;
-				else card.sessionId = sess;
-			}
-			if (sha !== null) {
-				if (sha.length === 0) delete card.commit;
-				else card.commit = sha;
-			}
-			if (labs !== undefined) {
-				if (labs.length === 0) delete card.labels;
-				else card.labels = labs;
-			}
-			writeBoard(path, b);
-			sendJson(res, 200, { ok: true, cards: b.cards });
+			// #101: 検査も書き込みも同じロックの中で（順番もそのまま: 404 が 400 より先）。
+			let reply: { status: number; body: unknown } = { status: 500, body: { ok: false, error: "board write failed" } };
+			const persistError = mutateBoard(path, (b) => {
+				const card = b.cards.find((c) => c.id === Number(idParam));
+				if (!card) {
+					reply = { status: 404, body: { ok: false, error: `no card with id ${idParam}` } };
+					return false;
+				}
+				// Validate every parameter before mutating: a 400 must not leave half the change applied.
+				const at = q.get("at");
+				const atIso = at === null ? null : normalizeFireAt(at);
+				// Non-empty but unparseable is a user mistake, not a clear.
+				if (at !== null && atIso === null && at.trim().length > 0) {
+					reply = { status: 400, body: { ok: false, error: "at must be ISO 8601 or +Nm/+Nh/+Nd" } };
+					return false;
+				}
+				const blocked = q.get("blocked");
+				const projectParam = q.get("project");
+				const p = projectParam === null ? null : normalizeProject(projectParam);
+				// Only an exact empty string clears; anything else unnormalizable (incl. spaces) is a typo.
+				if (p !== null && p.length === 0 && projectParam !== "") {
+					reply = { status: 400, body: { ok: false, error: "project must match [A-Za-z0-9._-]" } };
+					return false;
+				}
+				const sessionParam = q.get("session");
+				const sess = sessionParam === null ? null : normalizeSessionId(sessionParam);
+				if (sess !== null && sess.length === 0 && sessionParam !== "") {
+					reply = { status: 400, body: { ok: false, error: "session must match [A-Za-z0-9._:@-]" } };
+					return false;
+				}
+				const commitParam = q.get("commit");
+				const sha = commitParam === null ? null : normalizeCommit(commitParam);
+				if (sha !== null && sha.length === 0 && commitParam !== "") {
+					reply = { status: 400, body: { ok: false, error: "commit must be 7-40 hex characters" } };
+					return false;
+				}
+				// #22: whole-set replacement, like project/session/commit - labels=bug clears 調査.
+				// undefined = 未指定（触らない）, null = 不正な値。ここを null 一つで兼ねると
+				// labels を渡さない全呼び出しが 400 になる。
+				const labelsParam = q.get("labels");
+				const labs = labelsParam === null ? undefined : parseLabels(labelsParam);
+				if (labs === null) {
+					reply = { status: 400, body: { ok: false, error: `labels must be a comma-separated list of: ${LABELS.join(", ")}` } };
+					return false;
+				}
+				if (at !== null) {
+					if (atIso === null) {
+						delete card.nextFireAt;
+						delete card.firedFor;
+					} else card.nextFireAt = atIso;
+				}
+				if (blocked !== null) {
+					const t = blocked.trim();
+					if (t.length === 0) delete card.blocked;
+					else card.blocked = t;
+				}
+				if (p !== null) {
+					if (p.length === 0) delete card.project;
+					else card.project = p;
+				}
+				if (sess !== null) {
+					if (sess.length === 0) delete card.sessionId;
+					else card.sessionId = sess;
+				}
+				if (sha !== null) {
+					if (sha.length === 0) delete card.commit;
+					else card.commit = sha;
+				}
+				if (labs !== undefined) {
+					if (labs.length === 0) delete card.labels;
+					else card.labels = labs;
+				}
+				reply = { status: 200, body: { ok: true, cards: b.cards } };
+			});
+			if (persistError !== null) reply = { status: 500, body: { ok: false, error: persistError } };
+			sendJson(res, reply.status, reply.body);
 			return;
 		}
 		// #82: the deliverables' own routes. They are not cards: no col, no phase, no nextId.
@@ -5192,10 +5249,14 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 				sendJson(res, 400, { ok: false, error: "text required" });
 				return;
 			}
-			const deliverable: Deliv = { id: b.delivNextId++, text, at: Date.now() };
-			b.deliverables.push(deliverable);
-			writeBoard(path, b);
-			sendJson(res, 200, { ok: true, deliverable });
+			let reply: { status: number; body: unknown } = { status: 500, body: { ok: false, error: "board write failed" } };
+			const persistError = mutateBoard(path, (b) => {
+				const deliverable: Deliv = { id: b.delivNextId++, text, at: Date.now() };
+				b.deliverables.push(deliverable);
+				reply = { status: 200, body: { ok: true, deliverable } };
+			});
+			if (persistError !== null) reply = { status: 500, body: { ok: false, error: persistError } };
+			sendJson(res, reply.status, reply.body);
 			return;
 		}
 		case "/api/deliv/edit": {
@@ -5204,27 +5265,29 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 				sendJson(res, 400, { ok: false, error: "text required" });
 				return;
 			}
-			const deliverable = b.deliverables.find((d) => d.id === Number(idParam));
-			if (deliverable === undefined) {
-				sendJson(res, 404, { ok: false, error: `no deliverable with id ${idParam}` });
-				return;
-			}
-			deliverable.text = text;
-			writeBoard(path, b);
-			sendJson(res, 200, { ok: true, deliverable });
+			let reply: { status: number; body: unknown } = { status: 404, body: { ok: false, error: `no deliverable with id ${idParam}` } };
+			const persistError = mutateBoard(path, (b) => {
+				const deliverable = b.deliverables.find((d) => d.id === Number(idParam));
+				if (deliverable === undefined) return false;
+				deliverable.text = text;
+				reply = { status: 200, body: { ok: true, deliverable } };
+			});
+			if (persistError !== null) reply = { status: 500, body: { ok: false, error: persistError } };
+			sendJson(res, reply.status, reply.body);
 			return;
 		}
 		case "/api/deliv/remove": {
-			const deliverable = b.deliverables.find((d) => d.id === Number(idParam));
-			if (deliverable === undefined) {
-				sendJson(res, 404, { ok: false, error: `no deliverable with id ${idParam}` });
-				return;
-			}
-			// Same rule as a card: only our own media names, and only when nothing else shows them.
-			trashUnusedMedia(b, "deliv", deliverable.id, mediaNames(deliverable.img));
-			b.deliverables = b.deliverables.filter((d) => d.id !== deliverable.id);
-			writeBoard(path, b);
-			sendJson(res, 200, { ok: true });
+			let reply: { status: number; body: unknown } = { status: 404, body: { ok: false, error: `no deliverable with id ${idParam}` } };
+			const persistError = mutateBoard(path, (b) => {
+				const deliverable = b.deliverables.find((d) => d.id === Number(idParam));
+				if (deliverable === undefined) return false;
+				// Same rule as a card: only our own media names, and only when nothing else shows them.
+				trashUnusedMedia(b, "deliv", deliverable.id, mediaNames(deliverable.img));
+				b.deliverables = b.deliverables.filter((d) => d.id !== deliverable.id);
+				reply = { status: 200, body: { ok: true } };
+			});
+			if (persistError !== null) reply = { status: 500, body: { ok: false, error: persistError } };
+			sendJson(res, reply.status, reply.body);
 			return;
 		}
 		// #61: drop ONE attachment entry (the deliverables tile's ×). `n` is the index after
@@ -5232,32 +5295,36 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 		// the csv entry is ours; a media name is trashed unless another card still shows it.
 		// Removing the last entry drops `img` itself, so the card stops being a deliverable.
 		case "/api/attach/del": {
-			const t = mediaTarget(q, b);
-			if (t.kind === "missing") {
-				sendJson(res, 404, { ok: false, error: t.error });
-				return;
-			}
-			if (t.kind === "new") {
-				sendJson(res, 400, { ok: false, error: "id required" });
-				return;
-			}
-			const owner: { id: number; img?: string } = t.kind === "deliv" ? t.deliv : t.card;
-			const list = (owner.img ?? "").split(",").map((s) => s.trim()).filter(Boolean);
-			const nRaw = q.get("n");
-			const n = Number(nRaw);
-			// nRaw empty/null first: Number("") and Number(null) are both 0, which would
-			// silently mean "the first one" instead of a 400.
-			if (nRaw === null || nRaw.trim() === "" || !Number.isInteger(n) || n < 0 || n >= list.length) {
-				sendJson(res, 400, { ok: false, error: `n out of range (0..${list.length - 1})` });
-				return;
-			}
-			const gone = list.splice(n, 1)[0];
-			// #92: one rule, shared with /api/deliv/remove and the deliverable tool.
-			trashUnusedMedia(b, t.kind, owner.id, [gone]);
-			if (list.length === 0) delete owner.img;
-			else owner.img = list.join(",");
-			writeBoard(path, b);
-			sendJson(res, 200, { ok: true, cards: b.cards, deliverables: b.deliverables });
+			let reply: { status: number; body: unknown } = { status: 500, body: { ok: false, error: "board write failed" } };
+			const persistError = mutateBoard(path, (b) => {
+				const t = mediaTarget(q, b);
+				if (t.kind === "missing") {
+					reply = { status: 404, body: { ok: false, error: t.error } };
+					return false;
+				}
+				if (t.kind === "new") {
+					reply = { status: 400, body: { ok: false, error: "id required" } };
+					return false;
+				}
+				const owner: { id: number; img?: string } = t.kind === "deliv" ? t.deliv : t.card;
+				const list = (owner.img ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+				const nRaw = q.get("n");
+				const n = Number(nRaw);
+				// nRaw empty/null first: Number("") and Number(null) are both 0, which would
+				// silently mean "the first one" instead of a 400.
+				if (nRaw === null || nRaw.trim() === "" || !Number.isInteger(n) || n < 0 || n >= list.length) {
+					reply = { status: 400, body: { ok: false, error: `n out of range (0..${list.length - 1})` } };
+					return false;
+				}
+				const gone = list.splice(n, 1)[0];
+				// #92: one rule, shared with /api/deliv/remove and the deliverable tool.
+				trashUnusedMedia(b, t.kind, owner.id, [gone]);
+				if (list.length === 0) delete owner.img;
+				else owner.img = list.join(",");
+				reply = { status: 200, body: { ok: true, cards: b.cards, deliverables: b.deliverables } };
+			});
+			if (persistError !== null) reply = { status: 500, body: { ok: false, error: persistError } };
+			sendJson(res, reply.status, reply.body);
 			return;
 		}
 		default:
@@ -5994,14 +6061,17 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 	const runImgCommand = (ctx: ExtensionContext, sid: string, id: number, input: string): void => {
 		// #17: the card lives on this cwd's project board.
 		const path = boardPath("project", boardKeyFor(ctx, sid, "project"));
-		const b = readBoard(path);
-		const r = attachToCard(b, id, input);
-		if (!r.ok) {
-			ctx.ui.notify(r.error);
-			return;
-		}
-		writeBoard(path, b);
-		ctx.ui.notify(`#${r.card.id} に画像を添付: ${r.basename}（session）`);
+		// #101: 読んで添えて書くまでが同じロック。他プロセスが同時に触ったカードを消さない。
+		let msg = "";
+		mutateBoard(path, (b) => {
+			const r = attachToCard(b, id, input);
+			if (!r.ok) {
+				msg = r.error;
+				return false;
+			}
+			msg = `#${r.card.id} に画像を添付: ${r.basename}（session）`;
+		});
+		ctx.ui.notify(msg);
 		refresh(ctx, sid);
 	};
 
@@ -6041,9 +6111,13 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 			return;
 		}
 		// 0 is the default: drop the key instead of storing an explicit 0.
-		if (value === 0) delete card.priority;
-		else card.priority = value;
-		writeBoard(path, b);
+		// #101: 書くときだけロックの中でもう一度引き直す。
+		mutateBoard(path, (fb) => {
+			const live = fb.cards.find((c) => c.id === id);
+			if (live === undefined) return false;
+			if (value === 0) delete live.priority;
+			else live.priority = value;
+		});
 		ctx.ui.notify(`#${card.id} 優先度を ${value} に設定（${scope}）`);
 		refresh(ctx, sid);
 	};
@@ -6343,12 +6417,13 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 				// resetScopesOnce removes the legacy one - so only this cwd's project board is read.
 				let claimed = 0;
 				for (const path of [boardPath("project", projKey)]) {
-					const b = readBoard(path);
-					const stolen = cardsIn(b, "doing").filter((c) => c.movedBy !== sid);
-					if (stolen.length === 0) continue;
-					for (const card of stolen) card.movedBy = sid;
-					claimed += stolen.length;
-					writeBoard(path, b);
+					// #101: 引き継ぎも同じロックの中で（他プロセスの更新を巻き添えにしない）。
+					mutateBoard(path, (b) => {
+						const stolen = cardsIn(b, "doing").filter((c) => c.movedBy !== sid);
+						if (stolen.length === 0) return false;
+						for (const card of stolen) card.movedBy = sid;
+						claimed += stolen.length;
+					});
 				}
 				ctx.ui.notify(
 					`kanban: 駆動元を ${prev ?? "なし"} → ${sid} に切り替えた` +
@@ -6386,12 +6461,15 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 				// #17: the card belongs to this conversation, and the project board is the one
 				// this cwd shares - there is no session board left to add it to.
 				const path = boardPath("project", projKey);
-				const b = readBoard(path);
-				const card: Card = { id: b.nextId++, text: parsed.text, col: "todo" };
-				stampMove(card, sid);
-				b.cards.push(card);
-				writeBoard(path, b);
-				ctx.ui.notify(`TODO に追加: ${formatCard(card)}`);
+				let added: Card | null = null;
+				// #101: nextId の採番も同じロックの中で（別プロセスと id がぶつからない）。
+				mutateBoard(path, (b) => {
+					const card: Card = { id: b.nextId++, text: parsed.text, col: "todo" };
+					stampMove(card, sid);
+					b.cards.push(card);
+					added = card;
+				});
+				if (added !== null) ctx.ui.notify(`TODO に追加: ${formatCard(added)}`);
 				refresh(ctx, sid);
 				return;
 			}
@@ -6525,10 +6603,12 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 						if (text === undefined) return;
 						const trimmed = text.trim();
 						if (trimmed.length > 0) {
-							const card: Card = { id: b.nextId++, text: trimmed, col };
-							stampMove(card, sid);
-							b.cards.push(card);
-							writeBoard(boardPath(scope, projKey), b);
+							// #101: 採番と挿入を同じロックの中で。
+							mutateBoard(boardPath(scope, projKey), (fb) => {
+								const card: Card = { id: fb.nextId++, text: trimmed, col };
+								stampMove(card, sid);
+								fb.cards.push(card);
+							});
 						}
 						refresh(ctx, sid);
 						continue;
@@ -6546,13 +6626,17 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 					]);
 					if (op === undefined) return;
 					if (op === "← 列選択に戻る") continue;
-					if (op === "削除") {
-						removeMedia(card); // the `kanban` tool already drops the image; keep the paths symmetric
-						b.cards = b.cards.filter((c) => c.id !== card.id);
-					} else {
-						moveCardTo(card, COLS[MOVE_LABELS.indexOf(op)], sid);
-					}
-					writeBoard(boardPath(scope, projKey), b);
+					// #101: 消すのも動かすのも、ロックの中で引き直してから。
+					mutateBoard(boardPath(scope, projKey), (fb) => {
+						const live = fb.cards.find((c) => c.id === card.id);
+						if (live === undefined) return false;
+						if (op === "削除") {
+							removeMedia(live); // the `kanban` tool already drops the image; keep the paths symmetric
+							fb.cards = fb.cards.filter((c) => c.id !== card.id);
+						} else {
+							moveCardTo(live, COLS[MOVE_LABELS.indexOf(op)], sid);
+						}
+					});
 					refresh(ctx, sid);
 				}
 			}
@@ -6640,13 +6724,27 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 			// #16: global is a read-only aggregate everywhere else (HTTP, dashboard), so the tool
 			// must read the same set - GLOBAL_JSON alone is empty after the migration.
 			const b: Board = scope === "global" ? aggregateGlobal() : readBoard(path);
+			// #101: 盤面の書き換えは全部この口を通す。ロックの中で read し直すので、他の
+			// プロセスが同時に足したカードを writeBoard ごと巻き添えにしない。
+			// global は集計物で書く行が無い（従来どおり、書き込みは "global board is read-only" で拒む）。
+			let seen: Board = b;
+			const persist = (fn: (board: Board) => boolean | void): string | null => {
+				if (scope === "global") {
+					fn(seen);
+					return writeBoard(path, seen);
+				}
+				return mutateBoard(path, (live) => {
+					seen = live; // details に返す盤面も書き込み後のものに
+					return fn(live);
+				});
+			};
 			let persistError: string | null = null;
 			const done = (text: string) => ({
 				content: [{ type: "text" as const, text }],
 				details: {
 					scope,
-					cards: [...b.cards],
-					nextId: b.nextId,
+					cards: [...seen.cards],
+					nextId: seen.nextId,
 					...(persistError === null ? {} : { persistError }),
 				},
 			});
@@ -6677,7 +6775,7 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 				return null;
 			};
 
-			let message: string;
+			let message = "";
 			switch (params.action) {
 				case "add": {
 					const text = (params.text ?? "").trim();
@@ -6692,31 +6790,53 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 					if (commit === "" && (params.commit ?? "") !== "") return fail("commit must be 7-40 hex characters");
 					const labels = parseLabels(params.labels ?? null);
 					if (labels === null) return fail(`labels must be a comma-separated list of: ${LABELS.join(", ")}`);
-					const card: Card = { id: b.nextId++, text, col };
-					stampMove(card, sessionSid);
-					const gateError = applyGate(card);
-					if (gateError !== null) return fail(gateError);
-					if (project !== "") card.project = project;
-					if (sessionId !== "") card.sessionId = sessionId;
-					if (commit !== "") card.commit = commit;
-					if (labels.length > 0) card.labels = labels;
-					b.cards.push(card);
-					persistError = writeBoard(path, b);
-					message = `added ${formatCard(card)} to ${card.col} (${scope})${gateNote(card)}`;
+					// #101: 採番・検証・挿入を同じロックの中で（別プロセスと id がぶつからない）。
+					let added: Card | null = null;
+					let gateError: string | null = null;
+					persistError = persist((fb) => {
+						const card: Card = { id: fb.nextId++, text, col };
+						stampMove(card, sessionSid);
+						gateError = applyGate(card);
+						if (gateError !== null) return false;
+						if (project !== "") card.project = project;
+						if (sessionId !== "") card.sessionId = sessionId;
+						if (commit !== "") card.commit = commit;
+						if (labels.length > 0) card.labels = labels;
+						fb.cards.push(card);
+						added = card;
+					});
+					if (added === null) return fail(gateError ?? persistError ?? "add failed");
+					message = `added ${formatCard(added)} to ${added.col} (${scope})${gateNote(added)}`;
 					break;
 				}
 				case "move": {
-					const card = params.id === undefined ? undefined : b.cards.find((c) => c.id === params.id);
-					if (card === undefined) return fail(`no card with id ${params.id} in the ${scope} board`);
-					if (params.col === undefined) return fail("move requires col");
-					const changed = moveCardTo(card, params.col, sessionSid);
-					const gateError = applyGate(card);
-					if (gateError !== null) return fail(gateError);
-					persistError = writeBoard(path, b);
+					// #101: 移動もロックの中で引き直す。順番は従来どおり card → col の検査順。
+					let err: string | null = null;
+					let moved: Card | null = null;
+					let changed = false;
+					persistError = persist((fb) => {
+						const card = params.id === undefined ? undefined : fb.cards.find((c) => c.id === params.id);
+						if (card === undefined) {
+							err = `no card with id ${params.id} in the ${scope} board`;
+							return false;
+						}
+						if (params.col === undefined) {
+							err = "move requires col";
+							return false;
+						}
+						changed = moveCardTo(card, params.col, sessionSid);
+						const gateError = applyGate(card);
+						if (gateError !== null) {
+							err = gateError;
+							return false;
+						}
+						moved = card;
+					});
+					if (moved === null) return fail(err ?? persistError ?? "move failed");
 					// #18: do not report "moved" for a no-op. The board already had it there.
 					message = changed
-						? `moved #${card.id} to ${card.col} (${scope})${gateNote(card)}`
-						: `#${card.id} is already in ${card.col} (${scope})${gateNote(card)}`;
+						? `moved #${moved.id} to ${moved.col} (${scope})${gateNote(moved)}`
+						: `#${moved.id} is already in ${moved.col} (${scope})${gateNote(moved)}`;
 					break;
 				}
 				case "edit": {
@@ -6736,36 +6856,50 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 					// value (" ") is a typo, not a clear - #20 shipped that bug for ?commit=%20%20.
 					const labs = params.labels === undefined ? undefined : parseLabels(params.labels);
 					if (labs === null) return fail(`labels must be a comma-separated list of: ${LABELS.join(", ")}`);
-					const card = b.cards.find((c) => c.id === params.id);
-					if (card === undefined) return fail(`no card with id ${params.id} in the ${scope} board`);
-					if (text.length > 0) card.text = text;
-					if (proj !== undefined) {
-						if (proj === "") delete card.project;
-						else card.project = proj;
-					}
-					if (sess !== undefined) {
-						if (sess === "") delete card.sessionId;
-						else card.sessionId = sess;
-					}
-					if (sha !== undefined) {
-						if (sha === "") delete card.commit;
-						else card.commit = sha;
-					}
-					if (labs !== undefined) {
-						if (labs.length === 0) delete card.labels;
-						else card.labels = labs;
-					}
-					persistError = writeBoard(path, b);
-					message = `edited #${card.id} (${scope})`;
+					let err: string | null = null;
+					let edited: Card | null = null;
+					persistError = persist((fb) => {
+						const live = fb.cards.find((c) => c.id === params.id);
+						if (live === undefined) {
+							err = `no card with id ${params.id} in the ${scope} board`;
+							return false;
+						}
+						if (text.length > 0) live.text = text;
+						if (proj !== undefined) {
+							if (proj === "") delete live.project;
+							else live.project = proj;
+						}
+						if (sess !== undefined) {
+							if (sess === "") delete live.sessionId;
+							else live.sessionId = sess;
+						}
+						if (sha !== undefined) {
+							if (sha === "") delete live.commit;
+							else live.commit = sha;
+						}
+						if (labs !== undefined) {
+							if (labs.length === 0) delete live.labels;
+							else live.labels = labs;
+						}
+						edited = live;
+					});
+					if (edited === null) return fail(err ?? persistError ?? "edit failed");
+					message = `edited #${edited.id} (${scope})`;
 					break;
 				}
 				case "remove": {
 					if (params.id === undefined) return fail("remove requires id");
-					const card = b.cards.find((c) => c.id === params.id);
-					if (card === undefined) return fail(`no card with id ${params.id} in the ${scope} board`);
-					removeMedia(card);
-					b.cards = b.cards.filter((c) => c.id !== params.id);
-					persistError = writeBoard(path, b);
+					let err: string | null = null;
+					persistError = persist((fb) => {
+						const live = fb.cards.find((c) => c.id === params.id);
+						if (live === undefined) {
+							err = `no card with id ${params.id} in the ${scope} board`;
+							return false;
+						}
+						removeMedia(live);
+						fb.cards = fb.cards.filter((c) => c.id !== params.id);
+					});
+					if (err !== null) return fail(err);
 					message = `removed #${params.id} (${scope})`;
 					break;
 				}
@@ -6793,11 +6927,18 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 					if (id === undefined || !Number.isInteger(id) || id < 1) return fail("img requires id (an integer 1 or more)");
 					const input = (params.image ?? "").trim();
 					if (input === "") return fail("img requires image (a local file path)");
-					// attachToCard validates everything before removeMedia, so a bad path writes nothing.
-					const r = attachToCard(b, id, input);
-					if (!r.ok) return fail(r.error);
-					persistError = writeBoard(path, b);
-					message = `attached ${r.name} to #${r.card.id}`;
+					// #101: 添付もロックの中で（検証→書き込みの間に他プロセスが触っても消さない）。
+					let err: string | null = null;
+					persistError = persist((fb) => {
+						// attachToCard validates everything before removeMedia, so a bad path writes nothing.
+						const attached = attachToCard(fb, id, input);
+						if (!attached.ok) {
+							err = attached.error;
+							return false;
+						}
+						message = `attached ${attached.name} to #${attached.card.id}`;
+					});
+					if (err !== null) return fail(err);
 					break;
 				}
 				case "ref": {
@@ -6805,11 +6946,17 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 					if (id === undefined || !Number.isInteger(id) || id < 1) return fail("ref requires id (an integer 1 or more)");
 					const input = (params.image ?? "").trim();
 					if (input === "") return fail("ref requires image (an absolute file path)");
-					// refToCard validates before the write, so a refused path leaves the card alone.
-					const r = refToCard(b, id, input);
-					if (!r.ok) return fail(r.error);
-					persistError = writeBoard(path, b);
-					message = `referenced ${r.abs} on #${r.card.id}`;
+					let err: string | null = null;
+					persistError = persist((fb) => {
+						// refToCard validates before the write, so a refused path leaves the card alone.
+						const r = refToCard(fb, id, input);
+						if (!r.ok) {
+							err = r.error;
+							return false;
+						}
+						message = `referenced ${r.abs} on #${r.card.id}`;
+					});
+					if (err !== null) return fail(err);
 					break;
 				}
 				case "url": {
@@ -6872,7 +7019,18 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 			const sid = scope === "project" ? projectSlugOf(cwdOfCtx(ctx)) : sessionSid;
 			const path = boardPath(scope, sid);
 			// #16/#92: global reads the aggregate (GLOBAL_JSON is empty after the migration).
-			const b: Board = scope === "global" ? aggregateGlobal() : readBoard(path);
+			let b: Board = scope === "global" ? aggregateGlobal() : readBoard(path);
+			// #101: 行の追加/削除もロックの中で read し直す（global は書く行が無いので従来どおり）。
+			const persist = (fn: (board: Board) => boolean | void): string | null => {
+				if (scope === "global") {
+					fn(b);
+					return writeBoard(path, b);
+				}
+				return mutateBoard(path, (live) => {
+					b = live;
+					return fn(live);
+				});
+			};
 			let persistError: string | null = null;
 			const done = (text: string) => ({
 				content: [{ type: "text" as const, text }],
@@ -6886,40 +7044,52 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 			// Same back door as the kanban tool: an in-process write is invisible to the HTTP gate.
 			if (scope === "global" && params.action !== "list") return fail("global board is read-only");
 
-			let message: string;
+			let message = "";
 			switch (params.action) {
 				case "add": {
 					const text = (params.text ?? "").trim();
 					if (text.length === 0) return fail("add requires a non-empty text");
 					// `at` is part of the row (the band sorts on it). The id is the board's own deliv
 					// sequence; db.ts raises deliv_next_id to max(id)+1 inside its lock anyway.
-					const deliverable: Deliv = { id: b.delivNextId, text, at: Date.now() };
-					b.deliverables.push(deliverable);
-					b.delivNextId += 1;
-					persistError = writeBoard(path, b);
-					message = `added ${text} to deliverable #${deliverable.id} (${scope})`;
+					let delivered: Deliv | null = null;
+					persistError = persist((fb) => {
+						const deliverable: Deliv = { id: fb.delivNextId, text, at: Date.now() };
+						fb.deliverables.push(deliverable);
+						fb.delivNextId += 1;
+						delivered = deliverable;
+					});
+					if (delivered === null) return fail(persistError ?? "add failed");
+					message = `added ${text} to deliverable #${delivered.id} (${scope})`;
 					break;
 				}
 				case "edit": {
 					if (params.id === undefined) return fail("edit requires id");
 					const text = (params.text ?? "").trim();
 					if (text.length === 0) return fail("edit requires a non-empty text");
-					const deliverable = b.deliverables.find((d) => d.id === params.id);
-					if (deliverable === undefined) return fail(`no deliverable with id ${params.id} in the ${scope} board`);
-					deliverable.text = text; // at/img stay: a rewording is not a new row
-					persistError = writeBoard(path, b);
-					message = `edited deliverable #${deliverable.id} (${scope})`;
+					let edited: Deliv | null = null;
+					persistError = persist((fb) => {
+						const deliverable = fb.deliverables.find((d) => d.id === params.id);
+						if (deliverable === undefined) return false;
+						deliverable.text = text; // at/img stay: a rewording is not a new row
+						edited = deliverable;
+					});
+					if (edited === null) return fail(`no deliverable with id ${params.id} in the ${scope} board`);
+					message = `edited deliverable #${edited.id} (${scope})`;
 					break;
 				}
 				case "remove": {
 					if (params.id === undefined) return fail("remove requires id");
-					const i = b.deliverables.findIndex((d) => d.id === params.id);
-					if (i < 0) return fail(`no deliverable with id ${params.id} in the ${scope} board`);
-					// #92: the same trash rule as /api/deliv/remove. Never removeMedia(): that takes a
-					// Card, so passing a Deliv needs `as Card` - which is how the two spaces got mixed.
-					trashUnusedMedia(b, "deliv", params.id, mediaNames(b.deliverables[i].img));
-					b.deliverables.splice(i, 1);
-					persistError = writeBoard(path, b);
+					let missing = true;
+					persistError = persist((fb) => {
+						const i = fb.deliverables.findIndex((d) => d.id === params.id);
+						if (i < 0) return false;
+						missing = false;
+						// #92: the same trash rule as /api/deliv/remove. Never removeMedia(): that takes a
+						// Card, so passing a Deliv needs `as Card` - which is how the two spaces got mixed.
+						trashUnusedMedia(fb, "deliv", params.id, mediaNames(fb.deliverables[i].img));
+						fb.deliverables.splice(i, 1);
+					});
+					if (missing) return fail(`no deliverable with id ${params.id} in the ${scope} board`);
 					message = `removed deliverable #${params.id} (${scope})`;
 					break;
 				}
@@ -6930,10 +7100,16 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 					if (input === "") return fail("img requires image (a local file path)");
 					// attachToDeliv looks the owner up in b.deliverables: a deliv id can never land on
 					// the same-numbered card.
-					const r = attachToDeliv(b, id, input);
-					if (!r.ok) return fail(r.error);
-					persistError = writeBoard(path, b);
-					message = `attached ${r.name} to deliverable #${r.deliv.id} (${scope})`;
+					let err: string | null = null;
+					persistError = persist((fb) => {
+						const r = attachToDeliv(fb, id, input);
+						if (!r.ok) {
+							err = r.error;
+							return false;
+						}
+						message = `attached ${r.name} to deliverable #${r.deliv.id} (${scope})`;
+					});
+					if (err !== null) return fail(err);
 					break;
 				}
 				case "ref": {
@@ -6941,10 +7117,16 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 					if (id === undefined || !Number.isInteger(id) || id < 1) return fail("ref requires id (an integer 1 or more)");
 					const input = (params.image ?? "").trim();
 					if (input === "") return fail("ref requires image (an absolute file path)");
-					const r = refToDeliv(b, id, input);
-					if (!r.ok) return fail(r.error);
-					persistError = writeBoard(path, b);
-					message = `referenced ${r.abs} on deliverable #${r.deliv.id} (${scope})`;
+					let err: string | null = null;
+					persistError = persist((fb) => {
+						const r = refToDeliv(fb, id, input);
+						if (!r.ok) {
+							err = r.error;
+							return false;
+						}
+						message = `referenced ${r.abs} on deliverable #${r.deliv.id} (${scope})`;
+					});
+					if (err !== null) return fail(err);
 					break;
 				}
 				default: {

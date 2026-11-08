@@ -102,6 +102,14 @@ export type KanbanDb = {
 	/** Drop a whole board. Tests use this to reproduce "no boards at all". */
 	deleteBoard(key: BoardKey): void;
 	/**
+	 * #101: the atomic read-modify-write door. One write lock covers the read, fn, and the
+	 * write back, so two processes touching one board serialize instead of last-winner-eats-
+	 * the-other. fn edits `b` in place; returning `false` aborts the write, so the edits are
+	 * discarded and nothing is persisted. Nobody may call readBoard()/writeBoard()/mutate()
+	 * inside fn.
+	 */
+	mutate(key: BoardKey, fn: (b: Board) => boolean | void): Board;
+	/**
 	 * #17: one-shot reset - drop every board whose scope is not project, with its cards and
 	 * deps. The session model's rows are unenumerable from outside (no sessionKeys any more),
 	 * so the reset cannot be composed out of deleteBoard() alone. Returns boards removed.
@@ -278,6 +286,19 @@ function rowToDecision(r: Row): Decision {
 }
 
 /** Open (creating if needed) the board database. Callers own the single instance. */
+/** A failing ROLLBACK must never hide the error that made us roll back. */
+const rollbackQuietly = (db: { exec(sql: string): void }): void => {
+	try {
+		db.exec("ROLLBACK");
+	} catch {
+		/* nothing left to undo */
+	}
+};
+
+/** #101: the columns the ALTER block adds. Drift is safe in one direction only: a column
+ * listed here without an ALTER keeps taking the write lock, never a wrong schema. */
+const CARD_COLUMNS = ["due", "estimate", "session_id", "commit_sha", "labels"];
+
 export function openKanbanDb(file: string): KanbanDb {
 	// node:sqlite is still flagged experimental, and its warning is noise the user cannot
 	// act on. Every other warning must still reach stderr.
@@ -299,29 +320,58 @@ export function openKanbanDb(file: string): KanbanDb {
 	const db = new mod.DatabaseSync(file);
 	// WAL lets the dashboard process read while the extension writes. busy_timeout turns
 	// the transient SQLITE_BUSY into a wait instead of an exception.
-	db.exec("PRAGMA journal_mode = WAL");
 	db.exec("PRAGMA busy_timeout = 3000");
-	db.exec(SCHEMA);
+	// #101: the journal mode is database-wide. Measured: on a DB that is already WAL this is a
+	// no-op (~7ms) even while another process holds BEGIN EXCLUSIVE - tests/kanban-parallel.test.mjs
+	// holds that lock for 8s (longer than busy_timeout) and open still returns. A FRESH file is
+	// different: whoever gets there first does the schema work, so a burst of simultaneous
+	// first-opens contends on that write lock (measured: 40 at once under a loaded suite all hit
+	// SQLITE_BUSY). No retry belongs here - if the mode really cannot be set, that is a real error
+	// and must surface; the schema block below is the one that needs the write lock.
+	db.exec("PRAGMA journal_mode = WAL");
+	// #17: user_version is a marker, not a precondition - the live DB was found at v0 with
+	// missing columns, so the columns themselves decide. #101: a healthy board needs no write
+	// lock at all; an upload holds that lock for the length of its file write, and taking it on
+	// every open would let busy_timeout decide whether a new process starts.
+	const schemaProblems = (): number => {
+		const card = new Set((db.prepare("PRAGMA table_info(card)").all() as Row[]).map((r) => String(r.name)));
+		const board = new Set((db.prepare("PRAGMA table_info(board)").all() as Row[]).map((r) => String(r.name)));
+		const version = Number((db.prepare("PRAGMA user_version").get() as Row).user_version);
+		const missing = CARD_COLUMNS.filter((c) => !card.has(c));
+		if (!board.has("deliv_next_id")) missing.push("board.deliv_next_id");
+		if (version < 2) missing.push("user_version " + version);
+		return missing.length;
+	};
+	if (schemaProblems() > 0) {
+		// #101: CREATE TABLE IF NOT EXISTS cannot add a column, and the ALTERs are check-then-act:
+		// two openers both saw a missing column and one died with "duplicate column name". One
+		// write lock, and the checks below run again inside it.
+		db.exec("BEGIN IMMEDIATE");
+		try {
+			db.exec(SCHEMA);
 
-	// CREATE TABLE IF NOT EXISTS cannot add a column to a table that already exists, so the
-	// upgrade is an ALTER driven by table_info. #17: user_version is a marker, not a
-	// precondition - the live DB was found at v0 with missing columns, so a version gate
-	// had silently skipped the repair. The version is written last so an interrupted
-	// upgrade still retries.
-	const cols = new Set((db.prepare("PRAGMA table_info(card)").all() as Row[]).map((r) => String(r.name)));
-	if (!cols.has("due")) db.exec("ALTER TABLE card ADD COLUMN due TEXT");
-	if (!cols.has("estimate")) db.exec("ALTER TABLE card ADD COLUMN estimate INTEGER");
-	if (!cols.has("session_id")) db.exec("ALTER TABLE card ADD COLUMN session_id TEXT");
-	if (!cols.has("commit_sha")) db.exec("ALTER TABLE card ADD COLUMN commit_sha TEXT");
-	if (!cols.has("labels")) db.exec("ALTER TABLE card ADD COLUMN labels TEXT");
-	// #82: the deliverable id sequence. max(id)+1 would re-issue the id of a deleted row and
-	// INSERT OR REPLACE would then silently overwrite a live one.
-	const boardCols = new Set(
-		(db.prepare("PRAGMA table_info(board)").all() as Row[]).map((r) => String(r.name)),
-	);
-	if (!boardCols.has("deliv_next_id")) db.exec("ALTER TABLE board ADD COLUMN deliv_next_id INTEGER NOT NULL DEFAULT 1");
-	// shortcut: ALTER は列名で判定する。型変更が必要になったらテーブル再作成に切り替える。
-	db.exec("PRAGMA user_version = 2");
+			// The upgrade is an ALTER driven by table_info, not by user_version. The version is
+			// written last so an interrupted upgrade still retries.
+			const cols = new Set((db.prepare("PRAGMA table_info(card)").all() as Row[]).map((r) => String(r.name)));
+			if (!cols.has("due")) db.exec("ALTER TABLE card ADD COLUMN due TEXT");
+			if (!cols.has("estimate")) db.exec("ALTER TABLE card ADD COLUMN estimate INTEGER");
+			if (!cols.has("session_id")) db.exec("ALTER TABLE card ADD COLUMN session_id TEXT");
+			if (!cols.has("commit_sha")) db.exec("ALTER TABLE card ADD COLUMN commit_sha TEXT");
+			if (!cols.has("labels")) db.exec("ALTER TABLE card ADD COLUMN labels TEXT");
+			// #82: the deliverable id sequence. max(id)+1 would re-issue the id of a deleted row and
+			// INSERT OR REPLACE would then silently overwrite a live one.
+			const boardCols = new Set(
+				(db.prepare("PRAGMA table_info(board)").all() as Row[]).map((r) => String(r.name)),
+			);
+			if (!boardCols.has("deliv_next_id")) db.exec("ALTER TABLE board ADD COLUMN deliv_next_id INTEGER NOT NULL DEFAULT 1");
+			// shortcut: ALTER は列名で判定する。型変更が必要になったらテーブル再作成に切り替える。
+			db.exec("PRAGMA user_version = 2");
+			db.exec("COMMIT");
+		} catch (err) {
+			rollbackQuietly(db);
+			throw err;
+		}
+	}
 
 	// #34: a slug comes from a directory name, and Windows does not tell `C:\Code\Repo` from
 	// `c:\code\repo`, so every sid lookup matches case-insensitively. What is STORED keeps
@@ -454,73 +504,103 @@ export function openKanbanDb(file: string): KanbanDb {
 		return row === undefined ? undefined : Object.values(row)[0];
 	};
 
+	// #101: the body of a board write WITHOUT its transaction. writeBoard() wraps it in one,
+	// and mutate() needs the same body inside ITS lock - two copies would drift.
+	const writeBoardLocked = (
+		key: BoardKey,
+		b: Pick<Board, "cards" | "nextId"> & Partial<Pick<Board, "deliverables" | "delivNextId">>,
+	): void => {
+		const now = Date.now();
+		// #34: a board that already exists keeps the spelling it was created with, so a
+		// write under another case cannot split its cards into a twin board.
+		const head = selectBoard.get(key.scope, key.sid) as Row | undefined;
+		const sid = head === undefined ? key.sid : String(head.sid);
+		// #82: a Board built without readBoard() (a test, a seed, a scratch board) may carry
+		// no deliverables at all. That means "leave the deliv table alone" - never "delete
+		// them": a wipe would also rewind the counter, and the next add would re-issue a
+		// live id for INSERT OR REPLACE to eat.
+		const delivs: Deliv[] | undefined = b.deliverables;
+		// The rows and their counter are one unit: given only one half, the sequence can rewind
+		// and INSERT OR REPLACE would then eat a live row - so clamp past every id we write.
+		// #101: head is read inside this transaction too, so there is no second read to distrust.
+		let delivNext =
+			delivs === undefined
+				? (head === undefined ? 1 : Number(head.deliv_next_id))
+				: Number(b.delivNextId ?? 1);
+		if (delivs !== undefined) {
+			for (const d of delivs) if (d.id >= delivNext) delivNext = d.id + 1;
+		}
+		if (head === undefined) {
+			insertBoard.run(key.scope, sid, b.nextId, delivNext, now);
+		} else {
+			upsertBoard.run(b.nextId, delivNext, now, key.scope, sid);
+		}
+		const ids = JSON.stringify(b.cards.map((c) => c.id));
+		deleteStaleCards.run(key.scope, sid, ids);
+		for (let i = 0; i < b.cards.length; i++) {
+			const c = b.cards[i];
+			insertCard.run(
+				key.scope,
+				sid,
+				c.id,
+				i,
+				c.text ?? "",
+				c.col ?? "todo",
+				c.img ?? null,
+				c.movedAt ?? null,
+				c.movedBy ?? null,
+				c.priority ?? null,
+				c.nextFireAt ?? null,
+				c.blocked ?? null,
+				c.firedFor ?? null,
+				c.project ?? null,
+				c.due ?? null,
+				c.estimate ?? null,
+				c.sessionId ?? null,
+				c.commit ?? null,
+				labelColumn(c),
+			);
+		}
+		writeDeps(key.scope, sid, b.cards);
+		if (delivs !== undefined) writeDelivs(key.scope, sid, delivs);
+	};
+
+	// #101: one writer at a time. A fn that re-enters would deadlock on its own BEGIN
+	// IMMEDIATE (or read a half-built board), so it is an error, not a nested savepoint.
+	let inTx = false;
+	const tx = <T>(body: () => T): T => {
+		if (inTx) throw new Error("mutate() re-entered: fn must not call mutate/readBoard/writeBoard");
+		db.exec("BEGIN IMMEDIATE");
+		inTx = true;
+		try {
+			const out = body();
+			db.exec("COMMIT");
+			return out;
+		} catch (err) {
+			rollbackQuietly(db);
+			throw err;
+		} finally {
+			inTx = false;
+		}
+	};
+
 	return {
 		readBoard,
 		// One transaction: a reader never sees half a board, and a concurrent writer waits
 		// instead of overwriting. Cards that vanished from the array are deleted by id so a
 		// removed card cannot come back on the next read.
 		writeBoard(key, b) {
-			const now = Date.now();
-			// #34: a board that already exists keeps the spelling it was created with, so a
-			// write under another case cannot split its cards into a twin board.
-			const head = selectBoard.get(key.scope, key.sid) as Row | undefined;
-			const sid = head === undefined ? key.sid : String(head.sid);
-			// #82: a Board built without readBoard() (a test, a seed, a scratch board) may carry
-			// no deliverables at all. That means "leave the deliv table alone" - never "delete
-			// them": a wipe would also rewind the counter, and the next add would re-issue a
-			// live id for INSERT OR REPLACE to eat. Nothing is read before the lock.
-			const delivs: Deliv[] | undefined = b.deliverables;
-			db.exec("BEGIN IMMEDIATE");
-			try {
-				// Inside the lock, or a concurrent /api/deliv/add would be counted out. The rows
-				// and their counter are one unit: given only one half, the sequence can rewind and
-				// INSERT OR REPLACE would then eat a live row - so clamp past every id we write.
-				const cur = head === undefined ? undefined : (selectBoard.get(key.scope, key.sid) as Row | undefined);
-				let delivNext =
-					delivs === undefined
-						? (cur === undefined ? 1 : Number(cur.deliv_next_id))
-						: Number(b.delivNextId ?? 1);
-				if (delivs !== undefined) {
-					for (const d of delivs) if (d.id >= delivNext) delivNext = d.id + 1;
-				}
-				if (head === undefined) {
-					insertBoard.run(key.scope, sid, b.nextId, delivNext, now);
-				} else {
-					upsertBoard.run(b.nextId, delivNext, now, key.scope, sid);
-				}
-				const ids = JSON.stringify(b.cards.map((c) => c.id));
-				deleteStaleCards.run(key.scope, sid, ids);
-				for (let i = 0; i < b.cards.length; i++) {
-					const c = b.cards[i];
-					insertCard.run(
-						key.scope,
-						sid,
-						c.id,
-						i,
-						c.text ?? "",
-						c.col ?? "todo",
-						c.img ?? null,
-						c.movedAt ?? null,
-						c.movedBy ?? null,
-						c.priority ?? null,
-						c.nextFireAt ?? null,
-						c.blocked ?? null,
-						c.firedFor ?? null,
-						c.project ?? null,
-						c.due ?? null,
-						c.estimate ?? null,
-						c.sessionId ?? null,
-						c.commit ?? null,
-						labelColumn(c),
-					);
-				}
-				writeDeps(key.scope, sid, b.cards);
-				if (delivs !== undefined) writeDelivs(key.scope, sid, delivs);
-				db.exec("COMMIT");
-			} catch (err) {
-				db.exec("ROLLBACK");
-				throw err;
-			}
+			tx(() => writeBoardLocked(key, b));
+		},
+		// #101: the read, fn and the write back are one transaction, so a card another
+		// process added between our read and our write cannot be deleted as "stale".
+		mutate(key, fn) {
+			return tx(() => {
+				const cur = readBoard(key) ?? { cards: [], nextId: 1, deliverables: [], delivNextId: 1 };
+				if (fn(cur) === false) return cur;
+				writeBoardLocked(key, cur);
+				return cur;
+			});
 		},
 		revOf(key) {
 			const row = selectRev.get(key.scope, key.sid) as Row | undefined;
@@ -568,7 +648,7 @@ export function openKanbanDb(file: string): KanbanDb {
 				writeDeps(key.scope, key.sid, b.cards);
 				db.exec("COMMIT");
 			} catch (err) {
-				db.exec("ROLLBACK");
+				rollbackQuietly(db);
 				throw err;
 			}
 			return true;
@@ -596,7 +676,7 @@ export function openKanbanDb(file: string): KanbanDb {
 				db.exec("COMMIT");
 				return Number(info.changes ?? 0);
 			} catch (err) {
-				db.exec("ROLLBACK");
+				rollbackQuietly(db);
 				throw err;
 			}
 		},

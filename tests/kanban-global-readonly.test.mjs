@@ -55,8 +55,9 @@ check("drillBoard の global 分岐は aggregateGlobal() の集約から組む",
 });
 
 // --- 2: 書き込みは列ループ先頭のガードの後ろだけ -------------------------------------
-check("writeBoard(boardPath(scope, projKey)) はすべてガードの直後から始まる列ループの中", () => {
-	const writes = occurrences(DRILL, "writeBoard(boardPath(scope, projKey)");
+check("mutateBoard(boardPath(scope, projKey)) はすべてガードの直後から始まる列ループの中", () => {
+	// #101: 書き込みは read も同じロックの中で行う mutateBoard に一本化した。
+	const writes = occurrences(DRILL, "mutateBoard(boardPath(scope, projKey)");
 	assert.ok(writes.length > 0, "書き込みが見つからない（テストの切り出しが壊れている）");
 	for (const w of writes) {
 		const loop = DRILL.lastIndexOf("for (;;) {", w);
@@ -65,6 +66,8 @@ check("writeBoard(boardPath(scope, projKey)) はすべてガードの直後か�
 		assert.ok(guard > loop, `列ループ先頭のガードより前に書き込みがある（index ${w}）`);
 		assert.ok(guard - loop < 200, `ガードが列ループ先頭ではない（ループ先頭から ${guard - loop} 文字）`);
 	}
+	// 盤面まるごと read-modify-write の旧経路が戻ってきたら、ここで落ちる。
+	assert.equal(occurrences(DRILL, "writeBoard(").length, 0, "ドリルダウンに writeBoard が残っている");
 });
 
 check("globalReadOnly() の呼び出しは 2 か所（優先度 + 列ループ）だけ", () => {

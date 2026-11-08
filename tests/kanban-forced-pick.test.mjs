@@ -19,16 +19,17 @@ if (ADD_START < 0 || ADD_END < 0 || MOVE < 0) throw new Error("/api/add / quicka
 const ADD = SOURCE.slice(ADD_START, ADD_END);
 const QUICK = SOURCE.slice(ADD_END, MOVE);
 
-// writeBoard は失敗を戻り値で返す（throw しない）。戻り値を見ない stamp は
-// 「カードは保存されていないのに wake だけ出る」経路を作るので、ここで形を固定する。
-const SUCCESS = "writeBoard(path, b) === null";
+// #101: 書き込みは mutateBoard の中なので、成否は「ロックの中で立てた writeOk」と
+// 「mutateBoard の戻り値が null（throw していない）」の両方で持つ。writeOk だけだと
+// BEGIN IMMEDIATE の失敗（戻り値が文字列）を見落とし、保存できていないのに wake が出る。
+const SUCCESS = "persistError === null && writeOk";
 
 test("+ の TODO 追加は永続化が通ったときだけ stamp する", () => {
-	assert.ok(ADD.includes(SUCCESS), "/api/add が writeBoard の戻り値を見ていない");
+	assert.ok(ADD.includes("const persistError = mutateBoard(path, (b) => {"), "/api/add がロック内の書き込みと成否の受け取りを使っていない");
 	const stamp = ADD.indexOf("userPickAt.set(");
 	assert.ok(stamp > 0, "/api/add が合図を置かない");
 	const line = ADD.slice(ADD.lastIndexOf("\n", stamp) + 1, ADD.indexOf("\n", stamp));
-	assert.ok(line.includes(SUCCESS), "合図の条件に writeBoard の成功が入っていない");
+	assert.ok(line.includes(SUCCESS), "合図の条件に書き込み成功が入っていない");
 	assert.ok(line.includes('col === "todo"'), "TODO 以外でも合図を置いている");
 });
 
@@ -41,7 +42,7 @@ test("+ の複数行経路（quickadd）も 1 枚以上入ったときだけ合�
 	// 入力欄は 1 行なら /api/add、複数行やトークン付きなら /api/quickadd に振り分けられる
 	// （web/dash/_app.js:891）。quickadd はトークンだけの行を捨てて cards 0 件を返し得るので、
 	// 0 件で stamp すると「#tag と打っただけ」で wake が出る。
-	assert.match(QUICK, /if \(parsed\.cards\.length > 0 && writeBoard\(path, b\) === null\) userPickAt\.set\(/);
+	assert.match(QUICK, /if \(persistError === null && writeOk && added > 0\) userPickAt\.set\(/);
 });
 
 test("poll は郵便受けを forced として渡し、発火したら消す", () => {
