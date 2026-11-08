@@ -7,7 +7,7 @@
 //   - 保存される表記は最初に書いたもの（後から別 case で書いても増えない）
 //   - GET /api/kanban?p=<slug> は cwd と無関係にそのボードを返し、不正な p は 400
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
@@ -29,6 +29,8 @@ process.env.HOME = HOME_DIR;
 process.env.USERPROFILE = process.env.HOME;
 // sessionInfoById() の源泉。 /api/modes は sid の cwd をここから引く。
 // PI_CODING_AGENT_DIR があると getAgentDir() が HOME を無視する。
+// #93: cwd の源は session_start が publish する live cwd（cwdBySid）になったので、
+// セッションの jsonl を seed する必要はない（ここは偽 HOME を隔離するだけ）。
 const AGENT_SESSIONS = `${HOME_DIR}/.pi/agent/sessions/encoded-elsewhere`;
 mkdirSync(AGENT_SESSIONS, { recursive: true });
 delete process.env.PI_CODING_AGENT_DIR;
@@ -95,14 +97,27 @@ const CARDS = [
 	{ id: 3, text: "three", col: "done" },
 ];
 // #34: modes のキーは保存表記。cwd だけ大文字を混ぜたボードを作る。
-// sessionInfoById() は 30 秒キャッシュなので、最初の /api/dashboard より前に置く。
 const CASE_STORED = "modes-case-target";
 const CASE_SID = "modes-case-sid";
 const CASE_CWD = `${HOME_DIR}/Modes-Case-Target`;
-writeFileSync(
-	`${AGENT_SESSIONS}/${CASE_SID}.jsonl`,
-	`${JSON.stringify({ type: "session", version: 3, id: CASE_SID, timestamp: "2026-01-01T00:00:00.000Z", cwd: CASE_CWD })}\n`,
-);
+
+// #93: cwdBySid を作る唯一の口。ヘッダ cwd を seed する代わりにこれを叩く（失敗しても
+// 後続の assert が落ちるので、ここでは握り潰さずにそのまま返す）。
+const startSession = (onFooter) =>
+	handlers.get("session_start")(
+		{},
+		{
+			hasUI: true,
+			isIdle: () => true,
+			ui: {
+				notify() {},
+				setWidget(_key, lines) {
+					if (onFooter) onFooter(lines[0]);
+				},
+			},
+			sessionManager: { getSessionId: () => CASE_SID, getCwd: () => CASE_CWD, getEntries: () => [] },
+		},
+	);
 
 // --- 1. 純関数: 大小を保つ ---------------------------------------------------------
 await check("normalizeProject は case を保つ（#34）", () => {
@@ -231,8 +246,9 @@ await check("保存表記と cwd 表記が違っても modes は保存表記の�
 	const SID = CASE_SID;
 	seedBoard(`${KANBAN}/projects/${storedKey}.json`, { cards: [{ id: 1, text: "s", col: "todo" }], nextId: 2 });
 	assert.equal(mod.projectSlugOf(cwdDir), "Modes-Case-Target", "cwd 表記が保存表記と同じになっている");
-	// キャッシュを温める（sid の既知判定はここを見る）。
-	assert.equal((await tf(`${BASE}/api/dashboard`)).status, 200);
+	// cwd の publish（sid の既知判定は cwdBySid を見る）。旧テストは sessionInfoById の
+	// キャッシュを /api/dashboard で温めていた。
+	startSession();
 	const r = await tf(`${BASE}/api/modes?scope=project&sid=${SID}&key=doingLoop&value=off`);
 	assert.equal(r.status, 200);
 	const keys = Object.keys(JSON.parse(readFileSync(`${KANBAN}/modes.json`, "utf8")).PROJECT ?? {}).filter(
@@ -240,21 +256,11 @@ await check("保存表記と cwd 表記が違っても modes は保存表記の�
 	);
 	assert.deepEqual(keys, [storedKey], `modes.json のキーが保存表記でない: ${JSON.stringify(keys)}`);
 	// 読み手: session_start -> refresh() は boardKeyFor でキーを決める（poll と同じ規則）。
+	// 2 回目は OFF を書いた後の描画を見るため（1 回目は publish 専用）。
 	let footer = null;
-	handlers.get("session_start")(
-		{},
-		{
-			hasUI: true,
-			isIdle: () => true,
-			ui: {
-				notify() {},
-				setWidget(_key, lines) {
-					footer = lines[0];
-				},
-			},
-			sessionManager: { getSessionId: () => SID, getCwd: () => cwdDir, getEntries: () => [] },
-		},
-	);
+	startSession((line) => {
+		footer = line;
+	});
 	assert.match(String(footer), /^PROJECT: modes-case-target: /, `footer が保存表記のボードを引いていない: ${footer}`);	assert.ok(!/ loop\b/.test(String(footer)), `OFF にしたループが footer で ON のまま: ${footer}`);
 	// ダッシュボードも同じキーを読む（project.id は ?p= の projectId と同じ表記）。
 	const d = await (await tf(`${BASE}/api/dashboard`)).json();

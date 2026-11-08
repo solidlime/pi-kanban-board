@@ -88,7 +88,8 @@ for (let i = 0; i < 40; i++) {
 // 最初の読みで modes.json が無ければ既定が書かれる（readModesFile の repair 経路）。
 assert.ok((await tf(`${BASE}/api/kanban?fields=id`)).ok, "起動したサーバが /api/kanban に答えない");
 
-/** /api/kanban?sid= は modes を直接返す（GET。実在セッションに限らない）。 */
+/** /api/kanban?sid= は modes を直接返す（GET。ただし #93 以降は cwdBySid に publish 済みの
+ * 実在セッションに限る - 未知の sid は 400）。 */
 async function boardModes() {
 	const r = await tf(`${BASE}/api/kanban?fields=id`);
 	assert.ok(r.ok, `/api/kanban が ${r.status}`);

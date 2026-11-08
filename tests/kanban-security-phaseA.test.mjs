@@ -266,9 +266,12 @@ const NOTE = JSON.stringify({ take: 1 });
 		// 起動時 migration で project ボードになった分は global に載る（仕様）。漏れてはいけない
 		// のは「project セクションに他人の看板が混ざること」なので、そちらで見る。
 		assert.equal(JSON.parse(bare.body).project.cards.length, 0, bare.body);
-		assert.equal(named.status, 200, `status=${named.status}`);
-		assert.equal(JSON.parse(named.body).project.cards.length, 0, named.body);
-		assert.equal(JSON.parse(named.body).projectId, j.projectId, "sid で他人の project に飛べる");
+		// #93: cwdBySid (published by session_start / take) is the only source of a sid's cwd, so a
+		// sid nobody published would resolve to this process's driver board - a guess. Refuse it,
+		// same as the write gate, instead of naming a board the caller never asked for.
+		assert.equal(named.status, 400, `status=${named.status} body=${named.body}`);
+		assert.match(named.body, /unknown sid/);
+		assert.equal(named.body.includes("secret-other"), false, named.body);
 	});
 }
 {

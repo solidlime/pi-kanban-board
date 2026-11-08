@@ -430,7 +430,9 @@ checkA("session_shutdown は driver の pin を解放する（#17/#26: sid 省�
 		return body.cards.find((c) => c.text === text).movedBy;
 	};
 	assert.equal(await probe(), "fire-quiet", "pin されたセッションが帰属になっていない");
-	handlers.get("session_shutdown")();
+	// #93: session_shutdown はイベントの ctx から死んだ sid を読む（subagent/兄弟の teardown で
+	// 生きた driver を消さないため）。ホストは常に ctx を渡すので、この呼び出しも渡す。
+	handlers.get("session_shutdown")({}, ctxFor("fire-quiet"));
 	assert.equal(await probe(), "", "shutdown 後も pin が残っている");
 });
 

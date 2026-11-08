@@ -65,8 +65,7 @@ import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import { homedir, hostname, networkInterfaces } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { Type } from "typebox";
-import { SessionManager } from "@earendil-works/pi-coding-agent";
-import type { ExtensionAPI, ExtensionContext, SessionInfo } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { DASHBOARD_TEMPLATE } from "./dashboard.generated.ts";
 import { openKanbanDb } from "./db.ts";
 import type { BoardKey, Decision, KanbanDb } from "./db.ts";
@@ -193,6 +192,11 @@ export const STARVATION_FACTOR = 3;
 // The panel needs a session id before the user touches anything; every handler
 // refreshes this, and the GUI pins whatever it first receives.
 let activeSessionId: string | null = null;
+// #93: the HTTP routes are module level and get no ctx, so the two places that know a session's
+// live cwd (`sync()` and `/kanban take`) publish it here. `cwdBySid` = every sid this process has
+// seen (all session_starts, not just the pin); `driverCwd` = the panel's default board.
+let driverCwd = "";
+const cwdBySid = new Map<string, string>();
 // A loop halt lives in one extension closure (memory + session JSONL). The HTTP server
 // runs in the same process but outside that closure, so this is the only door for the
 // GUI to learn WHY the loop stopped. Published by paintLoop, cleared by resume.
@@ -432,17 +436,30 @@ export function projectSlugOf(cwd: string): string {
 }
 
 /**
- * The cwd behind a sid, for the HTTP routes (which are sync). sessionInfoById() is the
- * only filler of that cache and the dashboard poll calls it, so it is warm in practice;
- * a cold cache reads as this process's cwd rather than adding a second async door.
- * A header without cwd reads as "" here (session-manager.js:541 - old sessions), and ""
- * must mean absent: `??` would pass it on to projectSlugOf("") -> "inbox" while cwdOfCtx
- * answers process.cwd(), so the same missing input named two boards. Same test as cwdOfCtx.
+ * The cwd behind a sid, for the HTTP routes (which are sync): what `pinDriver()` published for
+ * that sid, then the driver's cwd, then ours. Nothing here may scan the session store - that
+ * is 757-990 files / 1.9GB of jsonl and cost 6-10s per cold /api/dashboard.
+ * A sid we never saw has no cwd and falls back to the driver's board; the gates that must not
+ * guess (`projectKeyOfWrite`, the read at /api/kanban) refuse it before getting here.
  */
 function cwdOfSidSync(sid: string | null): string {
 	const id = sid === null || sid === "" ? activeSessionId : sid;
-	const cwd = id === null || id === "" ? undefined : sessionInfoCache?.byId.get(id)?.cwd;
-	return typeof cwd === "string" && cwd !== "" ? cwd : process.cwd();
+	const known = id === null || id === "" ? undefined : cwdBySid.get(id);
+	if (typeof known === "string" && known !== "") return known;
+	return driverCwd !== "" ? driverCwd : process.cwd();
+}
+
+/**
+ * #93: pin a session as the driver and publish both cwds the sync HTTP routes read. Called by
+ * `sync()` (the automatic pin) and `/kanban take` (the explicit handover) - the only two places
+ * that assign a session to `activeSessionId`. Publishing only in `sync()` left a taken-over session
+ * unlisted, so every ctx-less request fell back to the previous repo's board.
+ */
+function pinDriver(ctx: ExtensionContext, sid: string): void {
+	activeSessionId = sid;
+	const cwd = cwdOfCtx(ctx);
+	driverCwd = cwd;
+	if (sid !== "") cwdBySid.set(sid, cwd);
 }
 
 /** The tool's cwd. A context without getCwd (an older host, a test double) reads as ours. */
@@ -3539,24 +3556,6 @@ function collectBody(
 	});
 }
 
-
-let sessionInfoCache: { at: number; byId: Map<string, SessionInfo> } | null = null;
-const SESSION_INFO_TTL_MS = 30_000;
-
-/** SessionManager.listAll() rescans every session file, so its result is kept briefly. */
-async function sessionInfoById(): Promise<Map<string, SessionInfo>> {
-	if (sessionInfoCache !== null && Date.now() - sessionInfoCache.at < SESSION_INFO_TTL_MS) {
-		return sessionInfoCache.byId;
-	}
-	let byId = new Map<string, SessionInfo>();
-	try {
-		byId = new Map((await SessionManager.listAll()).map((s) => [s.id, s]));
-	} catch {
-		// unreadable session store -> labels fall back to the id prefix
-	}
-	sessionInfoCache = { at: Date.now(), byId };
-	return byId;
-}
 /** Files directly under ~/.pi/kanban/media (the dashboard's `media` stat). */
 function mediaFileCount(): number {
 	try {
@@ -3859,9 +3858,6 @@ function projectReport(
 
 /** GET /api/dashboard: one request carrying everything the dashboard renders. */
 async function dashboardPayload(): Promise<unknown> {
-	// #17: projectKeyOfWrite() reads the session-info cache, and this route is now the only
-	// caller that keeps it warm (the session list that filled it is gone).
-	await sessionInfoById();
 	// #16: global is the aggregate over every project board, so its counts ARE the board
 	// counts. Summing this process's project board on top of it (the old shape) counted
 	// the same card twice.
@@ -3877,18 +3873,14 @@ async function dashboardPayload(): Promise<unknown> {
 	const totals = countCols(aggBoard);
 	// Phase 0: project is where cards live now. Its counts are already inside `totals`
 	// (they are part of the aggregate), so they are reported, never added again.
-	// #27: what this reads is the session FILE's header cwd (`sessionInfoById()` above fills that
-	// cache), not this process's cwd - and not ctx's either. dashboardPayload is module level and
-	// the route calls it with no arguments, while the only cwd the ctx route knows (ownCtx) lives
-	// in the default export's closure, so cwdOfCtx cannot be handed in here. Residual: when pi
-	// re-opens a session with a cwdOverride (dist/main.js:563-566 - the recorded cwd was gone and
-	// the user picked another), the header keeps the OLD cwd while ctx.getCwd() answers the picked
-	// one, so this panel names the board the session was recorded against. Closing that needs a
-	// module-level driver cwd published by sync/poll; until then no closer source exists for a
-	// request without a ctx. cwdOfSidSync still falls back to process.cwd() per request: when
-	// activeSessionId is null (server outlives shutdown), when the cache does not hold the sid
-	// (not scanned yet, or its header cwd is empty - session-manager.js:541), or when a rescan
-	// failed and byId is empty.
+	// #27/#93: the cwd is the one published for the driver session (`pinDriver`) - not ctx's,
+	// because dashboardPayload is module level and the route passes no ctx. #27's residual is
+	// closed by that: a session resumed with a cwdOverride (dist/main.js:563-566) now names the
+	// board it was resumed into, not the one recorded in its header. Residual that remains: a sid
+	// nobody published (a subagent that never started, a sibling pi's session) has no cwd, but
+	// /api/dashboard never names one - it asks for the driver's board, which is the only panel
+	// this process draws. With no pin at all (a test double, a host that never fires
+	// session_start) driverCwd stays "" and this is process.cwd(), exactly as before.
 	const slug = storedProjectKey(projectSlugOf(cwdOfSidSync(null)));
 	const pb = readBoard(boardPath("project", slug));
 	return {
@@ -3959,13 +3951,14 @@ type WriteTarget = { ok: true; path: string } | { ok: false; error: string };
 
 /**
  * The project board key a request may write, or null when its sid cannot name one.
- * A sid we have never seen has no cwd, so cwdOfSidSync would silently fall back to OUR
- * cwd and touch the wrong repo's board: refuse instead. (The UI sends no sid.)
- * Both gates (board writes and the switch routes) read the key from here, so the two
- * answers cannot drift: /api/add and /api/modes accept exactly the same sids.
+ * Only a sid `pinDriver()` published (every session_start, plus `/kanban take`) has a cwd, so
+ * an unknown sid would fall back to the driver's cwd and touch the wrong repo's board: refuse.
+ * (The UI sends no sid.)
+ * Both gates (board writes and the switch routes) and the /api/kanban read read the key from
+ * here, so their answers cannot drift: they accept exactly the same sids.
  */
 function projectKeyOfWrite(sid: string | null): string | null {
-	if (sid !== null && sid !== "" && sessionInfoCache?.byId.has(sid) !== true) return null;
+	if (sid !== null && sid !== "" && !cwdBySid.has(sid)) return null;
 	return projectSlugOf(cwdOfSidSync(sid));
 }
 
@@ -4666,7 +4659,14 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 			return;
 		}
 		// #36: `?p=` is the caller spelling, not the board; boardKeyOfP answers the stored one.
-		const storedSid = p.named ? p.key : storedProjectKey(projectSlugOf(cwdOfSidSync(sid)));
+		// #93: a sid nobody published has no cwd, so resolving it would name the driver's board:
+		// refuse like the write gate does, instead of showing a board nobody asked for.
+		const cwdKey = p.named ? p.key : projectKeyOfWrite(sid);
+		if (cwdKey === null) {
+			sendJson(res, 400, { ok: false, error: "unknown sid" });
+			return;
+		}
+		const storedSid = p.named ? cwdKey : storedProjectKey(cwdKey);
 		const pb = readBoard(boardPath("project", storedSid));
 		// #52: whose eyes is this? ?sid= names the session explicitly; without it the driver
 		// stands in (the dashboard sends none, and it is the driver's board it draws). "" = no
@@ -6323,7 +6323,9 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 				}
 				const prev = ownCtx === null ? null : sidOf(ownCtx);
 				ownCtx = ctx;
-				activeSessionId = sid;
+				// #93: take is a pin, so it publishes the cwd like sync() does - otherwise every
+				// ctx-less request kept reading the previous repo's board after a handover.
+				pinDriver(ctx, sid);
 				lastTickAt = 0; // judge immediately in the new session, not after the interval
 				pollSnapshot = null; // force the next poll to redraw
 				warnedDeadCtx = false;
@@ -7092,7 +7094,7 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 			ownCtx = ctx;
 			// #40: the first session to start in this process pins the panel's default
 			// sid. Later starts (siblings, subagents) must not move it.
-			activeSessionId = sid;
+			pinDriver(ctx, sid);
 			warnedDeadCtx = false;
 			deadCtxStrikes = 0;
 		} else if (isTree) {
@@ -7102,6 +7104,9 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 				// disposed ownCtx: its poll strikes out and releases it for the next start
 			}
 		}
+		// #93: every session_start publishes its OWN sid (cwdBySid), while only the pin above
+		// moves the panel's default (driverCwd): a subagent's start must not move the panel.
+		if (sid !== "") cwdBySid.set(sid, cwdOfCtx(ctx));
 		// Started unconditionally: the HTTP server is shared with a sibling pi, but the loop
 		// is this session's, so no listen result may gate it. ownCtx is set by now either way.
 		ensurePollTimer();
@@ -7109,17 +7114,23 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 	pi.on("session_start", (_event, ctx) => sync(ctx, false));
 	pi.on("session_tree", (_event, ctx) => sync(ctx, true));
 
-	pi.on("session_shutdown", () => {
-		// #55: the driver pin must not outlive the session that pinned it. Read the sid
-		// before stopPoll() releases ownCtx; release only our own pin, never a handover.
-		let pinned: string | null = null;
+	pi.on("session_shutdown", (_event, ctx) => {
+		// #55: the driver pin must not outlive the session that pinned it - but only that
+		// session may end it. Read the dying sid off the event's ctx: ownCtx is the live driver,
+		// so a subagent's or a sibling's teardown would otherwise release our own pin.
+		let dying: string | null = null;
 		try {
-			pinned = ownCtx === null ? null : sidOf(ownCtx);
+			dying = sidOf(ctx);
 		} catch {
-			// disposed ownCtx cannot answer; that session is gone either way
+			// disposed ctx cannot answer; that session is gone either way
 		}
 		stopPoll();
-		if (pinned !== null && activeSessionId === pinned) activeSessionId = null;
+		if (dying !== null && activeSessionId === dying) activeSessionId = null;
+		// #93: the published cwds outlive the pin on purpose - with no driver, the ctx-less
+		// routes keep naming the last board this process drew, which beats an empty one (PID 1
+		// cannot restart us). Only the dead sid's own entry is dropped (not the live driver's), so
+		// a long-lived process does not grow one map entry per session it ever hosted.
+		if (dying !== null) cwdBySid.delete(dying);
 	});
 
 	// Per-turn injection: attach this cwd's project board as a request-only trailing message.
