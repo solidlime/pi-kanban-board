@@ -25,6 +25,12 @@ test("#58: .deliverables は全幅、.del-grid は 230px の自動詰め", () =>
 	assert.match(B, /\.del-grid\{[^}]*grid-template-columns:repeat\(auto-fill, ?minmax\(230px, ?1fr\)\)/, "del-grid の格栅が無い");
 	assert.match(B, /\.del-tile\{[^}]*overflow:hidden/, ".del-tile が無い");
 	assert.match(B, /\.del-body\{[^}]*height:140px/, "サムネ高さ 140px が無い");
+	// #105: 成果物タイルの添付はアス比維持（contain）で縮める。見切れさせない。
+	assert.match(B, /\.del-body img\{[^}]*object-fit:contain/, ".del-body img が contain でない");
+	assert.match(B, /\.del-body video\{[^}]*object-fit:contain/, ".del-body video が contain でない");
+	assert.match(HTML, /\.vthumb\{[^}]*pointer-events:none/, ".vthumb が無い（タイルの動画がクリックを奪う）");
+	// #105: カード内の動画も箱に収める（.vthumb は max-width だけだと縦動画が縦に膨らむ）。
+	assert.match(B, /\.attline video\{[^}]*height:120px[^}]*object-fit:contain/, ".attline video が箱に入っていない");
 	assert.match(B, /\.del-tile \.refbad\{/, "不在オーバーレイ (.refbad) が無い");
 });
 

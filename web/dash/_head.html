@@ -30,7 +30,8 @@
 }
 .banner a{color:#fff; text-decoration:underline}
 .banner[hidden]{display:none} /* display:flex が hidden 属性に勝つのを防ぐ */
-.vthumb{max-width:100%; border-radius:var(--radius); display:block; margin-top:6px}
+/* #105: タイル/カード内の動画は静止サムネ。クリックは親が受けて lightbox を開く（再生は #lbvid だけ）。 */
+.vthumb{max-width:100%; border-radius:var(--radius); display:block; pointer-events:none}
 </style>
 </head>
 <body>

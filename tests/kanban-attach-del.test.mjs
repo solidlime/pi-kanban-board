@@ -1,4 +1,4 @@
-// #61: 成果物タイルの × が叩く `/api/attach/del`。カードの `img` csv から 1 エントリだけ外す。
+// #61: 成果物の「添付を外す」(旧: 帯タイルの ×) が叩く `/api/attach/del`。カードの `img` csv から 1 エントリだけ外す。
 // 参照型（file:）は csv だけ落とし実ファイルは触らない。実体型（media 名）は .trash へ。
 // 最後の 1 枚を消したら `card.img` 自体が消える（undefined）。
 import { fileURLToPath } from "node:url";

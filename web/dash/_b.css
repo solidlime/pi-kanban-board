@@ -116,6 +116,8 @@ html[data-density="compact"] .chips,html[data-density="compact"] .meta{display:n
   font-family:var(--font-mono); font-size:11px; color:var(--muted);
 }
 .attline:hover{border-color:var(--accent); color:var(--text)}
+/* #105: カード内の動画も箱に収める。.vthumb は max-width しか持たないので縦動画が縦に膨らむ。 */
+.attline video{width:100%; height:120px; object-fit:contain; display:block}
 
 /* ── #58: 第4帯『成果物』(全幅) ─────────────── */
 .deliverables{
@@ -149,8 +151,9 @@ html[data-density="compact"] .chips,html[data-density="compact"] .meta{display:n
 .del-cap .id{font-family:var(--font-mono); font-size:10px; color:var(--muted); margin-right:5px}
 .del-cap .del-sid{margin-left:6px; font-family:var(--font-mono); font-size:9px; color:var(--accent)}
 .del-body{position:relative; height:140px; border-top:1px solid var(--line); background:var(--bg0)}
-.del-body img{width:100%; height:100%; object-fit:cover; display:block}
-.del-body video{width:100%; height:100%; object-fit:cover; display:block}
+/* #105: 見切れないようにアス比維持で箱に収める（レターボックス）。 */
+.del-body img{width:100%; height:100%; object-fit:contain; display:block}
+.del-body video{width:100%; height:100%; object-fit:contain; display:block}
 /* html / 参照型のプレビューは触らせない（クリックは lightbox が取る） */
 .del-body iframe{width:100%; height:100%; border:0; display:block; pointer-events:none; background:var(--bg0)}
 .del-body .delfile{
@@ -165,24 +168,16 @@ html[data-density="compact"] .chips,html[data-density="compact"] .meta{display:n
   color:var(--text); background:color-mix(in srgb,var(--bg0) 80%, transparent);
   border:1px solid var(--line); border-radius:4px; padding:0 4px;
 }
-/* #61: 添付を 1 枚外す ×。hover でだけ出す（タイルのクリックは lightbox が取る）。 */
-.del-x{
+/* #98/#105: タイル全体がプレビューなので、編集の入口は右上の鉛筆 1 個だけ。 */
+.del-edit{
   position:absolute; top:3px; right:3px; z-index:1; line-height:1.2;
   font-family:var(--font-mono); font-size:13px; padding:0 5px;
   color:var(--muted); background:color-mix(in srgb,var(--bg0) 80%, transparent);
   border:1px solid var(--line); border-radius:4px;
   opacity:0; transition:opacity .12s; cursor:pointer;
 }
-/* #98: タイル全体がプレビューになったので、編集の入口は × の隣に残す。 */
-.del-edit{
-  position:absolute; top:3px; right:34px; z-index:1; line-height:1.2;
-  font-family:var(--font-mono); font-size:13px; padding:0 5px;
-  color:var(--muted); background:color-mix(in srgb,var(--bg0) 80%, transparent);
-  border:1px solid var(--line); border-radius:4px;
-  opacity:0; transition:opacity .12s; cursor:pointer;
-}
-.del-tile:hover .del-x,.del-tile:hover .del-edit{opacity:1}
-.del-x:hover,.del-edit:hover{color:var(--text); border-color:var(--accent)}
+.del-tile:hover .del-edit{opacity:1}
+.del-edit:hover{color:var(--text); border-color:var(--accent)}
 .del-tile .refbad{
   position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
   font-family:var(--font-mono); font-size:11px; color:var(--muted);

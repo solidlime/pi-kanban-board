@@ -5394,9 +5394,10 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 			sendJson(res, reply.status, reply.body);
 			return;
 		}
-		// #61: drop ONE attachment entry (the deliverables tile's ×). `n` is the index after
-		// the dashboard's csv split. A reference (`file:<abs>`) leaves its file alone - only
+		// #61: drop ONE attachment entry. `n` is the index after the dashboard's csv split.
+		// A reference (`file:<abs>`) leaves its file alone - only
 		// the csv entry is ours; a media name is trashed unless another card still shows it.
+		// #105: 帯タイルの × は廃止した。発信元は成果物の右クリック「添付を外す」(n:0) だけ。
 		// Removing the last entry drops `img` itself, so the card stops being a deliverable.
 		case "/api/attach/del": {
 			let reply: { status: number; body: unknown } = { status: 500, body: { ok: false, error: "board write failed" } };

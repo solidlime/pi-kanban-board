@@ -223,13 +223,20 @@ const serveId = add.details.id;
 	const src = readFileSync(fileURLToPath(new URL("../web/dashboard.html", import.meta.url)), "utf8");
 	check("動画は <video> 要素で描画する（img では再生できない）", () =>
 		assert.match(src, /createElement\("video"\)/));
-	check("<video> に controls / preload=metadata が付き、autoplay は無い", () => {
-		const block = (src.match(/im = document\.createElement\("video"\);[\s\S]{0,200}/) ?? [""])[0];
+	// #105: タイル内の動画は静止サムネ（controls なし + .vthumb でクリックを親に通す）。
+	check("タイルとカード両方の <video> が controls 無し・.vthumb・preload=metadata、autoplay 無し", () => {
+		assert.ok(!/\.controls\s*=/.test(src), "video に controls を代入する箇所がある");
+		assert.equal((src.match(/className = "vthumb"/g) ?? []).length, 2, ".vthumb が帯タイルとカードの 2 箇所に無い");
+		const block = (src.match(/v = document\.createElement\("video"\);[\s\S]{0,300}/) ?? [""])[0];
 		assert.ok(block.length > 0, "video 生成ブロックが無い");
-		assert.match(block, /im\.controls = true/);
-		assert.match(block, /im\.preload = "metadata"/);
+		assert.ok(!/\.controls/.test(block), `タイルの video に controls が付いている: ${block}`);
+		assert.match(block, /v\.className = "vthumb"/);
+		assert.match(block, /v\.preload = "metadata"/);
 		assert.ok(!/autoplay/i.test(block), `autoplay が付いている: ${block}`);
 	});
+	// 再生は lightbox の #lbvid だけ。
+	check("#lbvid には controls が残っている", () =>
+		assert.match(src, /<video id="lbvid" controls/));
 	check("<img> 経路も残っている（画像は今のまま）", () =>
 		assert.match(src, /createElement\("img"\)/));
 	check("動画の拡張子分岐が mp4/webm を見ている", () => {

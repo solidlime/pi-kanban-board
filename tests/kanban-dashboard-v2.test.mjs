@@ -142,9 +142,10 @@ test("dashboard: 成果物タイルはどこを押してもプレビュー（#98
 	// 編集への入口（鉛筆）が残る。
 	assert.match(app, /el\("span", "del-edit"/);
 	assert.match(app, /ed\.title = "成果物を編集"/);
-	// × は自前の stopPropagation で止める（タイルの lightbox と競合させない）。
-	assert.match(app, /var x = el\("span", "del-x", "\\u00d7"\);/);
-	assert.match(app, /ev\.stopPropagation\(\);/);
+	// #105: × は廃止（タイルのクリック面と競合する）。外す導線は右クリックメニューだけ。
+	assert.ok(!app.includes("del-x"), "del-x が残っている");
+	assert.ok(!css.includes("del-x"), "del-x の CSS が残っている");
+	assert.match(app, /ed\.onclick = function \(ev\) \{ ev\.stopPropagation\(\); openDelivModal/);
 	// 種別ごとの器が HTML に在る。
 	for (const id of ["lbvid", "lbaud", "lbtxt"]) assert.ok(HTML.includes(`id="${id}"`), `id="${id}" が無い`);
 	// ソースは textContent で出す（.js を lightbox で走らせない）。

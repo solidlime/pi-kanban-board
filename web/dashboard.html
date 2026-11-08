@@ -261,6 +261,8 @@ html[data-density="compact"] .chips,html[data-density="compact"] .meta{display:n
   font-family:var(--font-mono); font-size:11px; color:var(--muted);
 }
 .attline:hover{border-color:var(--accent); color:var(--text)}
+/* #105: カード内の動画も箱に収める。.vthumb は max-width しか持たないので縦動画が縦に膨らむ。 */
+.attline video{width:100%; height:120px; object-fit:contain; display:block}
 
 /* ── #58: 第4帯『成果物』(全幅) ─────────────── */
 .deliverables{
@@ -294,8 +296,9 @@ html[data-density="compact"] .chips,html[data-density="compact"] .meta{display:n
 .del-cap .id{font-family:var(--font-mono); font-size:10px; color:var(--muted); margin-right:5px}
 .del-cap .del-sid{margin-left:6px; font-family:var(--font-mono); font-size:9px; color:var(--accent)}
 .del-body{position:relative; height:140px; border-top:1px solid var(--line); background:var(--bg0)}
-.del-body img{width:100%; height:100%; object-fit:cover; display:block}
-.del-body video{width:100%; height:100%; object-fit:cover; display:block}
+/* #105: 見切れないようにアス比維持で箱に収める（レターボックス）。 */
+.del-body img{width:100%; height:100%; object-fit:contain; display:block}
+.del-body video{width:100%; height:100%; object-fit:contain; display:block}
 /* html / 参照型のプレビューは触らせない（クリックは lightbox が取る） */
 .del-body iframe{width:100%; height:100%; border:0; display:block; pointer-events:none; background:var(--bg0)}
 .del-body .delfile{
@@ -310,24 +313,16 @@ html[data-density="compact"] .chips,html[data-density="compact"] .meta{display:n
   color:var(--text); background:color-mix(in srgb,var(--bg0) 80%, transparent);
   border:1px solid var(--line); border-radius:4px; padding:0 4px;
 }
-/* #61: 添付を 1 枚外す ×。hover でだけ出す（タイルのクリックは lightbox が取る）。 */
-.del-x{
+/* #98/#105: タイル全体がプレビューなので、編集の入口は右上の鉛筆 1 個だけ。 */
+.del-edit{
   position:absolute; top:3px; right:3px; z-index:1; line-height:1.2;
   font-family:var(--font-mono); font-size:13px; padding:0 5px;
   color:var(--muted); background:color-mix(in srgb,var(--bg0) 80%, transparent);
   border:1px solid var(--line); border-radius:4px;
   opacity:0; transition:opacity .12s; cursor:pointer;
 }
-/* #98: タイル全体がプレビューになったので、編集の入口は × の隣に残す。 */
-.del-edit{
-  position:absolute; top:3px; right:34px; z-index:1; line-height:1.2;
-  font-family:var(--font-mono); font-size:13px; padding:0 5px;
-  color:var(--muted); background:color-mix(in srgb,var(--bg0) 80%, transparent);
-  border:1px solid var(--line); border-radius:4px;
-  opacity:0; transition:opacity .12s; cursor:pointer;
-}
-.del-tile:hover .del-x,.del-tile:hover .del-edit{opacity:1}
-.del-x:hover,.del-edit:hover{color:var(--text); border-color:var(--accent)}
+.del-tile:hover .del-edit{opacity:1}
+.del-edit:hover{color:var(--text); border-color:var(--accent)}
 .del-tile .refbad{
   position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
   font-family:var(--font-mono); font-size:11px; color:var(--muted);
@@ -691,7 +686,8 @@ html.halt .swline .sw[data-sw="pause"]{ border-color:var(--bad); }
 }
 .banner a{color:#fff; text-decoration:underline}
 .banner[hidden]{display:none} /* display:flex が hidden 属性に勝つのを防ぐ */
-.vthumb{max-width:100%; border-radius:var(--radius); display:block; margin-top:6px}
+/* #105: タイル/カード内の動画は静止サムネ。クリックは親が受けて lightbox を開く（再生は #lbvid だけ）。 */
+.vthumb{max-width:100%; border-radius:var(--radius); display:block; pointer-events:none}
 </style>
 </head>
 <body>
@@ -1101,7 +1097,7 @@ __KB_MD_JS__
       // 動画は <video> で描画する（img では再生できない）。autoplay は付けない。
       if (mediaExt === "mp4" || mediaExt === "webm") {
         var im = document.createElement("video");
-        im.controls = true;
+        // #105: カードのサムネも静止表示。クリックはカードが受けてモーダルを開く。
         im.preload = "metadata";
         im.src = srcOf(name);
         im.className = "vthumb";
@@ -1469,7 +1465,8 @@ __KB_MD_JS__
     var ext = (name.split(".").pop() || "").toLowerCase();
     if (ext === "mp4" || ext === "webm") {
       var v = document.createElement("video");
-      v.controls = true;
+      // #105: タイル内は静止サムネ（.vthumb でクリックを親に通す）。再生は lightbox の #lbvid だけ。
+      v.className = "vthumb";
       v.preload = "metadata";
       v.src = srcOf(name);
       body.appendChild(v);
@@ -1508,32 +1505,13 @@ __KB_MD_JS__
     else t.appendChild(el("div", "del-nobody", "添付なし"));
     // #56: 参照型（file:）の添付があるカードは右上に 1 バッジ。
     if (imgs.length && imgs.some(function (n) { return refOf(n); })) t.lastChild.appendChild(el("span", "del-ref", "\u2750"));
-    // #61: hover で右上に ×。csv の index をそのまま送るので、外れるのはこの 1 枚だけ。
     if (imgs.length) {
       // #98: どこを押してもプレビューになったので、編集の入口は右上の鉛筆に残す。
+      // #105: 添付を外す × は廃止（タイルのクリック面と競合するため）。導線は右クリックメニューのみ。
       var ed = el("span", "del-edit", "\u270e");
       ed.title = "成果物を編集";
       ed.onclick = function (ev) { ev.stopPropagation(); openDelivModal(Number(c.id)); };
       t.appendChild(ed);
-      var at = imgs.indexOf(name);
-      var x = el("span", "del-x", "\u00d7");
-      x.title = "この添付を外す";
-      x.onclick = function (ev) {
-        // tile 自身が .thumb（クリックで lightbox）なので、ここで止めないと両方走る。
-        ev.stopPropagation();
-        // 横断ビューは c.sid、ボード表示は state.cur が書き先の slug。
-        var p = c.sid || state.cur;
-        if (!p || p === "__all__") { toast("添付を外す先のボードが定まらない"); return; }
-        fetch("/api/attach/del" + qsOf({ p: p, deliv: c.id, n: at })).then(function (r) {
-          if (r.status === 401) authFail();
-          return r.json().then(function (j) {
-            if (!r.ok || !j || !j.ok) throw new Error((j && j.error) || "http " + r.status);
-            toast("#" + c.id + " から添付 " + name + " を外した");
-            refresh();
-          });
-        }, fail).catch(fail);
-      };
-      t.appendChild(x);
     }
     return t;
   }
@@ -2215,10 +2193,10 @@ __KB_MD_JS__
     return items;
   }
   function ctxDelivItems(d) {
-    var imgs = imgsOf(d), p = d.sid || state.cur; // × と同じ書き先の決め方
+    var imgs = imgsOf(d), p = d.sid || state.cur; // 書き先の決め方（タイル側と同じ）
     return [
       { label: "編集…", run: function () { openDelivModal(d.id); } },
-      // shortcut: 外すのは先頭の 1 枚だけ（タイルが見せている添付）、複数指定は #61 の × と同条件。
+      // shortcut: 外すのは先頭の 1 枚だけ（タイルが見せている添付）。#105 でタイルの × は廃止したので、ここが唯一の外す導線。
       { label: "添付を外す" + (imgs.length ? "（" + imgs[0] + "）" : ""), off: !imgs.length, run: function () {
         act("/api/attach/del", { p: p, deliv: d.id, n: 0 }).then(function () { refresh(); toast("#" + d.id + " から添付を外した"); }, fail);
       } },
@@ -2357,7 +2335,7 @@ __KB_MD_JS__
       return; // モーダル内の他のクリックは下へ流さない
     }
     // #98: 帯タイルはどこを押しても lightbox。添付が無いタイルだけ成果物モーダルに送る。
-    // .del-x / .del-edit は自前の onclick で stopPropagation するのでここへは来ない。
+    // .del-edit は自前の onclick で stopPropagation するのでここへは来ない。
     var dt = t.closest && t.closest(".del-tile");
     if (dt) {
       if (dt.classList.contains("thumb")) showLb(lbList().indexOf(dt));
