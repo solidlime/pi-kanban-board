@@ -167,6 +167,8 @@ The autonomous loop decides once every 1.5s whether to wake the agent. Set `KANB
 
 The interval is measured from **the last injection** (the last poll wake, or the last continuation the settle chain pushed), not from the last board revision: a board nobody touches still gets its continuation every interval, and a `nextFireAt` wake that pi rejected does not count as injected, so the schedule stays armed. With auto-pick on, keep the interval comfortably above one turn — the poll cannot tell "my own continuation is still being processed" from "the user is idle", so a very short interval stacks a wake behind the turn you are already running (the wake re-fires once pi is idle again).
 
+#94: a TODO added with the dashboard's 「+」 (one line or several) does not wait for that interval — the next poll of that board wakes once with `forced` (`KANBAN_DEBUG` trace: `=> fire:forced`). Only the interval and quiet gates open: a halted or switched-off loop still stays down, and a busy agent is still not interrupted. The cue is kept until it fires, so a busy turn, an open dialog or a halt only delays the wake; after five minutes the cue expires and the normal interval takes over.
+
 ## Security notes
 
 The HTTP server binds `0.0.0.0`, so every data route (`/api/*`, `/serve/*`) requires a token: 64 hex chars in `~/.pi/kanban/token`, generated on first start with mode `0600` in a `0700` dir. Mutating endpoints are `GET`-reachable so the board works from a plain browser tab, so the token — not the verb — is what guards them.

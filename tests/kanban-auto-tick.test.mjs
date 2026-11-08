@@ -7,6 +7,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
 import { readBoardAt, seedBoard, useKanban } from "./helpers/board.mjs";
+import { authFetch } from "./helpers/token.mjs";
 
 const HOME_DIR = "/tmp/kb-autotick-home";
 rmSync(HOME_DIR, { recursive: true, force: true });
@@ -36,7 +37,7 @@ const jiti = createJiti(import.meta.url);
 const target = process.env.KANBAN_TS ?? fileURLToPath(new URL("../extensions/kanban.ts", import.meta.url));
 const mod = await jiti.import(target);
 useKanban(mod);
-const { shouldAutoTick, tickCardFor, AUTO_TICK_MS } = mod;
+const { shouldAutoTick, autoTickVerdict, tickCardFor, AUTO_TICK_MS } = mod;
 
 const MIN = 60_000;
 const card = (id, col, movedBy) => (movedBy === undefined ? { id, col } : { id, col, movedBy });
@@ -98,6 +99,48 @@ check("halted stuck -> no fire", () => {
 
 check("halted limit -> no fire", () => {
 	assert.equal(shouldAutoTick({ ...base, halted: "limit" }), false);
+});
+
+// #93: ダッシュボードの「+」で足した TODO は 5 分ゲートを待たない。1 回きりの合図なので
+// interval も quiet も飛ばすが、menu / loop-off / no-card / busy / halted は曲げない。
+check("forced: true -> interval と quiet を飛ばして fire (reason forced)", () => {
+	const v = autoTickVerdict({ ...base, now: MIN, lastTickAt: 0, lastActivityAt: 0, forced: true });
+	assert.equal(v.fire, true);
+	assert.equal(v.reason, "forced");
+	// 実際 quiet ではない（lastActivityAt が新しい）。それでも発火するのが forced。
+	assert.equal(v.quiet, false);
+});
+
+check("forced は quiet を偽装しない (trace の quiet= は実値)", () => {
+	// 直前に喋っていても強制発火は起きる。ただし quiet の値は嘘をつかない（trace が説明できる）。
+	const v = autoTickVerdict({ ...base, now: MIN, lastTickAt: 0, lastActivityAt: MIN, forced: true });
+	assert.equal(v.fire, true);
+	assert.equal(v.reason, "forced");
+	assert.equal(v.quiet, false);
+});
+
+check("forced でも halted limit -> no fire", () => {
+	const v = autoTickVerdict({ ...base, now: MIN, lastActivityAt: 0, halted: "limit", forced: true });
+	assert.equal(v.fire, false);
+	assert.equal(v.reason, "halted:limit");
+});
+
+check("forced でも doingLoop OFF -> no fire", () => {
+	assert.equal(autoTickVerdict({ ...base, now: MIN, lastActivityAt: 0, doingLoop: false, forced: true }).fire, false);
+});
+
+check("forced でも busy -> no fire", () => {
+	assert.equal(autoTickVerdict({ ...base, now: MIN, lastActivityAt: 0, isIdle: false, forced: true }).fire, false);
+});
+
+check("forced でも /kanban ダイアログ中 -> no fire", () => {
+	assert.equal(autoTickVerdict({ ...base, now: MIN, lastActivityAt: 0, menuOpen: true, forced: true }).fire, false);
+});
+
+check("forced 未指定は従来どおり interval で止まる (退行なし)", () => {
+	const v = autoTickVerdict({ ...base, now: MIN, lastTickAt: 0, lastActivityAt: 0 });
+	assert.equal(v.fire, false);
+	assert.equal(v.reason, "interval");
 });
 
 check("lastTickAt 0 after loop ON -> fires on next poll (no 5m wait)", () => {
@@ -201,6 +244,17 @@ async function liveTick() {
 	// (D) 5 分は経っていない -> 追加発火なし。
 	await sleep(1800);
 	assert.equal(sent.length, 1, `second poll must not fire: got ${sent.length}`);
+
+	// (E) #94: 直前に wake した板（interval も quiet も閉じている）に dashboard の「+」で TODO を
+	//     足すと、次の tick で 1 回だけ起きる。合図の往復(/api/add -> userPickAt -> poll)は
+	//     ここでしか実経路を通らない: 文字列一致のテストでは delete の位置や > の向きを守れない。
+	const beforeCue = sent.length;
+	await authFetch("http://127.0.0.1:" + process.env.KANBAN_PORT + "/api/add?p=" + SLUG + "&text=from+dashboard");
+	await sleep(1800);
+	assert.equal(sent.length, beforeCue + 1, "forced wake expected, got " + (sent.length - beforeCue));
+	// (F) 合図は 1 回きり -> 次の tick は 5 分ゲートに戻る。
+	await sleep(1800);
+	assert.equal(sent.length, beforeCue + 1, "cue must fire once, got " + (sent.length - beforeCue));
 }
 
 try {

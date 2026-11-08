@@ -208,6 +208,9 @@ const resumeRequests = new Map<string, number>();
 // #48: the same door, the other direction. A halt is idempotent, so a Set is enough:
 // outstanding duplicates collapse into the one state the poll already holds.
 const haltRequests = new Set<string>();
+/** #94: ダッシュボードの「+」で TODO が増えた時刻。次の poll は無音ゲートを待たずに
+ *  しゃべってよい。ボード単位: あるボードの追加が別ボードの駆動を引っぱらない。 */
+const userPickAt = new Map<string, number>();
 let server: Server | null = null;
 // Every non-starting state is surfaced in the footer: a dead API must never be silent.
 //   up    - this process owns the port, or a process of OUR version does.
@@ -1531,6 +1534,9 @@ export function autoTickVerdict(i: {
 	now: number;
 	intervalMs?: number; // omit -> AUTO_TICK_MS (legacy entries)
 	menuOpen?: boolean; // a /kanban dialog is on screen: never speak behind it
+	// #94: a TODO just arrived from the dashboard's "+". Opens the two TIME gates once;
+	// every gate above it still decides on its own.
+	forced?: boolean;
 }): { fire: boolean; reason: string; quiet: boolean } {
 	const interval = i.intervalMs ?? AUTO_TICK_MS;
 	// Starvation guard: lastActivityAt is a heuristic. If something keeps stamping it,
@@ -1546,7 +1552,8 @@ export function autoTickVerdict(i: {
 	// last injection is old; a user message a second ago would still pass it.
 	// #51-②: whichever injection clock (poll / settle chain) spoke last is what "old" means.
 	const lastInjected = Math.max(i.lastTickAt, i.lastChainAt ?? Number.NEGATIVE_INFINITY);
-	const reason =
+	// The gates that no clock can open: menu, switch off, nothing to do, busy, halted.
+	const gate =
 		i.menuOpen === true
 			? "menu"
 			: !i.doingLoop
@@ -1557,11 +1564,11 @@ export function autoTickVerdict(i: {
 						? "busy"
 						: i.halted !== null
 							? `halted:${i.halted}`
-							: i.now - lastInjected < interval
-								? "interval"
-								: !quiet
-									? "not-quiet"
-									: "";
+							: "";
+	// #94: a TODO just added in the dashboard skips the interval and quiet gates once. It
+	// stays below every gate above: a "+" must not restart a halted or switched-off loop.
+	if (gate === "" && i.forced === true) return { fire: true, quiet, reason: "forced" };
+	const reason = gate !== "" ? gate : i.now - lastInjected < interval ? "interval" : !quiet ? "not-quiet" : "";
 	return { fire: reason === "", reason, quiet };
 }
 
@@ -4909,7 +4916,12 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 			if (blocks.length > 0) card.blocks = blocks;
 			if (labels.length > 0) card.labels = labels;
 			b.cards.push(card);
-			writeBoard(path, b);
+			// #94: ダッシュボードの「+」はユーザーの意思なので、次の poll は 5 分待たない。
+			// slug は書き込み先から取る（route がボードを特定したのと同じ値。sid から引き直すと
+			// storedProjectKey の揺れで poll の key とズレ、永久に発火しなくなる）。
+			// 合図は永続化が通ったときだけ: writeBoard は失敗を戻り値で返す（throw しない）。
+			// TODO 以外（doing/done 直行）はループの仕事ではない。
+			if (writeBoard(path, b) === null && col === "todo") userPickAt.set(storedProjectKey(boardKeyOf(path).sid), Date.now());
 			sendJson(res, 200, { ok: true, cards: b.cards });
 			return;
 		}
@@ -4931,7 +4943,9 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 				b.cards.push(card);
 			}
 			b.nextId += parsed.cards.length;
-			writeBoard(path, b);
+			// #94: /api/quickadd も入力欄の + の経路（複数行・トークン付き）で、作るカードは常に todo。
+			// /api/add と同じく「ユーザーが今足した」合図を置く。
+			if (parsed.cards.length > 0 && writeBoard(path, b) === null) userPickAt.set(storedProjectKey(boardKeyOf(path).sid), Date.now());
 			sendJson(res, 200, { ok: true, cards: b.cards, added: parsed.cards });
 			return;
 		}
@@ -6205,6 +6219,12 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 					}
 				}
 				const now = Date.now();
+				// #94: ダッシュボードの「+」が残した合図。前回発火より新しく、まだ 5 分以内
+				// のものだけが「今の追加」= 古い合図はゴミなので拾わない（lastTickAt も同条件）。
+				const forcedAt = userPickAt.get(key) ?? 0;
+				const forced = forcedAt > lastTickAt && now - forcedAt < AUTO_TICK_MS;
+				// #94: 期限切れの合図は読んだ場所で捨てる（二度と発火しない板の Map を残さない）。
+				if (!forced && forcedAt !== 0) userPickAt.delete(key);
 				const v = autoTickVerdict({
 					isIdle: isIdle === true,
 					doingLoop: m.doingLoop,
@@ -6217,15 +6237,18 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 					now,
 					intervalMs: intervalMsOf(m),
 					menuOpen: menuOpen(),
+					forced,
 				});
 				if (pollDebugEnabled()) {
-					const why = v.fire ? "fire" : `skip:${v.reason}`;
+					const why = v.fire ? (v.reason === "forced" ? "fire:forced" : "fire") : `skip:${v.reason}`;
 					process.stderr.write(
 						`kanban: poll sid=${sid} idle=${isIdle ?? "n/a"} doingLoop=${m.doingLoop} card=${card?.id ?? "null"} halted=${loop.halted ?? "null"} sinceLastTick=${now - lastTickAt} quiet=${v.quiet} => ${why}\n`,
 					);
 				}
 				if (!v.fire) continue;
 				if (card === undefined) continue; // v.fire implies a card; this only narrows for TS
+				// #94: 合図は 1 回きり。lastTickAt の更新で自然に古くなるが、掃除は明示的に。
+				userPickAt.delete(key);
 				// Set and cleared inside one synchronous block, so this is effectively dead today:
 				// sendUserMessage does not re-enter poll(). It guards the day it starts to, and the
 				// `/kanban take` handler reads it to refuse a switch mid-wake.
