@@ -169,3 +169,75 @@ test("dashboard: 列ヘッダの sticky top は実測の --topbar-h（#88）", (
 	// 決め打ちが残っていたら、モバイルの折り返しでまたズレる
 	assert.ok(!/top:56px/.test(css), "56px の決め打ちが残っている");
 });
+
+test("dashboard: 右クリック操作（#95）— 器は 1 個・3 分岐・閉じ方", () => {
+	const app = read("web/dash/_app.js");
+	const css = read("web/dash/_c.css");
+	// 器は 1 個だけ。項目は JS が組み立てる（HTML に 3 つ並べない）。
+	assert.equal((HTML.match(/id="ctxmenu"/g) || []).length, 1, "ctxmenu の器が 1 個でない");
+	assert.match(app, /function ctxClose\(\) \{ \$\("#ctxmenu"\)\.hidden = true; \}/, "JS が器を引いて閉じていない");
+	assert.ok(!/id="ctx-(card|deliv|col)"/.test(HTML), "メニューを用途別に増やしている");
+	// モーダル(#cm=70)/lightbox(#lb=75)より上に出る。
+	const zi = Number((css.match(/\.ctxmenu\{[^}]*z-index:(\d+)/) || [])[1]);
+	assert.ok(zi > 75, `ctxmenu の z-index ${zi} が lightbox の下`);
+
+	// 委譲は 1 本。card / del-tile / 列の 3 分岐が同じハンドラに居る（順序が preventDefault の前提）。
+	const at = app.indexOf('document.addEventListener("contextmenu"');
+	assert.ok(at > 0, "contextmenu の委譲が無い");
+	const body = app.slice(at, app.indexOf("\n  document.addEventListener", at + 1));
+	for (const t of ['closest("article.card")', 'closest(".del-tile")', 'closest("#board .col")']) {
+		assert.ok(body.includes(t), `${t} の分岐が contextmenu ハンドラに無い`);
+	}
+	// 入力欄では既定メニューを残す = 止めるのはメニューを出す時だけ。
+	assert.ok(body.includes('t.closest("input, textarea, pre")'), "入力欄で既定メニューを止めている");
+	const pd = body.indexOf("e.preventDefault()");
+	assert.ok(pd > body.indexOf('t.closest("#board .col")'), "preventDefault が分岐より前（器が無くても止める）");
+	// モーダル・lightbox・パレットが開いている間は出さない。
+	assert.ok(body.includes("if (modalOpen() ||"), "開いている間の抑止が無い");
+	for (const id of ["#pal", "#lb"]) assert.ok(body.includes(`$("${id}").hasAttribute("open")`), `${id} の抑止が無い`);
+
+	// 項目は <button>（キーボードで押せる）で、今の列は disabled。
+	assert.match(app, /var b = el\("button", it\.cls \|\| null, it\.label\);/);
+	assert.match(app, /off: c\.col === col/);
+	assert.match(app, /b\.disabled = !!it\.off/);
+	// 画面外へはみ出す時は右・下の余白を見て位置を寄せる（測ってから決める）。
+	assert.match(app, /var r = m\.getBoundingClientRect\(\), pad = 4;/);
+	assert.match(app, /x \+ r\.width > window\.innerWidth - pad \? x - r\.width : x/);
+	assert.match(app, /y \+ r\.height > window\.innerHeight - pad \? y - r\.height : y/);
+	// 閉じ方: Esc / 外側クリック / スクロール。
+	assert.match(app, /if \(e\.key === "Escape" && !\$\("#ctxmenu"\)\.hidden\) \{ ctxClose\(\); return; \}/);
+	assert.match(app, /if \(!\$\("#ctxmenu"\)\.hidden && !\(e\.target\.closest && e\.target\.closest\("#ctxmenu"\)\)\) ctxClose\(\);/);
+	assert.match(app, /document\.addEventListener\("scroll", ctxClose, true\);/);
+});
+
+test("dashboard: 右クリックの各項目は既存 API を既存の引数で呼ぶ（#95）", () => {
+	const app = read("web/dash/_app.js");
+	// 引数の形は既存の呼び出しと同じ（/api/remove は id、/api/attach/del は deliv + n）。
+	for (const [needle, why] of [
+		['act("/api/add", { text: txt.trim(), col: col })', "列への追加"],
+		['act("/api/priority", { id: id, n: next })', "優先度 ±1（n は絶対値）"],
+		['act("/api/remove", { id: id })', "カード削除"],
+		['act("/api/attach/del", { p: p, deliv: d.id, n: 0 })', "添付を外す"],
+		['act("/api/deliv/remove", { p: p, id: d.id })', "成果物削除"],
+		['moveCard(id, col)', "列移動"],
+		['openModal(id)', "カード編集（既存モーダル）"],
+		['openDelivModal(d.id)', "成果物編集（既存モーダル）"],
+		['addCard("deliverable")', "成果物の追加（既存の + と同じ導線）"],
+	]) assert.ok(app.includes(needle), `${why} が ${needle} を呼んでいない`);
+	// 消す系は必ず confirm を挟む（右クリック 1 発で消えない）。
+	const i = app.indexOf("function ctxCardItems(");
+	const j = app.indexOf("function ctxColItems(");
+	const cards = app.slice(i, j);
+	assert.ok(cards.includes('window.confirm("#" + id + " を削除する？")'), "カード削除に confirm が無い");
+	const deliv = app.slice(app.indexOf("function ctxDelivItems("), j);
+	assert.ok(deliv.includes('window.confirm("成果物 #" + d.id + " を削除する？")'), "成果物削除に confirm が無い");
+	// 添付を外すは添付がある時だけ（空でも押せると n 範囲外の 400 になる）。
+	assert.ok(deliv.includes("off: !imgs.length"), "添付なしでも外せる");
+});
+
+test("dashboard: 右クリックの生成物が最新（#95）", () => {
+	// 生成物は手で直さず build する。ここが落ちたら build-web.mjs を回す。
+	assert.ok(HTML.includes('id="ctxmenu"'), "dashboard.html に器が無い");
+	assert.ok(HTML.includes(".ctxmenu button"), "CSS が dashboard.html に入っていない");
+	assert.ok(read("extensions/dashboard.generated.ts").includes('id="ctxmenu"'), "generated.ts が古い");
+});

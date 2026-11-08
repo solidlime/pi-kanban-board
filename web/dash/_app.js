@@ -1075,17 +1075,19 @@
   }
 
   // ---- card modal (#45) ----
-  function modalCard() {
-    var rep = projReport(), cards = (rep && rep.cards) || [], i;
-    for (i = 0; i < cards.length; i++) if (cards[i].id === state.modal) return cards[i];
+  function cardById(id) {
+    var cards = (projReport() && projReport().cards) || [], i;
+    for (i = 0; i < cards.length; i++) if (cards[i].id === id) return cards[i];
     return null;
   }
+  function modalCard() { return cardById(state.modal); }
   // #82: 成果物モーダルの行。card と同じ #cm を使うが、探す先と番号空間が違う。
-  function delivModal() {
+  function delivById(id) {
     var list = delItems(), i;
-    for (i = 0; i < list.length; i++) if (list[i].id === state.modalDeliv) return list[i];
+    for (i = 0; i < list.length; i++) if (list[i].id === id) return list[i];
     return null;
   }
+  function delivModal() { return delivById(state.modalDeliv); }
   function modalOpen() { return state.modal != null || state.modalDeliv != null; }
   function openDelivModal(id) {
     state.modal = null;
@@ -1323,6 +1325,75 @@
     Promise.all(jobs).then(function () { closeModal(); refresh(); toast("#" + id + " を保存"); }, fail);
   }
 
+  // ---- 右クリックメニュー (#95) ----
+  // 器は 1 個。#ctxmenu の中身は開くたびに作り直す（状態を持たない）。
+  function ctxClose() { $("#ctxmenu").hidden = true; }
+  function ctxShow(x, y, items) {
+    var m = clear($("#ctxmenu")), first = null;
+    m.hidden = false;
+    items.forEach(function (it) {
+      var b = el("button", it.cls || null, it.label);
+      b.type = "button";
+      b.disabled = !!it.off;
+      m.appendChild(b);
+      if (b.disabled) return;
+      b.onclick = function () { ctxClose(); it.run(); };
+      if (!first) first = b;
+      m.appendChild(b);
+    });
+    // 画面外へはみ出す時は右・下の余白を見て位置を寄せる（大きさを測ってから決める）。
+    var r = m.getBoundingClientRect(), pad = 4;
+    m.style.left = Math.max(pad, x + r.width > window.innerWidth - pad ? x - r.width : x) + "px";
+    m.style.top = Math.max(pad, y + r.height > window.innerHeight - pad ? y - r.height : y) + "px";
+    if (first) first.focus();
+  }
+  function ctxPrio(id, next) {
+    act("/api/priority", { id: id, n: next }).then(function () { refresh(); toast("#" + id + " の優先度を " + next + " に"); }, fail);
+  }
+  function ctxCardItems(c) {
+    var id = c.id, n = prioOf(c), items = [
+      // 編集は既存のカードモーダル（本文・ラベル・予約・添付が同じ場所にある）。
+      { label: "編集…", run: function () { openModal(id); } },
+    ];
+    ["todo", "doing", "done"].forEach(function (col) {
+      items.push({ label: colName(col) + " へ移動", off: c.col === col, run: function () { moveCard(id, col); } });
+    });
+    items.push(
+      { label: "優先度 +1（今 " + n + "）", off: n >= 99, run: function () { ctxPrio(id, n + 1); } },
+      { label: "優先度 −1（今 " + n + "）", off: n <= -99, run: function () { ctxPrio(id, n - 1); } },
+      { label: "削除", cls: "danger", run: function () {
+        if (!window.confirm("#" + id + " を削除する？")) return;
+        act("/api/remove", { id: id }).then(function () { refresh(); toast("#" + id + " を削除"); }, fail);
+      } }
+    );
+    return items;
+  }
+  function ctxDelivItems(d) {
+    var imgs = imgsOf(d), p = d.sid || state.cur; // × と同じ書き先の決め方
+    return [
+      { label: "編集…", run: function () { openDelivModal(d.id); } },
+      // shortcut: 外すのは先頭の 1 枚だけ（タイルが見せている添付）、複数指定は #61 の × と同条件。
+      { label: "添付を外す" + (imgs.length ? "（" + imgs[0] + "）" : ""), off: !imgs.length, run: function () {
+        act("/api/attach/del", { p: p, deliv: d.id, n: 0 }).then(function () { refresh(); toast("#" + d.id + " から添付を外した"); }, fail);
+      } },
+      { label: "削除", cls: "danger", run: function () {
+        if (!window.confirm("成果物 #" + d.id + " を削除する？")) return;
+        act("/api/deliv/remove", { p: p, id: d.id }).then(function () { refresh(); toast("成果物 #" + d.id + " を削除"); }, fail);
+      } }
+    ];
+  }
+  function ctxColItems(col) {
+    return [
+      { label: colName(col) + " に追加…", run: function () {
+        var txt = window.prompt(colName(col) + " に追加する本文");
+        if (!txt || !txt.trim()) return;
+        act("/api/add", { text: txt.trim(), col: col }).then(function () { refresh(); toast(colName(col) + " に追加"); }, fail);
+      } },
+      // 成果物は列を持たない (#82)。既存の帯の + と同じ導線を開くだけ。
+      { label: "成果物を追加…", run: function () { addCard("deliverable"); } }
+    ];
+  }
+
   // ---- wiring ----
   document.addEventListener("change", function (e) {
     // #47 周辺: 上限の保存。v2.5 で消えていた設定をスイッチ帯に戻した。
@@ -1340,6 +1411,34 @@
     if (!Number.isFinite(n) || n < 0) return;
     act("/api/maxloops", { n: Math.round(n) }).then(function () { refresh(); toast("上限を " + (n > 0 ? n : "∞") + " に"); }, fail);
   });
+
+  // #95: 右クリックの委譲。1 本のハンドラで card / 成果物タイル / 列の余白を見る。
+  document.addEventListener("contextmenu", function (e) {
+    var t = e.target;
+    // 入力欄ではブラウザ既定のメニュー（コピー/貼り付け）を残す。
+    if (!t || !t.closest || t.closest("input, textarea, pre")) return;
+    // モーダル・パレット・lightbox が開いている間は出さない。
+    if (modalOpen() || $("#pal").hasAttribute("open") || $("#lb").hasAttribute("open")) return;
+    var card = t.closest("article.card");
+    var tile = t.closest(".del-tile");
+    var col = t.closest("#board .col");
+    var items = null;
+    // 横断ビューのカードは移動先の板が定まらない（#46）ので、板のカードだけ。
+    if (card && card.closest("#board")) { var c = cardById(Number(card.dataset.id)); items = c && ctxCardItems(c); }
+    else if (tile) { var d = delivById(Number(tile.dataset.deliv)); items = d && ctxDelivItems(d); }
+    // shortcut: 添付が html/pdf のタイルは中が iframe なので、そこだけ既定メニューのまま
+    // （iframe 内の contextmenu は親に上がらない）。caption 側で右クリックすれば出る。
+    else if (col && !t.closest("button, form, .donefold, .othertodos")) items = ctxColItems(col.dataset.col);
+    if (!items) return; // 出す物が無いなら既定メニューを殺さない
+    e.preventDefault();
+    ctxShow(e.clientX, e.clientY, items);
+  });
+
+  // #95: メニュー外のクリック・スクロールで閉じる（Esc は下の keydown）。
+  document.addEventListener("click", function (e) {
+    if (!$("#ctxmenu").hidden && !(e.target.closest && e.target.closest("#ctxmenu"))) ctxClose();
+  }, true);
+  document.addEventListener("scroll", ctxClose, true);
 
   document.addEventListener("click", function (e) {
     var t = e.target;
@@ -1492,6 +1591,8 @@
     e.preventDefault();
   }, { passive: false });
   document.addEventListener("keydown", function (e) {
+    // #95: 右クリックメニューが開いていたら Esc はそれだけを閉じる。
+    if (e.key === "Escape" && !$("#ctxmenu").hidden) { ctxClose(); return; }
     // Ctrl/Cmd+K は検索欄からでも開く（入力中の打鍵は下で捨てる）
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); openPal(); return; }
     // #77: #cm の入力欄にフォーカスがあっても Esc で閉じる（下の input/textarea 分岐が blur で消費するため先に処理する）。

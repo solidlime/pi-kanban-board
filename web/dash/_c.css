@@ -173,3 +173,17 @@ html.halt .swline .sw[data-sw="pause"]{ border-color:var(--bad); }
 .gbar i.full{background:var(--ok)}
 .group article.card{margin:0 12px 8px; background:var(--bg2)}
 .grouparticle, .group .cards{padding:0 0 4px}
+/* #95: 右クリックメニュー。位置は JS が寄せる（fixed）+ モーダル(70)/lightbox(75) より上。 */
+.ctxmenu{
+  position:fixed; z-index:80; min-width:170px; padding:4px;
+  background:var(--bg1); border:1px solid var(--line); border-radius:var(--radius);
+  box-shadow:0 8px 24px rgba(0,0,0,.45); display:flex; flex-direction:column;
+}
+.ctxmenu[hidden]{display:none}
+.ctxmenu button{
+  text-align:left; background:none; border:0; color:var(--text); font:inherit;
+  padding:6px 10px; border-radius:var(--radius); cursor:pointer;
+}
+.ctxmenu button:hover:not(:disabled),.ctxmenu button:focus-visible{background:var(--bg2); outline:none}
+.ctxmenu button:disabled{color:var(--muted); cursor:default}
+.ctxmenu button.danger{color:var(--bad)}
