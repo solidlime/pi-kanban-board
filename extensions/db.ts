@@ -105,8 +105,9 @@ export type KanbanDb = {
 	 * #101: the atomic read-modify-write door. One write lock covers the read, fn, and the
 	 * write back, so two processes touching one board serialize instead of last-winner-eats-
 	 * the-other. fn edits `b` in place; returning `false` aborts the write, so the edits are
-	 * discarded and nothing is persisted. Nobody may call readBoard()/writeBoard()/mutate()
-	 * inside fn.
+	 * discarded and nothing is persisted. Nobody may call writeBoard()/mutate() inside fn: the
+	 * transaction is already open and they throw. readBoard() does NOT throw - it returns the
+	 * uncommitted board - so treat it as forbidden too: read from `b`, never from the database.
 	 */
 	mutate(key: BoardKey, fn: (b: Board) => boolean | void): Board;
 	/**
@@ -469,7 +470,7 @@ export function openKanbanDb(file: string): KanbanDb {
 		}
 	};
 
-	const readBoard = (key: BoardKey): Board | null => {
+	const readBoardLocked = (key: BoardKey): Board | null => {
 		const head = selectBoard.get(key.scope, key.sid) as Row | undefined;
 		if (!head) return null;
 		const rows = selectCards.all(key.scope, key.sid) as Row[];
@@ -495,6 +496,21 @@ export function openKanbanDb(file: string): KanbanDb {
 			deliverables,
 			delivNextId: Number(head.deliv_next_id),
 		};
+	};
+	// #101: 4 本の SELECT を 1 つの読み取りトランザクションに入れる。WAL のスナップショットは
+	// トランザクション単位なので、これが無いと card と deps の間で書き込みが挟まり得る。
+	// mutate() は自分のトランザクションの中からこれを呼ぶ（inTx）ので、その時は包まない。
+	const readBoard = (key: BoardKey): Board | null => {
+		if (inTx) return readBoardLocked(key);
+		db.exec("BEGIN");
+		try {
+			const out = readBoardLocked(key);
+			db.exec("COMMIT");
+			return out;
+		} catch (err) {
+			rollbackQuietly(db);
+			throw err;
+		}
 	};
 
 	// First column of a one-row pragma. Only maintenance() reads pragmas this way, so this
@@ -569,7 +585,7 @@ export function openKanbanDb(file: string): KanbanDb {
 	// IMMEDIATE (or read a half-built board), so it is an error, not a nested savepoint.
 	let inTx = false;
 	const tx = <T>(body: () => T): T => {
-		if (inTx) throw new Error("mutate() re-entered: fn must not call mutate/readBoard/writeBoard");
+		if (inTx) throw new Error("mutate() re-entered: fn must not call mutate/writeBoard");
 		db.exec("BEGIN IMMEDIATE");
 		inTx = true;
 		try {

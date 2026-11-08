@@ -3425,15 +3425,13 @@ function mediaNames(img: string | undefined): string[] {
  * prefix plus randHex8(), so a card and a deliverable can never share one, and no copy
  * path exists either - but if a shared name ever becomes possible, those three are the holes.
  */
-function trashUnusedMedia(b: Board, kind: "card" | "deliv", ownerId: number, gone: string[]): void {
+/** 消してよいメディア名（他がまだ見ていないもの）。実際の trash は書き込みが通ってから呼び出し側で。 */
+function unusedMedia(b: Board, kind: "card" | "deliv", ownerId: number, gone: string[]): string[] {
 	const kept = [
 		...(kind === "card" ? b.cards.filter((c) => c.id !== ownerId) : b.cards),
 		...(kind === "deliv" ? b.deliverables.filter((d) => d.id !== ownerId) : b.deliverables),
 	].flatMap((o) => mediaNames(o.img));
-	for (const name of gone) {
-		if (name.startsWith("file:") || !isSafeMediaName(name)) continue;
-		if (!kept.includes(name)) trashMedia(join(MEDIA_DIR, name));
-	}
+	return gone.filter((name) => !name.startsWith("file:") && isSafeMediaName(name) && !kept.includes(name));
 }
 
 /** Best-effort delete of a card's media files. Missing file is not an error. */
@@ -3781,19 +3779,20 @@ async function projectsPayload(): Promise<unknown> {
  */
 type DbInfo = {
 	file: string;
-	bytes: number;
+	// withBytes=false のときは載らない（/api/dashboard の本文を可変値から遠ざけるため）。
+	bytes?: number;
 	boards: number;
 	cards: number;
 	projects: number;
 	decisions: number;
 };
-function dbInfo(cards: number): DbInfo | null {
+function dbInfo(cards: number, withBytes = true): DbInfo | null {
 	try {
-		const st = statSync(DB_FILE);
+		const st = withBytes ? statSync(DB_FILE) : null;
 		const store = kanbanDb();
 		return {
 			file: basename(DB_FILE),
-			bytes: st.size,
+			...(st === null ? {} : { bytes: st.size }),
 			// +1 = GLOBAL board. Project boards are every board on the machine. The +1 is
 			// conceptual: no GLOBAL row exists, but global is always shown in the heading.
 			boards: 1 + store.projectKeys().length,
@@ -3913,17 +3912,19 @@ async function dashboardPayload(): Promise<unknown> {
 		startedAt: serverStartedAt,
 		// #65/#74/#101: ここには分粒度の now があった。クライアントはもう描画に使わず（sigOf が除外）、
 		// 読み手も無い。一方で本文は sendEtagJson が sha1 するので、分境界を跨ぐと ETag が動き、
-		// 内容が同じでも 304 が 200 に化ける（tests/kanban-etag の 4b が 4 回に 1 回落ちていた原因）。
+		// 内容が同じでも 304 が 200 に化ける（tests/kanban-etag の 4b が 4 回に 1 回落ちていた。
+		// now を戻した A/B では再現せず、原因と断定できていない）。
+		// 同じ理由で stats.media（毎リクエスト readdir）と db.bytes（毎リクエスト statSync）は本文から外した。
 		// 分粒度の時計を本文に載せないこと自体が #65 の趣旨。
 		stats: {
 			todo: totals.todo,
 			doing: totals.doing,
 			done: totals.done,
 			serve: 0,
-			media: mediaFileCount(),
 		},
 		// #11: 設定タブの「保存データ」。絶対パスは出さない（#80-⑦）。
-		db: dbInfo(totals.todo + totals.doing + totals.done),
+		// bytes は毎リクエスト statSync するので、ETag の本文には載せない（設定タブの /api/db/diagnose は既定で残す）。
+		db: dbInfo(totals.todo + totals.doing + totals.done, false),
 		// The board picker's choices. projectKeys() is the board table itself, so a board with
 		// no cards yet is still selectable (listProjectBoards() only returns boards with cards).
 		boards: kanbanDb()
@@ -4091,6 +4092,7 @@ function handleUpload(req: IncomingMessage, res: ServerResponse, q: URLSearchPar
 		// #101: mediaTarget() が読む盤面も、書き戻す盤面も同じロックの中。owner の id も
 		// ここで採るので、別プロセスと id がぶつからない。
 		let reply: { status: number; body: unknown } = { status: 500, body: { ok: false, error: "media write failed" } };
+		let wroteName: string | null = null;
 		const persistError = mutateBoard(path, (b) => {
 			const t = mediaTarget(q, b);
 			if (t.kind === "missing") {
@@ -4130,11 +4132,16 @@ function handleUpload(req: IncomingMessage, res: ServerResponse, q: URLSearchPar
 			// busy_timeout(3000ms) を超え得るので、アップロードが重くなったら mediaDir を外へ出す。
 			const name = writeMedia(owner.id, ext, buf);
 			if (name === null) return false;
+			wroteName = name;
 			owner.img = owner.img ? `${owner.img},${name}` : name;
 			reply = { status: 200, body: t.kind === "deliv" ? { ok: true, deliverable: owner } : { ok: true, card: owner } };
 		});
 		// #101: 書き込み自体が throw した（BEGIN/COMMIT 失敗）なら success を返さない。
-		if (persistError !== null) reply = { status: 500, body: { ok: false, error: persistError } };
+		if (persistError !== null) {
+			// 行が入らなかったファイルは誰も参照しない（COMMIT 失敗で孤児を残さない）。
+			if (wroteName !== null) trashMedia(join(MEDIA_DIR, wroteName));
+			reply = { status: 500, body: { ok: false, error: persistError } };
+		}
 		sendJson(res, reply.status, reply.body);
 	});
 }
@@ -4203,6 +4210,7 @@ function handleUpload2(req: IncomingMessage, res: ServerResponse, q: URLSearchPa
 	// ディレクトリの全走査は重いのでロックの外で測り、比較だけ中で行う（404/400 の判定順を変えない）。
 	const mediaUsed = mediaDirBytes();
 	let reply: { status: number; body: unknown } = { status: 500, body: { ok: false, error: "media write failed" } };
+	let wroteName: string | null = null;
 	const persistError = mutateBoard(target.path, (b) => {
 		const t = mediaTarget(q, b);
 		if (t.kind === "missing") {
@@ -4226,11 +4234,16 @@ function handleUpload2(req: IncomingMessage, res: ServerResponse, q: URLSearchPa
 		}
 		const name = writeMedia(owner.id, parsed.ext, parsed.bytes);
 		if (name === null) return false;
+		wroteName = name;
 		// #53: add, do not replace (a card can hold several attachments).
 		owner.img = owner.img ? `${owner.img},${name}` : name;
 		reply = { status: 200, body: t.kind === "deliv" ? { ok: true, deliverable: owner } : { ok: true, card: owner } };
 	});
-	if (persistError !== null) reply = { status: 500, body: { ok: false, error: persistError } };
+	if (persistError !== null) {
+		// 行が入らなかったファイルは誰も参照しない（COMMIT 失敗で孤児を残さない）。
+		if (wroteName !== null) trashMedia(join(MEDIA_DIR, wroteName));
+		reply = { status: 500, body: { ok: false, error: persistError } };
+	}
 	sendJson(res, reply.status, reply.body);
 }
 
@@ -5278,15 +5291,17 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 		}
 		case "/api/deliv/remove": {
 			let reply: { status: number; body: unknown } = { status: 404, body: { ok: false, error: `no deliverable with id ${idParam}` } };
+			let doomed: string[] = [];
 			const persistError = mutateBoard(path, (b) => {
 				const deliverable = b.deliverables.find((d) => d.id === Number(idParam));
 				if (deliverable === undefined) return false;
 				// Same rule as a card: only our own media names, and only when nothing else shows them.
-				trashUnusedMedia(b, "deliv", deliverable.id, mediaNames(deliverable.img));
+				doomed = unusedMedia(b, "deliv", deliverable.id, mediaNames(deliverable.img));
 				b.deliverables = b.deliverables.filter((d) => d.id !== deliverable.id);
 				reply = { status: 200, body: { ok: true } };
 			});
 			if (persistError !== null) reply = { status: 500, body: { ok: false, error: persistError } };
+			else for (const n of doomed) trashMedia(join(MEDIA_DIR, n));
 			sendJson(res, reply.status, reply.body);
 			return;
 		}
@@ -5296,6 +5311,7 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 		// Removing the last entry drops `img` itself, so the card stops being a deliverable.
 		case "/api/attach/del": {
 			let reply: { status: number; body: unknown } = { status: 500, body: { ok: false, error: "board write failed" } };
+			let doomed: string[] = [];
 			const persistError = mutateBoard(path, (b) => {
 				const t = mediaTarget(q, b);
 				if (t.kind === "missing") {
@@ -5318,12 +5334,13 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 				}
 				const gone = list.splice(n, 1)[0];
 				// #92: one rule, shared with /api/deliv/remove and the deliverable tool.
-				trashUnusedMedia(b, t.kind, owner.id, [gone]);
+				doomed = unusedMedia(b, t.kind, owner.id, [gone]);
 				if (list.length === 0) delete owner.img;
 				else owner.img = list.join(",");
 				reply = { status: 200, body: { ok: true, cards: b.cards, deliverables: b.deliverables } };
 			});
 			if (persistError !== null) reply = { status: 500, body: { ok: false, error: persistError } };
+			else for (const n of doomed) trashMedia(join(MEDIA_DIR, n));
 			sendJson(res, reply.status, reply.body);
 			return;
 		}
@@ -6112,12 +6129,22 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 		}
 		// 0 is the default: drop the key instead of storing an explicit 0.
 		// #101: 書くときだけロックの中でもう一度引き直す。
-		mutateBoard(path, (fb) => {
+		let found = false;
+		const err = mutateBoard(path, (fb) => {
 			const live = fb.cards.find((c) => c.id === id);
 			if (live === undefined) return false;
+			found = true;
 			if (value === 0) delete live.priority;
 			else live.priority = value;
 		});
+		if (err !== null) {
+			ctx.ui.notify(`#${id} 優先度の保存に失敗: ${err}（${scope}）`);
+			return;
+		}
+		if (!found) {
+			ctx.ui.notify(`その id は無い: #${id}（${scope}）`);
+			return;
+		}
 		ctx.ui.notify(`#${card.id} 優先度を ${value} に設定（${scope}）`);
 		refresh(ctx, sid);
 	};
@@ -6733,10 +6760,17 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 					fn(seen);
 					return writeBoard(path, seen);
 				}
-				return mutateBoard(path, (live) => {
-					seen = live; // details に返す盤面も書き込み後のものに
-					return fn(live);
+				let aborted = false;
+				const err = mutateBoard(path, (live) => {
+					seen = live;
+					const keep = fn(live);
+					if (keep === false) aborted = true;
+					return keep;
 				});
+				// fn が盤面を書き換えた後に false を返している（ゲート拒否など）。その状態は DB に
+				// 入っていないので、details が「そこにある」と言わないよう読み直す。
+				if (aborted) seen = readBoard(path) ?? b;
+				return err;
 			};
 			let persistError: string | null = null;
 			const done = (text: string) => ({
@@ -7080,15 +7114,17 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 				case "remove": {
 					if (params.id === undefined) return fail("remove requires id");
 					let missing = true;
+					let doomed: string[] = [];
 					persistError = persist((fb) => {
 						const i = fb.deliverables.findIndex((d) => d.id === params.id);
 						if (i < 0) return false;
 						missing = false;
 						// #92: the same trash rule as /api/deliv/remove. Never removeMedia(): that takes a
 						// Card, so passing a Deliv needs `as Card` - which is how the two spaces got mixed.
-						trashUnusedMedia(fb, "deliv", params.id, mediaNames(fb.deliverables[i].img));
+						doomed = unusedMedia(fb, "deliv", params.id, mediaNames(fb.deliverables[i].img));
 						fb.deliverables.splice(i, 1);
 					});
+					if (persistError === null && !missing) for (const n of doomed) trashMedia(join(MEDIA_DIR, n));
 					if (missing) return fail(`no deliverable with id ${params.id} in the ${scope} board`);
 					message = `removed deliverable #${params.id} (${scope})`;
 					break;
