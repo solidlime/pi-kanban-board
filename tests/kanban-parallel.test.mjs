@@ -14,6 +14,7 @@
 // nodejs/node#56645 / #64322 の Windows シャットダウンレースで、#61999（2026-07-24 merged）が修正。
 // 24.20.0 と 26.7.0 に入り、25.x は EOL で入らない（v25.2.1 の node_platform.cc にガード無し）。
 // 子プロセス spawn は窓を広げるだけで原因ではない。根治は Node を 24.20+ / 26.7+ へ上げること。
+// 決定（2026-11）: Node は上げない。偽の失敗が煩い時は npm run test:stable（13s -> 62s）。
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";

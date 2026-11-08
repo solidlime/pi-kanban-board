@@ -40,7 +40,8 @@
     "build": "node scripts/build-web.mjs",
     "pretest": "node scripts/build-web.mjs --check",
     "prepack": "node scripts/build-web.mjs",
-    "test": "node --test \"tests/**/*.test.mjs\""
+    "test": "node --test \"tests/**/*.test.mjs\"",
+    "test:stable": "node --test --test-concurrency=2 \"tests/**/*.test.mjs\""
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "^1.2.0",
