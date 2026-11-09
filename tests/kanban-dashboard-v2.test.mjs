@@ -242,3 +242,19 @@ test("dashboard: 右クリックの生成物が最新（#95）", () => {
 	assert.ok(HTML.includes(".ctxmenu button"), "CSS が dashboard.html に入っていない");
 	assert.ok(read("extensions/dashboard.generated.ts").includes('id="ctxmenu"'), "generated.ts が古い");
 });
+
+// #106: 携帯からの追加。送信経路が Ctrl/Cmd+Enter だけだと、ソフトキーボードには Ctrl が無く、
+// textarea の Enter は改行なので送信できない（実機では打てるのに送れない）。addrow に submit ボタンを常設する。
+test("#106: 追加行に送信ボタンがある（タッチに Ctrl+Enter は無い）", () => {
+	const app = read("web/dash/_app.js");
+	const addRow = (app.match(/function addRow\(col\) \{[\s\S]*?\n  \}/) ?? [""])[0];
+	assert.ok(addRow.length > 0, "addRow が見つからない");
+	assert.match(addRow, /btn\.type = "submit"/, "addRow に submit ボタンが無い（携帯から送信できない）");
+	assert.match(addRow, /className = "addbtn"/, ".addbtn が付いていない");
+	assert.match(addRow, /f\.appendChild\(btn\)/, "ボタンが form に入っていない");
+	assert.match(addRow, /f\.onsubmit = function \(e\)/, "form の送信配線が無い（ボタンが素の GET になる）");
+	const head = read("web/dash/_head.html");
+	assert.match(head, /\.addrow\{[^}]*display:flex/, ".addrow が flex でない（ボタンが textarea の下に落ちる）");
+	assert.match(head, /\.addrow \.addin\{[^}]*flex:1 1 0/, ".addin が横を引き受けない");
+	assert.match(head, /\.addrow \.addbtn\{[^}]*min-height:36px/, ".addbtn のタップ領域が36px 未満");
+});

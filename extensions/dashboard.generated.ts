@@ -673,11 +673,19 @@ html.halt .swline .sw[data-sw="pause"]{ border-color:var(--bad); }
 /* 追加: j/k 選択の可視化 */
 .card.sel{outline:2px solid var(--accent); outline-offset:-1px}
 /* 追加: 列内インライン新規。パレット/モーダルを1つも増やさない */
-.addrow{margin-bottom:var(--gap)}
+/* #106: 追加ボタンを常設する。携帯のソフトキーボードには Ctrl+Enter が無く、
+   textarea の Enter は改行だから、ボタンが無いと送信できない。 */
+.addrow{margin-bottom:var(--gap); display:flex; gap:6px; align-items:flex-start}
 .addrow .addin{
-  width:100%; background:var(--bg2); color:var(--text); font:inherit;
+  flex:1 1 0; width:auto; min-width:0; min-height:36px;
+  background:var(--bg2); color:var(--text); font:inherit;
   border:1px dashed var(--accent); border-radius:var(--radius); padding:6px 8px;
   resize:vertical; min-height:0;
+}
+.addrow .addbtn{
+  flex:0 0 auto; min-height:36px; padding:0 12px; cursor:pointer;
+  background:var(--bg2); color:var(--text); font:inherit; font-size:12px;
+  border:1px solid var(--accent); border-radius:var(--radius);
 }
 /* #50: 普段は1行、フォーカスで4行に伸びる（blur で戻る） */
 .addrow .addin:focus{outline:1px solid var(--accent); outline-offset:0; height:calc(4 * 1.5em + 12px)}
@@ -1726,7 +1734,13 @@ function esc(s){return String(s).replace(/[&<>"]/g,function(c){return {"&":"&amp
       else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); submitAdd(col, inp.value); }
     });
     f.onsubmit = function (e) { e.preventDefault(); submitAdd(col, inp.value); };
+    // #106: 携帯のソフトキーボードには Ctrl+Enter が無い。ボタンが無いと送信経路がゼロになる。
+    var btn = document.createElement("button");
+    btn.type = "submit";
+    btn.className = "addbtn";
+    btn.textContent = "追加";
     f.appendChild(inp);
+    f.appendChild(btn);
     return f;
   }
   function submitAdd(col, text) {

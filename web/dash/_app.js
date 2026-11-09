@@ -865,7 +865,13 @@
       else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); submitAdd(col, inp.value); }
     });
     f.onsubmit = function (e) { e.preventDefault(); submitAdd(col, inp.value); };
+    // #106: 携帯のソフトキーボードには Ctrl+Enter が無い。ボタンが無いと送信経路がゼロになる。
+    var btn = document.createElement("button");
+    btn.type = "submit";
+    btn.className = "addbtn";
+    btn.textContent = "追加";
     f.appendChild(inp);
+    f.appendChild(btn);
     return f;
   }
   function submitAdd(col, text) {
