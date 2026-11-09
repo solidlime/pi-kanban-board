@@ -6599,7 +6599,7 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 				// #17: the card belongs to this conversation, and the project board is the one
 				// this cwd shares - there is no session board left to add it to.
 				const path = boardPath("project", projKey);
-				let added: Card | null = null;
+				let added = null as Card | null;
 				// #101: nextId の採番も同じロックの中で（別プロセスと id がぶつからない）。
 				mutateBoard(path, (b) => {
 					const card: Card = { id: b.nextId++, text: parsed.text, col: "todo" };
@@ -6936,7 +6936,7 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 					const labels = parseLabels(params.labels ?? null);
 					if (labels === null) return fail(`labels must be a comma-separated list of: ${LABELS.join(", ")}`);
 					// #101: 採番・検証・挿入を同じロックの中で（別プロセスと id がぶつからない）。
-					let added: Card | null = null;
+					let added = null as Card | null;
 					let gateError: string | null = null;
 					persistError = persist((fb) => {
 						const card: Card = { id: fb.nextId++, text, col };
@@ -6957,7 +6957,7 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 				case "move": {
 					// #101: 移動もロックの中で引き直す。順番は従来どおり card → col の検査順。
 					let err: string | null = null;
-					let moved: Card | null = null;
+					let moved = null as Card | null;
 					let changed = false;
 					persistError = persist((fb) => {
 						const card = params.id === undefined ? undefined : fb.cards.find((c) => c.id === params.id);
@@ -7002,7 +7002,7 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 					const labs = params.labels === undefined ? undefined : parseLabels(params.labels);
 					if (labs === null) return fail(`labels must be a comma-separated list of: ${LABELS.join(", ")}`);
 					let err: string | null = null;
-					let edited: Card | null = null;
+					let edited = null as Card | null;
 					persistError = persist((fb) => {
 						const live = fb.cards.find((c) => c.id === params.id);
 						if (live === undefined) {
@@ -7196,7 +7196,7 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 					if (text.length === 0) return fail("add requires a non-empty text");
 					// `at` is part of the row (the band sorts on it). The id is the board's own deliv
 					// sequence; db.ts raises deliv_next_id to max(id)+1 inside its lock anyway.
-					let delivered: Deliv | null = null;
+					let delivered = null as Deliv | null;
 					persistError = persist((fb) => {
 						const deliverable: Deliv = { id: fb.delivNextId, text, at: Date.now() };
 						fb.deliverables.push(deliverable);
@@ -7211,7 +7211,7 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 					if (params.id === undefined) return fail("edit requires id");
 					const text = (params.text ?? "").trim();
 					if (text.length === 0) return fail("edit requires a non-empty text");
-					let edited: Deliv | null = null;
+					let edited = null as Deliv | null;
 					persistError = persist((fb) => {
 						const deliverable = fb.deliverables.find((d) => d.id === params.id);
 						if (deliverable === undefined) return false;
