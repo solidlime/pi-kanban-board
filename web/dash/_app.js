@@ -887,7 +887,8 @@
       }, fail);
       return;
     }
-    var multi = body.indexOf("\n") >= 0 || QA_RE.test(body);
+    // #107: 末尾改行だけなら単行扱い（quickadd は TODO にしか作らないので列が落ちる）。
+    var multi = body.trim().indexOf("\n") >= 0 || QA_RE.test(body);
     var req = multi
       ? act("/api/quickadd", { text: body })
       : act("/api/add", { text: body.trim(), col: col });
@@ -896,8 +897,11 @@
       delete addDraft[col];
       refresh();
       var added = (multi && r && r.added) || [];
-      toast(added.length ? added.map(function (c) { return "#" + c.id; }).join(" ") + " を追加"
-        : "#" + colName(col) + " に追加");
+      // #107: quickadd が 0 件（コメント行・トークンだけの行）でも成功トーストが出ていた。
+      var msg = !multi ? "#" + colName(col) + " に追加"
+        : added.length ? added.map(function (c) { return "#" + c.id; }).join(" ") + " を追加"
+        : "追加できる行が無い";
+      toast(msg);
     }, fail);
   }
   function moveCard(id, col) {

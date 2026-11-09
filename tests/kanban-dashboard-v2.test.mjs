@@ -258,3 +258,19 @@ test("#106: 追加行に送信ボタンがある（タッチに Ctrl+Enter は�
 	assert.match(head, /\.addrow \.addin\{[^}]*flex:1 1 0/, ".addin が横を引き受けない");
 	assert.match(head, /\.addrow \.addbtn\{[^}]*min-height:36px/, ".addbtn のタップ領域が36px 未満");
 });
+
+// #107: 1) 末尾改行だけでも quickadd に倒れ、quickadd は TODO にしか作らないので、
+// DOING の「+」で return を押しただけでカードが TODO に落ちていた。
+// 2) quickadd が 0 件（コメント行・トークンだけの行）でも成功トーストが出ていた。
+// 3) iOS Safari は 16px 未満の入力欄でフォーカス時に自動ズームする。
+test("#107: 末尾改行で列が落ちない / 0件を成功に見せない / iOS で自動ズームしない", () => {
+	const app = read("web/dash/_app.js");
+	assert.match(app, /var multi = body\.trim\(\)\.indexOf\("\\n"\) >= 0/, "末尾改行を数えている（DOING から打つと TODO に落ちる）");
+	assert.match(app, /var msg = !multi \?/, "0 件と成功を区別していない");
+	assert.match(app, /act\("\/api\/quickadd", \{ text: body \}\)/, "quickadd へ trim した本文を送っている（子カードのインデントが消える）");
+	assert.match(app, /追加できる行が無い/, "0 件でも成功トーストが出る");
+	const head = read("web/dash/_head.html");
+	assert.match(head, /@media \(pointer:coarse\)\{\.addrow \.addin\{font-size:16px\}\}/, "iOS の自動ズームを止めていない");
+	assert.match(head, /\.addrow \.addin\{[^}]*min-height:36px/, "追加ボタンと下端が揃わない");
+});
+

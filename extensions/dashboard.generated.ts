@@ -677,16 +677,19 @@ html.halt .swline .sw[data-sw="pause"]{ border-color:var(--bad); }
    textarea の Enter は改行だから、ボタンが無いと送信できない。 */
 .addrow{margin-bottom:var(--gap); display:flex; gap:6px; align-items:flex-start}
 .addrow .addin{
-  flex:1 1 0; width:auto; min-width:0; min-height:36px;
+  flex:1 1 0; width:auto; min-width:0;
   background:var(--bg2); color:var(--text); font:inherit;
   border:1px dashed var(--accent); border-radius:var(--radius); padding:6px 8px;
-  resize:vertical; min-height:0;
+  resize:vertical; min-height:36px; /* 追加ボタンと下端を揃える（:focus の height の方が大きいので伸縮は変わらない） */
 }
 .addrow .addbtn{
   flex:0 0 auto; min-height:36px; padding:0 12px; cursor:pointer;
   background:var(--bg2); color:var(--text); font:inherit; font-size:12px;
   border:1px solid var(--accent); border-radius:var(--radius);
 }
+/* #107: iOS Safari は 16px 未満の入力欄でフォーカス時に自動ズームする。
+   4 行に伸びる欄と重なると視界が跳ぶので、粗いポインタの端末だけ 16px にする。 */
+@media (pointer:coarse){.addrow .addin{font-size:16px}}
 /* #50: 普段は1行、フォーカスで4行に伸びる（blur で戻る） */
 .addrow .addin:focus{outline:1px solid var(--accent); outline-offset:0; height:calc(4 * 1.5em + 12px)}
 /* 401（トークン無し/失効）の常報。沈黙させない */
@@ -1756,7 +1759,8 @@ function esc(s){return String(s).replace(/[&<>"]/g,function(c){return {"&":"&amp
       }, fail);
       return;
     }
-    var multi = body.indexOf("\\n") >= 0 || QA_RE.test(body);
+    // #107: 末尾改行だけなら単行扱い（quickadd は TODO にしか作らないので列が落ちる）。
+    var multi = body.trim().indexOf("\\n") >= 0 || QA_RE.test(body);
     var req = multi
       ? act("/api/quickadd", { text: body })
       : act("/api/add", { text: body.trim(), col: col });
@@ -1765,8 +1769,11 @@ function esc(s){return String(s).replace(/[&<>"]/g,function(c){return {"&":"&amp
       delete addDraft[col];
       refresh();
       var added = (multi && r && r.added) || [];
-      toast(added.length ? added.map(function (c) { return "#" + c.id; }).join(" ") + " を追加"
-        : "#" + colName(col) + " に追加");
+      // #107: quickadd が 0 件（コメント行・トークンだけの行）でも成功トーストが出ていた。
+      var msg = !multi ? "#" + colName(col) + " に追加"
+        : added.length ? added.map(function (c) { return "#" + c.id; }).join(" ") + " を追加"
+        : "追加できる行が無い";
+      toast(msg);
     }, fail);
   }
   function moveCard(id, col) {
