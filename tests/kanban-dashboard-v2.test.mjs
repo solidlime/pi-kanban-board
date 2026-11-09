@@ -267,10 +267,11 @@ test("#107: 末尾改行で列が落ちない / 0件を成功に見せない / i
 	const app = read("web/dash/_app.js");
 	assert.match(app, /var multi = body\.trim\(\)\.indexOf\("\\n"\) >= 0/, "末尾改行を数えている（DOING から打つと TODO に落ちる）");
 	assert.match(app, /var msg = !multi \?/, "0 件と成功を区別していない");
-	assert.match(app, /act\("\/api\/quickadd", \{ text: body \}\)/, "quickadd へ trim した本文を送っている（子カードのインデントが消える）");
+	assert.match(app, /act\("\/api\/quickadd", \{ text: body, col: col \}\)/, "quickadd へ trim した本文か列を渡していない（子カードのインデントが消える / 列が落ちる）");
 	assert.match(app, /追加できる行が無い/, "0 件でも成功トーストが出る");
 	const head = read("web/dash/_head.html");
-	assert.match(head, /@media \(pointer:coarse\)\{\.addrow \.addin\{font-size:16px\}\}/, "iOS の自動ズームを止めていない");
+	assert.match(head, /@media \(pointer:coarse\)\{\.addrow \.addin\{font-size:16px[^}]*\}/, "iOS の自動ズームを止めていない");
+	assert.match(head, /@media \(pointer:coarse\)[^\n]*\.addbtn\{min-height:44px\}/, "粗いポインタのタップ領域が 44px 未満");
 	assert.match(head, /\.addrow \.addin\{[^}]*min-height:36px/, "追加ボタンと下端が揃わない");
 });
 

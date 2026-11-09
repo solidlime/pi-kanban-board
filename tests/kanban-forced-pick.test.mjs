@@ -38,11 +38,19 @@ test("stamp の slug は書き込み先と同じボードキー", () => {
 	assert.match(ADD, /userPickAt\.set\(storedProjectKey\(boardKeyOf\(path\)\.sid\), Date\.now\(\)\)/);
 });
 
-test("+ の複数行経路（quickadd）も 1 枚以上入ったときだけ合図を置く", () => {
+test("#108: quickadd は入力欄の列を使う（常に todo に作らない）", () => {
+	assert.match(QUICK, /parseQuickAdd\(q\.get\("text"\) \?\? "", b\.nextId, col\)/, "quickadd が列を落としている");
+	assert.match(QUICK, /const col = parseCol\(colParam\) \?\? "todo";/, "quickadd が col を既定 todo で受けない");
+	assert.ok(QUICK.includes('colParam === "deliverable"'), "quickadd が deliverable を列として受ける");
+});
+
+test("+ の複数行経路（quickadd）も 1 枚以上かつ TODO のときだけ合図を置く", () => {
 	// 入力欄は 1 行なら /api/add、複数行やトークン付きなら /api/quickadd に振り分けられる
 	// （web/dash/_app.js:891）。quickadd はトークンだけの行を捨てて cards 0 件を返し得るので、
 	// 0 件で stamp すると「#tag と打っただけ」で wake が出る。
-	assert.match(QUICK, /if \(persistError === null && writeOk && added > 0\) userPickAt\.set\(/);
+	// #108: 列が可変になったので、DOING/DONE 直行（ループの仕事ではない）でも発火しないよう
+	// 列の条件まで固定する（/api/add:5058 と同じ門）。条件を書かないと、誰かが消しても通る。
+	assert.ok(QUICK.includes("added > 0 && col === "), "quickadd の合図が列を見ていない");
 });
 
 test("poll は郵便受けを forced として渡し、発火したら消す", () => {

@@ -30,8 +30,10 @@
   border:1px solid var(--accent); border-radius:var(--radius);
 }
 /* #107: iOS Safari は 16px 未満の入力欄でフォーカス時に自動ズームする。
-   4 行に伸びる欄と重なると視界が跳ぶので、粗いポインタの端末だけ 16px にする。 */
-@media (pointer:coarse){.addrow .addin{font-size:16px}}
+   4 行に伸びる欄と重なると視界が跳ぶので、粗いポインタの端末だけ 16px にする。
+   #108: タップ領域はこのファイルの慣例（44px）に揃える。iPad + トラックパッドは
+   pointer:fine なのでここに入らない（自動ズームは残る、既知の穴）。 */
+@media (pointer:coarse){.addrow .addin{font-size:16px; min-height:44px}.addrow .addbtn{min-height:44px}}
 /* #50: 普段は1行、フォーカスで4行に伸びる（blur で戻る） */
 .addrow .addin:focus{outline:1px solid var(--accent); outline-offset:0; height:calc(4 * 1.5em + 12px)}
 /* 401（トークン無し/失効）の常報。沈黙させない */

@@ -865,7 +865,7 @@ export type QuickAddResult = { ok: true; cards: Card[] } | { ok: false; error: s
  * （新しい id は既存カードから指されていない＝循環しない）。
  * トークンは行頭から続く間だけ消費し、残りが本文。トークンだけの行は捨てる。
  */
-export function parseQuickAdd(text: string, baseId = 1): QuickAddResult {
+export function parseQuickAdd(text: string, baseId = 1, col: Col = "todo"): QuickAddResult {
 	if (Buffer.byteLength(text, "utf8") > QUICKADD_MAX_BYTES) {
 		return { ok: false, error: `text must be at most ${QUICKADD_MAX_BYTES / 1024}KB` };
 	}
@@ -893,7 +893,7 @@ export function parseQuickAdd(text: string, baseId = 1): QuickAddResult {
 		}
 		const body = words.slice(i).join(" ");
 		if (body === "") continue; // トークンだけの行は無視する
-		const card: Card = { id: nextId++, text: body, col: "todo" };
+		const card: Card = { id: nextId++, text: body, col };
 		if (project !== "") card.project = project;
 		if (due !== undefined) card.due = due;
 		if (estimate !== undefined) card.estimate = estimate;
@@ -5067,8 +5067,15 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 			let reply: { status: number; body: unknown } = { status: 500, body: { ok: false, error: "board write failed" } };
 			let added = 0;
 			let writeOk = false;
+			// #108: 入力欄の列をそのまま使う。以前は常に todo に作っていたので、DOING の「+」から
+			// 複数行やトークン付きで足すとカードが TODO に落ちた（#82 と同じく deliverable は列ではない）。
+			if (colParam === "deliverable") {
+				sendJson(res, 400, { ok: false, error: "deliverable is not a phase" });
+				return;
+			}
+			const col = parseCol(colParam) ?? "todo";
 			const persistError = mutateBoard(path, (b) => {
-				const parsed = parseQuickAdd(q.get("text") ?? "", b.nextId);
+				const parsed = parseQuickAdd(q.get("text") ?? "", b.nextId, col);
 				if (!parsed.ok) {
 					reply = { status: 400, body: { ok: false, error: parsed.error } };
 					return false;
@@ -5087,9 +5094,10 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 				writeOk = true;
 				reply = { status: 200, body: { ok: true, cards: b.cards, added: parsed.cards } };
 			});
-			// #94: /api/quickadd も入力欄の + の経路（複数行・トークン付き）で、作るカードは常に todo。
-			// /api/add と同じく「ユーザーが今足した」合図を置く。
-			if (persistError === null && writeOk && added > 0) userPickAt.set(storedProjectKey(boardKeyOf(path).sid), Date.now());
+			// #94: /api/quickadd も入力欄の + の経路（複数行・トークン付き）。カードの列は col（既定 todo）。
+			// 合図を置くのは TODO に足したときだけ。DOING/DONE 直行はループの仕事ではなく
+			// （/api/add:5058 と同じ門）、ここで置くと「DONE に記録した」だけで forced が 1 回焼かれる。
+			if (persistError === null && writeOk && added > 0 && col === "todo") userPickAt.set(storedProjectKey(boardKeyOf(path).sid), Date.now());
 			if (persistError !== null) reply = { status: 500, body: { ok: false, error: persistError } };
 			sendJson(res, reply.status, reply.body);
 			return;

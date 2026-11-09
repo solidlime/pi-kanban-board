@@ -686,8 +686,10 @@ html.halt .swline .sw[data-sw="pause"]{ border-color:var(--bad); }
   border:1px solid var(--accent); border-radius:var(--radius);
 }
 /* #107: iOS Safari は 16px 未満の入力欄でフォーカス時に自動ズームする。
-   4 行に伸びる欄と重なると視界が跳ぶので、粗いポインタの端末だけ 16px にする。 */
-@media (pointer:coarse){.addrow .addin{font-size:16px}}
+   4 行に伸びる欄と重なると視界が跳ぶので、粗いポインタの端末だけ 16px にする。
+   #108: タップ領域はこのファイルの慣例（44px）に揃える。iPad + トラックパッドは
+   pointer:fine なのでここに入らない（自動ズームは残る、既知の穴）。 */
+@media (pointer:coarse){.addrow .addin{font-size:16px; min-height:44px}.addrow .addbtn{min-height:44px}}
 /* #50: 普段は1行、フォーカスで4行に伸びる（blur で戻る） */
 .addrow .addin:focus{outline:1px solid var(--accent); outline-offset:0; height:calc(4 * 1.5em + 12px)}
 /* 401（トークン無し/失効）の常報。沈黙させない */
@@ -1697,6 +1699,7 @@ __KB_MD_JS__
   // #75: その場追加の打ちかけは再描画で消さない。閉じる（state.addCol）と破棄（draft）を分ける。
   var addDraft = {};
   // #50: 入力欄は textarea。単行・トークン無しは従来どおり /api/add、それ以外は /api/quickadd。
+  // #108: どちらも col を渡す（quickadd が常に TODO に作っていたのが列落ちの病巣）。
   // 行頭のタブ/2 スペースは親へのインデントなので、trim せずにサーバへ渡す。
   var QA_RE = /(^|\s)(#[A-Za-z0-9._-]+|![0-9]{1,3}|due:\S+)/;
   function addRow(col) {
@@ -1738,10 +1741,10 @@ __KB_MD_JS__
       }, fail);
       return;
     }
-    // #107: 末尾改行だけなら単行扱い（quickadd は TODO にしか作らないので列が落ちる）。
+    // #107: 末尾改行だけなら単行扱い（以前は quickadd に倒れて列が TODO に落ちた）。
     var multi = body.trim().indexOf("\n") >= 0 || QA_RE.test(body);
     var req = multi
-      ? act("/api/quickadd", { text: body })
+      ? act("/api/quickadd", { text: body, col: col })
       : act("/api/add", { text: body.trim(), col: col });
     req.then(function (r) {
       state.addCol = null;

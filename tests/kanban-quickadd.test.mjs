@@ -33,6 +33,14 @@ test("quickadd: 素の1行は todo のカード1枚", () => {
 	assert.equal(cards[0].estimate, undefined);
 });
 
+test("#108: quickadd は列を受け取る（既定は todo）", () => {
+	assert.equal(ok(parseQuickAdd("a", 1, "doing"))[0].col, "doing");
+	assert.equal(ok(parseQuickAdd("a", 1, "done"))[0].col, "done");
+	assert.equal(ok(parseQuickAdd("a", 1))[0].col, "todo");
+	const two = ok(parseQuickAdd("親\n  子", 1, "doing"));
+	assert.deepEqual(two.map((c) => c.col), ["doing", "doing"]);
+});
+
 test("quickadd: #project は normalizeProject を通る", () => {
 	const cards = ok(parseQuickAdd("#pi-kanban 板を直す", 1));
 	assert.equal(cards[0].project, "pi-kanban");

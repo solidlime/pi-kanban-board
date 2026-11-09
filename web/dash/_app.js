@@ -846,6 +846,7 @@
   // #75: その場追加の打ちかけは再描画で消さない。閉じる（state.addCol）と破棄（draft）を分ける。
   var addDraft = {};
   // #50: 入力欄は textarea。単行・トークン無しは従来どおり /api/add、それ以外は /api/quickadd。
+  // #108: どちらも col を渡す（quickadd が常に TODO に作っていたのが列落ちの病巣）。
   // 行頭のタブ/2 スペースは親へのインデントなので、trim せずにサーバへ渡す。
   var QA_RE = /(^|\s)(#[A-Za-z0-9._-]+|![0-9]{1,3}|due:\S+)/;
   function addRow(col) {
@@ -887,10 +888,10 @@
       }, fail);
       return;
     }
-    // #107: 末尾改行だけなら単行扱い（quickadd は TODO にしか作らないので列が落ちる）。
+    // #107: 末尾改行だけなら単行扱い（以前は quickadd に倒れて列が TODO に落ちた）。
     var multi = body.trim().indexOf("\n") >= 0 || QA_RE.test(body);
     var req = multi
-      ? act("/api/quickadd", { text: body })
+      ? act("/api/quickadd", { text: body, col: col })
       : act("/api/add", { text: body.trim(), col: col });
     req.then(function (r) {
       state.addCol = null;
