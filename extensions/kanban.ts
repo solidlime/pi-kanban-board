@@ -3896,9 +3896,9 @@ function dbInfo(cards: number, withBytes = true): DbInfo | null {
  * 実装で、同じ数字を埋める）。VACUUM の失敗は握り潰さず 500 で返す。
  */
 async function dbMaintenance(pathname: string, res: ServerResponse): Promise<void> {
-	const { cards: aggCards, nextId } = aggregateGlobal();
+	const { cards: aggCards } = aggregateGlobal();
 	// #13: same count as /api/dashboard's stats now that both read the one aggregate.
-	const totals = countCols({ cards: aggCards, nextId });
+	const totals = countCols({ cards: aggCards });
 	const countCards = totals.todo + totals.doing + totals.done;
 	if (pathname === "/api/db/diagnose") {
 		const info = dbInfo(countCards) ?? {};
@@ -7224,15 +7224,17 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 				}
 				case "remove": {
 					if (params.id === undefined) return fail("remove requires id");
+					// closure 越しに params.id の絞り込みが効かないので、番号を 1 回だけ取り出す。
+					const ownerId = params.id;
 					let missing = true;
 					let doomed: string[] = [];
 					persistError = persist((fb) => {
-						const i = fb.deliverables.findIndex((d) => d.id === params.id);
+						const i = fb.deliverables.findIndex((d) => d.id === ownerId);
 						if (i < 0) return false;
 						missing = false;
 						// #92: the same trash rule as /api/deliv/remove. Never removeMedia(): that takes a
 						// Card, so passing a Deliv needs `as Card` - which is how the two spaces got mixed.
-						doomed = unusedMedia(fb, "deliv", params.id, mediaNames(fb.deliverables[i].img));
+						doomed = unusedMedia(fb, "deliv", ownerId, mediaNames(fb.deliverables[i].img));
 						fb.deliverables.splice(i, 1);
 					});
 					if (persistError === null && !missing) for (const n of doomed) trashMedia(join(MEDIA_DIR, n));
