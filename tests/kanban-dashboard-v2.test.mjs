@@ -138,7 +138,7 @@ test("dashboard: 成果物タイルはどこを押してもプレビュー（#98
 	assert.match(app, /if \(dt\.classList\.contains\("thumb"\)\) showLb/, "タイル全体が lightbox に行かない");
 	assert.match(app, /else openDelivModal\(Number\(dt\.dataset\.deliv\)\)/, "添付なしタイルのモーダルが死んでいる");
 	// 添付のあるタイルは全部 .thumb + data-lb（動画・音声も prev/next に載る）。
-	assert.match(app, /if \(imgs\.length\) \{ t\.classList\.add\("thumb"\); t\.dataset\.lb = name; \}/);
+	assert.match(app, /if \(imgs\.length\) \{ t\.classList\.add\("thumb"\); t\.dataset\.lb = name; t\.dataset\.at = at; \}/);
 	// 編集への入口（鉛筆）が残る。
 	assert.match(app, /el\("span", "del-edit"/);
 	assert.match(app, /ed\.title = "成果物を編集"/);
@@ -275,3 +275,26 @@ test("#107: 末尾改行で列が落ちない / 0件を成功に見せない / i
 	assert.match(head, /\.addrow \.addin\{[^}]*min-height:36px/, "追加ボタンと下端が揃わない");
 });
 
+
+test("#109: 帯のタイルは複数添付を横ドラッグで切り替える", () => {
+	const app = read("web/dash/_app.js");
+	const css = read("web/dash/_b.css");
+	// index 計算は純関数なので、実装を切り出して値で確かめる（文字列一致より強い）。
+	const m = app.match(/function delIdx\(cur, n, d\) \{[\s\S]*?\n  \}/);
+	assert.ok(m, "delIdx が無い");
+	const delIdx = new Function(m[0] + "\nreturn delIdx;")();
+	assert.equal(delIdx(undefined, 3, 0), 0, "未保存は先頭");
+	assert.equal(delIdx(0, 2, 1), 1, "2 枚で次へ");
+	assert.equal(delIdx(1, 2, 1), 0, "2 枚で末尾から先頭へ回る");
+	assert.equal(delIdx(0, 2, -1), 1, "2 枚で先頭から末尾へ回る");
+	assert.equal(delIdx(2, 3, 1), 0, "3 枚で wrap");
+	assert.equal(delIdx(2, 2, 1), 0, "添付が減ったら clamp が効く（直後の 1 振りは空振りしうる）");
+	assert.equal(delIdx(2, 2, -1), 0, "clamp 後の逆方向も効く（2/2 から 1/2）");
+	assert.ok(app.includes("delAt[c.id] = delIdx(delAt[c.id], imgs.length, d);"), "切り替えが delIdx を通っていない");
+	assert.ok(app.includes("var at = imgs.length ? delIdx(delAt[c.id], imgs.length, 0) : 0;"), "表示が delIdx を通っていない");
+	assert.ok(app.includes("t.setPointerCapture(ev.pointerId)"), "タイル外で離すと pointerup が来ない");
+	assert.ok(app.includes("if (!sw || sw.id !== ev.pointerId) return;"), "別ポインタの up で切り替わる");
+	assert.ok(app.includes('(at + 1) + "/" + imgs.length'), "2/3 のカウンタが無い");
+	assert.ok(app.includes("if (delSwipe.id === Number(dt.dataset.deliv) && Date.now() - delSwipe.at < 400) return;"), "振ったタイルのタップ抑止が無い");
+	assert.ok(css.includes(".del-tile.thumb{touch-action:pan-y pinch-zoom}"), "横ドラッグ or ピンチズームが死んでいる");
+});

@@ -168,6 +168,14 @@ html[data-density="compact"] .chips,html[data-density="compact"] .meta{display:n
   color:var(--text); background:color-mix(in srgb,var(--bg0) 80%, transparent);
   border:1px solid var(--line); border-radius:4px; padding:0 4px;
 }
+/* #109: 複数添付の何枚目か。タイルを横にドラッグすると切り替わる（縦スクロールは邪魔しない）。 */
+.del-tile.thumb{touch-action:pan-y pinch-zoom}
+.del-n{
+  position:absolute; right:4px; bottom:4px; padding:0 5px; border-radius:4px;
+  font-family:var(--font-mono); font-size:10px; color:var(--text);
+  background:color-mix(in srgb,var(--bg0) 80%, transparent); border:1px solid var(--line);
+  pointer-events:none;
+}
 /* #98/#105: タイル全体がプレビューなので、編集の入口は右上の鉛筆 1 個だけ。 */
 .del-edit{
   position:absolute; top:3px; right:3px; z-index:1; line-height:1.2;

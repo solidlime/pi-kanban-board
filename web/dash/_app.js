@@ -648,12 +648,32 @@
     }
     return body;
   }
+  // #109: タイルは添付を 1 枚しか見せないので、横ドラッグで切り替える。index はセッション内だけ持つ
+  // （リロードで先頭に戻ってよい）。添付が外れたときは clamp する。
+  var delAt = {};
+  var delSwipe = { id: 0, at: 0 }; // 直前に振った成果物（そのタイルのタップだけ抑止する）
+  // 添付 index: 添付が減っていても clamp してから回す。表示側も同じ式を通す。
+  // dataset.at はアプリが読まない観測点（実機検証で何枚目かを見る）。
+  function delIdx(cur, n, d) {
+    var c = typeof cur === "number" && cur >= 0 ? Math.min(cur, n - 1) : 0;
+    return (c + d + n) % n;
+  }
+  function stepDeliv(t, c, d) {
+    var imgs = imgsOf(c);
+    if (imgs.length < 2) return;
+    delAt[c.id] = delIdx(delAt[c.id], imgs.length, d);
+    delSwipe.id = c.id;
+    delSwipe.at = Date.now();
+    t.parentNode.replaceChild(delTile(c), t);
+  }
   function delTile(c) {
-    var imgs = imgsOf(c), name = imgs[0];
+    var imgs = imgsOf(c);
+    var at = imgs.length ? delIdx(delAt[c.id], imgs.length, 0) : 0;
+    var name = imgs[at];
     var t = el("div", "del-tile");
     t.dataset.deliv = c.id; // #82: 帯のタイル→成果物モーダル（card の id 空間とは別）
     // #98: 添付があるタイルは全部 lightbox の面にする（動画・音声も prev/next に載せる）。
-    if (imgs.length) { t.classList.add("thumb"); t.dataset.lb = name; }
+    if (imgs.length) { t.classList.add("thumb"); t.dataset.lb = name; t.dataset.at = at; }
     var cap = el("div", "del-cap");
     cap.appendChild(el("span", "id", "#" + c.id));
     cap.appendChild(document.createTextNode(c.text || ""));
@@ -663,6 +683,25 @@
     // #79: 添付なしでも成果物として帯に出す（本文だけのタイル）。
     if (imgs.length) t.appendChild(delBody(name, c.text));
     else t.appendChild(el("div", "del-nobody", "添付なし"));
+    // #109: 何枚目かと、横ドラッグでの切り替え（タップは従来どおり lightbox）。
+    if (imgs.length > 1) {
+      t.lastChild.appendChild(el("span", "del-n", (at + 1) + "/" + imgs.length));
+      // #109: ポインタはタイルに捕まえる。外で離しても pointerup が来る（マウスは implicit capture が無い）。
+      var sw = null;
+      t.addEventListener("pointerdown", function (ev) {
+        if (ev.target.closest && ev.target.closest(".del-edit")) return;
+        sw = { id: ev.pointerId, x: ev.clientX, y: ev.clientY };
+        if (t.setPointerCapture) { try { t.setPointerCapture(ev.pointerId); } catch (err) { void err; } }
+      });
+      t.addEventListener("pointerup", function (ev) {
+        if (!sw || sw.id !== ev.pointerId) return;
+        var dx = ev.clientX - sw.x, dy = ev.clientY - sw.y;
+        sw = null;
+        if (Math.abs(dx) < 24 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+        stepDeliv(t, c, dx < 0 ? 1 : -1); // 左へ引く = 次の添付
+      });
+      t.addEventListener("pointercancel", function () { sw = null; });
+    }
     // #56: 参照型（file:）の添付があるカードは右上に 1 バッジ。
     if (imgs.length && imgs.some(function (n) { return refOf(n); })) t.lastChild.appendChild(el("span", "del-ref", "\u2750"));
     if (imgs.length) {
@@ -1509,6 +1548,8 @@
     // .del-edit は自前の onclick で stopPropagation するのでここへは来ない。
     var dt = t.closest && t.closest(".del-tile");
     if (dt) {
+      // #109: 振った直後のそのタイルのタップだけ抑止する（他のタイルは普通に開く）。
+      if (delSwipe.id === Number(dt.dataset.deliv) && Date.now() - delSwipe.at < 400) return;
       if (dt.classList.contains("thumb")) showLb(lbList().indexOf(dt));
       else openDelivModal(Number(dt.dataset.deliv));
       return;
