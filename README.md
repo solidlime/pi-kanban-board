@@ -106,6 +106,27 @@ A **referenced** attachment (`file:<abs>`) can also be a document, which keeps `
 
 `.md` is served as `text/plain` rather than `text/markdown` because Chrome has no viewer for the latter and would download it; the inline `Content-Disposition` on every line of the table is what keeps the browser showing the file instead of saving it. Only `file:` entries can be documents — `.pdf`/`.md` are not in the upload allowlist, so `/api/media` never serves them.
 
+### serve-allow.json
+
+`~/.pi/kanban/serve-allow.json` decides what `/api/ref` and the `ref` tool may read, and where a served entry's inbox may write. Missing or `{}` means the default and the default is narrow: `~/workspace`, nothing else. `roots` **replaces** it wholesale (the default is not merged in), each entry is an absolute path (`~` is not expanded, a relative path resolves against pi's cwd), and an empty array is ignored rather than read as “everything”:
+
+```json
+{
+  "roots": [
+    "C:/Users/Owner/workspace",
+    "D:/Code"
+  ]
+}
+```
+
+Forward slashes keep the JSON readable; a backslash path works too but has to be doubled (`"C:\\Users\\Owner\\workspace"`). The request path and the roots both go through `realpath` before the containment check, so a symlink inside a root is not a way out of it. The file is read on every request — an edit takes effect without a restart.
+
+The optional `baseUrl` pins the host in emitted `/serve` links. `KANBAN_BASE_URL` wins over it, and the port comes from the server, so leave the port off:
+
+```json
+{ "baseUrl": "http://nas.local" }
+```
+
 ### 双方向の添付（アンケート）
 
 An attachment can talk back. `/api/ehr` is the only route that answers without the token, because the sandboxed iframe has an opaque origin and therefore no cookie. The old name `/api/quiz` stays as an alias to the same handler, so a page already attached under it keeps working (new rows land under `ehr:<card>`; answers written to `quiz:<card>` before the rename are still read):
