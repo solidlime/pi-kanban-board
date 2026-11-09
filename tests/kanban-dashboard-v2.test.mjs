@@ -298,3 +298,16 @@ test("#109: 帯のタイルは複数添付を横ドラッグで切り替える",
 	assert.ok(app.includes("if (delSwipe.id === Number(dt.dataset.deliv) && Date.now() - delSwipe.at < 400) return;"), "振ったタイルのタップ抑止が無い");
 	assert.ok(css.includes(".del-tile.thumb{touch-action:pan-y pinch-zoom}"), "横ドラッグ or ピンチズームが死んでいる");
 });
+
+test("#110: 成果物タイルの削除は編集の左（スマフォでは常時表示）", () => {
+	const app = read("web/dash/_app.js");
+	const css = read("web/dash/_b.css");
+	assert.ok(app.includes('el("span", "del-del"'), "削除ボタンが無い");
+	assert.ok(app.includes('de.title = "成果物を削除";'), "削除のツールチップが無い");
+	assert.ok(app.includes("if (!window.confirm(\"成果物 #\" + c.id + \" を削除する？\")) return;"), "確認なしで消える");
+	assert.ok(app.includes('act("/api/deliv/remove", { p: c.sid || state.cur, id: c.id })'), "削除の宛先がタイル側の決め方と違う");
+	// 編集より先に append = DOM では左に来る（見た目の左右は CSS の right で決める）。
+	assert.ok(app.indexOf('"del-del"') < app.indexOf('"del-edit"'), "削除が編集より後ろに append されている");
+	assert.ok(css.includes("right:32px"), "削除が編集の左に置かれていない");
+	assert.ok(css.includes("@media (hover:none){ .del-edit,.del-del{opacity:1} }"), "ホバーの無い端末で押せない");
+});

@@ -176,6 +176,18 @@ html[data-density="compact"] .chips,html[data-density="compact"] .meta{display:n
   background:color-mix(in srgb,var(--bg0) 80%, transparent); border:1px solid var(--line);
   pointer-events:none;
 }
+/* #110: 削除は編集の左隣。タイル全体がプレビューなので、小さな的 2 つだけが例外。 */
+.del-del{
+  position:absolute; top:3px; right:32px; z-index:1; line-height:1.2;
+  font-family:var(--font-mono); font-size:13px; padding:0 5px;
+  color:var(--muted); background:color-mix(in srgb,var(--bg0) 80%, transparent);
+  border:1px solid var(--line); border-radius:4px;
+  opacity:0; transition:opacity .12s; cursor:pointer;
+}
+.del-tile:hover .del-del{opacity:1}
+.del-del:hover{color:var(--bad); border-color:var(--bad)}
+/* ホバーの無い端末（スマフォ）では隠すと押せないので常時出す。 */
+@media (hover:none){ .del-edit,.del-del{opacity:1} }
 /* #98/#105: タイル全体がプレビューなので、編集の入口は右上の鉛筆 1 個だけ。 */
 .del-edit{
   position:absolute; top:3px; right:3px; z-index:1; line-height:1.2;

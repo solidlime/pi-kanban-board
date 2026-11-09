@@ -321,6 +321,18 @@ html[data-density="compact"] .chips,html[data-density="compact"] .meta{display:n
   background:color-mix(in srgb,var(--bg0) 80%, transparent); border:1px solid var(--line);
   pointer-events:none;
 }
+/* #110: 削除は編集の左隣。タイル全体がプレビューなので、小さな的 2 つだけが例外。 */
+.del-del{
+  position:absolute; top:3px; right:32px; z-index:1; line-height:1.2;
+  font-family:var(--font-mono); font-size:13px; padding:0 5px;
+  color:var(--muted); background:color-mix(in srgb,var(--bg0) 80%, transparent);
+  border:1px solid var(--line); border-radius:4px;
+  opacity:0; transition:opacity .12s; cursor:pointer;
+}
+.del-tile:hover .del-del{opacity:1}
+.del-del:hover{color:var(--bad); border-color:var(--bad)}
+/* ホバーの無い端末（スマフォ）では隠すと押せないので常時出す。 */
+@media (hover:none){ .del-edit,.del-del{opacity:1} }
 /* #98/#105: タイル全体がプレビューなので、編集の入口は右上の鉛筆 1 個だけ。 */
 .del-edit{
   position:absolute; top:3px; right:3px; z-index:1; line-height:1.2;
@@ -1550,7 +1562,7 @@ __KB_MD_JS__
       // #109: ポインタはタイルに捕まえる。外で離しても pointerup が来る（マウスは implicit capture が無い）。
       var sw = null;
       t.addEventListener("pointerdown", function (ev) {
-        if (ev.target.closest && ev.target.closest(".del-edit")) return;
+        if (ev.target.closest && ev.target.closest(".del-edit, .del-del")) return;
         sw = { id: ev.pointerId, x: ev.clientX, y: ev.clientY };
         if (t.setPointerCapture) { try { t.setPointerCapture(ev.pointerId); } catch (err) { void err; } }
       });
@@ -1565,9 +1577,17 @@ __KB_MD_JS__
     }
     // #56: 参照型（file:）の添付があるカードは右上に 1 バッジ。
     if (imgs.length && imgs.some(function (n) { return refOf(n); })) t.lastChild.appendChild(el("span", "del-ref", "\u2750"));
+    // #110: 削除は添付の有無に関係なく出す（編集だけは添付が要る）。DOM では編集より先＝CSS で右から 32px。
+    var de = el("span", "del-del", "\u00d7");
+    de.title = "成果物を削除";
+    de.onclick = function (ev) {
+      ev.stopPropagation();
+      if (!window.confirm("成果物 #" + c.id + " を削除する？")) return;
+      act("/api/deliv/remove", { p: c.sid || state.cur, id: c.id }).then(function () { refresh(); toast("成果物 #" + c.id + " を削除"); }, fail);
+    };
+    t.appendChild(de);
     if (imgs.length) {
-      // #98: どこを押してもプレビューになったので、編集の入口は右上の鉛筆に残す。
-      // #105: 添付を外す × は廃止（タイルのクリック面と競合するため）。導線は右クリックメニューのみ。
+      // #98: どこを押してもプレビューになったので、入口は右上の小さなボタンに寄せる。
       var ed = el("span", "del-edit", "\u270e");
       ed.title = "成果物を編集";
       ed.onclick = function (ev) { ev.stopPropagation(); openDelivModal(Number(c.id)); };

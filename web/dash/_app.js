@@ -689,7 +689,7 @@
       // #109: ポインタはタイルに捕まえる。外で離しても pointerup が来る（マウスは implicit capture が無い）。
       var sw = null;
       t.addEventListener("pointerdown", function (ev) {
-        if (ev.target.closest && ev.target.closest(".del-edit")) return;
+        if (ev.target.closest && ev.target.closest(".del-edit, .del-del")) return;
         sw = { id: ev.pointerId, x: ev.clientX, y: ev.clientY };
         if (t.setPointerCapture) { try { t.setPointerCapture(ev.pointerId); } catch (err) { void err; } }
       });
@@ -704,9 +704,17 @@
     }
     // #56: 参照型（file:）の添付があるカードは右上に 1 バッジ。
     if (imgs.length && imgs.some(function (n) { return refOf(n); })) t.lastChild.appendChild(el("span", "del-ref", "\u2750"));
+    // #110: 削除は添付の有無に関係なく出す（編集だけは添付が要る）。DOM では編集より先＝CSS で右から 32px。
+    var de = el("span", "del-del", "\u00d7");
+    de.title = "成果物を削除";
+    de.onclick = function (ev) {
+      ev.stopPropagation();
+      if (!window.confirm("成果物 #" + c.id + " を削除する？")) return;
+      act("/api/deliv/remove", { p: c.sid || state.cur, id: c.id }).then(function () { refresh(); toast("成果物 #" + c.id + " を削除"); }, fail);
+    };
+    t.appendChild(de);
     if (imgs.length) {
-      // #98: どこを押してもプレビューになったので、編集の入口は右上の鉛筆に残す。
-      // #105: 添付を外す × は廃止（タイルのクリック面と競合するため）。導線は右クリックメニューのみ。
+      // #98: どこを押してもプレビューになったので、入口は右上の小さなボタンに寄せる。
       var ed = el("span", "del-edit", "\u270e");
       ed.title = "成果物を編集";
       ed.onclick = function (ev) { ev.stopPropagation(); openDelivModal(Number(c.id)); };
