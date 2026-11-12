@@ -543,6 +543,9 @@ function storedProjectKey(slug: string): string {
  * session's JSONL), never the board file, so a board key (what `p=` carries) has to be turned back
  * into the sessions holding it: the driver is only one of them, and usually not the stopped one.
  * Ordered the way `cwdBySid` saw them (oldest first), so the newest owner is the last element.
+ * Not exactly "oldest first": `Map.set` keeps an existing key's position, so a session that changes
+ * cwd (or starts again) keeps BOTH its slot and its start-time cwd here - the order and the board
+ * a sid is counted on are the ones it had when it first started.
  */
 function sidsOnBoard(key: string): string[] {
 	const sids: string[] = [];
@@ -3967,11 +3970,13 @@ function projectReport(
 	// them off the viewer made a board another session had stopped report halted:false (4 days of
 	// a stopped doing-loop shown as running). Cards above stay the viewer's: that is a different
 	// question (#52), and filtering them by owner would hide the viewer's own work.
-	// Several sessions can share a board (a restart, a subagent, a sibling pi), and "which one is
-	// stopped" has no single answer: take the NEWEST, because that is the session the board is
-	// currently drawn for, and an older sibling's leftover halt must not claim a live board's row.
+	// Several sessions can share a board (a restart, a subagent, a sibling pi). A halt is a BOARD-wide
+	// fact - it dropped the shared doingLoop - so a stopped owner is the truth for the row even after
+	// a later session lands on the same board; only when nobody is stopped does the newest owner
+	// speak (that is the session the board is currently drawn for).
 	const owners = sidsOnBoard(slug);
-	const owner = owners.at(-1) ?? sidActor;
+	const stopped = owners.findLast((s) => haltedBySid.get(s)?.scope === "project");
+	const owner = stopped ?? owners.at(-1) ?? sidActor;
 	return {
 		id: slug,
 		counts: countCols(pb),
@@ -5252,10 +5257,15 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 			// #110: `key` names a BOARD, but the resume lives in the sessions that hold it. Queue on
 			// all of them: `activeSessionId` is only the driver, so re-keying onto it resumed a
 			// sibling's board and left the stopped one halted (the GUI then showed switch ON + halt).
-			// No session owns the board: keep the old single key (nothing reads it, which is the
-			// same harmless park as before the pin).
+			// No session owns the board: the driver still gets it (the old single-key park is read by
+			// the driver's own poll as long as the key is a sid). With no driver either, queue nothing:
+			// a board key would park a request no poll can ever read (#17: sids only).
 			const owners = sidsOnBoard(key);
-			const sids = owners.length > 0 ? owners : [activeSessionId ?? key];
+			const sids = owners.length > 0 ? owners : activeSessionId === null ? [] : [activeSessionId];
+			if (sids.length === 0) {
+				sendJson(res, 202, { ok: true, queued: false });
+				return;
+			}
 			for (const sid of sids) {
 				// One counter of outstanding requests: a stuck consumer must not grow the map.
 				const pending = (resumeRequests.get(sid) ?? 0) + 1;
@@ -5270,9 +5280,14 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 			const key = settingsSidOf(q, res);
 			if (key === null) return;
 			// #110: same board-to-owner resolution as /api/resume. A halt is idempotent, so every
-			// session on the board may get it; the parked set collapses duplicates anyway.
+			// session on the board may get it; the parked set collapses duplicates anyway. No owner and
+			// no driver: nothing to halt, so do not park a board key (#17).
 			const owners = sidsOnBoard(key);
-			const sids = owners.length > 0 ? owners : [activeSessionId ?? key];
+			const sids = owners.length > 0 ? owners : activeSessionId === null ? [] : [activeSessionId];
+			if (sids.length === 0) {
+				sendJson(res, 202, { ok: true, queued: false });
+				return;
+			}
 			for (const sid of sids) haltRequests.add(sid);
 			sendJson(res, 202, { ok: true, queued: true, sid: sids[0] });
 			return;
@@ -7515,7 +7530,19 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 		// routes keep naming the last board this process drew, which beats an empty one (PID 1
 		// cannot restart us). Only the dead sid's own entry is dropped (not the live driver's), so
 		// a long-lived process does not grow one map entry per session it ever hosted.
-		if (dying !== null) cwdBySid.delete(dying);
+		// #110: the halt and the count live exactly as long as the session: left behind, a dead sid's
+		// halt would pin its board's row to halted forever, because the owner rule reads a halt first.
+		// ---continue rebuilds both (restoreLoop -> paintLoop), which kanban-loop-ctx covers.
+		if (dying !== null) {
+			cwdBySid.delete(dying);
+			haltedBySid.delete(dying);
+			for (const s of ["project", "global"] as const) {
+				loopCount.delete(tagKey(dying, s));
+				setLoopTag(dying, s, "");
+			}
+		}
+		// A disposed ctx cannot answer `sidOf`, so this path cannot tell whose state to drop.
+		// Residual: that one session's halt/count/board entry stay until the process ends.
 	});
 
 	// Per-turn injection: attach this cwd's project board as a request-only trailing message.
