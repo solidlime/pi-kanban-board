@@ -1579,6 +1579,8 @@ function esc(s){return String(s).replace(/[&<>"]/g,function(c){return {"&":"&amp
     else t.appendChild(el("div", "del-nobody", "添付なし"));
     // #109: 何枚目かと、横ドラッグでの切り替え（タップは従来どおり lightbox）。
     if (imgs.length > 1) {
+      // #112: img のネイティブドラッグが pointercancel を撃ち、横ドラッグが成立しない（マウス）。
+      t.addEventListener("dragstart", function (ev) { ev.preventDefault(); });
       t.lastChild.appendChild(el("span", "del-n", (at + 1) + "/" + imgs.length));
       // #109: ポインタはタイルに捕まえる。外で離しても pointerup が来る（マウスは implicit capture が無い）。
       var sw = null;

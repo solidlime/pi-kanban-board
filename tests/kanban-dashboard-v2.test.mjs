@@ -297,6 +297,10 @@ test("#109: 帯のタイルは複数添付を横ドラッグで切り替える",
 	assert.ok(app.includes('(at + 1) + "/" + imgs.length'), "2/3 のカウンタが無い");
 	assert.ok(app.includes("if (delSwipe.id === Number(dt.dataset.deliv) && Date.now() - delSwipe.at < 400) return;"), "振ったタイルのタップ抑止が無い");
 	assert.ok(css.includes(".del-tile.thumb{touch-action:pan-y pinch-zoom}"), "横ドラッグ or ピンチズームが死んでいる");
+	// #112: マウスでは img のネイティブドラッグが pointercancel を撃ち、sw が消える。打ち消しはタイル限定。
+	const swipeBlock = app.slice(app.indexOf("if (imgs.length > 1) {"), app.indexOf("t.addEventListener(\"pointercancel\""));
+	assert.ok(swipeBlock.includes('t.addEventListener("dragstart"') && swipeBlock.includes("ev.preventDefault()"), "#112: dragstart の打ち消しが複数添付タイルのブロックに無い");
+	assert.equal(app.split("ev.preventDefault()").length - 1, 1, "#112: 打ち消しがタイル以外にも広がっている");
 });
 
 test("#110: 成果物タイルの削除は編集の左（スマフォでは常時表示）", () => {
