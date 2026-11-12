@@ -1347,8 +1347,11 @@ function haltTag(l: LoopState): string {
 }
 
 const loopTags = new Map<string, string>();
-// The COUNT per (session, board), never the rendered " 3/10": the cap is read at every
-// draw (see modeTags), so a cap change shows up in the footer without another settle.
+// The COUNT is per (session, scope) - the loops this session has spent from its budget - never
+// the rendered " 3/10": the cap is read off the BOARD at every draw (see modeTags), so a cap
+// change shows up without another settle. #110: the two therefore part ways when a session moves
+// boards (take keeps count on purpose) - do NOT re-key this by board, or changing cwd would hand
+// the budget back and a session could hop boards to dodge the cap.
 const loopCount = new Map<string, number>();
 
 const tagKey = (sessionId: string, scope: Scope): string => `${sessionId}|${scope}`;
