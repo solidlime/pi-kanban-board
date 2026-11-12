@@ -538,6 +538,17 @@ export function readBoard(path: string): Board {
 function storedProjectKey(slug: string): string {
 	return kanbanDb().boardSid({ scope: "project", sid: slug }) ?? slug;
 }
+/**
+ * #110: every session whose cwd lives on this board. A loop halt rides the SESSION (memory + that
+ * session's JSONL), never the board file, so a board key (what `p=` carries) has to be turned back
+ * into the sessions holding it: the driver is only one of them, and usually not the stopped one.
+ * Ordered the way `cwdBySid` saw them (oldest first), so the newest owner is the last element.
+ */
+function sidsOnBoard(key: string): string[] {
+	const sids: string[] = [];
+	for (const [sid, cwd] of cwdBySid) if (storedProjectKey(projectSlugOf(cwd)) === key) sids.push(sid);
+	return sids;
+}
 /** Drop a board entirely. Only tests use this; the server never deletes one. */
 export function deleteBoardPath(path: string): void {
 	kanbanDb().deleteBoard(boardKeyOf(path));
@@ -3945,6 +3956,15 @@ function projectReport(
 	// decides whose card this is and which TODOs are somebody else's.
 	const tagged = pb.cards.map((c) => (sidActor !== "" && c.movedBy === sidActor ? { ...c, mine: true } : c));
 	const others = tagged.filter((c) => c.col === "todo" && !todoMineOrUnowned(c, sidActor));
+	// #110: loops/halted are SESSION state, so they must be read off the board's owner - reading
+	// them off the viewer made a board another session had stopped report halted:false (4 days of
+	// a stopped doing-loop shown as running). Cards above stay the viewer's: that is a different
+	// question (#52), and filtering them by owner would hide the viewer's own work.
+	// Several sessions can share a board (a restart, a subagent, a sibling pi), and "which one is
+	// stopped" has no single answer: take the NEWEST, because that is the session the board is
+	// currently drawn for, and an older sibling's leftover halt must not claim a live board's row.
+	const owners = sidsOnBoard(slug);
+	const owner = owners.at(-1) ?? sidActor;
 	return {
 		id: slug,
 		counts: countCols(pb),
@@ -3955,8 +3975,8 @@ function projectReport(
 		hiddenTodoCount: others.length,
 		next: nextTodo(pb.cards, "project", sidActor) ?? null,
 		modes: modesFor(f, slug, "project"),
-		loops: loopCountOf(sidActor, "project"),
-		halted: haltedBySid.get(sidActor)?.scope === "project",
+		loops: loopCountOf(owner, "project"),
+		halted: haltedBySid.get(owner)?.scope === "project",
 	};
 }
 
@@ -5222,15 +5242,19 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 			// （セッションはいるが今は止まっていない、が普通なので）。
 			const key = settingsSidOf(q, res);
 			if (key === null) return;
-			// #17: resume is process state. The poll consumes it by the DRIVER's session id, so a
-			// project-scope request (which resolves to a slug) has to be re-keyed onto the actor.
-			// No driver yet (activeSessionId null): the key stays a slug, but poll returns at skip:no-ctx,
-			// so nothing ever reads it back. Harmless.
-			const sid = activeSessionId ?? key;
-			// One counter of outstanding requests: a stuck consumer must not grow the map.
-			const pending = (resumeRequests.get(sid) ?? 0) + 1;
-			resumeRequests.set(sid, Math.min(pending, 5));
-			sendJson(res, 202, { ok: true, queued: true, sid });
+			// #110: `key` names a BOARD, but the resume lives in the sessions that hold it. Queue on
+			// all of them: `activeSessionId` is only the driver, so re-keying onto it resumed a
+			// sibling's board and left the stopped one halted (the GUI then showed switch ON + halt).
+			// No session owns the board: keep the old single key (nothing reads it, which is the
+			// same harmless park as before the pin).
+			const owners = sidsOnBoard(key);
+			const sids = owners.length > 0 ? owners : [activeSessionId ?? key];
+			for (const sid of sids) {
+				// One counter of outstanding requests: a stuck consumer must not grow the map.
+				const pending = (resumeRequests.get(sid) ?? 0) + 1;
+				resumeRequests.set(sid, Math.min(pending, 5));
+			}
+			sendJson(res, 202, { ok: true, queued: true, sid: sids[0] });
 			return;
 		}
 		case "/api/halt": {
@@ -5238,10 +5262,12 @@ function route(req: IncomingMessage, res: ServerResponse): void {
 			// ここも 202 で受けるだけ。実際の停止はそのセッションの poll が行う。
 			const key = settingsSidOf(q, res);
 			if (key === null) return;
-			// #17: resume と同じ re-key。process state はドライバの sid で引く。
-			const sid = activeSessionId ?? key;
-			haltRequests.add(sid);
-			sendJson(res, 202, { ok: true, queued: true, sid });
+			// #110: same board-to-owner resolution as /api/resume. A halt is idempotent, so every
+			// session on the board may get it; the parked set collapses duplicates anyway.
+			const owners = sidsOnBoard(key);
+			const sids = owners.length > 0 ? owners : [activeSessionId ?? key];
+			for (const sid of sids) haltRequests.add(sid);
+			sendJson(res, 202, { ok: true, queued: true, sid: sids[0] });
 			return;
 		}
 		case "/api/priority": {
