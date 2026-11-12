@@ -1704,6 +1704,9 @@ export type KanbanArgs =
 	| { kind: "img"; id: number; path: string }
 	| { kind: "take" }
 	| { kind: "url" }
+	// #111: halting is process memory + one JSONL entry, so this is the only manual resume a
+	// human has (and the agent through it).
+	| { kind: "resume" }
 	| { kind: "reject"; reason: string };
 
 const KANBAN_HELP =
@@ -1719,6 +1722,7 @@ const KANBAN_HELP =
 	"/kanban maxloops <回>  ループ上限（無指定で現在値、0 = 無制限）\n" +
 	"/kanban loop on|off|status / pick on|off  自動再開ループ / 自動ピック（このプロジェクトボードのスイッチ）\n" +
 	"/kanban take  auto-tick の駆動元をこのセッションに切り替える\n" +
+	"/kanban resume  doing-loop の halt を解除（ダッシュボードの再開と同じ）\n" +
 	"/kanban url  この看板を開く URL（トークン付き）\n" +
 	// #90: ツールの description から落とした正規化規則の置き場所。既存の行は消さない。
 	"カードの project は [A-Za-z0-9._-]（24 文字まで・大文字小文字は保持）、session は [A-Za-z0-9._:@-]、commit は 7-40 hex（小文字で保存）。空文字は解除\n" +
@@ -1740,6 +1744,9 @@ export function parseKanbanArgs(argv: string[]): KanbanArgs {
 	if (head === "take") return { kind: "take" };
 	// #83b: the board needs a token; this is how a human gets one without reading the file.
 	if (head === "url") return { kind: "url" };
+	// #111: without this the word falls through to the card branch below and `/kanban resume`
+	// just adds a TODO card - the halt it was meant to lift stays put. Args are ignored.
+	if (head === "resume") return { kind: "resume" };
 	if (head === "add") {
 		const text = argv.slice(1).join(" ").trim();
 		return text.length === 0 ? { kind: "reject", reason: "使い方: /kanban add <タスク内容>（空のカードは作りません）" } : { kind: "add", text };
@@ -5986,6 +5993,19 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 	};
 
 	/**
+	 * #111: the resume plus the line both entry points print. Shared so `/kanban resume` and the
+	 * `kanban` tool's resume action cannot drift into two spellings of the same reset.
+	 */
+	const resumeMessage = (ctx: ExtensionContext, sid: string): string => {
+		const was = loop.halted === null ? "なし" : `halted:${loop.halted}`;
+		const oldCount = loop.count;
+		resumeWithModes(ctx, sid);
+		// #26: the cap in force is the project board's - global has no switch and no budget.
+		const capNow = maxLoopsOf(modesFor(readModesFile(), boardKeyFor(ctx, sid, "project"), "project"));
+		return `resumed: ${was} / count ${oldCount} → 0 / doingLoop ON (project) / ${loopBudgetText(capNow, 0)}`;
+	};
+
+	/**
 	 * `/kanban loop on|off|status` and `/kanban pick on|off`. `loop on` is also the
 	 * reset: a halted loop restarts only when the user asks for it.
 	 */
@@ -6530,7 +6550,7 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 	pi.registerCommand("kanban", {
 		// #90: the main use is "add a card"; the drilldown menu is only what a bare /kanban opens.
 		description:
-			"Add a card to this project's TODO, or run a subcommand: url / loop / pick / take / interval / stuck / maxloops / priority / img / help",
+			"Add a card to this project's TODO, or run a subcommand: url / loop / pick / take / resume / interval / stuck / maxloops / priority / img / help",
 		handler: async (args, ctx) => {
 		const sid = sidOf(ctx);
 		// #17: project boards are keyed by their cwd slug; the pi session id stays the actor.
@@ -6549,6 +6569,13 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 			}
 			if (parsed.kind === "url") {
 				ctx.ui.notify(`ダッシュボード: ${boardUrl()}`);
+				return;
+			}
+			if (parsed.kind === "resume") {
+				// #111: the same resume the `kanban` tool's resume action does - a halt is process
+				// memory + one JSONL entry, so no HTTP call can lift it (and #110's /api/resume only
+				// reaches sessions it knows). Not a card: that is what this used to add.
+				ctx.ui.notify(resumeMessage(ctx, sid));
 				return;
 			}
 			if (parsed.kind === "take") {
@@ -7085,12 +7112,8 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 					// #58: a halt is process memory + one JSONL entry; no HTTP call can lift it,
 					// so the agent (and a human through it) gets the same reset `/kanban loop on` does.
 					// #67: the reset itself lives in resumeWithModes, shared with /api/resume.
-					const was = loop.halted === null ? "なし" : `halted:${loop.halted}`;
-					const oldCount = loop.count;
-					resumeWithModes(ctx, sessionSid);
-					// #26: the cap in force is the project board's - global has no switch and no budget.
-					const capNow = maxLoopsOf(modesFor(readModesFile(), boardKeyFor(ctx, sessionSid, "project"), "project"));
-					message = `resumed: ${was} / count ${oldCount} → 0 / doingLoop ON (project) / ${loopBudgetText(capNow, 0)}`;
+					// #111: the message lives with the reset now, so `/kanban resume` prints the same one.
+					message = resumeMessage(ctx, sessionSid);
 					break;
 				}
 				case "img": {
