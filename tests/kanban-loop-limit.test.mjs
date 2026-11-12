@@ -136,6 +136,12 @@ check("isValidMaxLoops: 範囲外・非整数・NaN は拒否", () => {
 	}
 });
 
+// #110: sid をキーにした状態（cwd / halted / count）はセッションの寿命で消える。本番と同じく
+// 各 case の末尾で session_shutdown を呼ぶ: 同じ板に複数の owner が生きたままだと、
+// 「止まっている owner を最優先で読む」規則が前の case の halt を拾って行を halted にする。
+const shutdownOf = (run, c) =>
+	run.handlers.get("session_shutdown")({ type: "session_shutdown", reason: "quit" }, c);
+
 // --- 3. 既存 modes.json（maxLoops 無し）でも壊れない --------------------------
 const SID = "sid-limit";
 writeBoardFile(SID);
@@ -224,6 +230,8 @@ first.handlers.get("session_start")({ type: "session_start" }, ctx);
 	});
 }
 
+shutdownOf(first, ctx);
+
 // --- 5. 上限に達したら halted:limit、無制限なら止まらない --------------------
 // 停止判定は settle（agent_before_settle）の中で起きる。count が既に上限の状態で
 // 復元し、settle を実際に通して halted が立つことを見る。
@@ -258,6 +266,8 @@ lim.handlers.get("agent_before_settle")({ context: { contextMessages: undefined 
 	});
 }
 
+shutdownOf(lim, ctxLim);
+
 // 無制限（0）のセッションは、count が大きくても limit 停止しない。
 const SID_FREE = "sid-unlimited";
 writeBoardFile(SID_FREE);
@@ -278,6 +288,8 @@ free.handlers.get("agent_before_settle")({ context: { contextMessages: undefined
 		assert.equal(row.loops, 1000, JSON.stringify(row));
 	});
 }
+
+shutdownOf(free, ctxFree);
 
 // --- 6. 再開: halted:limit -> null、count 0、doingLoop ON --------------------
 const SID_RESUME = "sid-resume";
@@ -360,6 +372,8 @@ check("kanban ツールの resume は可変の上限を反映した残量を返�
 check("kanban ツールの resume は ON にしたスコープを報告する", () =>
 	assert.match(res.content[0].text, /doingLoop ON \(project\)/, res.content[0].text));
 
+shutdownOf(rp, ctxRp);
+
 // --- 6b. project scope の loop entry は再起動をまたいで残る -------------------
 // 復元で scope が落ちると settle は session ボードを見て、project の halted:stuck を
 // 自分で解除してしまう（暴走防止の停止が勝手に解ける）。
@@ -399,6 +413,8 @@ pl.handlers.get("agent_before_settle")({ context: { contextMessages: undefined }
 		assert.equal(row.halted, true, JSON.stringify(row));
 	});
 }
+
+shutdownOf(pl, ctxPl);
 
 // --- 6c. project で止まった loop は footer と件数に出る -----------------------
 // footer は 2 行しかなく、project 用の行は無い。paintLoop が project を落としていたので
@@ -445,6 +461,8 @@ await foot.handlers.get("agent_before_settle")({ context: { contextMessages: und
 	});
 }
 
+shutdownOf(foot, ctxFoot);
+
 // 同じことが停止していない場合（件数だけ）にも成り立つこと。
 const SID_FOOT2 = "sid-project-count";
 seedBoard(projectFile, { cards: [{ id: 1, text: "proj doing", col: "doing", movedBy: SID_FOOT2 }], nextId: 2 });
@@ -482,6 +500,8 @@ foot2.handlers.get("session_start")({ type: "session_start" }, ctxFoot2);
 		assert.equal(row.loops, 4, JSON.stringify(row));
 	});
 }
+
+shutdownOf(foot2, ctxFoot2);
 
 // --- 6d. 移行待ちの間は write 経路（tools/settle/poll）が待つ ------------------
 // 折り込みは session/global 行を消して終わるので、その窓で受けた書き込みは最後の
@@ -620,7 +640,8 @@ check("DASHBOARD_HTML の <script> はすべて構文として通る", () => {
 	for (const src of scripts) new Function(src);
 });
 
-for (const h of [first, lim, free, rp, pl, foot, foot2, gate]) h.handlers.get("session_shutdown")({ type: "session_shutdown", reason: "quit" });
+// gate は最後の poll / settle / 移行待ちまで生かす（他の case は上で死んでいる）。
+shutdownOf(gate, ctxGate);
 delete process.env.KANBAN_DEBUG;
 process.stderr.write = origWrite;
 

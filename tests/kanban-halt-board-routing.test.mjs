@@ -2,7 +2,8 @@
 // セッションのメモリ（+ JSONL）に載る。ここは p= が「その板を持つセッション」に解決されること、
 // 行の halted/loops が板のオーナーを映すこと、板を持たない p が従来どおりであることを見る。
 // ドライバ（A、リポジトリ cwd）と止まっている板の持ち主（B、別 cwd）を分けて張るので、
-// "最後に session_start したセッション" に付け替える実装はここで落ちる。
+// "最後に session_start したセッション" に付け替える実装はここで落ちる。さらに同じ B_DIR で
+// 後から始まる C も張る（終了した board の halted は C の登場では消えない）。
 // HOME と KANBAN_PORT を差し替えるので本番の ~/.pi/kanban と 8789 には触れない。
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
@@ -169,32 +170,9 @@ check("B の poll が自分の halt 要求を消費する", () => assert.equal(t
 		assert.equal(d.body.project.loops, 0, JSON.stringify(d.body.project)));
 }
 
-{
-	const r = await get(`/api/resume?scope=project&p=${B_KEY}`);
-	check("/api/resume?p=<B> は 202", () => {
-		assert.equal(r.status, 202, JSON.stringify(r.body));
-		assert.equal(r.body.queued, true, JSON.stringify(r.body));
-	});
-	check("resume も板を持つセッション（B）に積まれる", () => {
-		assert.equal(tB.resumeRequests.get(SID_B), 1, `keys=${[...tB.resumeRequests]}`);
-		assert.equal(tB.resumeRequests.has(SID_A), false, `keys=${[...tB.resumeRequests]}`);
-	});
-}
-
-tB.poll();
-{
-	const b = await get(`/api/kanban?p=${B_KEY}`);
-	check("resume 後は halted:false / loops 0", () => {
-		assert.equal(b.body.project.halted, false, JSON.stringify(b.body.project));
-		assert.equal(b.body.project.loops, 0, JSON.stringify(b.body.project));
-	});
-	const modes = JSON.parse(readFileSync(MODES, "utf8")).PROJECT;
-	check("resume は B の doingLoop を ON に戻す", () =>
-		assert.equal(modes[B_KEY].doingLoop, true, JSON.stringify(modes)));
-}
-
 // フォールバックの回帰: どのセッションも持っていない板（sidsOnBoard が空）は従来どおり
 // ドライバに積む（その板を読むプロセスが無いので、実際には誰も消費しない）。
+// A がまだドライバのうちに済ませる（この後の C の session_start でピンが C に移る）。
 {
 	const r = await get("/api/halt?scope=project&p=nobody-has-this-board");
 	check("板を持たない p の halt はドライバに積まれる（従来動作）", () => {
@@ -211,12 +189,89 @@ tB.poll();
 	tB.resumeRequests.delete(SID_A);
 }
 
+// 後発セッション: 止まっている板 B に、後から同じ B_DIR で始まった C が載る。止まっているのは
+// 板そのもの（共有の doingLoop が落ちている）という事実は C の登場で消えない。規則を
+// `owners.at(-1)`（最新）に戻すと、この 2 つが落ちる。
+const SID_C = "sid-sibling-b";
+const runC = mkPi();
+const tC = mod.default(runC.pi).__test;
+runC.handlers.get("session_start")({ type: "session_start" }, mkCtx(SID_C, B_DIR, [loopEntry(0)]));
+{
+	const b = await get(`/api/kanban?p=${B_KEY}`);
+	check("後発の C が同じ板に載っても /api/kanban?p=<B> は halted:true のまま", () =>
+		assert.equal(b.body.project.halted, true, JSON.stringify(b.body.project)));
+	check("後発の C の 0 ではなく、止まっている B の loops 2 を出す", () =>
+		assert.equal(b.body.project.loops, 2, JSON.stringify(b.body.project)));
+}
+
+{
+	const r = await get(`/api/resume?scope=project&p=${B_KEY}`);
+	check("/api/resume?p=<B> は 202", () => {
+		assert.equal(r.status, 202, JSON.stringify(r.body));
+		assert.equal(r.body.queued, true, JSON.stringify(r.body));
+	});
+	check("resume は板を持つセッション全員（B と C）に積まれる", () => {
+		assert.equal(tB.resumeRequests.get(SID_B), 1, `keys=${[...tB.resumeRequests]}`);
+		assert.equal(tB.resumeRequests.get(SID_C), 1, `keys=${[...tB.resumeRequests]}`);
+		assert.equal(tB.resumeRequests.has(SID_A), false, `keys=${[...tB.resumeRequests]}`);
+	});
+}
+
+tB.poll();
+{
+	const b = await get(`/api/kanban?p=${B_KEY}`);
+	check("resume 後は halted:false / loops 0", () => {
+		assert.equal(b.body.project.halted, false, JSON.stringify(b.body.project));
+		assert.equal(b.body.project.loops, 0, JSON.stringify(b.body.project));
+	});
+	const modes = JSON.parse(readFileSync(MODES, "utf8")).PROJECT;
+	check("resume は B の doingLoop を ON に戻す", () =>
+		assert.equal(modes[B_KEY].doingLoop, true, JSON.stringify(modes)));
+}
+
+// #110 の再発防止: sid をキーにした状態（cwd / halted / count）は session_shutdown で消える。
+// 死んだセッションの halted が残ると、上の owner 規則（halted を最優先）が板の行を永久に
+// halted に固定する。C を実際に止めてから殺し、行が戻ることを見る。
+tC.haltRequests.add(SID_C);
+tC.poll();
+{
+	const b = await get(`/api/kanban?p=${B_KEY}`);
+	check("止まっている後発セッション（C）が行の halted を担う", () =>
+		assert.equal(b.body.project.halted, true, JSON.stringify(b.body.project)));
+}
+runC.handlers.get("session_shutdown")({ type: "session_shutdown", reason: "quit" }, mkCtx(SID_C, B_DIR));
+{
+	const b = await get(`/api/kanban?p=${B_KEY}`);
+	check("死んだセッションの halted は板の行に残らない（板が halted に固まらない）", () => {
+		assert.equal(b.body.project.halted, false, JSON.stringify(b.body.project));
+		assert.equal(b.body.project.loops, 0, JSON.stringify(b.body.project));
+	});
+}
+
+// ピンも板の持ち主もいない: 板名（slug）を sid として積まない（#17 の不変）。
+// 受け方は従来どおり 202 だが queued:false - 積む先が無いことを GUI に伝える。
+{
+	const r = await get("/api/halt?scope=project&p=nobody-has-this-board");
+	check("板もドライバも無い halt は 202 / queued:false で、板名を積まない", () => {
+		assert.equal(r.status, 202, JSON.stringify(r.body));
+		assert.equal(r.body.queued, false, JSON.stringify(r.body));
+		assert.equal(tB.haltRequests.has("nobody-has-this-board"), false, `keys=${[...tB.haltRequests]}`);
+		assert.equal(tB.haltRequests.size, 0, `keys=${[...tB.haltRequests]}`);
+	});
+	const s = await get("/api/resume?scope=project&p=nobody-has-this-board");
+	check("板もドライバも無い resume も 202 / queued:false（板名を sid にしない）", () => {
+		assert.equal(s.status, 202, JSON.stringify(s.body));
+		assert.equal(s.body.queued, false, JSON.stringify(s.body));
+		assert.equal(tB.resumeRequests.has("nobody-has-this-board"), false, `keys=${[...tB.resumeRequests]}`);
+	});
+}
+
 if (failures.length) {
 	console.error(`kanban-halt-board-routing: ${passed} passed, ${failures.length} failed`);
 	for (const f of failures) console.error("FAIL " + f);
 	process.exit(1);
 }
 console.log(`kanban-halt-board-routing: ${passed} passed`);
-runA.handlers.get("session_shutdown")({ type: "session_shutdown", reason: "quit" });
-runB.handlers.get("session_shutdown")({ type: "session_shutdown", reason: "quit" });
+runA.handlers.get("session_shutdown")({ type: "session_shutdown", reason: "quit" }, mkCtx(SID_A, A_DIR));
+runB.handlers.get("session_shutdown")({ type: "session_shutdown", reason: "quit" }, mkCtx(SID_B, B_DIR));
 setTimeout(() => process.exit(0), 100);
