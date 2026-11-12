@@ -66,9 +66,12 @@ assert.notEqual(A_KEY, B_KEY, "the two test boards must not share a key");
 
 function mkPi() {
 	const handlers = new Map();
+	const commands = new Map();
 	const appended = [];
 	const pi = {
-		registerCommand() {},
+		registerCommand(name, spec) {
+			commands.set(name, spec);
+		},
 		registerTool() {},
 		appendEntry(type, data) {
 			appended.push({ type, data });
@@ -78,7 +81,7 @@ function mkPi() {
 		},
 		sendUserMessage() {},
 	};
-	return { pi, handlers, appended };
+	return { pi, handlers, commands, appended };
 }
 
 // getCwd is what #110 turns on: without it every session reads as process.cwd(), i.e. board A,
@@ -264,6 +267,60 @@ runC.handlers.get("session_shutdown")({ type: "session_shutdown", reason: "quit"
 		assert.equal(s.body.queued, false, JSON.stringify(s.body));
 		assert.equal(tB.resumeRequests.has("nobody-has-this-board"), false, `keys=${[...tB.resumeRequests]}`);
 	});
+}
+
+// 2 次レビュー: halt は「どの板で止まったか」を自分で持つ。sid が同じでも cwd が変われば別の板の
+// 話なので、A で止めた halt が B の行を halted にしてはいけない（旧実装は scope しか見ないので、
+// sid 単独キーの haltedBySid が板をまたいで効く余地があった）。
+// このブロックは「板もドライバも無い」の後ろに置く: セッションの session_start がピンを動かすため。
+{
+	const SID_D = "sid-moves-boards";
+	const runD = mkPi();
+	const tD = mod.default(runD.pi).__test;
+	runD.handlers.get("session_start")({ type: "session_start" }, mkCtx(SID_D, A_DIR, [loopEntry(3)]));
+	const r = await get(`/api/halt?scope=project&p=${A_KEY}`);
+	check("板 A の halt は 202（前提）", () => assert.equal(r.status, 202, JSON.stringify(r.body)));
+	tD.poll();
+	const a = await get(`/api/kanban?p=${A_KEY}`);
+	check("前提: D の板 A は halted:true / loops 3", () => {
+		assert.equal(a.body.project.halted, true, JSON.stringify(a.body.project));
+		assert.equal(a.body.project.loops, 3, JSON.stringify(a.body.project));
+	});
+
+	// 同じ sid D が B_DIR で始まり直す: extension も新規なので loop.halted は無く、sync の
+	// paintLoop が D の公開値を消す（＝A の halt は B の行に残らない）。
+	const runD2 = mkPi();
+	mod.default(runD2.pi);
+	runD2.handlers.get("session_start")({ type: "session_start" }, mkCtx(SID_D, B_DIR, [loopEntry(0)]));
+	const b = await get(`/api/kanban?p=${B_KEY}`);
+	check("同じ sid が別の板で始まり直しても、A で止めた halt は B の行を halted にしない", () =>
+		assert.equal(b.body.project.halted, false, JSON.stringify(b.body.project)));
+	runD2.handlers.get("session_shutdown")({ type: "session_shutdown", reason: "quit" }, mkCtx(SID_D, B_DIR));
+
+	// 残る漏れの経路: halt を消すのは /kanban take。cwd を B に変えて take すると、メモリの halt は
+	// 消えるが haltedBySid の公開値が残る（修正前は B の行の再開ボタンが点いたまま）。
+}
+{
+	const SID_E = "sid-take-moves";
+	const runE = mkPi();
+	const tE = mod.default(runE.pi).__test;
+	let dir = A_DIR;
+	const ctxE = mkCtx(SID_E, A_DIR, [loopEntry(3)]);
+	ctxE.sessionManager.getCwd = () => dir;
+	runE.handlers.get("session_start")({ type: "session_start" }, ctxE);
+	const r = await get(`/api/halt?scope=project&p=${A_KEY}`);
+	check("板 A の halt は 202（前提・take 側）", () => assert.equal(r.status, 202, JSON.stringify(r.body)));
+	tE.poll();
+	const a = await get(`/api/kanban?p=${A_KEY}`);
+	check("前提: E の板 A は halted:true（take 側）", () =>
+		assert.equal(a.body.project.halted, true, JSON.stringify(a.body.project)));
+
+	dir = B_DIR;
+	await runE.commands.get("kanban").handler("take", ctxE);
+	const b = await get(`/api/kanban?p=${B_KEY}`);
+	check("take で halt を消したら、移った先の板（B）の行は halted:false", () =>
+		assert.equal(b.body.project.halted, false, JSON.stringify(b.body.project)));
+	runE.handlers.get("session_shutdown")({ type: "session_shutdown", reason: "quit" }, ctxE);
 }
 
 if (failures.length) {

@@ -201,9 +201,12 @@ const cwdBySid = new Map<string, string>();
 // A loop halt lives in one extension closure (memory + session JSONL). The HTTP server
 // runs in the same process but outside that closure, so this is the only door for the
 // GUI to learn WHY the loop stopped. Published by paintLoop, cleared by resume.
+// `key` is the board the halt happened ON, so a halt cannot follow its sid to another board:
+// project scope publishes the stopped board's slug, global scope publishes the sid (global is
+// session-wide and boardKeyFor answers the sid for it).
 const haltedBySid = new Map<
 	string,
-	{ halted: "limit" | "stuck"; stuckId: number | null; stuckCount: number; cap: number; scope: Scope }
+	{ halted: "limit" | "stuck"; stuckId: number | null; stuckCount: number; cap: number; scope: Scope; key: string }
 >();
 // #67: /api/resume cannot reach a session's closure state from the server module, so it
 // parks a request here and the owning session's poll runs the resume (see resumeLoop).
@@ -543,9 +546,9 @@ function storedProjectKey(slug: string): string {
  * session's JSONL), never the board file, so a board key (what `p=` carries) has to be turned back
  * into the sessions holding it: the driver is only one of them, and usually not the stopped one.
  * Ordered the way `cwdBySid` saw them (oldest first), so the newest owner is the last element.
- * Not exactly "oldest first": `Map.set` keeps an existing key's position, so a session that changes
- * cwd (or starts again) keeps BOTH its slot and its start-time cwd here - the order and the board
- * a sid is counted on are the ones it had when it first started.
+ * Order is insertion order, which `Map.set` never changes. The cwd is the LAST one published
+ * (pinDriver / sync overwrite it), so a session that moves boards is counted on the new one -
+ * only its position in the order is from the first start.
  */
 function sidsOnBoard(key: string): string[] {
 	const sids: string[] = [];
@@ -3975,7 +3978,12 @@ function projectReport(
 	// a later session lands on the same board; only when nobody is stopped does the newest owner
 	// speak (that is the session the board is currently drawn for).
 	const owners = sidsOnBoard(slug);
-	const stopped = owners.findLast((s) => haltedBySid.get(s)?.scope === "project");
+	// A halt names its own board (haltedBySid.key), so it never stops another board's row under
+	// the same sid.
+	const stopped = owners.findLast((s) => {
+		const h = haltedBySid.get(s);
+		return h?.scope === "project" && h.key === slug;
+	});
 	const owner = stopped ?? owners.at(-1) ?? sidActor;
 	return {
 		id: slug,
@@ -3988,7 +3996,9 @@ function projectReport(
 		next: nextTodo(pb.cards, "project", sidActor) ?? null,
 		modes: modesFor(f, slug, "project"),
 		loops: loopCountOf(owner, "project"),
-		halted: haltedBySid.get(owner)?.scope === "project",
+		// `key` is the slug for a project halt and the sid for a global one, so the key alone says
+		// whether the halt belongs to this board.
+		halted: haltedBySid.get(owner)?.key === slug,
 	};
 }
 
@@ -5957,8 +5967,9 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 		// Same value the footer shows, published for the HTTP dashboard (see haltedBySid).
 		if (loop.halted === null) haltedBySid.delete(sid);
 		else {
-			const cap = maxLoopsOf(modesFor(readModesFile({ repair: false }), boardKeyFor(ctx, sid, scope), scope));
-			haltedBySid.set(sid, { halted: loop.halted, stuckId: loop.stuckId, stuckCount: loop.stuckCount, cap, scope });
+			const key = boardKeyFor(ctx, sid, scope);
+			const cap = maxLoopsOf(modesFor(readModesFile({ repair: false }), key, scope));
+			haltedBySid.set(sid, { halted: loop.halted, stuckId: loop.stuckId, stuckCount: loop.stuckCount, cap, scope, key });
 		}
 		refresh(ctx, sid);
 	};
@@ -6631,6 +6642,10 @@ export default function kanbanExtension(pi: ExtensionAPI) {
 						claimed += stolen.length;
 					});
 				}
+				// #110: the halt just cleared is also published state (haltedBySid), and only paintLoop
+				// writes that map. After the hand-over, so the one draw already shows the cards this
+				// session now owns.
+				paintLoop(ctx, sid);
 				ctx.ui.notify(
 					`kanban: 駆動元を ${prev ?? "なし"} → ${sid} に切り替えた` +
 						(claimed > 0 ? `（DOING ${claimed} 枚の所有権も引き継いだ）` : ""),
