@@ -298,9 +298,12 @@ test("#109: 帯のタイルは複数添付を横ドラッグで切り替える",
 	assert.ok(app.includes("if (delSwipe.id === Number(dt.dataset.deliv) && Date.now() - delSwipe.at < 400) return;"), "振ったタイルのタップ抑止が無い");
 	assert.ok(css.includes(".del-tile.thumb{touch-action:pan-y pinch-zoom}"), "横ドラッグ or ピンチズームが死んでいる");
 	// #112: マウスでは img のネイティブドラッグが pointercancel を撃ち、sw が消える。打ち消しはタイル限定。
-	const swipeBlock = app.slice(app.indexOf("if (imgs.length > 1) {"), app.indexOf("t.addEventListener(\"pointercancel\""));
+	const a0 = app.indexOf("if (imgs.length > 1) {");
+	const a1 = app.indexOf('t.addEventListener("pointercancel"');
+	assert.ok(a0 >= 0 && a1 > a0, "#112: スライス境界が取れない（アサートが空振りする）");
+	const swipeBlock = app.slice(a0, a1);
 	assert.ok(swipeBlock.includes('t.addEventListener("dragstart"') && swipeBlock.includes("ev.preventDefault()"), "#112: dragstart の打ち消しが複数添付タイルのブロックに無い");
-	assert.equal(app.split("ev.preventDefault()").length - 1, 1, "#112: 打ち消しがタイル以外にも広がっている");
+	assert.equal(app.split('addEventListener("dragstart"').length - 1, 2, "#112: dragstart のリスナーはカード DnD とタイルの 2 本だけ");
 });
 
 test("#110: 成果物タイルの削除は編集の左（スマフォでは常時表示）", () => {

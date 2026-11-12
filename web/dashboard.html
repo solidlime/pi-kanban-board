@@ -1559,6 +1559,7 @@ __KB_MD_JS__
     // #109: 何枚目かと、横ドラッグでの切り替え（タップは従来どおり lightbox）。
     if (imgs.length > 1) {
       // #112: img のネイティブドラッグが pointercancel を撃ち、横ドラッグが成立しない（マウス）。
+      // shortcut: 2 枚以上のタイルに限る（1 枚は img のドラッグ保存を残す）, 揃えるなら imgs.length 全体へ移す
       t.addEventListener("dragstart", function (ev) { ev.preventDefault(); });
       t.lastChild.appendChild(el("span", "del-n", (at + 1) + "/" + imgs.length));
       // #109: ポインタはタイルに捕まえる。外で離しても pointerup が来る（マウスは implicit capture が無い）。
