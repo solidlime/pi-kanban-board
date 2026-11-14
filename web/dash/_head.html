@@ -157,6 +157,8 @@
       <div class="cmdrop" id="cm-drop">ここにドロップ（png / jpg / gif / webp / avif / mp4 / webm）</div>
       <div class="cmthumbs" id="cm-thumbs"></div>
     </div>
+    <!-- #116: global 行（sid === ""）は保存も削除も宛先が無いので、ボタンの代わりに理由を出す -->
+    <p class="note" id="cm-note" hidden>global の成果物は読み取り専用</p>
     <div class="cmact">
       <button type="button" id="cm-save">保存</button>
       <button type="button" id="cm-sched" class="cardonly">実行予約</button>

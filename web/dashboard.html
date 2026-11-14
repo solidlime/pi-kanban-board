@@ -656,6 +656,8 @@ html.halt .swline .sw[data-sw="pause"]{ border-color:var(--bad); }
 .modal button:hover{border-color:var(--accent)}
 .modal .cmprio button[aria-pressed="true"]{border-color:var(--accent); color:var(--accent)}
 .modal #cm-del{border-color:var(--bad); color:var(--bad)}
+/* #116: global 行（宛先が無い成果物）で保存/削除の代わりに出す注記 */
+.modal .note{margin:0; font-size:11px; color:var(--muted)}
 
 /* ══ #49: モーダルの添付（選択 / ドロップ / 現在のサムネ） ══ */
 .modal .cmatt{display:flex; flex-direction:column; gap:6px; font-size:11px; color:var(--muted)}
@@ -860,6 +862,8 @@ html.halt .swline .sw[data-sw="pause"]{ border-color:var(--bad); }
       <div class="cmdrop" id="cm-drop">ここにドロップ（png / jpg / gif / webp / avif / mp4 / webm）</div>
       <div class="cmthumbs" id="cm-thumbs"></div>
     </div>
+    <!-- #116: global 行（sid === ""）は保存も削除も宛先が無いので、ボタンの代わりに理由を出す -->
+    <p class="note" id="cm-note" hidden>global の成果物は読み取り専用</p>
     <div class="cmact">
       <button type="button" id="cm-save">保存</button>
       <button type="button" id="cm-sched" class="cardonly">実行予約</button>
@@ -919,6 +923,9 @@ __KB_MD_JS__
     modal: null, uploading: false,
     // #82: 成果物のモーダル番号。card の #3 と deliv の #3 は別物なので id 空間を共有しない。
     modalDeliv: null,
+    // #116: モーダルが掴んでいる行の宛先（delP の値）。全タブでは id が板を跨いで重複するので、
+    // id だけで引き直すと別の板の行になる。null = 指定なし（従来どおり先頭一致）。
+    modalSid: null,
     // #52: false = 他セッションの TODO は畳んで「他 N 件」だけ出す。押した時だけ true にして
     // showOthers=1 で取りに行く（既定の見え方を自動挙動に合わせない）。
     showOthers: false,
@@ -1591,6 +1598,7 @@ __KB_MD_JS__
     var name = imgs[at];
     var t = el("div", "del-tile");
     t.dataset.deliv = c.id; // #82: 帯のタイル→成果物モーダル（card の id 空間とは別）
+    t.dataset.delp = delP(c); // #116: この行の宛先。右クリックやクリックで (sid, id) を引き直すため
     // #98: 添付があるタイルは全部 lightbox の面にする（動画・音声も prev/next に載せる）。
     if (imgs.length) { t.classList.add("thumb"); t.dataset.lb = name; t.dataset.at = at; }
     var cap = el("div", "del-cap");
@@ -1632,14 +1640,15 @@ __KB_MD_JS__
     de.onclick = function (ev) {
       ev.stopPropagation();
       if (!window.confirm("成果物 #" + c.id + " を削除する？")) return;
-      act("/api/deliv/remove", { p: c.sid || state.cur, id: c.id }).then(function () { refresh(); toast("成果物 #" + c.id + " を削除"); }, fail);
+      act("/api/deliv/remove", { p: delP(c), id: c.id }).then(function () { refresh(); toast("成果物 #" + c.id + " を削除"); }, fail);
     };
-    t.appendChild(de);
+    // #116: global 行（sid === ""）は宛先が __all__ になり必ず 404 するので、× を DOM に出さない。
+    if (!isGlobalRow(c)) t.appendChild(de);
     if (imgs.length) {
       // #98: どこを押してもプレビューになったので、入口は右上の小さなボタンに寄せる。
       var ed = el("span", "del-edit", "\u270e");
       ed.title = "成果物を編集";
-      ed.onclick = function (ev) { ev.stopPropagation(); openDelivModal(Number(c.id)); };
+      ed.onclick = function (ev) { ev.stopPropagation(); openDelivModal(Number(c.id), delP(c)); };
       t.appendChild(ed);
     }
     return t;
@@ -1695,6 +1704,7 @@ __KB_MD_JS__
     }
     function cancel() { stop(); } // 中断なので onPick は呼ばない（選択は現状維持）
     box.addEventListener("pointerdown", function (ev) {
+      if (state.allview) return; // #116: 横断ビューでは矩形を始めない（描けても何も起きない・宛先も定まらない）
       if (ev.pointerType === "touch" || ev.button !== 0) return;
       // タイル上の押下は従来動作（横ドラッグ / lightbox / × / ✎）に渡す。
       if (ev.target.closest && (ev.target.closest(itemSel) || ev.target.closest(skip))) return;
@@ -1837,7 +1847,7 @@ __KB_MD_JS__
     // 一括 API は無いのでクライアントから N 発。宛先はタイルと同じ delP。
     renderSelBar($("#delgrid"), ".del-tile.msel", "deliv", "delbar", function (bar, ids) {
       // #82: global 行（sid === ""）は板が無いので一括削除に含めない（delP が "__all__" になり 404）。
-      var del = ids.filter(function (id) { var d = delivById(id); return d && d.sid !== ""; });
+      var del = ids.filter(function (id) { var d = delivById(id); return d && !isGlobalRow(d); });
       var skip = ids.length - del.length;
       bar.appendChild(btn("一括削除", "選んだ成果物をまとめて削除", function () {
         if (!del.length) { toast("global の " + skip + " 件は削除できない"); return; }
@@ -2209,24 +2219,36 @@ __KB_MD_JS__
     return null;
   }
   function modalCard() { return cardById(state.modal); }
-  // #82: 成果物モーダルの行。card と同じ #cm を使うが、探す先と番号空間が違う。
-  function delivById(id) {
+  // #116: 全タブの帯には板を持たない行（sid === ""、kanban.ts の GLOBAL_JSON）が混ざる。
+  // 判定はここ 1 箇所。押しても必ず失敗する導線（× / 保存 / 削除）は呼び元で出さない。
+  function isGlobalRow(d) { return !!d && d.sid === ""; }
+  // #116: 成果物の宛先（sid || cur）。global 行は "" が falsy なので __all__ に落ちる＝従来と同じ。
+  function delP(d) { return d && d.sid ? d.sid : state.cur; }
+  function delivById(id, sid) {
     var list = delItems(), i;
-    for (i = 0; i < list.length; i++) if (list[i].id === id) return list[i];
+    // #116: sid（= delP の値）が来たらその板の行だけ。省略時は従来どおり先頭一致（呼び元の互換）。
+    for (i = 0; i < list.length; i++) if (list[i].id === id && (sid == null || delP(list[i]) === sid)) return list[i];
     return null;
   }
-  // #114: 成果物の宛先。タイル側の式（c.sid || state.cur）と同じ。global 集約のときだけ sid が付く。
-  function delP(d) { return d.sid || state.cur; }
-  function delivModal() { return delivById(state.modalDeliv); }
+  function delivModal() { return delivById(state.modalDeliv, state.modalSid); }
+  // #116: global 行は保存も削除も p="__all__" で失敗するので両方引っ込め、理由を 1 行出す。
+  // カードモードへ戻すときも同じ関数を通す（成果物モーダルを開いた後に保存が消えない）。
+  function setDelivRO(on) {
+    $("#cm-save").hidden = on;
+    $("#cm-del").hidden = on;
+    $("#cm-note").hidden = !on;
+  }
   function modalOpen() { return state.modal != null || state.modalDeliv != null; }
-  function openDelivModal(id) {
+  function openDelivModal(id, sid) {
     state.modal = null;
     state.modalDeliv = id;
+    state.modalSid = sid == null ? null : sid;
     var d = delivModal();
-    if (!d) { state.modalDeliv = null; return; }
+    if (!d) { state.modalDeliv = null; state.modalSid = null; return; }
     // 横断ビューは読み取り専用（削除と添付× だけ d.sid 宛で許す）。
     var ro = state.allview || !state.cur || state.cur === "__all__";
     $("#cm").classList.add("deliv");
+    setDelivRO(isGlobalRow(d));
     $("#cm-text").readOnly = ro;
     $("#cm-id").textContent = "#" + d.id;
     $("#cm-text").value = d.text || "";
@@ -2238,9 +2260,11 @@ __KB_MD_JS__
     if (!needProj()) return;
     state.modal = id;
     state.modalDeliv = null;
+    state.modalSid = null;
     var c = modalCard();
     if (!c) { state.modal = null; return; }
     $("#cm").classList.remove("deliv");
+    setDelivRO(false); // #116: 成果物モーダルの global 行で消した保存/削除を戻す
     $("#cm-text").readOnly = false;
     $("#cm-id").textContent = "#" + c.id;
     $("#cm-text").value = c.text || "";
@@ -2258,6 +2282,7 @@ __KB_MD_JS__
   function closeModal() {
     state.modal = null;
     state.modalDeliv = null;
+    state.modalSid = null;
     $("#cm").classList.remove("deliv");
     $("#cm-text").readOnly = false;
     $("#cm").removeAttribute("open");
@@ -2330,7 +2355,7 @@ __KB_MD_JS__
       var d = delivModal();
       if (!d) return null;
       // 横断ビューの書き先は d.sid（帯の × と同じ解決）。
-      return { p: d.sid || state.cur, deliv: d.id };
+      return { p: delP(d), deliv: d.id };
     }
     if (state.modal != null) return { p: state.cur, id: state.modal };
     return null;
@@ -2499,14 +2524,14 @@ __KB_MD_JS__
     return items;
   }
   function ctxDelivItems(d) {
-    var imgs = imgsOf(d), p = d.sid || state.cur; // 書き先の決め方（タイル側と同じ）
+    var imgs = imgsOf(d), p = delP(d); // 書き先の決め方（タイル側と同じ）
     return [
-      { label: "編集…", run: function () { openDelivModal(d.id); } },
+      { label: "編集…", run: function () { openDelivModal(d.id, delP(d)); } },
       // shortcut: 外すのは先頭の 1 枚だけ（タイルが見せている添付）。#105 でタイルの × は廃止したので、ここが唯一の外す導線。
-      { label: "添付を外す" + (imgs.length ? "（" + imgs[0] + "）" : ""), off: !imgs.length, run: function () {
+      { label: "添付を外す" + (imgs.length ? "（" + imgs[0] + "）" : ""), off: !imgs.length || isGlobalRow(d), run: function () {
         act("/api/attach/del", { p: p, deliv: d.id, n: 0 }).then(function () { refresh(); toast("#" + d.id + " から添付を外した"); }, fail);
       } },
-      { label: "削除", cls: "danger", run: function () {
+      { label: "削除", cls: "danger", off: isGlobalRow(d), run: function () {
         if (!window.confirm("成果物 #" + d.id + " を削除する？")) return;
         act("/api/deliv/remove", { p: p, id: d.id }).then(function () { refresh(); toast("成果物 #" + d.id + " を削除"); }, fail);
       } }
@@ -2555,7 +2580,7 @@ __KB_MD_JS__
     var items = null;
     // 横断ビューのカードは移動先の板が定まらない（#46）ので、板のカードだけ。
     if (card && card.closest("#board")) { var c = cardById(Number(card.dataset.id)); items = c && ctxCardItems(c); }
-    else if (tile) { var d = delivById(Number(tile.dataset.deliv)); items = d && ctxDelivItems(d); }
+    else if (tile) { var d = delivById(Number(tile.dataset.deliv), tile.dataset.delp); items = d && ctxDelivItems(d); }
     // shortcut: 添付が html/pdf のタイルは中が iframe なので、そこだけ既定メニューのまま
     // （iframe 内の contextmenu は親に上がらない）。caption 側で右クリックすれば出る。
     else if (col && !t.closest("button, form, .donefold, .othertodos")) items = ctxColItems(col.dataset.col);
@@ -2641,7 +2666,7 @@ __KB_MD_JS__
         if (!dv) { closeModal(); return; }
         if (!dv.sid && !needProj()) return;
         if (!window.confirm("成果物 #" + dv.id + " を削除する？")) return;
-        act("/api/deliv/remove", { p: dv.sid || state.cur, id: dv.id }).then(function () {
+        act("/api/deliv/remove", { p: delP(dv), id: dv.id }).then(function () {
           closeModal(); refresh(); toast("成果物 #" + dv.id + " を削除");
         }, fail);
         return;
@@ -2655,7 +2680,7 @@ __KB_MD_JS__
       // #109: 振った直後のそのタイルのタップだけ抑止する（他のタイルは普通に開く）。
       if (delSwipe.id === Number(dt.dataset.deliv) && Date.now() - delSwipe.at < 400) return;
       if (dt.classList.contains("thumb")) showLb(lbList().indexOf(dt));
-      else openDelivModal(Number(dt.dataset.deliv));
+      else openDelivModal(Number(dt.dataset.deliv), dt.dataset.delp);
       return;
     }
     var th = t.closest && t.closest(".thumb");

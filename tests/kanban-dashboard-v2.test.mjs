@@ -136,7 +136,8 @@ test("dashboard: 成果物タイルはどこを押してもプレビュー（#98
 	assert.ok(!app.includes('closest(".del-cap")'), ".del-cap 限定の分岐が残っている");
 	assert.match(app, /closest\("\.del-tile"\)/);
 	assert.match(app, /if \(dt\.classList\.contains\("thumb"\)\) showLb/, "タイル全体が lightbox に行かない");
-	assert.match(app, /else openDelivModal\(Number\(dt\.dataset\.deliv\)\)/, "添付なしタイルのモーダルが死んでいる");
+	// #116: モーダルは行の宛先も受け取る（全タブでは id が板を跨いで重複する）。
+	assert.match(app, /else openDelivModal\(Number\(dt\.dataset\.deliv\), dt\.dataset\.delp\)/, "添付なしタイルのモーダルが死んでいる");
 	// 添付のあるタイルは全部 .thumb + data-lb（動画・音声も prev/next に載る）。
 	assert.match(app, /if \(imgs\.length\) \{ t\.classList\.add\("thumb"\); t\.dataset\.lb = name; t\.dataset\.at = at; \}/);
 	// 編集への入口（鉛筆）が残る。
@@ -222,7 +223,7 @@ test("dashboard: 右クリックの各項目は既存 API を既存の引数で�
 		['act("/api/deliv/remove", { p: p, id: d.id })', "成果物削除"],
 		['moveCard(id, col)', "列移動"],
 		['openModal(id)', "カード編集（既存モーダル）"],
-		['openDelivModal(d.id)', "成果物編集（既存モーダル）"],
+		['openDelivModal(d.id, delP(d))', "成果物編集（既存モーダル）"],
 		['addCard("deliverable")', "成果物の追加（既存の + と同じ導線）"],
 	]) assert.ok(app.includes(needle), `${why} が ${needle} を呼んでいない`);
 	// 消す系は必ず confirm を挟む（右クリック 1 発で消えない）。
@@ -312,7 +313,8 @@ test("#110: 成果物タイルの削除は編集の左（スマフォでは常�
 	assert.ok(app.includes('el("span", "del-del"'), "削除ボタンが無い");
 	assert.ok(app.includes('de.title = "成果物を削除";'), "削除のツールチップが無い");
 	assert.ok(app.includes("if (!window.confirm(\"成果物 #\" + c.id + \" を削除する？\")) return;"), "確認なしで消える");
-	assert.ok(app.includes('act("/api/deliv/remove", { p: c.sid || state.cur, id: c.id })'), "削除の宛先がタイル側の決め方と違う");
+	// #116: 宛先の式（sid || cur）は delP に畳んだ。タイルはその delP を通す。
+	assert.ok(app.includes('act("/api/deliv/remove", { p: delP(c), id: c.id })'), "削除の宛先がタイル側の決め方と違う");
 	// 編集より先に append = DOM では左に来る（見た目の左右は CSS の right で決める）。
 	assert.ok(app.indexOf('"del-del"') < app.indexOf('"del-edit"'), "削除が編集より後ろに append されている");
 	assert.ok(css.includes("right:32px"), "削除が編集の左に置かれていない");
@@ -430,7 +432,8 @@ test("#114: 帯は空き領域からの矩形選択で一括削除できる", ()
 	assert.ok(bar.includes('"/api/deliv/remove"'), "削除 API が違う");
 	assert.ok(bar.includes("delP("), "宛先（sid || cur）の解決が 1 箇所にまとまっていない");
 	// global 行（sid === ""）は板が無いので一括削除に含めない（delP が "__all__" になり 404）。
-	assert.ok(bar.includes('d.sid !== ""'), "global 行を一括削除の対象から除いていない");
+	// #116: 判定は isGlobalRow 1 箇所。
+	assert.ok(bar.includes("!isGlobalRow(d)"), "global 行を一括削除の対象から除いていない");
 	assert.ok(bar.includes("global の "), "除外した件数を toast で知らせていない");
 	const s0 = app.indexOf("function renderSelBar(");
 	const s1 = app.indexOf("\n  }", s0);
@@ -522,4 +525,77 @@ test("#115: カードは矩形選択で一括移動・一括削除できる", ()
 	// 列の再利用判定が .msel を見ていないと、選択のたびに列が総入れ替えになる（チカチカ・スクロール消失）。
 	assert.ok(app.includes('".card.sel, .card.msel"'), "renderBoard の列再利用判定が .msel を見ていない");
 	assert.ok(app.includes('classList.remove("sel", "msel")'), ".msel を比較前に落としていない");
+});
+
+// #116: 全タブ（横断ビュー）の帯には「どの板のものか」が無い global 行（sid === ""）が混ざる。
+// 宛先（d.sid || state.cur）が "__all__" になるので、押せるのに必ず失敗するボタンを DOM から消す。
+// 併せて id 解決を (sid, id) の組にする（成果物 id は板を跨いで重複し、先頭一致は別の板を指す）。
+test("#116: global 行は読み取り専用・成果物の id 解決は (sid, id)", () => {
+	const app = read("web/dash/_app.js");
+	const head = read("web/dash/_head.html");
+	const css = read("web/dash/_c.css");
+
+	// A: 宛先の解決は delP 1 箇所。素の式が他の呼び元に残っていない。
+	assert.ok(app.includes("function delP(d) { return d && d.sid ? d.sid : state.cur; }"), "宛先が delP に畳まれていない");
+	assert.equal(app.split("function delP(d)").length - 1, 1, "delP が 1 実装でない");
+	assert.equal(app.split("sid || state.cur").length - 1, 0, "宛先の式が delP の外に残っている");
+	assert.ok(app.split("delP(").length - 1 >= 6, "delP が呼び元で使われていない");
+
+	// B: global 判定も 1 箇所。
+	assert.ok(app.includes('function isGlobalRow(d) { return !!d && d.sid === ""; }'), "global 判定が 1 箇所に無い");
+	assert.equal(app.split('d.sid === ""').length - 1, 1, "global 判定が isGlobalRow 以外にも書かれている");
+
+	// タイル: global 行は × を DOM に出さない（disabled で残さない）。
+	const t0 = app.indexOf("function delTile(c) {");
+	assert.ok(t0 >= 0, "delTile が見つからない");
+	const t1 = app.indexOf("\n  }", t0);
+	assert.ok(t1 > t0, "delTile のブロック境界が取れない（アサートが空振りする）");
+	const tile = app.slice(t0, t1);
+	assert.ok(tile.includes("if (!isGlobalRow(c)) t.appendChild(de);"), "global 行にも × を出している");
+	assert.ok(!tile.includes("\n    t.appendChild(de);"), "× の append が無条件のまま");
+	assert.ok(tile.includes("t.dataset.delp = delP(c);"), "タイルが自分の行の宛先を持っていない（右クリックが行を引けない）");
+
+	// モーダル: 保存も削除も p=__all__ で失敗するので、両方引っ込めて理由を 1 行出す。
+	const o0 = app.indexOf("function openDelivModal(id, sid) {");
+	assert.ok(o0 >= 0, "openDelivModal が (id, sid) を受けていない");
+	const o1 = app.indexOf("\n  }", o0);
+	assert.ok(o1 > o0, "openDelivModal のブロック境界が取れない（アサートが空振りする）");
+	assert.ok(app.slice(o0, o1).includes("setDelivRO(isGlobalRow(d))"), "global 行でボタンを引っ込めていない");
+	assert.ok(app.includes('$("#cm-save").hidden = on;'), "保存を隠していない");
+	assert.ok(app.includes('$("#cm-del").hidden = on;'), "削除を隠していない");
+	assert.ok(app.includes('$("#cm-note").hidden = !on;'), "注記の出し入れが無い");
+	// カードモードでは元に戻す（成果物モーダルを開いた後にカードの保存が消えない）。
+	const oc0 = app.indexOf("function openModal(id) {");
+	assert.ok(oc0 >= 0, "openModal が見つからない");
+	const oc1 = app.indexOf("\n  }", oc0);
+	assert.ok(oc1 > oc0, "openModal のブロック境界が取れない（アサートが空振りする）");
+	assert.ok(app.slice(oc0, oc1).includes("setDelivRO(false)"), "カードモードでボタンが戻らない");
+	assert.ok(head.includes('id="cm-note"') && head.includes("global の成果物は読み取り専用"), "読み取り専用の注記ノードが無い");
+	assert.ok(css.includes(".modal .note{"), "注記のスタイルが無い");
+
+	// C: id 解決を (sid, id) の組に。sid 省略時は従来どおり（呼び元の互換を壊さない）。
+	assert.ok(app.includes("function delivById(id, sid)"), "delivById が sid を受けていない");
+	assert.ok(app.includes("(sid == null || delP(list[i]) === sid)"), "sid で絞っていない");
+	assert.ok(app.includes("return delivById(state.modalDeliv, state.modalSid)"), "モーダルが sid 付きで引き直していない");
+	assert.ok(app.includes("openDelivModal(Number(c.id), delP(c))"), "タイルの編集が行の sid を渡していない");
+	assert.ok(app.includes("openDelivModal(Number(dt.dataset.deliv), dt.dataset.delp)"), "タイルのクリックが行の sid を渡していない");
+	assert.ok(app.includes("delivById(Number(tile.dataset.deliv), tile.dataset.delp)"), "右クリックが行の sid を渡していない");
+	assert.ok(app.includes("openDelivModal(d.id, delP(d))"), "右クリックの編集が行の sid を渡していない");
+	// 呼び元の取りこぼしを拾う: 呼び出しは 3 箇所、全部 (id, sid) の 2 引数。
+	// 入口が増えたらここで落ちる（下の 3 includes にその 1 本を足す）。
+	assert.equal(app.split("openDelivModal(").length - 1, 4, "openDelivModal の呼び元が増えている（定義 1 + 呼び出し 3）");
+	assert.ok(app.includes("state.modalSid = null;"), "モーダルを閉じても sid が残る");
+
+	// D: 横断ビューでは矩形を始めない（描けるのに何も起きない状態を消す）。applyDSel の防御は残す。
+	assert.ok(app.includes("if (state.allview) return; // #116:"), "横断ビューで矩形が始まる");
+	assert.ok(app.includes("if (state.allview) state.dsel = {};"), "#114 の防御が消えている");
+
+	// E: 前提の固定。横断ビューでは #board が display:none で、カードの書き込み経路はそこからしか始まらない。
+	assert.ok(app.includes('$("#board").style.display = state.allview ? "none" : "";'), "横断ビューで #board を隠していない");
+	assert.ok(app.includes('if (card && card.closest("#board"))'), "右クリックのカード削除が横断ビューのカードに届く");
+	assert.ok(app.includes('if (state.allview || !state.cur || state.cur === "__all__") { toast("横断ビューでは操作できない（ボードを選ぶ）"); return false; }'), "needProj が横断ビューを弾いていない");
+	assert.ok(app.includes('if (!needProj()) return;\n    state.modal = id;'), "カードのモーダルが needProj を通っていない");
+	// バッチ（#114/#115）は選択が器に入っている時だけ走る。その選択は #board の矩形でしか作られない。
+	assert.ok(app.includes('marquee($("#board"), ".card[data-id]"'), "一括操作の入口が #board 以外にも増えている");
+	assert.equal(app.split("function marquee").length - 1, 1, "marquee が 1 実装でない（入口が増えたら E の前提が崩れる）");
 });
