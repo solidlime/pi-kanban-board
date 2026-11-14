@@ -828,7 +828,9 @@
     }
     // 打ちかけ（state.addCol）も署名に含める。含めないと + を押しても入力欄が出ない。
     // #113: query / delSort を入れないと絞り込み・ソートが再描画されない。
-    var sig = String(state.addCol) + "|" + state.query + "|" + state.delSort + "\n" + cards.map(function (c) { return c.id + "|" + c.img + "|" + (c.sid || "") + "|" + c.text; }).join("\n");
+    // #116: 板も署名に入れる。単体板の行は sid が undefined で全部 "" になるので、
+    // 入れないと板を切り替えても dataset.delp が前の板のまま残り、id 解決が null になる。
+    var sig = String(state.cur) + "|" + String(state.addCol) + "|" + state.query + "|" + state.delSort + "\n" + cards.map(function (c) { return c.id + "|" + c.img + "|" + (c.sid || "") + "|" + c.text; }).join("\n");
     if (box.dataset.sig === sig) return;
     box.dataset.sig = sig;
     clear(grid);
@@ -967,6 +969,7 @@
   // display:none）、pick() と #q が csel を捨てるので選択が残らない。宛先（state.cur）も定まらない（#46 / needProj() と同じ理由）。
   // 移動は /api/move を直接叩く（moveCard は 1 発ごとに needProj + refresh するので N 発で往復が増える）。
   function applyCSel() {
+    if (state.allview) state.csel = {}; // #116: 横断ビューは宛先が定まらない（applyDSel と同じ防御）
     Array.prototype.forEach.call($("#board").querySelectorAll(".card[data-id]"), function (n) {
       n.classList.toggle("msel", !!state.csel[Number(n.dataset.id)]);
     });
@@ -1449,7 +1452,8 @@
   function attSel() {
     if (state.modalDeliv != null) {
       var d = delivModal();
-      if (!d) return null;
+      // #116: global 行は宛先が無い（p=__all__ に飛ぶ）。削除を塞いだのと同じ失敗クラス。
+      if (!d || isGlobalRow(d)) return null;
       // 横断ビューの書き先は d.sid（帯の × と同じ解決）。
       return { p: delP(d), deliv: d.id };
     }
@@ -1487,7 +1491,7 @@
   // モーダルを閉じても送信は止めない（完了後の refresh は state.cur の盤にしか触らない）。
   function uploadFiles(files) {
     var sel = attSel();
-    if (!sel) return;
+    if (!sel) { if (state.modalDeliv != null) toast("global の成果物には添付できない"); return; }
     if (state.uploading) { toast("送信中… 終わるまで待って"); return; }
     var id = sel.deliv != null ? sel.deliv : sel.id, go = [], bad = [];
     var label = sel.deliv != null ? "成果物 #" + id : "#" + id;
@@ -1760,7 +1764,8 @@
       if (t.id === "cm-del" && state.modalDeliv != null) {
         var dv = delivModal();
         if (!dv) { closeModal(); return; }
-        if (!dv.sid && !needProj()) return;
+        if (!needProj()) return;
+        if (isGlobalRow(dv)) { toast("global の成果物は削除できない"); return; }
         if (!window.confirm("成果物 #" + dv.id + " を削除する？")) return;
         act("/api/deliv/remove", { p: delP(dv), id: dv.id }).then(function () {
           closeModal(); refresh(); toast("成果物 #" + dv.id + " を削除");

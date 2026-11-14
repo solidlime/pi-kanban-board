@@ -131,6 +131,7 @@ html.halt .swline .sw[data-sw="pause"]{ border-color:var(--bad); }
 .modal #cm-del{border-color:var(--bad); color:var(--bad)}
 /* #116: global 行（宛先が無い成果物）で保存/削除の代わりに出す注記 */
 .modal .note{margin:0; font-size:11px; color:var(--muted)}
+.modal .note[hidden]{display:none}
 
 /* ══ #49: モーダルの添付（選択 / ドロップ / 現在のサムネ） ══ */
 .modal .cmatt{display:flex; flex-direction:column; gap:6px; font-size:11px; color:var(--muted)}

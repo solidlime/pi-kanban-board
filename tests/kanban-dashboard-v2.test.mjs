@@ -584,7 +584,11 @@ test("#116: global 行は読み取り専用・成果物の id 解決は (sid, id
 	// 呼び元の取りこぼしを拾う: 呼び出しは 3 箇所、全部 (id, sid) の 2 引数。
 	// 入口が増えたらここで落ちる（下の 3 includes にその 1 本を足す）。
 	assert.equal(app.split("openDelivModal(").length - 1, 4, "openDelivModal の呼び元が増えている（定義 1 + 呼び出し 3）");
-	assert.ok(app.includes("state.modalSid = null;"), "モーダルを閉じても sid が残る");
+	// 全体検索だと closeModal から消しても他所の代入で通るので、closeModal のスライスに絞る。
+	const cl0 = app.indexOf("function closeModal() {");
+	const cl1 = app.indexOf("\n  }", cl0);
+	assert.ok(cl1 > cl0, "closeModal の境界が取れない");
+	assert.ok(app.slice(cl0, cl1).includes("state.modalSid = null;"), "closeModal が sid を落としていない（次のモーダルが古い宛先を掴む）");
 
 	// D: 横断ビューでは矩形を始めない（描けるのに何も起きない状態を消す）。applyDSel の防御は残す。
 	assert.ok(app.includes("if (state.allview) return; // #116:"), "横断ビューで矩形が始まる");
@@ -598,4 +602,27 @@ test("#116: global 行は読み取り専用・成果物の id 解決は (sid, id
 	// バッチ（#114/#115）は選択が器に入っている時だけ走る。その選択は #board の矩形でしか作られない。
 	assert.ok(app.includes('marquee($("#board"), ".card[data-id]"'), "一括操作の入口が #board 以外にも増えている");
 	assert.equal(app.split("function marquee").length - 1, 1, "marquee が 1 実装でない（入口が増えたら E の前提が崩れる）");
+
+	// F: 帯の再描画署名に板を入れる。単体板の行は sid が undefined で全部 "" になるので、
+	// 署名に board が無いと板を切り替えても dataset.delp が前の板のまま残り、id 解決が null になる。
+	const g0 = app.indexOf("function renderDeliverables() {");
+	const g1 = app.indexOf("\n  }", g0);
+	assert.ok(g1 > g0, "renderDeliverables のブロック境界が取れない");
+	assert.ok(app.slice(g0, g1).includes("var sig = String(state.cur)"), "帯の sig に板が入っていない（dataset.delp が前の板のまま残る）");
+
+	// G: 宛先が無い global 行は、押すと必ず失敗する操作を全部塞ぐ（無言の失敗を作らない）。
+	assert.ok(app.includes('if (isGlobalRow(dv)) { toast("global の成果物は削除できない"); return; }'), "モーダル削除が global 行を塞いでいない");
+	const a0 = app.indexOf("function attSel() {");
+	const a1 = app.indexOf("\n  }", a0);
+	assert.ok(a1 > a0, "attSel の境界が取れない");
+	assert.ok(app.slice(a0, a1).includes("if (!d || isGlobalRow(d)) return null;"), "attSel が global 行に __all__ を返す");
+	assert.ok(app.includes('if (!sel) { if (state.modalDeliv != null) toast("global の成果物には添付できない"); return; }'), "添付が global 行で無言に return する");
+	// 横断ビューはカードの宛先も定まらない（allview では act() が p を付けず cwd の実在板を消す）。
+	const cs0 = app.indexOf("function applyCSel() {");
+	const cs1 = app.indexOf("\n  }", cs0);
+	assert.ok(cs1 > cs0, "applyCSel の境界が取れない");
+	assert.ok(app.slice(cs0, cs1).includes("if (state.allview) state.csel = {};"), "applyCSel に allview ガードが無い");
+
+	// H: [hidden] は display を持つ要素に負ける（repo で 3 回踏んだ罠）。
+	assert.ok(css.includes(".modal .note[hidden]{display:none}"), "注記の [hidden] 保険が無い");
 });
