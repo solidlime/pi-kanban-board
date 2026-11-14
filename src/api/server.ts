@@ -5,9 +5,10 @@ import http from "node:http";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { fail, type ErrorCode } from "../shared/errors.js";
+import { TOKEN_COOKIE } from "../shared/constants.js";
 import type { HomeState } from "../persistence/init.js";
 import type { Db } from "../persistence/db.js";
-import { authCookie, presentedToken, tokenMatches } from "./auth.js";
+import { acceptToken, authCookie, clearCookie, presentedTokens } from "./auth.js";
 import { API_VERSION, handleApi, sendJson, type Ctx } from "./routes.js";
 
 export interface ServerDeps {
@@ -107,24 +108,40 @@ export function createServer(deps: ServerDeps) {
 
     try {
       // ---- auth: everything is behind the token, including the UI shell.
-      const presented = presentedToken(req, url);
       // `?token=` is a bootstrap carrier, not a general one: it is honoured on GET /
       // (and /index.html) only, where it becomes the cookie. Accepting it anywhere would put the token
       // in history, Referer headers and proxy logs for no gain — every other call already has a cookie.
       const bootstrapPath = req.method === "GET" && (url.pathname === "/" || url.pathname === "/index.html");
-      const authed = tokenMatches(deps.token, presented.token)
-        && (presented.via !== "query" || bootstrapPath);
-      const bootstrap = authed && presented.via === "query";
+      const candidates = presentedTokens(req, url).filter((c) => c.via !== "query" || bootstrapPath);
+      const picked = acceptToken(deps.token, candidates);
+      const authed = picked !== null;
+      const staleCookie = candidates.some((c) => c.via === "cookie");
+      // Whatever just authenticated has to end up in the cookie, and a cookie that did not has to go:
+      // otherwise one bad cookie shadows every later request for its full 30 days.
+      const cookieFix: Record<string, string> = {};
+      if (picked) {
+        if (picked.via !== "cookie") cookieFix["set-cookie"] = authCookie(picked.token);
+        // The token rode in on a URL: keep it out of Referer headers on the way back out.
+        if (picked.via === "query") cookieFix["referrer-policy"] = "no-referrer";
+      } else if (staleCookie) {
+        cookieFix["set-cookie"] = clearCookie();
+      }
       // No token file yet (home not initialized): the two read-only diagnostics stay open so the
       // UI can say "run init" instead of failing with 401 forever. Both expose nothing secret.
       const diagnostics = deps.token === null && req.method === "GET"
         && (url.pathname === "/api/meta" || url.pathname === "/api/selftest");
       if (!authed && !diagnostics) {
-        const message = deps.token
-          ? "missing or invalid token"
-          : `no token file in ${deps.home} (home ${deps.state.status}) — run the v2 init, which rewrites ` +
-            `the v1 layout and therefore needs explicit confirmation`;
-        return sendJson(ctx, 401, fail("UNAUTHORIZED", message));
+        // Name the carrier: a stale cookie is the one failure that looks identical to "no token"
+        // and that the user cannot fix without knowing which carrier to replace.
+        let message = "missing or invalid token";
+        if (deps.token === null) {
+          message = `no token file in ${deps.home} (home ${deps.state.status}) — run the v2 init, which ` +
+            `rewrites the v1 layout and therefore needs explicit confirmation`;
+        } else if (staleCookie) {
+          message = `invalid token in cookie ${TOKEN_COOKIE} (stale from an older home?) — ` +
+            `open /?token=<token> to replace it`;
+        }
+        return sendJson(ctx, 401, fail("UNAUTHORIZED", message), cookieFix);
       }
 
       if (req.method !== "GET" && req.method !== "HEAD" && !originAllowed(req)) {
@@ -134,8 +151,7 @@ export function createServer(deps: ServerDeps) {
       if (await handleApi(ctx)) return;
 
       if (req.method === "GET" || req.method === "HEAD") {
-        const cookie: Record<string, string> = bootstrap && presented.token ? { "set-cookie": authCookie(presented.token) } : {};
-        return void await serveFile(ctx, cookie);
+        return void await serveFile(ctx, cookieFix);
       }
       return sendJson(ctx, 404, fail("NOT_FOUND", `no route for ${req.method} ${url.pathname}`));
     } catch (err) {

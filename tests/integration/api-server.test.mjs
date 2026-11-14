@@ -74,6 +74,17 @@ test("auth: token gate on the API and the shell", async (t) => {
   const queryShell = await fetch(`${base}/?token=${run.token}`);
   assert.equal(queryShell.status, 200, "GET / is the one place a query token still works");
   assert.ok(queryShell.headers.get("set-cookie")?.includes("kb_auth="), "and it becomes the cookie");
+
+  // A stale cookie must not shadow a good ?token=. v1 used the same cookie name, so after a home is
+  // recreated every browser still holds one for 30 days — that turned /?token=<token> into a 401 that
+  // could never heal, and it looked exactly like "missing or invalid token".
+  const staleBoot = await fetch(`${base}/?token=${run.token}`, { headers: { cookie: "kb_auth=stale" } });
+  assert.equal(staleBoot.status, 200, "a stale cookie must not veto the bootstrap");
+  assert.match(staleBoot.headers.get("set-cookie") ?? "", new RegExp(`kb_auth=${run.token}`), "and it is replaced");
+  assert.equal(staleBoot.headers.get("referrer-policy"), "no-referrer", "a URL-borne token must not leak");
+  const staleBare = await fetch(`${base}/`, { headers: { cookie: "kb_auth=stale" } });
+  assert.equal(staleBare.status, 401);
+  assert.match(staleBare.headers.get("set-cookie") ?? "", /Max-Age=0/, "a cookie that failed is cleared");
 });
 
 test("meta + selftest report build, schema and home state", async (t) => {
