@@ -77,3 +77,10 @@ test("parseSince accepts an ISO stamp and a Nd window, and refuses anything else
     assert.throws(() => parseSince(bad, now), (err) => err instanceof DomainError && err.code === "VALIDATION", `should reject ${bad}`);
   }
 });
+
+test("parseSince: a window far outside Date's range is a 422, not a RangeError 500", () => {
+  assert.throws(() => parseSince("999999999d", new Date("2026-01-01T00:00:00Z")), (e) => e instanceof DomainError && e.code === "VALIDATION");
+  assert.throws(() => parseSince("1000000000000h", new Date("2026-01-01T00:00:00Z")), (e) => e instanceof DomainError && e.code === "VALIDATION");
+  // The boundary itself still parses: 7d and an ISO stamp are unchanged.
+  assert.equal(parseSince("7d", new Date("2026-01-08T00:00:00Z")), "2026-01-01T00:00:00.000Z");
+});

@@ -14,7 +14,7 @@ export const THROTTLE_MS = 86_400_000;
 
 export type SinkSetting = { kind: "off" } | { kind: "file"; path: string };
 
-export interface Delivery { path: string; written: number; skipped: number }
+export interface Delivery { path: string; written: number; skipped: number; /** Set when the mirror could not be written; the read still succeeds. */ error?: string }
 
 export interface SinkLine { at: string; slot: string; notification: Notification }
 
@@ -55,8 +55,13 @@ export function deliverNotifications(
     lines.push(JSON.stringify({ at: now.toISOString(), slot, notification: n } satisfies SinkLine));
   }
   if (lines.length > 0) {
-    mkdirSync(dirname(setting.path), { recursive: true });
-    appendFileSync(setting.path, `${lines.join("\n")}\n`, "utf8");
+    try {
+      mkdirSync(dirname(setting.path), { recursive: true });
+      appendFileSync(setting.path, `${lines.join("\n")}\n`, "utf8");
+    } catch (err) {
+      // The mirror is a convenience: a read must not 500 because its disk is full or gone.
+      return { path: setting.path, written: 0, skipped: skipped + lines.length, error: (err as Error).message };
+    }
   }
   return { path: setting.path, written: lines.length, skipped };
 }

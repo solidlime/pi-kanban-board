@@ -655,7 +655,7 @@ function getNotifications(ctx: Ctx): void {
   const delivery = deliverNotifications(items, parseSinkSetting(process.env[SINK_ENV]));
   sendJson(ctx, 200, ok({
     notifications: items,
-    sink: delivery === null ? undefined : { path: delivery.path, written: delivery.written, skipped: delivery.skipped },
+    sink: delivery === null ? undefined : { path: delivery.path, written: delivery.written, skipped: delivery.skipped, ...(delivery.error === undefined ? {} : { error: delivery.error }) },
   }));
 }
 

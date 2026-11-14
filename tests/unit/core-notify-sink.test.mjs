@@ -81,3 +81,17 @@ test("slotOf: identity is who/what/where, so a changed detail is not a new notif
   assert.equal(slotOf(notice({ columnId: "done", kind: "wip", cardId: undefined })), "p|wip||done");
   assert.notEqual(slotOf(notice({ projectId: "q" })), slotOf(notice()));
 });
+
+test("deliverNotifications: an unwritable sink reports the failure instead of throwing", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "kb-sink-"));
+  // A file where a directory is needed: mkdirSync throws ENOTDIR on every platform.
+  const blocker = path.join(dir, "blocker");
+  writeFileSync(blocker, "x");
+  const setting = { kind: "file", path: path.join(blocker, "sub", "out.jsonl") };
+  const d = deliverNotifications([notice()], setting);
+  assert.ok(d);
+  assert.equal(d.written, 0, "nothing reached the disk");
+  assert.equal(d.skipped, 1, "an undelivered line is skipped, not silently counted as written");
+  assert.equal(typeof d.error, "string");
+  assert.ok(d.error.length > 0);
+});

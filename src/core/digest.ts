@@ -40,7 +40,10 @@ export function parseSince(raw: string | null | undefined, now: Date = new Date(
   if (m) {
     const n = Number(m[1]);
     if (!Number.isFinite(n) || n <= 0) throw badSince(s);
-    return new Date(now.getTime() - n * UNIT_MS[m[2]]).toISOString();
+    const from = now.getTime() - n * UNIT_MS[m[2]];
+    // 999999999d is finite but outside Date's ±8.64e15 ms, where toISOString throws RangeError.
+    if (!Number.isFinite(from) || Math.abs(from) > 8.64e15) throw badSince(s);
+    return new Date(from).toISOString();
   }
   // Only a full ISO stamp is accepted: Date.parse("7") is a date in V8, which would turn a
   // missing unit into a silent 2001 window.
