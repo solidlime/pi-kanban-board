@@ -927,7 +927,10 @@
   }
 
   // #114: 帯の選択の見た目。タイルは renderDeliverables が作り直すので、毎 render id で付け直す。
+  // 横断ビューでは選択を張らない: 成果物 id は板を跨いで重複し、delivById（先頭一致）が別の板の行を指す。
+  // ガードはここに置く（共有ヘルパの renderSelBar に呼び元固有の分岐を持ち込まない）。
   function applyDSel() {
+    if (state.allview) state.dsel = {}; // #114: 横断ビューは id が板を跨いで重複し、delivById が別板を指す
     Array.prototype.forEach.call($("#delgrid").querySelectorAll(".del-tile"), function (n) {
       n.classList.toggle("msel", !!state.dsel[Number(n.dataset.deliv)]);
     });
@@ -993,16 +996,13 @@
   // sig（選択 id をソートして join）が同じなら作り直さない: 5 秒ポーリングの render() が
   // 押している最中のボタンを差し替えて click を消すのを防ぐ（renderDeliverables の dataset.sig と同じ流儀）。
   function renderSelBar(box, itemSel, idAttr, barId, build) {
-    // #114: 横断ビューでは成果物のバーを出さない（全行 sid === "" で一括削除が必ず空振りする）。
-    // カード側（applyCSel）と同じ扱いに揃える。
-    var off = state.allview && barId === "delbar";
-    var ids = off ? [] : Array.prototype.map.call(box.querySelectorAll(itemSel), function (n) { return Number(n.dataset[idAttr]); });
+    var ids = Array.prototype.map.call(box.querySelectorAll(itemSel), function (n) { return Number(n.dataset[idAttr]); });
     var bar = $("#" + barId);
     if (!ids.length) { if (bar && bar.parentNode) bar.parentNode.removeChild(bar); return; }
     if (!bar) {
       bar = el("div", "selbar");
       bar.id = barId;
-      box.parentNode.insertBefore(bar, box); // grid / #board の直前（.layout の grid を 1 行使う）
+      box.parentNode.insertBefore(bar, box); // 対象 grid の直前（#cardbar は .layout の行を 1 つ使う）
     }
     var sig = ids.slice().sort(function (a, b) { return a - b; }).join(",");
     if (bar.dataset.sig === sig) return;

@@ -225,7 +225,7 @@ body.mq-on{user-select:none}
 /* #115: カード側（#cardbar）と見た目を共有する。 */
 .selbar{
   display:flex; align-items:center; gap:8px; flex-wrap:wrap;
-  grid-column:1/-1; /* #delbar（帯）も #cardbar も .layout（2 列 grid）の直下なので、行を 1 つ跨ぐ。 */
+  grid-column:1/-1; /* #cardbar（#board の兄弟 = .layout の直下）のため。 #delbar は #deliverables（details）の中なので効かない。 */
   padding:6px 12px; border-bottom:1px solid var(--line);
   font-family:var(--font-mono); font-size:11px; color:var(--muted);
 }

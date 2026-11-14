@@ -380,6 +380,14 @@ test("#114: 帯は空き領域からの矩形選択で一括削除できる", ()
 	assert.ok(marq.includes('window.addEventListener("pointercancel", cancel)'), "pointercancel を window に張っていない");
 	assert.ok(marq.includes('window.removeEventListener("pointercancel", cancel)'), "window のリスナーを外していない（stop が冪等でない）");
 	assert.ok(marq.includes('window.addEventListener("blur", stop)'), "ウィンドウ外で離した時の取りこぼし対策が無い");
+	// stop() は pointerdown で張った 4 本（move / up / cancel / blur）を全部外す。1 本でも漏れると stop が冪等でない。
+	assert.equal(marq.split("window.removeEventListener").length - 1, 4, "stop が window のリスナーを 4 本とも外していない");
+	// 4px 未満で離した時（クリック）は onPick を呼ばない。矩形が無いのに hits を渡すと空選択で選択が消える。
+	const u0 = marq.indexOf("function up(ev) {");
+	assert.ok(u0 >= 0, "up が見つからない");
+	const u1 = marq.indexOf("\n    }", u0);
+	assert.ok(u1 > u0, "up のブロック境界が取れない（アサートが空振りする）");
+	assert.ok(marq.slice(u0, u1).includes("if (!d.rect) return;"), "クリック（4px 未満）で onPick を呼んでいる");
 	assert.ok(marq.includes("function cancel() { stop(); }"), "cancel が選択を変えている");
 	assert.ok(!marq.includes("lostpointercapture"), "lostpointercapture への依存が残っている");
 	assert.ok(marq.includes("stop(); //"), "pointerdown で前回の途中状態を止めていない");
@@ -489,15 +497,22 @@ test("#115: カードは矩形選択で一括移動・一括削除できる", ()
 	assert.ok(css.includes(".card.msel{outline:2px solid var(--accent)"), ".card.msel の見た目が無い");
 	assert.ok(css.includes(".selbar{"), "操作バーの共通クラスが無い（#delbar と 2 つに割れている）");
 	assert.ok(app.includes('el("div", "selbar")'), "バーが .selbar を使っていない");
-	// #delbar（帯）も .layout の直下に入るので、行を跨ぐ指定は共通クラス側に置く。
-	assert.match(css, /\.selbar\{[^}]*grid-column:1\/-1/, ".selbar が .layout の行を跨いでいない");
+	// #cardbar は .layout（main）の直下なので grid-column:1/-1 が効く。#delbar は #deliverables（details）の中なので効かない。
+	// 指定は #cardbar のために共通クラス側に置く（帯側に出ても実害は無い）。
+	assert.match(css, /\.selbar\{[^}]*grid-column:1\/-1/, ".selbar に #cardbar 用の grid-column が無い");
 	assert.ok(!css.includes("#cardbar{grid-column"), "#cardbar の重複指定が残っている");
 
-	// 横断ビューでは成果物のバーを出さない（全行 sid === "" で一括削除が必ず空振りする）。
+	// 横断ビューでは選択そのものを張らない（成果物 id が板を跨いで重複し、delivById の先頭一致が別の板を指す）。
+	// ガードは共有ヘルパではなく選択を張る層（applyDSel）に置く。
+	const ad0 = app.indexOf("function applyDSel()");
+	assert.ok(ad0 >= 0, "applyDSel が見つからない");
+	const ad1 = app.indexOf("\n  }", ad0);
+	assert.ok(ad1 > ad0, "applyDSel のブロック境界が取れない（アサートが空振りする）");
+	assert.ok(app.slice(ad0, ad1).includes("if (state.allview) state.dsel = {};"), "横断ビューで成果物の選択を張っている");
 	const sb0 = app.indexOf("function renderSelBar(");
 	const sb1 = app.indexOf("\n  }", sb0);
 	assert.ok(sb1 > sb0, "renderSelBar のブロック境界が取れない");
-	assert.ok(app.slice(sb0, sb1).includes("state.allview"), "横断ビューで成果物のバーを止めていない");
+	assert.ok(!app.slice(sb0, sb1).includes("state.allview"), "共有ヘルパに呼び元固有の allview 分岐が残っている");
 
 	// 列の再利用判定が .msel を見ていないと、選択のたびに列が総入れ替えになる（チカチカ・スクロール消失）。
 	assert.ok(app.includes('".card.sel, .card.msel"'), "renderBoard の列再利用判定が .msel を見ていない");
