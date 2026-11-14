@@ -209,6 +209,19 @@ html[data-density="compact"] .chips,html[data-density="compact"] .meta{display:n
   font-family:var(--font-mono); font-size:11px; color:var(--muted);
   background:color-mix(in srgb,var(--bg0) 70%, transparent);
 }
+/* #114: 矩形選択。drag 中は body 直下の fixed なので、スクロールしてもズレない。 */
+.mq{
+  position:fixed; border:1px solid var(--accent); pointer-events:none; z-index:50;
+  background:color-mix(in srgb,var(--accent) 12%,transparent);
+}
+.del-tile.msel{outline:2px solid var(--accent); outline-offset:-2px}
+/* #114: 選択中の操作バー。summary の直下に 1 行だけ。 */
+#delbar{
+  display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+  padding:6px 12px; border-bottom:1px solid var(--line);
+  font-family:var(--font-mono); font-size:11px; color:var(--muted);
+}
+#delbar .n{margin-right:auto}
 
 /* ── lightbox ───────────────────────────── */
 .lb{

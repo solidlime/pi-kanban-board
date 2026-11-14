@@ -354,6 +354,19 @@ html[data-density="compact"] .chips,html[data-density="compact"] .meta{display:n
   font-family:var(--font-mono); font-size:11px; color:var(--muted);
   background:color-mix(in srgb,var(--bg0) 70%, transparent);
 }
+/* #114: 矩形選択。drag 中は body 直下の fixed なので、スクロールしてもズレない。 */
+.mq{
+  position:fixed; border:1px solid var(--accent); pointer-events:none; z-index:50;
+  background:color-mix(in srgb,var(--accent) 12%,transparent);
+}
+.del-tile.msel{outline:2px solid var(--accent); outline-offset:-2px}
+/* #114: 選択中の操作バー。summary の直下に 1 行だけ。 */
+#delbar{
+  display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+  padding:6px 12px; border-bottom:1px solid var(--line);
+  font-family:var(--font-mono); font-size:11px; color:var(--muted);
+}
+#delbar .n{margin-right:auto}
 
 /* ── lightbox ───────────────────────────── */
 .lb{
@@ -890,6 +903,8 @@ __KB_MD_JS__
     cur: "", allview: false, query: "", sel: -1,
     // #113: 帯（成果物）の表示順だけ。カード列の並びは変えない。既定は新→旧。
     delSort: "new",
+    // #114: 帯の複数選択（成果物 id → true）。キーボードカーソルの state.sel とは別物。
+    dsel: {},
     cards: {}, open: {}, doneOpen: false, projDoneOpen: false, offline: false, addCol: null,
     modal: null, uploading: false,
     // #82: 成果物のモーダル番号。card の #3 と deliv の #3 は別物なので id 空間を共有しない。
@@ -1619,6 +1634,61 @@ __KB_MD_JS__
     }
     return t;
   }
+  // #114: 空き領域からの矩形選択。帯も #board（#115）も同じ 1 本を使う（2 実装に割らない）。
+  // box に 1 回だけ配線する（render は box の中身を入れ替えるだけで、box 自体は残る）。
+  function marquee(box, itemSel, onPick) {
+    var drag = null;
+    // shortcut: タッチは矩形を作らない（スマフォのタイル操作を壊さない）, 要るなら長押し起点を足す
+    function stop() {
+      if (drag && drag.rect && drag.rect.parentNode) drag.rect.parentNode.removeChild(drag.rect);
+      Array.prototype.forEach.call(box.querySelectorAll(".mq-on"), function (n) { n.classList.remove("mq-on"); });
+      drag = null;
+    }
+    box.addEventListener("pointerdown", function (ev) {
+      if (ev.pointerType === "touch" || ev.button) return;
+      // タイル上の押下は従来動作（横ドラッグ / lightbox / × / ✎）に渡す。summary と入力欄も同様。
+      if (ev.target.closest && (ev.target.closest(itemSel) || ev.target.closest("summary, input, textarea, select"))) return;
+      drag = { id: ev.pointerId, x: ev.clientX, y: ev.clientY, rect: null, hits: [] };
+      // ボックス外へ出ても pointerup を落とさない（マウスは implicit capture が無い）。
+      if (box.setPointerCapture) { try { box.setPointerCapture(ev.pointerId); } catch (err) { void err; } }
+    });
+    box.addEventListener("pointermove", function (ev) {
+      if (!drag || drag.id !== ev.pointerId) return;
+      if (!drag.rect) {
+        // 4px 動くまではクリックの可能性を残す（矩形を出さない）。
+        if (Math.abs(ev.clientX - drag.x) < 4 && Math.abs(ev.clientY - drag.y) < 4) return;
+        drag.rect = el("div", "mq");
+        document.body.appendChild(drag.rect);
+      }
+      var x1 = Math.min(drag.x, ev.clientX), y1 = Math.min(drag.y, ev.clientY);
+      var x2 = Math.max(drag.x, ev.clientX), y2 = Math.max(drag.y, ev.clientY);
+      drag.rect.style.left = x1 + "px";
+      drag.rect.style.top = y1 + "px";
+      drag.rect.style.width = (x2 - x1) + "px";
+      drag.rect.style.height = (y2 - y1) + "px";
+      // getBoundingClientRect の交差で選ぶ（elementFromPoint は矩形に完全に入っていないと拾えない）。
+      drag.hits = [];
+      Array.prototype.forEach.call(box.querySelectorAll(itemSel), function (n) {
+        var r = n.getBoundingClientRect();
+        var on = r.left < x2 && r.right > x1 && r.top < y2 && r.bottom > y1;
+        n.classList.toggle("mq-on", on);
+        if (on) drag.hits.push(n);
+      });
+    });
+    box.addEventListener("pointerup", function (ev) {
+      if (!drag || drag.id !== ev.pointerId) return;
+      var d = drag;
+      stop();
+      // 4px 未満はクリック扱い。onPick を呼ばない = 既存の選択を消さない。
+      if (!d.rect) return;
+      onPick(d.hits.map(function (n) { return Number(n.dataset.deliv != null ? n.dataset.deliv : n.dataset.id); }));
+    });
+    box.addEventListener("pointercancel", function (ev) {
+      if (!drag || drag.id !== ev.pointerId) return;
+      stop(); // 中断なので onPick は呼ばない（選択を動かさない）
+    });
+  }
+
   function renderDeliverables() {
     var box = $("#deliverables"), grid = $("#delgrid");
     // #79: 3 列化したので成果物の置き場はこの帯だけ。添付の有無に関わらず全部出す。
@@ -1726,6 +1796,7 @@ __KB_MD_JS__
     renderDeliverables();
     renderRail(); renderFoot();
     applySel();
+    applyDSel();
   }
 
   function visibleCards() { return Array.prototype.slice.call(document.querySelectorAll("#board .card, #groups .card")); }
@@ -1733,6 +1804,42 @@ __KB_MD_JS__
     var all = visibleCards();
     if (state.sel >= all.length) state.sel = all.length - 1;
     all.forEach(function (n, i) { n.classList.toggle("sel", i === state.sel); });
+  }
+
+  // #114: 帯の選択の見た目。タイルは renderDeliverables が作り直すので、毎 render id で付け直す。
+  function applyDSel() {
+    Array.prototype.forEach.call($("#delgrid").querySelectorAll(".del-tile"), function (n) {
+      n.classList.toggle("msel", !!state.dsel[Number(n.dataset.deliv)]);
+    });
+    renderDelBar();
+  }
+  // #114: 選択が 1 件以上のときだけ summary の直下に 1 行バー。
+  // 件数は DOM の .msel から数える（refresh で消えた id を数えない）。
+  function renderDelBar() {
+    var grid = $("#delgrid");
+    var ids = Array.prototype.map.call(grid.querySelectorAll(".del-tile.msel"), function (n) { return Number(n.dataset.deliv); });
+    var bar = $("#delbar");
+    if (!ids.length) { if (bar && bar.parentNode) bar.parentNode.removeChild(bar); return; }
+    if (!bar) {
+      bar = el("div");
+      bar.id = "delbar";
+      grid.parentNode.insertBefore(bar, grid); // summary の直下・grid の直前
+    }
+    clear(bar);
+    bar.appendChild(el("span", "n", ids.length + " 件選択"));
+    // 一括 API は無いのでクライアントから N 発。宛先はタイルと同じ delP。
+    bar.appendChild(btn("一括削除", "選んだ成果物をまとめて削除", function () {
+      if (!window.confirm("成果物 " + ids.length + " 件を削除する？")) return;
+      return Promise.all(ids.map(function (id) {
+        var d = delivById(id);
+        return act("/api/deliv/remove", { p: d ? delP(d) : state.cur, id: id });
+      })).then(function () {
+        state.dsel = {};
+        refresh();
+        toast(ids.length + " 件の成果物を削除");
+      }, fail);
+    }));
+    bar.appendChild(btn("解除", "選択を解除", function () { state.dsel = {}; applyDSel(); }));
   }
 
   // ---- data: poll ----
@@ -1769,6 +1876,7 @@ __KB_MD_JS__
     state.cur = slug;
     state.allview = slug === "__all__";
     state.sel = -1;
+    state.dsel = {}; // #114: 選択は板ごと。別の板の成果物 id を持ち越さない
     state.addCol = null; // #75: 打ちかけの追加行は板ごとの状態。切替で持ち越さない
     state.ptabsOpen = false; // #84: 開いたタブ列は切替で閉じる（伸びたヘッダを持ち越さない）
     state.board = null;
@@ -2037,6 +2145,8 @@ __KB_MD_JS__
     for (i = 0; i < list.length; i++) if (list[i].id === id) return list[i];
     return null;
   }
+  // #114: 成果物の宛先。タイル側の式（c.sid || state.cur）と同じ。global 集約のときだけ sid が付く。
+  function delP(d) { return d.sid || state.cur; }
   function delivModal() { return delivById(state.modalDeliv); }
   function modalOpen() { return state.modal != null || state.modalDeliv != null; }
   function openDelivModal(id) {
@@ -2498,7 +2608,8 @@ __KB_MD_JS__
     if (det.open && !state.cards[slug]) fetchGroup(slug).then(render);
   }, true);
 
-  $("#q").addEventListener("input", function () { state.query = this.value; state.sel = -1; render(); });
+  // #114: 検索語が変わったら選択は捨てる（今見えていないタイルを消さない）。
+  $("#q").addEventListener("input", function () { state.query = this.value; state.sel = -1; state.dsel = {}; render(); });
   $("#palBtn").onclick = openPal;
   $("#palq").addEventListener("input", function () { palSel = 0; renderPal(); });
   $("#palq").addEventListener("keydown", function (e) {
@@ -2620,6 +2731,13 @@ __KB_MD_JS__
       try { localStorage.setItem("deliverables-open", box.open ? "1" : "0"); } catch (err) { void err; }
     });
   })();
+
+  // #114: 帯の矩形選択 → 一括削除。box は #deliverables（grid は render が中身を入れ替えるだけ）。
+  marquee($("#deliverables"), ".del-tile", function (ids) {
+    state.dsel = {};
+    ids.forEach(function (id) { state.dsel[id] = true; });
+    applyDSel();
+  });
 
   // #85: ポーリングは setTimeout 1 本。隠れているタブでは張らず、復帰で 1 回だけ取り直す。
   var timer = null;

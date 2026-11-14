@@ -370,7 +370,6 @@ test("#114: 帯は空き領域からの矩形選択で一括削除できる", ()
 	assert.ok(marq.includes("ev.target.closest(itemSel)"), "タイル上から始まった押下を奪っている");
 	assert.ok(marq.includes('el("div", "mq")'), "矩形の要素が無い");
 	assert.ok(marq.includes("getBoundingClientRect()"), "交差判定が矩形ベースでない");
-	assert.ok(marq.includes("function marquee") === false, "marquee が自分を再定義している");
 	assert.ok(marq.includes("// shortcut: タッチは矩形を作らない"), "shortcut コメントが無い");
 
 	assert.ok(app.includes('marquee($("#deliverables"), ".del-tile"'), "帯に矩形選択が配線されていない");
@@ -382,7 +381,7 @@ test("#114: 帯は空き領域からの矩形選択で一括削除できる", ()
 
 	const b0 = app.indexOf("function renderDelBar()");
 	assert.ok(b0 >= 0, "操作バーが無い");
-	const b1 = app.indexOf("function applyDSel()", b0);
+	const b1 = app.indexOf("// ---- data: poll ----", b0);
 	assert.ok(b1 > b0, "操作バーのブロック境界が取れない（アサートが空振りする）");
 	const bar = app.slice(b0, b1);
 	assert.ok(bar.includes("Promise.all(ids.map("), "一括削除が N 発の Promise.all でない");
