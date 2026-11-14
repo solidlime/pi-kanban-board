@@ -748,16 +748,21 @@
   // box に 1 回だけ配線する（render は box の中身を入れ替えるだけで、box 自体は残る）。
   function marquee(box, itemSel, onPick) {
     var drag = null;
+    // #114: capture 中は click が捕獲要素（#deliverables / #board）に付け替わるので、
+    // 直接 onclick のボタン（#delbar / #cardbar / .addbtn）が無反応になる。押下を奪わない。
+    var skip = "summary, button, input, textarea, select, .selbar, .addrow, a";
     // shortcut: タッチは矩形を作らない（スマフォのタイル操作を壊さない）, 要るなら長押し起点を足す
     function stop() {
       if (drag && drag.rect && drag.rect.parentNode) drag.rect.parentNode.removeChild(drag.rect);
       Array.prototype.forEach.call(box.querySelectorAll(".mq-on"), function (n) { n.classList.remove("mq-on"); });
+      document.body.classList.remove("mq-on");
       drag = null;
     }
     box.addEventListener("pointerdown", function (ev) {
       if (ev.pointerType === "touch" || ev.button) return;
-      // タイル上の押下は従来動作（横ドラッグ / lightbox / × / ✎）に渡す。summary と入力欄も同様。
-      if (ev.target.closest && (ev.target.closest(itemSel) || ev.target.closest("summary, input, textarea, select"))) return;
+      // タイル上の押下は従来動作（横ドラッグ / lightbox / × / ✎）に渡す。
+      if (ev.target.closest && (ev.target.closest(itemSel) || ev.target.closest(skip))) return;
+      stop(); // 前回の pointerup を取りこぼしていても途中状態を残さない
       drag = { id: ev.pointerId, x: ev.clientX, y: ev.clientY, rect: null, hits: [] };
       // ボックス外へ出ても pointerup を落とさない（マウスは implicit capture が無い）。
       if (box.setPointerCapture) { try { box.setPointerCapture(ev.pointerId); } catch (err) { void err; } }
@@ -769,6 +774,7 @@
         if (Math.abs(ev.clientX - drag.x) < 4 && Math.abs(ev.clientY - drag.y) < 4) return;
         drag.rect = el("div", "mq");
         document.body.appendChild(drag.rect);
+        document.body.classList.add("mq-on"); // ドラッグ中はキャプションのネイティブ選択を止める
       }
       var x1 = Math.min(drag.x, ev.clientX), y1 = Math.min(drag.y, ev.clientY);
       var x2 = Math.max(drag.x, ev.clientX), y2 = Math.max(drag.y, ev.clientY);
@@ -793,10 +799,9 @@
       if (!d.rect) return;
       onPick(d.hits.map(function (n) { return Number(n.dataset.deliv != null ? n.dataset.deliv : n.dataset.id); }));
     });
-    box.addEventListener("pointercancel", function (ev) {
-      if (!drag || drag.id !== ev.pointerId) return;
-      stop(); // 中断なので onPick は呼ばない（選択を動かさない）
-    });
+    // capture が外れた（pointerup / pointercancel / ウィンドウ外で離す / 別ウィンドウへ）でも残さない。
+    // onPick は呼ばない（中断なので選択を動かさない）。
+    box.addEventListener("lostpointercapture", stop);
   }
 
   function renderDeliverables() {
@@ -922,85 +927,82 @@
     Array.prototype.forEach.call($("#delgrid").querySelectorAll(".del-tile"), function (n) {
       n.classList.toggle("msel", !!state.dsel[Number(n.dataset.deliv)]);
     });
-    renderDelBar();
+    // 一括 API は無いのでクライアントから N 発。宛先はタイルと同じ delP。
+    renderSelBar($("#delgrid"), ".del-tile.msel", "deliv", "delbar", function (bar, ids) {
+      // #82: global 行（sid === ""）は板が無いので一括削除に含めない（delP が "__all__" になり 404）。
+      var del = ids.filter(function (id) { var d = delivById(id); return d && d.sid !== ""; });
+      var skip = ids.length - del.length;
+      bar.appendChild(btn("一括削除", "選んだ成果物をまとめて削除", function () {
+        if (!del.length) { toast("global の " + skip + " 件は削除できない"); return; }
+        if (!window.confirm("成果物 " + del.length + " 件を削除する？")) return;
+        return Promise.all(del.map(function (id) {
+          var d = delivById(id);
+          return act("/api/deliv/remove", { p: d ? delP(d) : state.cur, id: id });
+        })).then(function () {
+          state.dsel = {};
+          refresh();
+          toast(del.length + " 件の成果物を削除" + (skip ? "（global の " + skip + " 件は削除できない）" : ""));
+        }, fail);
+      }));
+      bar.appendChild(btn("解除", "選択を解除", function () { state.dsel = {}; applyDSel(); }));
+    });
   }
   // #115: カードの選択の見た目。列は renderBoard が作り直すので、毎 render id で付け直す。
   // .sel（キーボードカーソル）には触らない（applySel の 1 か所だけが .sel を持つ）。
+  // 選択が 1 件以上のときだけ #board の直前にバー。件数は DOM の .msel から数える
+  // （refresh で消えた id を数えない）。横断ビューでは出ない: 矩形は #board からしか作れず（#board は
+  // display:none）、pick() と #q が csel を捨てるので選択が残らない。宛先（state.cur）も定まらない（#46 / needProj() と同じ理由）。
+  // 移動は /api/move を直接叩く（moveCard は 1 発ごとに needProj + refresh するので N 発で往復が増える）。
   function applyCSel() {
     Array.prototype.forEach.call($("#board").querySelectorAll(".card[data-id]"), function (n) {
       n.classList.toggle("msel", !!state.csel[Number(n.dataset.id)]);
     });
-    renderCardBar();
-  }
-  // #115: 選択が 1 件以上のときだけ #board の直前に 1 行バー。件数は DOM の .msel から数える
-  // （refresh で消えた id を数えない）。横断ビューでは出ない: 矩形は #board からしか作れず（#board は
-  // display:none）、pick() と #q が csel を捨てるので選択が残らない。宛先（state.cur）も定まらない（#46 / needProj() と同じ理由）。
-  // 移動は /api/move を直接叩く（moveCard は 1 発ごとに needProj + refresh するので N 発で往復が増える）。
-  function renderCardBar() {
-    var board = $("#board");
-    var ids = Array.prototype.map.call(board.querySelectorAll(".card.msel"), function (n) { return Number(n.dataset.id); });
-    var bar = $("#cardbar");
-    if (!ids.length) { if (bar && bar.parentNode) bar.parentNode.removeChild(bar); return; }
-    if (!bar) {
-      bar = el("div", "selbar");
-      bar.id = "cardbar";
-      board.parentNode.insertBefore(bar, board); // #board の直前（.layout の grid を 1 行使う）
-    }
-    clear(bar);
-    bar.appendChild(el("span", "n", ids.length + " 件選択"));
-    ["todo", "doing", "done"].forEach(function (col) {
-      bar.appendChild(btn("\u2192 " + colName(col), "選んだカードを " + colName(col) + " へまとめて移動", function () {
-        // 既にその列にいるカードは飛ばす（無駄な rev を上げない）。空配列を Promise.all に渡さない。
-        var move = ids.filter(function (id) { var c = cardById(id); return c && c.col !== col; });
-        if (!move.length) { toast("移動するカードが無い（全件 " + colName(col) + "）"); return; }
-        return Promise.all(move.map(function (id) {
-          return act("/api/move", { id: id, col: col });
-        })).then(function () {
+    renderSelBar($("#board"), ".card.msel", "id", "cardbar", function (bar, ids) {
+      ["todo", "doing", "done"].forEach(function (col) {
+        bar.appendChild(btn("\u2192 " + colName(col), "選んだカードを " + colName(col) + " へまとめて移動", function () {
+          // 既にその列にいるカードは飛ばす（無駄な rev を上げない）。空配列を Promise.all に渡さない。
+          var move = ids.filter(function (id) { var c = cardById(id); return c && c.col !== col; });
+          if (!move.length) { toast("移動するカードが無い（全件 " + colName(col) + "）"); return; }
+          return Promise.all(move.map(function (id) {
+            return act("/api/move", { id: id, col: col });
+          })).then(function () {
+            state.csel = {};
+            refresh();
+            toast(move.length + " 件を " + colName(col) + " へ" + (move.length < ids.length ? "（" + (ids.length - move.length) + " 件は元から " + colName(col) + "）" : ""));
+          }, fail);
+        }));
+      });
+      bar.appendChild(btn("削除", "選んだカードをまとめて削除", function () {
+        // shortcut: 取り消せない（undo は付けない）, 要るなら /api/remove を論理削除にする
+        if (!window.confirm("カード " + ids.length + " 件を削除する？")) return;
+        return Promise.all(ids.map(function (id) { return act("/api/remove", { id: id }); })).then(function () {
           state.csel = {};
           refresh();
-          toast(move.length + " 件を " + colName(col) + " へ" + (move.length < ids.length ? "（" + (ids.length - move.length) + " 件は元から " + colName(col) + "）" : ""));
+          toast(ids.length + " 件のカードを削除");
         }, fail);
       }));
+      bar.appendChild(btn("解除", "選択を解除", function () { state.csel = {}; applyCSel(); }));
     });
-    bar.appendChild(btn("削除", "選んだカードをまとめて削除", function () {
-      // shortcut: 取り消せない（undo は付けない）, 要るなら /api/remove を論理削除にする
-      if (!window.confirm("カード " + ids.length + " 件を削除する？")) return;
-      return Promise.all(ids.map(function (id) { return act("/api/remove", { id: id }); })).then(function () {
-        state.csel = {};
-        refresh();
-        toast(ids.length + " 件のカードを削除");
-      }, fail);
-    }));
-    bar.appendChild(btn("解除", "選択を解除", function () { state.csel = {}; applyCSel(); }));
   }
 
-  // #114: 選択が 1 件以上のときだけ summary の直下に 1 行バー。
-  // 件数は DOM の .msel から数える（refresh で消えた id を数えない）。
-  function renderDelBar() {
-    var grid = $("#delgrid");
-    var ids = Array.prototype.map.call(grid.querySelectorAll(".del-tile.msel"), function (n) { return Number(n.dataset.deliv); });
-    var bar = $("#delbar");
+  // #114/#115: 選択バーは 1 実装。#delbar（帯）と #cardbar（#board）は対象と中身の差だけ。
+  // sig（選択 id をソートして join）が同じなら作り直さない: 5 秒ポーリングの render() が
+  // 押している最中のボタンを差し替えて click を消すのを防ぐ（renderDeliverables の dataset.sig と同じ流儀）。
+  function renderSelBar(box, itemSel, idAttr, barId, build) {
+    var ids = Array.prototype.map.call(box.querySelectorAll(itemSel), function (n) { return Number(n.dataset[idAttr]); });
+    var bar = $("#" + barId);
     if (!ids.length) { if (bar && bar.parentNode) bar.parentNode.removeChild(bar); return; }
     if (!bar) {
       bar = el("div", "selbar");
-      bar.id = "delbar";
-      grid.parentNode.insertBefore(bar, grid); // summary の直下・grid の直前
+      bar.id = barId;
+      box.parentNode.insertBefore(bar, box); // grid / #board の直前（.layout の grid を 1 行使う）
     }
+    var sig = ids.slice().sort(function (a, b) { return a - b; }).join(",");
+    if (bar.dataset.sig === sig) return;
+    bar.dataset.sig = sig;
     clear(bar);
     bar.appendChild(el("span", "n", ids.length + " 件選択"));
-    // 一括 API は無いのでクライアントから N 発。宛先はタイルと同じ delP。
-    bar.appendChild(btn("一括削除", "選んだ成果物をまとめて削除", function () {
-      if (!window.confirm("成果物 " + ids.length + " 件を削除する？")) return;
-      return Promise.all(ids.map(function (id) {
-        var d = delivById(id);
-        return act("/api/deliv/remove", { p: d ? delP(d) : state.cur, id: id });
-      })).then(function () {
-        state.dsel = {};
-        refresh();
-        toast(ids.length + " 件の成果物を削除");
-      }, fail);
-    }));
-    bar.appendChild(btn("解除", "選択を解除", function () { state.dsel = {}; applyDSel(); }));
+    build(bar, ids);
   }
 
   // ---- data: poll ----

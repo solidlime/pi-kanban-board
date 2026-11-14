@@ -365,9 +365,15 @@ test("#114: 帯は空き領域からの矩形選択で一括削除できる", ()
 	assert.equal(app.split("function marquee").length - 1, 1, "marquee が 1 実装に統一されていない");
 	const q0 = app.indexOf("function marquee(box, itemSel, onPick)");
 	assert.ok(q0 >= 0, "marquee の署名が仕様と違う");
-	const marq = app.slice(q0, app.indexOf("\n  }", q0));
+	const qEnd = app.indexOf("\n  }", q0);
+	assert.ok(qEnd > q0, "marquee のブロック境界が取れない（アサートが空振りする）");
+	const marq = app.slice(q0, qEnd);
 	assert.ok(marq.includes('ev.pointerType === "touch"'), "タッチで矩形を作っている（スマフォのタイル操作が壊れる）");
 	assert.ok(marq.includes("ev.target.closest(itemSel)"), "タイル上から始まった押下を奪っている");
+	// capture 中は click が捕獲要素に付け替わるので、button を除外しないと直接 onclick のボタンが死ぬ。
+	assert.ok(marq.includes("summary, button, input"), "除外リストに button が無い（capture 中にボタンの click が死ぬ）");
+	assert.ok(marq.includes('"lostpointercapture", stop'), "capture の後始末が無い（矩形が残る）");
+	assert.ok(marq.includes("stop(); //"), "pointerdown で前回の途中状態を止めていない");
 	assert.ok(marq.includes('el("div", "mq")'), "矩形の要素が無い");
 	assert.ok(marq.includes("getBoundingClientRect()"), "交差判定が矩形ベースでない");
 	assert.ok(marq.includes("// shortcut: タッチは矩形を作らない"), "shortcut コメントが無い");
@@ -377,17 +383,40 @@ test("#114: 帯は空き領域からの矩形選択で一括削除できる", ()
 	assert.ok(!/state\.sel\[/.test(app), "キーボードカーソル state.sel を複数選択に流用している");
 	assert.ok(app.includes("function applyDSel()"), "選択の描き直しが無い");
 	assert.ok(app.includes('.classList.toggle("msel"'), "選択の見た目が付かない");
-	assert.ok(app.includes("state.dsel = {};"), "選択を捨てる場所（板切替 / 検索変更）が無い");
+	// #q 側の 1 行で空振りしないよう、pick() のスライスの中で見る。
+	const p0 = app.indexOf("function pick(slug, haveProjects) {");
+	assert.ok(p0 >= 0, "pick が見つからない");
+	const p1 = app.indexOf("\n  }", p0);
+	assert.ok(p1 > p0, "pick のブロック境界が取れない（アサートが空振りする）");
+	assert.ok(app.slice(p0, p1).includes("state.dsel = {};"), "板切替で選択を捨てていない");
+	// render のスライス内で呼ばれていること（#115 の applyCSel と同じ検査）。
+	const r0 = app.indexOf("function render() {");
+	assert.ok(r0 >= 0, "render が見つからない");
+	const r1 = app.indexOf("\n  }", r0);
+	assert.ok(r1 > r0, "render のブロック境界が取れない（アサートが空振りする）");
+	assert.ok(app.slice(r0, r1).includes("applyDSel();"), "render の末尾で帯の選択を付け直していない");
 
-	const b0 = app.indexOf("function renderDelBar()");
+	// 操作バー: 1 実装（renderSelBar）を #delbar と #cardbar で共有する。
+	assert.equal(app.split("function renderSelBar(").length - 1, 1, "選択バーの生成が 1 実装に統一されていない");
+	const b0 = app.indexOf("function applyDSel()");
 	assert.ok(b0 >= 0, "操作バーが無い");
-	const b1 = app.indexOf("// ---- data: poll ----", b0);
-	assert.ok(b1 > b0, "操作バーのブロック境界が取れない（アサートが空振りする）");
+	const b1 = app.indexOf("function applyCSel()", b0);
+	assert.ok(b1 > b0, "applyDSel のブロック境界が取れない（アサートが空振りする）");
 	const bar = app.slice(b0, b1);
-	assert.ok(bar.includes("Promise.all(ids.map("), "一括削除が N 発の Promise.all でない");
-	assert.ok(bar.includes('window.confirm("成果物 " + ids.length + " 件を削除する？")'), "confirm に件数が無い");
+	assert.ok(bar.includes("Promise.all(del.map("), "一括削除が N 発の Promise.all でない");
+	assert.ok(bar.includes('window.confirm("成果物 " + del.length + " 件を削除する？")'), "confirm に件数が無い");
 	assert.ok(bar.includes('"/api/deliv/remove"'), "削除 API が違う");
 	assert.ok(bar.includes("delP("), "宛先（sid || cur）の解決が 1 箇所にまとまっていない");
+	// global 行（sid === ""）は板が無いので一括削除に含めない（delP が "__all__" になり 404）。
+	assert.ok(bar.includes('d.sid !== ""'), "global 行を一括削除の対象から除いていない");
+	assert.ok(bar.includes("global の "), "除外した件数を toast で知らせていない");
+	const s0 = app.indexOf("function renderSelBar(");
+	const s1 = app.indexOf("\n  }", s0);
+	assert.ok(s1 > s0, "renderSelBar のブロック境界が取れない（アサートが空振りする）");
+	const sel = app.slice(s0, s1);
+	assert.ok(sel.includes("bar.dataset.sig"), "sig で再構築を止めていない（ポーリングでボタンが差し替わる）");
+	assert.ok(sel.includes("sort("), "sig が選択 id のソート済み文字列でない");
+	assert.ok(sel.includes("件選択"), "件数が出ていない");
 
 	assert.ok(css.includes(".del-tile.msel{outline:2px solid var(--accent)"), ".msel の見た目が無い");
 	assert.ok(css.includes(".mq{"), "矩形の CSS が無い");
@@ -422,12 +451,11 @@ test("#115: カードは矩形選択で一括移動・一括削除できる", ()
 	assert.ok(app.slice(r0, r1).includes("applyCSel();"), "render の末尾で選択の見た目を付け直していない");
 
 	// 操作バー: N 件選択 / → TODO / → DOING / → DONE / 削除 / 解除。
-	const b0 = app.indexOf("function renderCardBar()");
+	const b0 = app.indexOf("function applyCSel()");
 	assert.ok(b0 >= 0, "カードの操作バーが無い");
-	const b1 = app.indexOf("// #114: 選択が 1 件以上のときだけ", b0);
+	const b1 = app.indexOf("function renderSelBar(", b0);
 	assert.ok(b1 > b0, "操作バーのブロック境界が取れない（アサートが空振りする）");
 	const bar = app.slice(b0, b1);
-	assert.ok(bar.includes("件選択"), "件数が出ていない");
 	assert.ok(bar.includes('["todo", "doing", "done"].forEach'), "列ごとの移動ボタンが無い");
 	assert.equal(bar.split("Promise.all(").length - 1, 2, "一括移動と一括削除が Promise.all でない");
 	assert.ok(bar.includes('act("/api/move"'), "移動 API が違う");
