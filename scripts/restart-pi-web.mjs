@@ -9,8 +9,14 @@ import { join } from "node:path";
 
 const port = Number(process.argv.find((a) => a.startsWith("--port="))?.slice(7) ?? 30141);
 const logPath = join(homedir(), ".pi", "kanban-deploy.log");
-const fd = openSync(logPath, "a");
-const log = (m) => { try { writeSync(fd, `[${new Date().toISOString()}] [restart] ${m}\n`); } catch { /* best effort */ } };
+// Another writer can hold the log with a share mode that makes open() fail (EBUSY on Windows);
+// logging is a nicety, losing it must not cost the restart.
+let fd = null;
+try { fd = openSync(logPath, "a"); } catch { fd = null; }
+const log = (m) => {
+  const line = `[${new Date().toISOString()}] [restart] ${m}\n`;
+  try { if (fd !== null) writeSync(fd, line); else console.log(line.trimEnd()); } catch { /* best effort */ }
+};
 const busy = () => new Promise((res) => {
   const s = createServer();
   s.once("error", (e) => res(e.code === "EADDRINUSE"));
@@ -36,15 +42,14 @@ const child = spawn(process.execPath, [piWeb, "-H", "0.0.0.0", "-p", String(port
 child.unref();
 log(`started pid=${child.pid ?? "?"} on :${port}`);
 
-// Prove the reload landed: the board must now accept a request that carries BOTH a stale cookie
-// and a good ?token= (before the fix the stale cookie won and answered 401).
-const token = readFileSync(join(homedir(), ".pi", "kanban", "token"), "utf8").trim();
+// Prove the reload landed: /api/meta is answered by the new code, which reports its auth mode.
 let verified = "not answered yet";
 for (let i = 0; i < 40; i++) {
   try {
-    const res = await fetch(`http://127.0.0.1:8789/?token=${token}`, { headers: { cookie: "kb_auth=stale-cookie-selftest" } });
-    const replaced = (res.headers.get("set-cookie") ?? "").includes(`kb_auth=${token}`);
-    verified = res.status === 200 && replaced ? "ok (stale cookie no longer shadows the token)" : `FAILED status=${res.status} cookieReplaced=${replaced}`;
+    const res = await fetch("http://127.0.0.1:8789/api/meta");
+    const body = await res.json().catch(() => null);
+    const d = body?.data ?? {};
+    verified = res.status === 200 ? `ok auth=${d.auth ?? "?"} build=${d.buildHash ?? "?"} version=${d.version ?? "?"}` : `FAILED status=${res.status}`;
     break;
   } catch { await new Promise((r) => setTimeout(r, 500)); }
 }

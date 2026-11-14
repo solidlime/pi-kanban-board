@@ -24,6 +24,8 @@ export interface StartOptions {
   version?: string;
   /** Cross-board doing-loop heartbeat. Absent/0 = off (tests, and anyone who wants quiet). */
   loop?: { intervalMs?: number } | number | false;
+  /** Token gate for the HTTP surface. Default: KANBAN_AUTH=on, else off. */
+  auth?: boolean;
 }
 
 export interface RunningServer {
@@ -71,7 +73,8 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   const db: Db | null = state.initialized ? openHomeDatabase(home).db : null;
   const token = readToken(home);
   const buildHash = await readBuildHash(webRoot);
-  const deps: ServerDeps = { db, home, state, token, webRoot, buildHash, version: opts.version };
+  const auth = opts.auth ?? process.env.KANBAN_AUTH === "on";
+  const deps: ServerDeps = { db, home, state, token, auth, webRoot, buildHash, version: opts.version };
 
   const server = createServer(deps);
   const host = opts.host ?? HOST_DEFAULT;

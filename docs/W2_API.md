@@ -16,9 +16,14 @@ Binds `HOST_DEFAULT` (`0.0.0.0`) on `PORT_DEFAULT` (`8789`). `PORT=0` picks a fr
 
 ## Auth
 
-Token = `<kanbanHome>/token`. Accepted as cookie `kb_auth`, `Authorization: Bearer <t>`, or
+**Off by default.** The gate exists for the case where the board is reachable by something other than
+the machine it runs on; on a tailnet-only box it cost more than it bought (a 64-hex token in the URL
+of every bookmark). `KANBAN_AUTH=on` — or `startServer({ auth: true })` — turns it back on, and
+`/api/meta` reports which way it is set as `data.auth: "off" | "token"`.
+
+When on: token = `<kanbanHome>/token`. Accepted as cookie `kb_auth`, `Authorization: Bearer <t>`, or
 `?token=<t>` — the query form only on `GET /` / `GET /index.html`, where it is exchanged for the
-cookie (`HttpOnly; SameSite=Lax; Path=/; Max-Age=30d`). Everything, the UI shell included, is behind
+cookie (`HttpOnly; SameSite=Lax; Path=/; Max-Age=30d`). Every path, the UI shell included, is behind
 the token: a missing/invalid one is `401 {"ok":false,"error":{"code":"UNAUTHORIZED"}}`.
 
 Bootstrap path: `GET /?token=<t>` (documented above) is the only unauthenticated carrier.

@@ -15,10 +15,10 @@ async function tempHome(prefix) {
   return path.join(dir, ".pi", "kanban");
 }
 
-async function initializedServer(t) {
+async function initializedServer(t, opts = { auth: true }) {
   const home = await tempHome("kb-api-");
   await executeInit(planInit(new Date(), home), { confirmed: true });
-  const run = await startServer({ home, port: 0 });
+  const run = await startServer({ home, port: 0, ...opts });
   t.after(() => run.close());
   const base = run.url.replace(/\/$/, "");
   const call = async (method, p, body, token = run.token) => {
@@ -34,6 +34,16 @@ async function initializedServer(t) {
   };
   return { run, base, call };
 }
+
+test("auth: off by default — the token gate is opt-in", async (t) => {
+  const { run } = await initializedServer(t, { auth: false });
+  const base = run.url.replace(/\/$/, "");
+  const bare = await fetch(`${base}/api/meta`);
+  assert.equal(bare.status, 200, "no token needed unless auth is asked for");
+  assert.equal((await bare.json()).data.auth, "off");
+  const shell = await fetch(`${base}/`);
+  assert.equal(shell.status, 200, "and the shell is open too");
+});
 
 test("auth: token gate on the API and the shell", async (t) => {
   const { run, base, call } = await initializedServer(t);
@@ -198,7 +208,7 @@ test("static: shell, assets, mime, and no traversal", async (t) => {
 
 test("uninitialized home: diagnostics answer, writes name the init", async (t) => {
   const home = await tempHome("kb-api-empty-");
-  const run = await startServer({ home, port: 0 });
+  const run = await startServer({ home, port: 0, auth: true });
   t.after(() => run.close());
   assert.equal(run.db, null, "an uninitialized home must not be opened");
 

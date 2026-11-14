@@ -56,6 +56,8 @@ export interface Ctx {
   home: string;
   state: HomeState;
   token: string | null;
+  /** Token gate state, echoed by meta so a client knows whether to send one. */
+  auth: boolean;
   version: string;
   buildHash: string;
 }
@@ -201,6 +203,7 @@ function getMeta(ctx: Ctx): void {
   sendJson(ctx, 200, ok({
     version: ctx.version,
     buildHash: ctx.buildHash,
+    auth: ctx.auth ? "token" : "off",
     schemaVersion: ctx.db ? schemaVersion(ctx.db) : (ctx.state.schemaVersion ?? 0),
     capabilities: CAPABILITIES,
   }));
@@ -233,6 +236,7 @@ function getSelftest(ctx: Ctx): void {
     ok: dbOk && schemaOk,
     version: ctx.version,
     buildHash: ctx.buildHash,
+    auth: ctx.auth ? "token" : "off",
     schemaVersion: version,
     schema: { version, expected: LATEST_SCHEMA_VERSION, ok: schemaOk },
     db: { ok: dbOk, error: dbError, integrity },

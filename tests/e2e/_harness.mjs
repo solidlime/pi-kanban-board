@@ -15,7 +15,7 @@ export async function tempHome(prefix = "kb-e2e-") {
 export async function setupServer(t, { init = true } = {}) {
   const home = await tempHome();
   if (init) await executeInit(planInit(new Date(), home), { confirmed: true });
-  const srv = await startServer({ home, host: "127.0.0.1", port: 0 });
+  const srv = await startServer({ home, host: "127.0.0.1", port: 0, auth: true });
   const base = `http://127.0.0.1:${srv.port}`;
   const token = srv.token;
   t.after(async () => { try { await srv.close(); } catch {} try { await rm(path.dirname(path.dirname(home)), { recursive: true, force: true }); } catch {} });

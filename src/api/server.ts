@@ -16,8 +16,10 @@ export interface ServerDeps {
   db: Db | null;
   home: string;
   state: HomeState;
-  /** null when the home has no token file: every request is 401. */
+  /** null when the home has no token file. Ignored unless `auth` is on. */
   token: string | null;
+  /** Token gate. Off by default — see StartOptions.auth. */
+  auth: boolean;
   webRoot: string;
   buildHash: string;
   version?: string;
@@ -101,7 +103,7 @@ export function createServer(deps: ServerDeps) {
     function rawCtx(r: http.IncomingMessage, s: http.ServerResponse): Ctx {
       return {
         req: r, res: s, url: url!, db: deps.db, home: deps.home, state: deps.state,
-        token: deps.token, version: deps.version ?? API_VERSION, buildHash: deps.buildHash,
+        token: deps.token, auth: deps.auth, version: deps.version ?? API_VERSION, buildHash: deps.buildHash,
       };
     }
     const ctx = rawCtx(req, res);
@@ -112,9 +114,13 @@ export function createServer(deps: ServerDeps) {
       // (and /index.html) only, where it becomes the cookie. Accepting it anywhere would put the token
       // in history, Referer headers and proxy logs for no gain — every other call already has a cookie.
       const bootstrapPath = req.method === "GET" && (url.pathname === "/" || url.pathname === "/index.html");
-      const candidates = presentedTokens(req, url).filter((c) => c.via !== "query" || bootstrapPath);
+      // Auth is off unless `auth` is on: a single-user board on a private network, where a 64-hex
+      // token in a URL cost more than it bought. KANBAN_AUTH=on restores the gate.
+      const candidates = deps.auth
+        ? presentedTokens(req, url).filter((c) => c.via !== "query" || bootstrapPath)
+        : [];
       const picked = acceptToken(deps.token, candidates);
-      const authed = picked !== null;
+      const authed = !deps.auth || picked !== null;
       const staleCookie = candidates.some((c) => c.via === "cookie");
       // Whatever just authenticated has to end up in the cookie, and a cookie that did not has to go:
       // otherwise one bad cookie shadows every later request for its full 30 days.
