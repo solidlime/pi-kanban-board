@@ -27,17 +27,28 @@ function idQuery(q: string): number | null {
   return m ? Number(m[1]) : null;
 }
 
+export const SEARCH_LIMIT_MAX = 200;
+export const SEARCH_LIMIT_DEFAULT = 50;
+
+/** One limit for the whole answer: a cross-board search slices once, after merging. */
+export function clampSearchLimit(raw: number | undefined): number {
+  if (raw === undefined || !Number.isFinite(raw)) return SEARCH_LIMIT_DEFAULT;
+  return Math.max(1, Math.min(SEARCH_LIMIT_MAX, Math.trunc(raw)));
+}
+
+export interface ScoredHit { hit: SearchHit; score: number }
+
 /**
  * Score: 0 exact id, 1 title/name hit, 2 body/ref hit. Ties break on project, then id.
  * The column of a card is carried so the UI can show where the hit lives.
+ * Unsliced on purpose: a caller searching several boards merges the scores first.
  */
-export function searchBoard(input: SearchInput): SearchHit[] {
+export function searchBoardScored(input: SearchInput): ScoredHit[] {
   const q = input.q.trim();
-  const limit = Math.max(1, Math.min(200, Math.trunc(input.limit ?? 50)));
   if (q === "") return [];
   const needle = q.toLowerCase();
   const id = idQuery(q);
-  const scored: { hit: SearchHit; score: number }[] = [];
+  const scored: ScoredHit[] = [];
 
   for (const card of sortCards(input.cards)) {
     const title = card.title ?? "";
@@ -78,8 +89,19 @@ export function searchBoard(input: SearchInput): SearchHit[] {
     });
   }
 
-  return scored
-    .sort((a, b) => a.score - b.score || a.hit.projectId.localeCompare(b.hit.projectId) || a.hit.id - b.hit.id)
-    .slice(0, limit)
+  return scored.sort(compareScored);
+}
+
+/** The one ordering rule: score, then board, then id (deliverables after cards on a tie). */
+export function compareScored(a: ScoredHit, b: ScoredHit): number {
+  return a.score - b.score
+    || a.hit.projectId.localeCompare(b.hit.projectId)
+    || a.hit.id - b.hit.id
+    || a.hit.type.localeCompare(b.hit.type);
+}
+
+export function searchBoard(input: SearchInput): SearchHit[] {
+  return searchBoardScored(input)
+    .slice(0, clampSearchLimit(input.limit))
     .map(s => s.hit);
 }

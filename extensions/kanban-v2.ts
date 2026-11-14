@@ -63,6 +63,7 @@ const HELP =
 	"/kanban move <id> <col>  列を移す（col は todo|doing|done）n" +
 	"/kanban remove <id>  カードを削除n" +
 	"/kanban check  DB/スキーマ/板の自己診断n" +
+	"/kanban digest [--since 7d]  期間の完了・成果物・コミットを Markdown 1 枚に（既定 7d、ISO も可）n" +
 	"/kanban url  ダッシュボードの URL（トークン付き）n" +
 	"/kanban resume  そのプロジェクトの自走ループを running にする（実行器は無い・状態だけ）n" +
 	"v1 の loop / pick / take / interval / stuck / maxloops / priority は v2 未実装（カードは作りません）n" +
@@ -223,6 +224,21 @@ export default function kanbanV2Extension(pi: ExtensionAPI): void {
 			// v1 subcommands with no v2 counterpart must NOT become a card named after them.
 			if (V1_ONLY.has(head)) {
 				ctx.ui.notify(`/kanban ${head}: v2 には doing-loop / media が無いので未実装（カードは作りません）`);
+				return;
+			}
+			if (head === "digest") {
+				const rest = argv.slice(1);
+				const since = rest[0] === "--since" ? rest[1] : rest[0];
+				if (rest[0] === "--since" && since === undefined) {
+					ctx.ui.notify("使い方: /kanban digest [--since 7d|36h|<ISO>]");
+					return;
+				}
+				try {
+					const out = await m.executeDigest({ since }, { cwd, actor: "user" });
+					ctx.ui.notify(out.ok ? out.text : `kanban: ${out.text}`);
+				} catch (err) {
+					ctx.ui.notify(`kanban: ${err instanceof Error ? err.message : String(err)}`);
+				}
 				return;
 			}
 			if (head === "move") {

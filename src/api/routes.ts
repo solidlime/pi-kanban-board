@@ -18,7 +18,7 @@ import {
   createTemplate, createView, deleteAttachment, deleteCard, deleteDeliverable, deleteTemplate, deleteView,
   getAttachment, getColumn, getLoop, getProject, getProjectBySlug, listAttachments, listCards, listColumns,
   listDeliverables, listDependencies, listProjects, listTemplates, listTimeline, listViews, moveCard,
-  readBoard, removeDependency, saveLoop, updateCard, updateColumn, updateView, addDependency,
+  readBoard, removeDependency, saveLoop, updateCard, updateColumn, updateView, addDependency, digestInput,
   type UpdateCardPatch,
 } from "../persistence/repos.js";
 import { defaultColumnId, makeBoard } from "../core/board.js";
@@ -26,9 +26,12 @@ import { assertDependencyAddable, assertDependencyType, closedLookup, openBlocke
 import { MAX_ATTACHMENT_BYTES, safeAttachmentName } from "../core/attachment.js";
 import { blobPath, storeBlob } from "../media.js";
 import { graphLayout } from "../core/graph.js";
+import { buildDigest, parseSince } from "../core/digest.js";
+import { deliverNotifications, parseSinkSetting, SINK_ENV } from "../core/notify-sink.js";
+import { acquireLock, assertResource, assertTtlSeconds, listLocks, releaseLock } from "../persistence/locks.js";
 import { initialLoopState, startLoop, stopLoop, tickLoop } from "../core/loop.js";
 import { notifications } from "../core/notify.js";
-import { searchBoard } from "../core/search.js";
+import { clampSearchLimit, compareScored, searchBoardScored, type ScoredHit } from "../core/search.js";
 import {
   assertBody, assertBlockedReason, assertColumnId, assertDue, assertEstimate, assertId, assertLabels,
   assertName, assertOwner, assertPriority, assertSlug, assertTitle, assertVersion,
@@ -39,6 +42,7 @@ export const CAPABILITIES = [
   "meta", "selftest", "projects", "board", "timeline", "cards", "card.move", "card.delete",
   "dependencies", "deliverables",
   "columns.update", "views", "templates", "attachments", "search", "notifications", "graph", "overview", "loop",
+  "digest", "locks",
 ];
 
 const ACTOR = "ui";
@@ -140,6 +144,18 @@ async function readJson(ctx: Ctx): Promise<Record<string, unknown>> {
   }
   return parsed as Record<string, unknown>;
 }
+
+/**
+ * `lastActor` (and any other timeline projection) is read-only: a write carrying it is a
+ * client bug, not something to silently drop.
+ */
+function rejectReadOnly(body: Record<string, unknown>, fields: readonly string[]): void {
+  for (const field of fields) {
+    if (field in body) throw new DomainError("VALIDATION", `${field} is read-only`, { field });
+  }
+}
+
+const CARD_READ_ONLY_FIELDS = ["lastActor"] as const;
 
 const str = (v: unknown, field: string): string => {
   if (typeof v !== "string" || v.trim() === "") throw new HttpError(400, "BAD_REQUEST", `${field} is required`);
@@ -266,6 +282,7 @@ function getTimeline(ctx: Ctx): void {
 async function postCard(ctx: Ctx): Promise<void> {
   const db = requireDb(ctx);
   const body = await readJson(ctx);
+  rejectReadOnly(body, CARD_READ_ONLY_FIELDS);
   const project = projectOr404(db, str(body.project, "project"));
   const { state } = boardState(db, project.projectId);
 
@@ -292,6 +309,7 @@ async function patchCard(ctx: Ctx, m: RegExpExecArray): Promise<void> {
   const project = projectOr404(db, decodeSegment(m[1]));
   const id = assertId(Number(m[2]));
   const body = await readJson(ctx);
+  rejectReadOnly(body, CARD_READ_ONLY_FIELDS);
   const expectedVersion = assertVersion(body.version);
 
   const patch: UpdateCardPatch = {};
@@ -305,6 +323,8 @@ async function patchCard(ctx: Ctx, m: RegExpExecArray): Promise<void> {
   if ("blockedReason" in body) patch.blockedReason = assertBlockedReason(body.blockedReason);
   // ref is a reference to a local path, never a copy: an empty string clears it.
   if ("ref" in body) patch.ref = body.ref === null ? null : optText(body.ref, "ref", 2000) || null;
+  // The digest reports landed commits, so the hash has to be writable from the API too.
+  if ("commit" in body) patch.commit = body.commit === null ? null : optText(body.commit, "commit", 64) || null;
 
   const card = updateCard(db, project.projectId, id, patch, { expectedVersion, actor: ACTOR });
   sendJson(ctx, 200, ok({ card }));
@@ -597,18 +617,25 @@ function deleteAttachmentRoute(ctx: Ctx, m: RegExpExecArray): void {
 
 // -------------------------------------------------------------- read-only views
 
+/**
+ * `project` is optional: without it every board is searched and the hits carry their projectId.
+ * `limit` is one budget for the whole answer — boards are gathered whole, merged on score,
+ * then sliced once (a per-board slice would let board A fill the quota and hide board B).
+ */
 function getSearch(ctx: Ctx): void {
   const db = requireDb(ctx);
   const q = ctx.url.searchParams;
-  const project = projectOr404(db, str(q.get("project"), "project"));
-  const snapshot = readBoard(db, project.projectId)!;
-  const limit = q.get("limit") === null ? undefined : Number(q.get("limit"));
-  const hits = searchBoard({
-    projectId: project.projectId, columns: snapshot.columns, cards: snapshot.cards,
-    deliverables: listDeliverables(db, project.projectId), q: q.get("q") ?? "",
-    ...(limit === undefined || !Number.isFinite(limit) ? {} : { limit }),
+  const ref = q.get("project")?.trim() ?? "";
+  const projects = ref === "" ? listProjects(db) : [projectOr404(db, ref)];
+  const limit = clampSearchLimit(q.get("limit") === null ? undefined : Number(q.get("limit")));
+  const scored: ScoredHit[] = projects.flatMap(project => {
+    const snapshot = readBoard(db, project.projectId)!;
+    return searchBoardScored({
+      projectId: project.projectId, columns: snapshot.columns, cards: snapshot.cards,
+      deliverables: listDeliverables(db, project.projectId), q: q.get("q") ?? "",
+    });
   });
-  sendJson(ctx, 200, ok({ hits }));
+  sendJson(ctx, 200, ok({ hits: scored.sort(compareScored).slice(0, limit).map(s => s.hit) }));
 }
 
 function getNotifications(ctx: Ctx): void {
@@ -622,7 +649,55 @@ function getNotifications(ctx: Ctx): void {
       deps: snapshot.dependencies ?? [], loop: getLoop(db, project.projectId),
     });
   });
-  sendJson(ctx, 200, ok({ notifications: items }));
+  // A5: same payload, optionally mirrored to KANBAN_NOTIFY_SINK=file:<path>. Off (no
+  // second key in the response) unless configured; a bad setting is a visible 422, not a
+  // silent fallback to off.
+  const delivery = deliverNotifications(items, parseSinkSetting(process.env[SINK_ENV]));
+  sendJson(ctx, 200, ok({
+    notifications: items,
+    sink: delivery === null ? undefined : { path: delivery.path, written: delivery.written, skipped: delivery.skipped },
+  }));
+}
+
+/** A6: who is writing what. Expired rows are reclaimed on read, so this is always the truth. */
+function getLocks(ctx: Ctx): void {
+  const db = requireDb(ctx);
+  const project = projectOr404(db, str(ctx.url.searchParams.get("project"), "project"));
+  sendJson(ctx, 200, ok({ locks: listLocks(db, project.projectId) }));
+}
+
+async function postLock(ctx: Ctx): Promise<void> {
+  const db = requireDb(ctx);
+  const body = await readJson(ctx);
+  const project = projectOr404(db, str(body.project, "project"));
+  const owner = optText(body.owner, "owner", 64) || ACTOR;
+  const lock = acquireLock(db, {
+    projectId: project.projectId,
+    resource: assertResource(body.resource),
+    owner,
+    ttlSeconds: body.ttlSeconds === undefined ? undefined : assertTtlSeconds(body.ttlSeconds),
+  });
+  sendJson(ctx, 201, ok({ lock }));
+}
+
+async function deleteLockRoute(ctx: Ctx, m: RegExpExecArray): Promise<void> {
+  const db = requireDb(ctx);
+  const project = projectOr404(db, str(ctx.url.searchParams.get("project"), "project"));
+  const resource = decodeSegment(m[1]);
+  // Releasing is idempotent: a holder that retries must not turn into a 404 wall.
+  sendJson(ctx, 200, ok({ released: releaseLock(db, project.projectId, resource) }));
+}
+
+/** One Markdown page for a period: done transitions, deliverables, commits. */
+function getDigest(ctx: Ctx): void {
+  const db = requireDb(ctx);
+  const q = ctx.url.searchParams;
+  const project = projectOr404(db, str(q.get("project"), "project"));
+  const until = new Date().toISOString();
+  const since = parseSince(q.get("since"), new Date(until));
+  const input = digestInput(db, project.projectId, { since, until });
+  if (!input) throw new DomainError("NOT_FOUND", `project ${project.projectId} not found`);
+  sendJson(ctx, 200, ok(buildDigest(input)));
 }
 
 function getGraph(ctx: Ctx): void {
@@ -747,6 +822,10 @@ const routes: Route[] = [
   { m: "GET", re: /^\/api\/search$/, h: getSearch },
   { m: "GET", re: /^\/api\/notifications$/, h: getNotifications },
   { m: "GET", re: /^\/api\/graph$/, h: getGraph },
+  { m: "GET", re: /^\/api\/digest$/, h: getDigest },
+  { m: "GET", re: /^\/api\/locks$/, h: getLocks },
+  { m: "POST", re: /^\/api\/locks$/, h: postLock },
+  { m: "DELETE", re: /^\/api\/locks\/([^/]+)$/, h: deleteLockRoute },
   { m: "GET", re: /^\/api\/overview$/, h: getOverview },
   { m: "GET", re: /^\/api\/loop$/, h: getLoopRoute },
   { m: "POST", re: /^\/api\/loop\/(start|stop|tick)$/, h: (ctx, m2) => postLoop(ctx, m2[1]) },

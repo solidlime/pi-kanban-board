@@ -8,6 +8,7 @@ import type { EntityId, ProjectId } from "../shared/ids.js";
 import { formatCid } from "../shared/ids.js";
 import type { EntityType, EventKind, TimelineEvent } from "../shared/events.js";
 import type { DependencyType } from "../core/dependency.js";
+import type { DigestInput } from "../core/digest.js";
 import { DomainError } from "../shared/errors.js";
 import type { Db } from "./db.js";
 import { all, one, run, withTx } from "./db.js";
@@ -511,13 +512,50 @@ export function deleteDeliverable(db: Db, projectId: ProjectId, id: EntityId, ac
 
 // ---------- board ----------
 
+/**
+ * Last writer per card, straight from the append-only timeline. One query: SQLite takes the
+ * bare `actor` column from the row that supplied MAX(seq), so no window function is needed.
+ */
+function lastActors(db: Db, projectId: ProjectId): Map<number, string> {
+  const rows = all<{ entity_id: string; actor: string }>(db,
+    "SELECT entity_id, actor, MAX(seq) AS seq FROM timeline_event " +
+    "WHERE project_id = ? AND entity_type = 'card' GROUP BY entity_id", projectId);
+  const out = new Map<number, string>();
+  for (const r of rows) {
+    const id = Number(r.entity_id.slice(r.entity_id.lastIndexOf("#") + 1));
+    if (Number.isInteger(id) && id > 0) out.set(id, r.actor);
+  }
+  return out;
+}
+
 /** One read for the UI/API: project + columns + cards + dependency edges. */
 export function readBoard(db: Db, projectId: ProjectId): BoardSnapshot | null {
   const project = getProject(db, projectId);
   if (!project) return null;
+  const actors = lastActors(db, projectId);
   return {
-    project, columns: listColumns(db, projectId), cards: listCards(db, projectId),
+    project, columns: listColumns(db, projectId),
+    cards: listCards(db, projectId).map(c => ({ ...c, lastActor: actors.get(c.id) ?? null })),
     dependencies: listDependencies(db, projectId)
+  };
+}
+
+/**
+ * Everything the digest needs, read once: the board rows plus the card.moved events inside
+ * the window. The rendering itself is core/digest.ts (pure, no db).
+ */
+export function digestInput(db: Db, projectId: ProjectId, opts: { since: string; until: string }): DigestInput | null {
+  const project = getProject(db, projectId);
+  if (!project) return null;
+  const events = all<TimelineRow>(db,
+    "SELECT * FROM timeline_event WHERE project_id = ? AND entity_type = 'card' " +
+    "AND kind = 'card.moved' AND at >= ? AND at < ? ORDER BY seq ASC",
+    projectId, opts.since, opts.until).map(toEvent);
+  return {
+    projectId, projectName: project.name, since: opts.since, until: opts.until,
+    columns: listColumns(db, projectId), cards: listCards(db, projectId), events,
+    deliverables: listDeliverables(db, projectId)
+      .filter(d => d.createdAt >= opts.since && d.createdAt < opts.until),
   };
 }
 

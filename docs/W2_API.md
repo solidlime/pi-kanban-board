@@ -40,7 +40,7 @@ Writes additionally require a same-origin `Origin` when one is present (or `Sec-
 | GET | `/api/board?project=` | `BoardSnapshot` (slug or id), 404 when unknown |
 | GET | `/api/timeline?project=&limit=&since=` | `{events}` |
 | POST | `/api/cards` | `{project,title,body?,columnId?,priority?,labels?,owner?,due?,estimate?,blockedReason?,ref?}` → 201 `{card}` |
-| PATCH | `/api/cards/:project/:id` | `{version,...patch}` — stale version → 409 `STALE_VERSION` |
+| PATCH | `/api/cards/:project/:id` | `{version,...patch}` — stale version → 409 `STALE_VERSION`. Patches: `title,body,priority,labels,owner,due,estimate,blockedReason,ref,commit`. `lastActor` is read-only and is rejected as 422. |
 | POST | `/api/cards/:project/:id/move` | `{columnId,version}` → `{card}` |
 | DELETE | `/api/cards/:project/:id` | `{version?}` (or `?version=`) → `{deleted:{projectId,id}}` |
 | PATCH | `/api/columns/:project/:id` | `{name?,wipLimit?,ord?}` → `{column}`. Lowering a limit under existing cards is allowed — over-WIP is an alert, not a delete. |
@@ -56,8 +56,12 @@ Writes additionally require a same-origin `Origin` when one is present (or `Sec-
 | POST | `/api/attachments?project=&cardId=|deliverableId=&name=` | **raw request body** = file bytes. Images only (PNG/JPEG/GIF/WebP, magic-byte sniffed, ≤ 8 MiB); anything else → 422. Blobs are content-addressed in `<home>/media/att/`. |
 | GET | `/api/attachments/:project/:id` | the bytes, `Content-Type` from the row, `nosniff`, `Content-Disposition: inline` |
 | DELETE | `/api/attachments/:project/:id` | → `{deleted:{id}}`; the blob file is kept |
-| GET | `/api/search?q=&project=` | `{hits:[{kind:'card'\|'deliverable',projectId,id,title,snippet}]}`; `#123` matches an id, **`project` is required** — search is per board (404 `MISSING_PROJECT` without it) |
-| GET | `/api/notifications?project=` | `{items:[{level,kind,projectId,id,title,detail}]}` — overdue / blocked / deps / wip / acceptance, worst level first |
+| GET | `/api/search?q=&project=&limit=` | `{hits:[{kind:'card'\|'deliverable',projectId,id,title,snippet}]}`; `#123` matches an id. `project` is **optional**: omitted means every board, and `limit` (default 50) is one budget over the merged, sorted set — boards are not cut to the limit before the merge. An explicit unknown `project` is still 404. |
+| GET | `/api/notifications?project=` | `{notifications:[{level,kind,projectId,cardId?,columnId?,title,detail}],sink?}` — overdue / blocked / deps / wip / acceptance / stale / loop, worst level first. With `KANBAN_NOTIFY_SINK=file:<path>` the same items are appended as JSON Lines and `sink:{path,written,skipped}` says what happened; without it the `sink` key is absent entirely. A setting that is neither `off` nor `file:<path>` is 422. |
+| GET | `/api/digest?project=&since=` | `{digest:{projectId,since,until,counts:{done,deliverables,commits},markdown}}` — one Markdown page for the window. `since` accepts `7d` / `36h` / `30m` or an ISO stamp; absent = `7d`; unparseable = 422. `done` counts `card.moved` events into a `done`-kind column inside the window, `deliverables` counts rows created inside it, `commits` counts cards carrying a commit hash whose `updatedAt` falls inside it. |
+| GET | `/api/locks?project=` | `{locks:[{resource,owner,at,expiresAt}]}` — expired rows are reclaimed on read, so this never lists a dead lock |
+| POST | `/api/locks` | `{project,resource,ttlSeconds?,owner?}` → 201 `{lock}`; held → 409 `CONFLICT` with `details.code = "LOCK_HELD"` (+ holder and expiry). `resource` is `[A-Za-z0-9._:-]` 1–64 chars, `ttlSeconds` 1..86400 (default 120), `owner` defaults to `ui`. |
+| DELETE | `/api/locks/:resource?project=` | → `{released:boolean}`. Idempotent on purpose: a holder that retries release must not hit a 404 wall. |
 | GET | `/api/graph?project=` | `{nodes,layer,edges}` — longest-path layering over the blocker chain |
 | GET | `/api/overview` | `{projects:[{projectId,name,loop,columns:[{id,name,kind,count,wipLimit}],counts:{total,open,done,ready,blocked,overdue,wipOver}}]}` for every board |
 | GET | `/api/loop?project=` | `{loop:{status:'idle'\|'running'\|'halted',haltReason,lastTickAt,ticks}}` |
@@ -82,6 +86,12 @@ bootstrap, meta/selftest, the full card slice with timeline and stale-version co
 `tests/integration/api-extras.test.mjs` — the management layer: columns, saved views, templates,
 attachments (round-trip + nosniff + content hashing), card ref, search, notifications, graph, overview,
 and the loop state machine. `node --test tests/integration/*.test.mjs`.
+`tests/integration/api-search-actor.test.mjs` — cross-board search (one limit for the whole answer)
+and the read-only `lastActor` projection. `tests/integration/api-digest.test.mjs` — the digest
+window, its empty sections and its 422. `tests/integration/api-locks-sink.test.mjs` — the lock
+endpoints and the notification sink (off by default, JSON Lines, 24h throttle).
+`tests/integration/persistence-locks.test.mjs` — migration 3 in place on a filled v2 database,
+plus one-holder-per-resource and expiry reclaim.
 
 ## Attachments and media
 
@@ -115,3 +125,22 @@ on top of a tick is a separate decision — the record is the interface.
 
 `tests/integration/loop-supervisor.test.mjs` pins the part that matters: a drained board halts
 without stopping its neighbour, and `stop()` really stops the timer.
+
+## Digest, sink, locks (tier A)
+
+`src/core/digest.ts` is a pure renderer: rows in, Markdown out, `now` passed in. It reads the
+board snapshot plus the `card.moved` events of the window, so a card that was finished and then
+reopened still shows up once (the newest move wins) and a card that never moved does not appear
+at all. `GET /api/digest` and `/kanban digest` share it, so the CLI and the HTTP answer cannot
+drift.
+
+`src/core/notify-sink.ts` is a side effect on a read: `GET /api/notifications` mirrors what it
+just computed. Off by default (no `sink` key, no file). A slot is `project|kind|cardId|columnId`,
+not the message text — renaming a card must not re-send the same overdue alert, and a genuinely
+new card must get through immediately. Dedupe state lives in the sink file itself, so there is no
+second source of truth and a restart does not forget.
+
+`src/persistence/locks.ts` treats a lock as a row with an expiry, not a lease with a heartbeat:
+whoever reads or takes a lock first deletes the expired ones. That keeps a crashed daemon from
+wedging a board and needs no sweeper thread. The table arrives as migration 3
+(`MIGRATIONS` in `src/persistence/migrations.ts`); a filled v2 database upgrades in place.

@@ -181,9 +181,25 @@ CREATE TABLE loop_state (
 CREATE UNIQUE INDEX idx_saved_view_name ON saved_view (project_id, name);
 `;
 
+// v3 adds the daemon lock (A6): one row per (project, resource), no history. Expiry is a
+// plain timestamp — a crashed holder is reclaimed by whoever reads next, not by a sweeper.
+const V3 = `
+CREATE TABLE card_lock (
+  project_id TEXT NOT NULL,
+  resource   TEXT NOT NULL,
+  owner      TEXT NOT NULL,
+  at         TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  PRIMARY KEY (project_id, resource),
+  FOREIGN KEY (project_id) REFERENCES project(project_id) ON DELETE CASCADE
+);
+CREATE INDEX idx_lock_expiry ON card_lock (project_id, expires_at);
+`;
+
 export const MIGRATIONS: Migration[] = [
   { version: 1, name: "v1-schema", up: (db) => { db.exec(V1); } },
   { version: 2, name: "v2-extras", up: (db) => { db.exec(V2); } },
+  { version: 3, name: "v3-locks", up: (db) => { db.exec(V3); } },
 ];
 
 export const SCHEMA_VERSION_KEY = "schema_version";

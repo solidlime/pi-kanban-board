@@ -11,7 +11,7 @@ test("init: detect/inspect/plan/execute in temp home", async () => {
   assert.ok(plan.backupDir.startsWith(home + ".v1.bak-"), "a dated backup dir is planned");
   const res = await executeInit(plan, { confirmed: true });
   assert.equal(res.home, home);
-  assert.equal(res.schemaVersion, 2);
+  assert.equal(res.schemaVersion, 3);
   const st1 = detectState(home);
   assert.equal(st1.status, "v2");
 });

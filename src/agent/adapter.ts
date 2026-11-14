@@ -13,7 +13,7 @@ import { closeDb, one } from "../persistence/db.js";
 import { detectState, kanbanHome, openHomeDatabase, readToken, type HomeState } from "../persistence/init.js";
 import { schemaVersion } from "../persistence/migrations.js";
 import {
-  createAttachment, createCard, createDeliverable, createProject, deleteCard, deleteDeliverable,
+  createAttachment, createCard, createDeliverable, createProject, deleteCard, deleteDeliverable, digestInput,
   getLoop, getProjectBySlug, listCards, listColumns, listDeliverables, listProjects, moveCard, peekNextId,
   saveLoop, updateCard, updateDeliverable, type UpdateCardPatch,
 } from "../persistence/repos.js";
@@ -23,6 +23,7 @@ import { sortCards } from "../core/card.js";
 import { assertBlockedReason, assertLabels, assertPriority, assertTitle, invalid, TITLE_MAX } from "../core/validation.js";
 import { MAX_ATTACHMENT_BYTES, safeAttachmentName } from "../core/attachment.js";
 import { startLoop } from "../core/loop.js";
+import { buildDigest, parseSince } from "../core/digest.js";
 import { storeBlob } from "../media.js";
 
 export type Scope = "project" | "global";
@@ -60,7 +61,7 @@ export interface DeliverableArgs {
 export interface Result {
   ok: boolean;
   text: string;
-  details: { scope: Scope; cards?: unknown[]; nextId?: number; url?: string; deliverables?: unknown[] };
+  details: { scope: Scope; cards?: unknown[]; nextId?: number; url?: string; deliverables?: unknown[]; digest?: { done: number; deliverables: number; commits: number } };
 }
 
 // ---------------------------------------------------------------- runtime (db + server)
@@ -629,6 +630,20 @@ export async function executeDeliverable(args: DeliverableArgs, env: Env): Promi
       return { ok: true, text: rows.length === 0 ? `[project ${projectId}] no deliverables` : rows.map((d) => deliverableLine(d)).join("\n"), details: listed() };
     }
   }
+}
+
+/** `/kanban digest [--since 7d]`: the same Markdown the HTTP route serves. */
+export async function executeDigest(args: { project?: string; since?: string }, env: Env): Promise<Result> {
+  const { db } = await dbOf();
+  const projectId = boardSlug(args, env);
+  const until = new Date().toISOString();
+  const since = parseSince(args.since, new Date(until));
+  const input = digestInput(db, projectId, { since, until });
+  if (!input) {
+    return fail("project", `no board ${projectId}: pass project=<slug> to name another one`);
+  }
+  const digest = buildDigest(input);
+  return { ok: true, text: digest.markdown, details: { scope: "project", cards: listCards(db, projectId), digest: digest.counts } };
 }
 
 // ---------------------------------------------------------------- self test

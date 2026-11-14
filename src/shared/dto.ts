@@ -19,6 +19,11 @@ export interface Card {
   sessionId?: string | null; commit?: string | null;
   /** Absolute path of the original file (v1 `ref` semantics: reference, never copied). */
   ref?: string | null;
+  /**
+   * Actor of the newest timeline event for this card. Read-only projection: the board
+   * snapshot carries it, no endpoint accepts it on a write.
+   */
+  lastActor?: string | null;
   createdAt: string; updatedAt: string; movedAt: string; closedAt?: string | null; version: number;
 }
 
