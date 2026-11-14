@@ -52,10 +52,10 @@ async function server(t) {
   return { run, base, home, call, upload, getBytes };
 }
 
-test("meta advertises the new capabilities and schema v2", async (t) => {
+test("meta advertises the new capabilities and schema v3", async (t) => {
   const { call } = await server(t);
   const meta = (await call("GET", "/api/meta")).data;
-  assert.equal(meta.schemaVersion, 2);
+  assert.equal(meta.schemaVersion, 3);
   for (const cap of ["columns.update", "views", "templates", "attachments", "search", "notifications", "graph", "overview", "loop"]) {
     assert.ok(meta.capabilities.includes(cap), `missing capability ${cap}`);
   }

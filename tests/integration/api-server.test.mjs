@@ -81,7 +81,7 @@ test("meta + selftest report build, schema and home state", async (t) => {
   const meta = (await call("GET", "/api/meta")).json.data;
   assert.equal(meta.version, "2.0.0-dev");
   assert.equal(meta.buildHash, run.buildHash);
-  assert.equal(meta.schemaVersion, 2);
+  assert.equal(meta.schemaVersion, 3);
   assert.ok(meta.capabilities.includes("card.move"));
 
   const st = (await call("GET", "/api/selftest")).json.data;
