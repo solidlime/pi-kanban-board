@@ -22,7 +22,7 @@
   },
   "pi": {
     "extensions": [
-      "./extensions/kanban.ts"
+      "./extensions/kanban-v2.ts"
     ]
   },
   "files": [
@@ -30,7 +30,10 @@
     "extensions/dashboard.generated.ts",
     "extensions/db.ts",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "extensions/kanban-v2.ts",
+    "src",
+    "web/dist"
   ],
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
