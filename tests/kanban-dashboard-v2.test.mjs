@@ -382,6 +382,11 @@ test("#114: 帯は空き領域からの矩形選択で一括削除できる", ()
 	assert.ok(marq.includes('window.addEventListener("blur", stop)'), "ウィンドウ外で離した時の取りこぼし対策が無い");
 	// stop() は pointerdown で張った 4 本（move / up / cancel / blur）を全部外す。1 本でも漏れると stop が冪等でない。
 	assert.equal(marq.split("window.removeEventListener").length - 1, 4, "stop が window のリスナーを 4 本とも外していない");
+	// 本数だけでは (pointerup, move) のような対の取り違えを見逃すので、対で固定する。
+	assert.ok(marq.includes('window.removeEventListener("pointermove", move)'), "pointermove の解除が move を指していない");
+	assert.ok(marq.includes('window.removeEventListener("pointerup", up)'), "pointerup の解除が up を指していない");
+	assert.ok(marq.includes('window.removeEventListener("pointercancel", cancel)'), "pointercancel の解除が cancel を指していない");
+	assert.ok(marq.includes('window.removeEventListener("blur", stop)'), "blur の解除が stop を指していない");
 	// 4px 未満で離した時（クリック）は onPick を呼ばない。矩形が無いのに hits を渡すと空選択で選択が消える。
 	const u0 = marq.indexOf("function up(ev) {");
 	assert.ok(u0 >= 0, "up が見つからない");
