@@ -318,3 +318,79 @@ test("#110: 成果物タイルの削除は編集の左（スマフォでは常�
 	assert.ok(css.includes("right:32px"), "削除が編集の左に置かれていない");
 	assert.ok(css.includes("@media (hover:none){ .del-edit,.del-del{opacity:1} }"), "ホバーの無い端末で押せない");
 });
+
+// #113: 検索は既存の横断検索 #q を成果物にも効かせる（専用ボックスは作らない）。
+// cardHit は blocked/labels/commit も見るが Deliv には無い項目なので、別関数にして持っている項目だけを見る。
+test("#113: 成果物は #q で絞り、帯だけ新旧ソートする（表示順だけ）", () => {
+	const app = read("web/dash/_app.js");
+	const head = read("web/dash/_head.html");
+	const css = read("web/dash/_b.css");
+
+	const m = app.match(/function delivHit\(d\) \{[\s\S]*?\n  \}/);
+	assert.ok(m, "delivHit が無い");
+	assert.ok(m[0].includes('"#" + d.id'), "成果物 id を検索対象にしていない");
+	assert.ok(m[0].includes("state.query"), "#q（state.query）と連動していない");
+	assert.ok(app.includes(".filter(delivHit)"), "renderDeliverables が delivHit で絞っていない");
+
+	// 並べ替えは純関数として値で確かめる（文字列一致より強い）。
+	const s = app.match(/function sortDeliv\(list, dir\) \{[\s\S]*?\n  \}/);
+	assert.ok(s, "sortDeliv が無い");
+	const sortDeliv = new Function(s[0] + "\nreturn sortDeliv;")();
+	const items = [{ id: 1, at: 100 }, { id: 2, at: 300 }, { id: 3 }, { id: 4, at: 300 }];
+	assert.deepEqual(sortDeliv(items, -1).map((d) => d.id), [2, 4, 1, 3], "新→旧が at 降順・同値 id 昇順でない");
+	assert.deepEqual(sortDeliv(items, 1).map((d) => d.id), [3, 1, 2, 4], "旧→新が at 昇順・at 欠落を 0 にしていない");
+	assert.deepEqual(items.map((d) => d.id), [1, 2, 3, 4], "呼び元の配列を並べ替えている");
+
+	// 署名に query と delSort が入っていないと、絞り込み/ソートが再描画されない。
+	assert.match(app, /var sig = [^\n]*state\.query[^\n]*state\.delSort/, "sig に query/delSort が入っていない");
+	assert.ok(app.includes('" / 全 " + all.length + " 枚"'), "絞り込み中の件数が「N / 全 M 枚」でない");
+
+	const i0 = head.indexOf('id="delcount"'), i1 = head.indexOf('id="delsort"'), i2 = head.indexOf('id="deladd"');
+	assert.ok(i0 >= 0 && i1 > i0 && i2 > i1, "#delsort が件数の後ろ・+ の前に無い");
+	assert.ok(app.includes('if (t.id === "delsort") {'), "#delsort のクリックが委譲ハンドラに無い");
+	const d0 = app.indexOf('if (t.id === "delsort") {');
+	const d1 = app.indexOf("return;", d0);
+	assert.ok(d0 >= 0 && d1 > d0, "#delsort のブロック境界が取れない（アサートが空振りする）");
+	assert.ok(app.slice(d0, d1).includes("e.preventDefault()"), "summary 内なので details が開閉してしまう");
+	assert.ok(app.includes('localStorage.setItem("del-sort", state.delSort)'), "向きを保存していない");
+	assert.ok(app.includes('localStorage.getItem("del-sort")'), "保存した向きを読んでいない");
+	assert.ok(app.includes('sbt.setAttribute("aria-pressed"'), "aria-pressed で現在値を出していない");
+	assert.match(css, /\.delhead \.sort\{[^}]*color:var\(--muted\)/, "#delsort の見た目が無い");
+});
+
+test("#114: 帯は空き領域からの矩形選択で一括削除できる", () => {
+	const app = read("web/dash/_app.js");
+	const css = read("web/dash/_b.css");
+
+	assert.equal(app.split("function marquee").length - 1, 1, "marquee が 1 実装に統一されていない");
+	const q0 = app.indexOf("function marquee(box, itemSel, onPick)");
+	assert.ok(q0 >= 0, "marquee の署名が仕様と違う");
+	const marq = app.slice(q0, app.indexOf("\n  }", q0));
+	assert.ok(marq.includes('ev.pointerType === "touch"'), "タッチで矩形を作っている（スマフォのタイル操作が壊れる）");
+	assert.ok(marq.includes("ev.target.closest(itemSel)"), "タイル上から始まった押下を奪っている");
+	assert.ok(marq.includes('el("div", "mq")'), "矩形の要素が無い");
+	assert.ok(marq.includes("getBoundingClientRect()"), "交差判定が矩形ベースでない");
+	assert.ok(marq.includes("function marquee") === false, "marquee が自分を再定義している");
+	assert.ok(marq.includes("// shortcut: タッチは矩形を作らない"), "shortcut コメントが無い");
+
+	assert.ok(app.includes('marquee($("#deliverables"), ".del-tile"'), "帯に矩形選択が配線されていない");
+	assert.ok(app.includes("state.dsel"), "選択の器が無い");
+	assert.ok(!/state\.sel\[/.test(app), "キーボードカーソル state.sel を複数選択に流用している");
+	assert.ok(app.includes("function applyDSel()"), "選択の描き直しが無い");
+	assert.ok(app.includes('.classList.toggle("msel"'), "選択の見た目が付かない");
+	assert.ok(app.includes("state.dsel = {};"), "選択を捨てる場所（板切替 / 検索変更）が無い");
+
+	const b0 = app.indexOf("function renderDelBar()");
+	assert.ok(b0 >= 0, "操作バーが無い");
+	const b1 = app.indexOf("function applyDSel()", b0);
+	assert.ok(b1 > b0, "操作バーのブロック境界が取れない（アサートが空振りする）");
+	const bar = app.slice(b0, b1);
+	assert.ok(bar.includes("Promise.all(ids.map("), "一括削除が N 発の Promise.all でない");
+	assert.ok(bar.includes('window.confirm("成果物 " + ids.length + " 件を削除する？")'), "confirm に件数が無い");
+	assert.ok(bar.includes('"/api/deliv/remove"'), "削除 API が違う");
+	assert.ok(bar.includes("delP("), "宛先（sid || cur）の解決が 1 箇所にまとまっていない");
+
+	assert.ok(css.includes(".del-tile.msel{outline:2px solid var(--accent)"), ".msel の見た目が無い");
+	assert.ok(css.includes(".mq{"), "矩形の CSS が無い");
+	assert.ok(css.includes("position:fixed"), "矩形が fixed でない（スクロール中にズレる）");
+});

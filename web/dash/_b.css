@@ -27,7 +27,13 @@
   font:16px/1 var(--font-mono); cursor:pointer;
 }
 .colhead .add:hover,.delhead .add:hover{color:var(--accent)}
-.delhead .add{align-self:center}
+.delhead .add{align-self:center; margin-left:0}
+/* #113: 帯の新旧ソート。summary の中で #deladd と並ぶ小さなボタン。間隔は件数側の margin-left:auto が持つ。 */
+.delhead .sort{
+  align-self:center; margin-left:0; padding:0 2px; border:0; background:none;
+  color:var(--muted); font:11px/1 var(--font-mono); cursor:pointer;
+}
+.delhead .sort:hover{color:var(--accent)}
 /* #52: 他セッションの TODO 集計バッジ。hiddenTodoCount>0 のときだけ DOM に出る。 */
 .othertodos{margin-bottom:8px}
 .othertodos button{

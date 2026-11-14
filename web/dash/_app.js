@@ -9,6 +9,8 @@
   var state = {
     payload: null, projects: null, board: null,
     cur: "", allview: false, query: "", sel: -1,
+    // #113: 帯（成果物）の表示順だけ。カード列の並びは変えない。既定は新→旧。
+    delSort: "new",
     cards: {}, open: {}, doneOpen: false, projDoneOpen: false, offline: false, addCol: null,
     modal: null, uploading: false,
     // #82: 成果物のモーダル番号。card の #3 と deliv の #3 は別物なので id 空間を共有しない。
@@ -136,6 +138,19 @@
     var hay = [c.text, "#" + c.id, c.project, c.sid, c.sessionId, c.commit, c.blocked, (c.labels || []).join(" ")]
       .filter(Boolean).join(" ").toLowerCase();
     return hay.indexOf(q) >= 0;
+  }
+  // #113: 成果物の検索。cardHit は blocked/labels/commit も見るが Deliv には無い項目なので、
+  // 持っている項目（本文 / id / 添付のファイル名 / sid）だけを見る。
+  function delivHit(d) {
+    var q = state.query.trim().toLowerCase();
+    if (!q) return true;
+    var hay = [d.text, "#" + d.id, imgsOf(d).map(function (n) { return n.split("/").pop(); }).join(" "), d.sid]
+      .filter(Boolean).join(" ").toLowerCase();
+    return hay.indexOf(q) >= 0;
+  }
+  // #113: 帯の並びは表示順だけ（サーバの ord も /api/deliv/* も触らない）。at 欠落は 0、同値は id。
+  function sortDeliv(list, dir) {
+    return list.slice().sort(function (x, y) { return dir * ((x.at || 0) - (y.at || 0)) || (x.id - y.id); });
   }
   function prioOf(c) { return typeof c.priority === "number" && isFinite(c.priority) ? c.priority : 0; }
   function dueOf(c) { return typeof c.due === "string" && /^\d{4}-\d{2}-\d{2}$/.test(c.due) ? c.due : ""; }
@@ -728,9 +743,18 @@
   function renderDeliverables() {
     var box = $("#deliverables"), grid = $("#delgrid");
     // #79: 3 列化したので成果物の置き場はこの帯だけ。添付の有無に関わらず全部出す。
-    var cards = delItems();
+    // #113: 絞り込み → 並べ替え。全件は件数表示（N / 全 M 枚）のために残す。
+    var all = delItems();
+    var cards = sortDeliv(all.filter(delivHit), state.delSort === "old" ? 1 : -1);
+    // #113: ソートの向きは帯だけの状態。summary の中なので毎 render 反映する（sig の早期 return より前）。
+    var sbt = $("#delsort");
+    if (sbt) {
+      sbt.textContent = state.delSort === "old" ? "旧→新" : "新→旧";
+      sbt.setAttribute("aria-pressed", state.delSort === "old" ? "true" : "false");
+    }
     // 打ちかけ（state.addCol）も署名に含める。含めないと + を押しても入力欄が出ない。
-    var sig = String(state.addCol) + "\n" + cards.map(function (c) { return c.id + "|" + c.img + "|" + (c.sid || "") + "|" + c.text; }).join("\n");
+    // #113: query / delSort を入れないと絞り込み・ソートが再描画されない。
+    var sig = String(state.addCol) + "|" + state.query + "|" + state.delSort + "\n" + cards.map(function (c) { return c.id + "|" + c.img + "|" + (c.sid || "") + "|" + c.text; }).join("\n");
     if (box.dataset.sig === sig) return;
     box.dataset.sig = sig;
     clear(grid);
@@ -740,9 +764,11 @@
       if (imgsOf(c).some(function (n) { return refOf(n); })) refs += 1;
       grid.appendChild(delTile(c));
     });
-    $("#delcount").textContent = cards.length
-      ? "成果物 " + cards.length + " 枚 / 参照型 " + refs + " 枚"
-      : "成果物 0 枚 — ＋ で追加";
+    $("#delcount").textContent = state.query.trim()
+      ? "成果物 " + cards.length + " / 全 " + all.length + " 枚"
+      : cards.length
+        ? "成果物 " + cards.length + " 枚 / 参照型 " + refs + " 枚"
+        : "成果物 0 枚 — ＋ で追加";
   }
 
   // ---- render: rail ----
@@ -1491,6 +1517,14 @@
     if (t.id === "cm") { closeModal(); return; }
     // #79: 帯の + 。summary の中なので既定の開閉を止めてから入力欄を出す。
     if (t.id === "deladd") { e.preventDefault(); addCard("deliverable"); return; }
+    // #113: 帯の新旧ソート。同じく summary の中なので、開閉を止めてから向きを反転する。
+    if (t.id === "delsort") {
+      e.preventDefault();
+      state.delSort = state.delSort === "old" ? "new" : "old";
+      try { localStorage.setItem("del-sort", state.delSort); } catch (err) { void err; }
+      render();
+      return;
+    }
     // #84: 溢れタブの「+N」/「−」。.ptab の pick より先に拾う。
     var more = t.closest && t.closest(".ptab-more");
     if (more) { state.ptabsOpen = !state.ptabsOpen; renderPtabs(); return; }
@@ -1695,6 +1729,8 @@
     var th = localStorage.getItem("kb-theme");
     if (th === "light") { document.documentElement.setAttribute("data-theme", "light"); $("#themeBtn").textContent = "テーマ: 明"; }
     if (localStorage.getItem("kb-density") === "compact") { document.documentElement.setAttribute("data-density", "compact"); $("#densityBtn").textContent = "密度: コンパクト"; }
+    // #113: 帯の表示順。壊れた値（"new" 以外）は既定の新→旧へ丸める。
+    if (localStorage.getItem("del-sort") === "old") state.delSort = "old";
   } catch (err) { void err; }
 
   // #58: 第4帯の開閉は覚える（既定は開）。toggle は summary クリックで飛ぶ。
