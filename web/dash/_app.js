@@ -13,6 +13,8 @@
     delSort: "new",
     // #114: 帯の複数選択（成果物 id → true）。キーボードカーソルの state.sel とは別物。
     dsel: {},
+    // #115: カードの複数選択（カード id → true）。こちらも .sel とは混ぜない。
+    csel: {},
     cards: {}, open: {}, doneOpen: false, projDoneOpen: false, offline: false, addCol: null,
     modal: null, uploading: false,
     // #82: 成果物のモーダル番号。card の #3 と deliv の #3 は別物なので id 空間を共有しない。
@@ -905,6 +907,7 @@
     renderRail(); renderFoot();
     applySel();
     applyDSel();
+    applyCSel();
   }
 
   function visibleCards() { return Array.prototype.slice.call(document.querySelectorAll("#board .card, #groups .card")); }
@@ -921,6 +924,56 @@
     });
     renderDelBar();
   }
+  // #115: カードの選択の見た目。列は renderBoard が作り直すので、毎 render id で付け直す。
+  // .sel（キーボードカーソル）には触らない（applySel の 1 か所だけが .sel を持つ）。
+  function applyCSel() {
+    Array.prototype.forEach.call($("#board").querySelectorAll(".card[data-id]"), function (n) {
+      n.classList.toggle("msel", !!state.csel[Number(n.dataset.id)]);
+    });
+    renderCardBar();
+  }
+  // #115: 選択が 1 件以上のときだけ #board の直前に 1 行バー。件数は DOM の .msel から数える
+  // （refresh で消えた id を数えない）。横断ビューでは出ない: 矩形は #board からしか作れず（#board は
+  // display:none）、pick() と #q が csel を捨てるので選択が残らない。宛先（state.cur）も定まらない（#46 / needProj() と同じ理由）。
+  // 移動は /api/move を直接叩く（moveCard は 1 発ごとに needProj + refresh するので N 発で往復が増える）。
+  function renderCardBar() {
+    var board = $("#board");
+    var ids = Array.prototype.map.call(board.querySelectorAll(".card.msel"), function (n) { return Number(n.dataset.id); });
+    var bar = $("#cardbar");
+    if (!ids.length) { if (bar && bar.parentNode) bar.parentNode.removeChild(bar); return; }
+    if (!bar) {
+      bar = el("div", "selbar");
+      bar.id = "cardbar";
+      board.parentNode.insertBefore(bar, board); // #board の直前（.layout の grid を 1 行使う）
+    }
+    clear(bar);
+    bar.appendChild(el("span", "n", ids.length + " 件選択"));
+    ["todo", "doing", "done"].forEach(function (col) {
+      bar.appendChild(btn("\u2192 " + colName(col), "選んだカードを " + colName(col) + " へまとめて移動", function () {
+        // 既にその列にいるカードは飛ばす（無駄な rev を上げない）。空配列を Promise.all に渡さない。
+        var move = ids.filter(function (id) { var c = cardById(id); return c && c.col !== col; });
+        if (!move.length) { toast("移動するカードが無い（全件 " + colName(col) + "）"); return; }
+        return Promise.all(move.map(function (id) {
+          return act("/api/move", { id: id, col: col });
+        })).then(function () {
+          state.csel = {};
+          refresh();
+          toast(move.length + " 件を " + colName(col) + " へ" + (move.length < ids.length ? "（" + (ids.length - move.length) + " 件は元から " + colName(col) + "）" : ""));
+        }, fail);
+      }));
+    });
+    bar.appendChild(btn("削除", "選んだカードをまとめて削除", function () {
+      // shortcut: 取り消せない（undo は付けない）, 要るなら /api/remove を論理削除にする
+      if (!window.confirm("カード " + ids.length + " 件を削除する？")) return;
+      return Promise.all(ids.map(function (id) { return act("/api/remove", { id: id }); })).then(function () {
+        state.csel = {};
+        refresh();
+        toast(ids.length + " 件のカードを削除");
+      }, fail);
+    }));
+    bar.appendChild(btn("解除", "選択を解除", function () { state.csel = {}; applyCSel(); }));
+  }
+
   // #114: 選択が 1 件以上のときだけ summary の直下に 1 行バー。
   // 件数は DOM の .msel から数える（refresh で消えた id を数えない）。
   function renderDelBar() {
@@ -929,7 +982,7 @@
     var bar = $("#delbar");
     if (!ids.length) { if (bar && bar.parentNode) bar.parentNode.removeChild(bar); return; }
     if (!bar) {
-      bar = el("div");
+      bar = el("div", "selbar");
       bar.id = "delbar";
       grid.parentNode.insertBefore(bar, grid); // summary の直下・grid の直前
     }
@@ -985,6 +1038,7 @@
     state.allview = slug === "__all__";
     state.sel = -1;
     state.dsel = {}; // #114: 選択は板ごと。別の板の成果物 id を持ち越さない
+    state.csel = {}; // #115: カードも同じ（別の板のカード id を持ち越さない）
     state.addCol = null; // #75: 打ちかけの追加行は板ごとの状態。切替で持ち越さない
     state.ptabsOpen = false; // #84: 開いたタブ列は切替で閉じる（伸びたヘッダを持ち越さない）
     state.board = null;
@@ -1717,7 +1771,7 @@
   }, true);
 
   // #114: 検索語が変わったら選択は捨てる（今見えていないタイルを消さない）。
-  $("#q").addEventListener("input", function () { state.query = this.value; state.sel = -1; state.dsel = {}; render(); });
+  $("#q").addEventListener("input", function () { state.query = this.value; state.sel = -1; state.dsel = {}; state.csel = {}; render(); });
   $("#palBtn").onclick = openPal;
   $("#palq").addEventListener("input", function () { palSel = 0; renderPal(); });
   $("#palq").addEventListener("keydown", function (e) {
@@ -1845,6 +1899,15 @@
     state.dsel = {};
     ids.forEach(function (id) { state.dsel[id] = true; });
     applyDSel();
+  });
+
+  // #115: #board の矩形選択 → 一括移動 / 一括削除。配線先は #board そのもの（_head.html の静的ノード。
+  // renderBoard は子の列を差し替えるだけ）。#114 が #deliverables（外側の details）に張っているのと同じ理由。
+  // カードは draggable だが、カード上から始まった押下は marquee が itemSel で弾くので単体の DnD のまま。
+  marquee($("#board"), ".card[data-id]", function (ids) {
+    state.csel = {};
+    ids.forEach(function (id) { state.csel[id] = true; });
+    render();
   });
 
   // #85: ポーリングは setTimeout 1 本。隠れているタブでは張らず、復帰で 1 回だけ取り直す。

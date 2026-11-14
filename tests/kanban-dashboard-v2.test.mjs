@@ -393,3 +393,61 @@ test("#114: 帯は空き領域からの矩形選択で一括削除できる", ()
 	assert.ok(css.includes(".mq{"), "矩形の CSS が無い");
 	assert.ok(css.includes("position:fixed"), "矩形が fixed でない（スクロール中にズレる）");
 });
+
+// #115: カード（TODO/DOING/DONE）も空き領域からの矩形選択でまとめて移動・削除できる。
+// 選択の器は state.csel。キーボードカーソルの state.sel / .card.sel とは混ぜない。
+test("#115: カードは矩形選択で一括移動・一括削除できる", () => {
+	const app = read("web/dash/_app.js");
+	const css = read("web/dash/_b.css");
+
+	// marquee は #114 の 1 実装をそのまま使う（2 実装に割らない）。
+	assert.equal(app.split("function marquee").length - 1, 1, "marquee が 1 実装に統一されていない");
+	assert.ok(app.includes('marquee($("#board"), ".card[data-id]"'), "#board に矩形選択が配線されていない");
+	assert.ok(app.includes('marquee($("#deliverables"), ".del-tile"'), "帯側の配線が #115 で壊れた");
+
+	// .sel（キーボードカーソル）のトグルは applySel の 1 か所だけ。state.csel は .sel を触らない。
+	assert.equal(app.split('.classList.toggle("sel", i === state.sel)').length - 1, 1, ".card.sel のトグルが 1 か所でない");
+	const c0 = app.indexOf("function applyCSel()");
+	assert.ok(c0 >= 0, "applyCSel が無い");
+	const c1 = app.indexOf("\n  }", c0);
+	assert.ok(c1 > c0, "applyCSel のブロック境界が取れない（アサートが空振りする）");
+	const csel = app.slice(c0, c1);
+	assert.ok(csel.includes('.classList.toggle("msel"'), "選択の見た目が付かない");
+	assert.ok(!/"sel"/.test(csel), "applyCSel が .sel（キーボードカーソル）を触っている");
+	assert.ok(app.includes("applyCSel();"), "render から呼ばれていない");
+	const r0 = app.indexOf("function render() {");
+	assert.ok(r0 >= 0, "render が見つからない");
+	const r1 = app.indexOf("\n  }", r0);
+	assert.ok(r1 > r0, "render のブロック境界が取れない");
+	assert.ok(app.slice(r0, r1).includes("applyCSel();"), "render の末尾で選択の見た目を付け直していない");
+
+	// 操作バー: N 件選択 / → TODO / → DOING / → DONE / 削除 / 解除。
+	const b0 = app.indexOf("function renderCardBar()");
+	assert.ok(b0 >= 0, "カードの操作バーが無い");
+	const b1 = app.indexOf("// #114: 選択が 1 件以上のときだけ", b0);
+	assert.ok(b1 > b0, "操作バーのブロック境界が取れない（アサートが空振りする）");
+	const bar = app.slice(b0, b1);
+	assert.ok(bar.includes("件選択"), "件数が出ていない");
+	assert.ok(bar.includes('["todo", "doing", "done"].forEach'), "列ごとの移動ボタンが無い");
+	assert.equal(bar.split("Promise.all(").length - 1, 2, "一括移動と一括削除が Promise.all でない");
+	assert.ok(bar.includes('act("/api/move"'), "移動 API が違う");
+	assert.ok(bar.includes('act("/api/remove"'), "削除 API が違う");
+	assert.ok(bar.includes('window.confirm("カード " + ids.length + " 件を削除する？")'), "confirm に件数が無い");
+	assert.ok(bar.includes("c.col !== col"), "既にその列にいるカードを飛ばしていない");
+	assert.ok(bar.includes("if (!move.length)"), "空配列を Promise.all に渡す経路が残っている");
+	assert.ok(bar.includes("// shortcut: 取り消せない"), "取り消せない旨の shortcut コメントが無い");
+
+	// 選択の後始末（板切替 / 検索変更）と、選択の器。
+	assert.ok(app.includes("csel: {}"), "選択の器が無い");
+	assert.ok(app.includes("state.csel = {}; // #115"), "板切替で選択を捨てていない");
+	const q0 = app.indexOf('$("#q").addEventListener("input"');
+	assert.ok(q0 >= 0, "#q のハンドラが見つからない");
+	const q1 = app.indexOf("\n", q0);
+	assert.ok(q1 > q0, "#q の行境界が取れない");
+	assert.ok(app.slice(q0, q1).includes("state.csel = {}"), "検索語が変わったら選択を捨てていない");
+
+	assert.ok(css.includes(".card.msel{outline:2px solid var(--accent)"), ".card.msel の見た目が無い");
+	assert.ok(css.includes(".selbar{"), "操作バーの共通クラスが無い（#delbar と 2 つに割れている）");
+	assert.ok(app.includes('el("div", "selbar")'), "バーが .selbar を使っていない");
+	assert.ok(css.includes("#cardbar{grid-column:1/-1}"), "#cardbar が .layout の行を跨いでいない");
+});
