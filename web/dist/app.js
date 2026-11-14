@@ -1,0 +1,2495 @@
+// web/src/api.ts
+var ApiError = class extends Error {
+  code;
+  status;
+  constructor(code, message, status) {
+    super(message);
+    this.name = "ApiError";
+    this.code = code;
+    this.status = status;
+  }
+};
+var netError = (e) => new ApiError("NETWORK", `\u30B5\u30FC\u30D0\u306B\u63A5\u7D9A\u3067\u304D\u307E\u305B\u3093 (${e instanceof Error ? e.message : String(e)})`, 0);
+async function req(method, path, body) {
+  let res;
+  try {
+    res = await fetch(path, {
+      method,
+      credentials: "same-origin",
+      // token lives in an HttpOnly cookie: never drop it
+      headers: body === void 0 ? {} : { "content-type": "application/json" },
+      body: body === void 0 ? void 0 : JSON.stringify(body)
+    });
+  } catch (e) {
+    throw netError(e);
+  }
+  return parse(res);
+}
+async function postBlob(path, body) {
+  let res;
+  try {
+    res = await fetch(path, { method: "POST", credentials: "same-origin", body });
+  } catch (e) {
+    throw netError(e);
+  }
+  return parse(res);
+}
+async function parse(res) {
+  const text = await res.text();
+  let env = null;
+  try {
+    env = text ? JSON.parse(text) : null;
+  } catch {
+    env = null;
+  }
+  if (env && env.ok === false) {
+    throw new ApiError(env.error?.code ?? "INTERNAL", env.error?.message ?? `HTTP ${res.status}`, res.status);
+  }
+  if (!res.ok) {
+    throw new ApiError(res.status === 401 ? "UNAUTHORIZED" : "HTTP", env?.error?.message ?? `HTTP ${res.status} ${res.statusText}`, res.status);
+  }
+  if (env === null) {
+    throw new ApiError("BAD_RESPONSE", `JSON \u3067\u306F\u306A\u3044\u5FDC\u7B54 (${res.status})`, res.status);
+  }
+  return env.ok === true ? env.data : env;
+}
+var p = encodeURIComponent;
+var getMeta = () => req("GET", "/api/meta");
+var getProjects = () => req("GET", "/api/projects");
+var getBoard = (project) => req("GET", `/api/board?project=${p(project)}`);
+var createProject = (body) => req("POST", "/api/projects", body);
+var createCard = (body) => req("POST", "/api/cards", body);
+var cardPath = (project, id) => `/api/cards/${p(project)}/${p(String(id))}`;
+var moveCard = (project, id, body) => req("POST", `${cardPath(project, id)}/move`, body);
+var patchCard = (project, id, body) => req("PATCH", cardPath(project, id), body);
+var deleteCard = (project, id, body) => req("DELETE", cardPath(project, id), body);
+var getTimeline = (project, limit = 200) => req("GET", `/api/timeline?project=${p(project)}&limit=${p(String(limit))}`);
+var getDeliverables = (project) => req("GET", `/api/deliverables?project=${p(project)}`);
+var createDeliverable = (body) => req("POST", "/api/deliverables", body);
+var deleteDeliverable = (project, id) => req("DELETE", `/api/deliverables/${p(project)}/${p(String(id))}`);
+var addDependency = (body) => req("POST", "/api/dependencies", body);
+var removeDependency = (project, fromCard, toCard, type = "blocks") => req(
+  "DELETE",
+  `/api/dependencies?project=${p(project)}&from=${p(String(fromCard))}&to=${p(String(toCard))}&type=${p(type)}`
+);
+var patchColumn = (project, columnId, body) => req("PATCH", `/api/columns/${p(project)}/${p(columnId)}`, body);
+var viewPath = (project, id) => `/api/views/${p(project)}/${p(String(id))}`;
+var getViews = (project) => req("GET", `/api/views?project=${p(project)}`);
+var createView = (body) => req("POST", "/api/views", body);
+var deleteView = (project, id) => req("DELETE", viewPath(project, id));
+var templatePath = (project, id) => `/api/templates/${p(project)}/${p(String(id))}`;
+var getTemplates = (project) => req("GET", `/api/templates?project=${p(project)}`);
+var createTemplate = (body) => req("POST", "/api/templates", body);
+var useTemplate = (project, id, body = {}) => req("POST", templatePath(project, id), body);
+var deleteTemplate = (project, id) => req("DELETE", templatePath(project, id));
+var attachQuery = (project, target) => {
+  const base = `/api/attachments?project=${p(project)}`;
+  if (!target) return base;
+  return "cardId" in target ? `${base}&cardId=${p(String(target.cardId))}` : `${base}&deliverableId=${p(String(target.deliverableId))}`;
+};
+var getAttachments = (project, target) => req("GET", attachQuery(project, target));
+var attachmentSrc = (project, id) => `/api/attachments/${p(project)}/${p(String(id))}`;
+var uploadAttachment = (project, target, name, file) => postBlob(`${attachQuery(project, target)}&name=${p(name)}`, file);
+var deleteAttachment = (project, id) => req("DELETE", `/api/attachments/${p(project)}/${p(String(id))}`);
+var searchBoard = (project, q, limit = 20) => req("GET", `/api/search?project=${p(project)}&q=${p(q)}&limit=${p(String(limit))}`);
+var getNotifications = (project) => req(
+  "GET",
+  project ? `/api/notifications?project=${p(project)}` : "/api/notifications"
+);
+var getGraph = (project) => req("GET", `/api/graph?project=${p(project)}`);
+var getOverview = () => req("GET", "/api/overview");
+var getLoop = (project) => req("GET", `/api/loop?project=${p(project)}`);
+var startLoop = (project) => req("POST", "/api/loop/start", { project });
+var stopLoop = (project, reason) => req("POST", "/api/loop/stop", reason === void 0 ? { project } : { project, reason });
+var tickLoop = (project) => req("POST", "/api/loop/tick", { project });
+
+// web/src/store.ts
+function cardKey(projectId, id) {
+  return `${projectId}#${id}`;
+}
+function keyOf(card) {
+  return cardKey(card.projectId, card.id);
+}
+function parseKey(key) {
+  const i = key.lastIndexOf("#");
+  return { projectId: key.slice(0, i), id: Number(key.slice(i + 1)) };
+}
+function createStore() {
+  return {
+    projectId: null,
+    projectName: null,
+    projects: [],
+    columns: {},
+    columnOrder: [],
+    cards: {},
+    dependencies: [],
+    deliverables: [],
+    timeline: [],
+    focus: false,
+    panel: false,
+    pane: "none",
+    overview: false,
+    overviewRows: [],
+    graph: false,
+    graphLayout: null,
+    q: "",
+    hits: null,
+    qFocus: false,
+    notifications: [],
+    attachments: [],
+    loop: null,
+    templates: [],
+    views: [],
+    generation: null,
+    buildHash: null,
+    version: null,
+    loaded: false,
+    loading: false,
+    error: null,
+    pending: /* @__PURE__ */ new Set()
+  };
+}
+function setMeta(s, meta) {
+  s.buildHash = meta.buildHash ?? s.buildHash;
+  s.version = meta.version ?? s.version;
+}
+function setProjects(s, projects) {
+  s.projects = projects;
+}
+function resetBoard(s, projectId) {
+  s.projectId = projectId;
+  s.projectName = projectId ? s.projects.find((x) => x.slug === projectId)?.name ?? null : null;
+  s.columns = {};
+  s.columnOrder = [];
+  s.cards = {};
+  s.dependencies = [];
+  s.deliverables = [];
+  s.timeline = [];
+  s.hits = null;
+  s.notifications = [];
+  s.attachments = [];
+  s.loop = null;
+  s.templates = [];
+  s.views = [];
+  s.graphLayout = null;
+  s.graph = false;
+  s.pane = "none";
+  s.qFocus = false;
+  s.generation = null;
+  s.loaded = false;
+  s.error = null;
+  s.pending = /* @__PURE__ */ new Set();
+}
+function applySnapshot(s, projectId, snap) {
+  if (!snap || !snap.project) return false;
+  const got = snap.project.slug ?? snap.project.projectId;
+  if (got !== projectId) return false;
+  s.projectId = projectId;
+  s.projectName = snap.project.name ?? null;
+  s.generation = snap.generation ?? null;
+  s.columns = {};
+  for (const c of snap.columns ?? []) s.columns[c.id] = c;
+  s.columnOrder = [...snap.columns ?? []].sort((a, b) => a.ord - b.ord || a.id.localeCompare(b.id)).map((c) => c.id);
+  s.cards = {};
+  for (const c of snap.cards ?? []) s.cards[keyOf(c)] = c;
+  s.dependencies = (snap.dependencies ?? []).filter((d) => s.cards[cardKey(d.projectId, d.fromCard)] && s.cards[cardKey(d.projectId, d.toCard)]);
+  s.loaded = true;
+  return true;
+}
+function upsertCard(s, card) {
+  if (!card || card.projectId !== s.projectId) return false;
+  s.cards[keyOf(card)] = card;
+  return true;
+}
+function removeCard(s, key) {
+  delete s.cards[key];
+}
+function applyLocalMove(s, key, columnId) {
+  const card = s.cards[key];
+  if (card) s.cards[key] = { ...card, columnId };
+}
+function cardsInColumn(s, columnId) {
+  const out = [];
+  for (const c of Object.values(s.cards)) {
+    if (c.columnId === columnId && c.projectId === s.projectId) out.push(c);
+  }
+  return out.sort((a, b) => b.priority - a.priority || a.id - b.id);
+}
+function isClosed(card) {
+  return card.closedAt !== null && card.closedAt !== void 0;
+}
+function isDoneColumn(s, columnId) {
+  return s.columns[columnId]?.kind === "done";
+}
+function openBlockers(s, cardId) {
+  const out = [];
+  for (const d of s.dependencies) {
+    if (d.type !== "blocks" || d.toCard !== cardId) continue;
+    const from = s.cards[cardKey(d.projectId, d.fromCard)];
+    if (from && isClosed(from)) continue;
+    if (from) out.push(from);
+  }
+  return out.sort((a, b) => a.id - b.id);
+}
+function blocksCards(s, cardId) {
+  const out = [];
+  for (const d of s.dependencies) {
+    if (d.type !== "blocks" || d.fromCard !== cardId) continue;
+    const to = s.cards[cardKey(d.projectId, d.toCard)];
+    if (to) out.push(to);
+  }
+  return out.sort((a, b) => a.id - b.id);
+}
+function edgesOf(s, cardId) {
+  return s.dependencies.filter((d) => d.fromCard === cardId || d.toCard === cardId);
+}
+function isBlocked(s, card) {
+  if (card.blockedReason) return true;
+  return openBlockers(s, card.id).length > 0;
+}
+function acceptanceProgress(body) {
+  let fenced = false;
+  let total = 0;
+  let done = 0;
+  for (const line of String(body ?? "").split(/\r?\n/)) {
+    if (/^\s{0,3}(?:```|~~~)/.test(line)) {
+      fenced = !fenced;
+      continue;
+    }
+    if (fenced) continue;
+    const m = /^\s{0,3}[-*]\s+\[([ xX])\]\s+(\S.*?)\s*$/.exec(line);
+    if (!m) continue;
+    total += 1;
+    if (m[1].toLowerCase() === "x") done += 1;
+  }
+  return { total, done };
+}
+function cardMatches(card, q) {
+  const needle = q.trim().toLowerCase();
+  if (!needle) return true;
+  const hay = [card.title, card.body ?? "", card.owner ?? "", ...card.labels ?? []].join("\n").toLowerCase();
+  return hay.includes(needle);
+}
+
+// web/src/render.ts
+function el(tag, cls, text) {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text !== void 0) n.textContent = text;
+  return n;
+}
+function keyedDiff(container, items) {
+  const keep = new Set(items);
+  for (const node of Array.from(container.children)) if (!keep.has(node)) node.remove();
+  let ref = container.firstChild;
+  for (const item of items) {
+    if (item === ref) {
+      ref = ref.nextSibling;
+      continue;
+    }
+    container.insertBefore(item, ref);
+  }
+}
+var toastTimer;
+function showToast(view2, message) {
+  view2.toast.textContent = message;
+  view2.toast.hidden = false;
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => {
+    view2.toast.hidden = true;
+  }, 5e3);
+}
+function mount(root2, h) {
+  const top = el("div", "top");
+  const brand = el("div", "brand", "Kanban v2");
+  const pick = el("label", "pick");
+  const select = el("select");
+  select.setAttribute("aria-label", "project");
+  select.addEventListener("change", () => h.onProject(select.value));
+  pick.append(el("span", "lbl", "project"), select);
+  const newForm = el("form", "newproj");
+  const newName = el("input");
+  newName.placeholder = "new project name";
+  newName.setAttribute("aria-label", "new project name");
+  const newBtn = el("button", void 0, "\u4F5C\u6210");
+  newBtn.type = "submit";
+  newForm.append(newName, newBtn);
+  newForm.addEventListener("submit", (ev) => {
+    ev.preventDefault();
+    const name = newName.value.trim();
+    if (!name) return;
+    void h.onCreateProject(name).then((ok) => {
+      if (ok) newName.value = "";
+    });
+  });
+  const focusBtn = el("button", "toggle", "\u30D5\u30A9\u30FC\u30AB\u30B9");
+  focusBtn.type = "button";
+  focusBtn.title = "\u3044\u307E\u7740\u624B\u3067\u304D\u308B\u30AB\u30FC\u30C9\u3060\u3051\u3092\u8868\u793A";
+  focusBtn.addEventListener("click", () => h.onToggleFocus());
+  const panelBtn = el("button", "toggle", "\u6210\u679C\u7269/\u5C65\u6B74");
+  panelBtn.type = "button";
+  panelBtn.title = "\u6210\u679C\u7269\u3068\u6700\u8FD1\u306E\u51FA\u6765\u4E8B\u3092\u958B\u304F";
+  panelBtn.addEventListener("click", () => h.onTogglePanel());
+  const searchWrap = el("div", "search");
+  const q = el("input", "q");
+  q.type = "search";
+  q.placeholder = "\u691C\u7D22\u2026";
+  q.setAttribute("aria-label", "\u30AB\u30FC\u30C9\u30FB\u6210\u679C\u7269\u3092\u691C\u7D22");
+  q.addEventListener("input", () => h.onSearch(q.value));
+  q.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape") {
+      h.onCloseSearch();
+      q.blur();
+    }
+  });
+  const qres = el("div", "qres");
+  qres.hidden = true;
+  qres.setAttribute("role", "listbox");
+  searchWrap.append(q, qres);
+  const overviewBtn = el("button", "toggle", "\u5168\u4F53");
+  overviewBtn.type = "button";
+  overviewBtn.title = "\u5168\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8\u3092\u4E00\u753B\u9762\u3067\uFF08\u7DCF\u5408\u7BA1\u7406\uFF09";
+  overviewBtn.addEventListener("click", () => h.onToggleOverview());
+  const graphBtn = el("button", "toggle", "\u4F9D\u5B58\u30DE\u30C3\u30D7");
+  graphBtn.type = "button";
+  graphBtn.title = "\u4F9D\u5B58\u95A2\u4FC2\u3092\u30EC\u30A4\u30E4\u3067\u8868\u793A";
+  graphBtn.addEventListener("click", () => h.onToggleGraph());
+  const viewsBtn = el("button", "toggle", "\u30D3\u30E5\u30FC");
+  viewsBtn.type = "button";
+  viewsBtn.title = "\u4FDD\u5B58\u3057\u305F\u691C\u7D22\u30D3\u30E5\u30FC";
+  viewsBtn.addEventListener("click", () => h.onTogglePane("views"));
+  const templatesBtn = el("button", "toggle", "\u30C6\u30F3\u30D7\u30EC\u30FC\u30C8");
+  templatesBtn.type = "button";
+  templatesBtn.title = "\u30AB\u30FC\u30C9\u306E\u96DB\u5F62";
+  templatesBtn.addEventListener("click", () => h.onTogglePane("templates"));
+  const notifBtn = el("button", "toggle notif", "\u901A\u77E5");
+  notifBtn.type = "button";
+  notifBtn.title = "\u8B66\u544A\u30FB\u901A\u77E5\u3092\u958B\u304F";
+  const notifCounts = { danger: el("span", "nb danger"), warn: el("span", "nb warn"), info: el("span", "nb info") };
+  notifBtn.append(notifCounts.danger, notifCounts.warn, notifCounts.info);
+  notifBtn.addEventListener("click", () => h.onTogglePane("notifications"));
+  const status = el("div", "status");
+  top.append(brand, pick, newForm, searchWrap, focusBtn, panelBtn, overviewBtn, graphBtn, viewsBtn, templatesBtn, notifBtn, el("div", "grow"), status);
+  const errBar = el("div", "err");
+  errBar.hidden = true;
+  const loopBar = el("section", "loop");
+  loopBar.hidden = true;
+  const loopStatus = el("span", "loop-st");
+  const loopText = el("span", "loop-txt");
+  const loopNext = el("button", "link next");
+  loopNext.type = "button";
+  loopNext.hidden = true;
+  const loopStart = el("button", void 0, "\u958B\u59CB");
+  loopStart.type = "button";
+  const loopStop = el("button", void 0, "\u505C\u6B62");
+  loopStop.type = "button";
+  const loopTick = el("button", "primary", "\u6B21\u3092\u5F15\u304F");
+  loopTick.type = "button";
+  loopStart.addEventListener("click", () => h.onLoop("start"));
+  loopStop.addEventListener("click", () => h.onLoop("stop"));
+  loopTick.addEventListener("click", () => h.onLoop("tick"));
+  loopNext.addEventListener("click", () => {
+    const id = Number(loopNext.dataset.id ?? "");
+    if (Number.isFinite(id) && id > 0) h.onOpenCard(id);
+  });
+  loopBar.append(loopStatus, loopText, loopNext, el("div", "grow"), loopStart, loopStop, loopTick);
+  const empty = el("div", "empty");
+  empty.hidden = true;
+  empty.setAttribute("role", "status");
+  const board = el("div", "board");
+  const focus = el("section", "focus");
+  focus.hidden = true;
+  const focusHead = el("div", "focus-h");
+  const focusTitle = el("h2", void 0, "\u3044\u307E\u3084\u308B");
+  const focusCount = el("span", "focus-n");
+  focusHead.append(focusTitle, focusCount);
+  const focusList = el("div", "focus-list");
+  const focusEmpty = el("div", "focus-empty", "\u7740\u624B\u3067\u304D\u308B\u30AB\u30FC\u30C9\u306F\u306A\u3044\uFF08\u5168\u90E8\u30D6\u30ED\u30C3\u30AF\u4E2D\u304B\u5B8C\u4E86\uFF09");
+  focusEmpty.hidden = true;
+  focus.append(focusHead, focusList, focusEmpty);
+  const panel = el("aside", "panel");
+  panel.hidden = true;
+  const panelHead = el("div", "panel-h");
+  const panelTitle = el("h2", void 0, "\u6210\u679C\u7269 / \u5C65\u6B74");
+  const panelClose = el("button", "ic", "\xD7");
+  panelClose.type = "button";
+  panelClose.title = "\u9589\u3058\u308B";
+  panelClose.addEventListener("click", () => h.onTogglePanel());
+  panelHead.append(panelTitle, panelClose);
+  const panelBody = el("div", "panel-body");
+  panel.append(panelHead, panelBody);
+  document.addEventListener("pointerdown", (ev) => {
+    const target = ev.target;
+    if (qres.hidden || !target || searchWrap.contains(target)) return;
+    h.onCloseSearch();
+  });
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape" && !qres.hidden) h.onCloseSearch();
+  });
+  const toast = el("div", "toast");
+  toast.hidden = true;
+  const overview = el("section", "ov");
+  overview.hidden = true;
+  const graph = el("section", "graph");
+  graph.hidden = true;
+  const mkPane = (title, onClose) => {
+    const aside = el("aside", "panel pane");
+    aside.hidden = true;
+    const head = el("div", "panel-h");
+    const close = el("button", "ic", "\xD7");
+    close.type = "button";
+    close.title = "\u9589\u3058\u308B";
+    close.addEventListener("click", onClose);
+    head.append(el("h2", void 0, title), close);
+    const body = el("div", "panel-body");
+    aside.append(head, body);
+    return { aside, body };
+  };
+  const tplPane = mkPane("\u30C6\u30F3\u30D7\u30EC\u30FC\u30C8", () => h.onTogglePane("templates"));
+  const viewPane = mkPane("\u30D3\u30E5\u30FC", () => h.onTogglePane("views"));
+  const notifPane = mkPane("\u901A\u77E5", () => h.onTogglePane("notifications"));
+  root2.append(
+    top,
+    errBar,
+    loopBar,
+    empty,
+    board,
+    overview,
+    graph,
+    focus,
+    panel,
+    tplPane.aside,
+    viewPane.aside,
+    notifPane.aside,
+    toast
+  );
+  return {
+    root: root2,
+    h,
+    select,
+    newName,
+    status,
+    errBar,
+    empty,
+    board,
+    focus,
+    focusCount,
+    focusList,
+    focusEmpty,
+    panel,
+    panelBody,
+    focusBtn,
+    panelBtn,
+    toast,
+    q,
+    qres,
+    notifBtn,
+    notifCounts,
+    overviewBtn,
+    graphBtn,
+    viewsBtn,
+    templatesBtn,
+    loopBar,
+    loopStatus,
+    loopText,
+    loopNext,
+    loopStart,
+    loopStop,
+    loopTick,
+    overview,
+    overviewSig: "",
+    graph,
+    graphSig: "",
+    paneTemplates: tplPane.aside,
+    paneViews: viewPane.aside,
+    paneNotif: notifPane.aside,
+    paneSig: { templates: "", views: "", notif: "" },
+    cols: /* @__PURE__ */ new Map(),
+    cards: /* @__PURE__ */ new Map(),
+    focusRows: /* @__PURE__ */ new Map(),
+    projectSig: "",
+    focusSig: "",
+    panelSig: ""
+  };
+}
+function makeColumn(id, h) {
+  const section = el("section", "col");
+  section.dataset.col = id;
+  const head = el("div", "col-h");
+  const name = el("h2", "col-name");
+  const count = el("span", "col-count");
+  const editBtn = el("button", "ic", "\u2699");
+  editBtn.type = "button";
+  editBtn.title = "\u5217\u540D\u3068 WIP \u4E0A\u9650\u3092\u7DE8\u96C6";
+  head.append(name, count, editBtn);
+  const editEl = el("form", "col-edit");
+  editEl.hidden = true;
+  const editName = el("input", "ce-name");
+  editName.placeholder = "\u5217\u540D";
+  editName.setAttribute("aria-label", "column name");
+  const editWip = el("input", "ce-wip");
+  editWip.type = "number";
+  editWip.min = "0";
+  editWip.step = "1";
+  editWip.placeholder = "WIP\u4E0A\u9650\uFF08\u7A7A=\u7121\u5236\u9650\uFF09";
+  editWip.setAttribute("aria-label", "wip limit");
+  const editSave = el("button", "primary", "\u4FDD\u5B58");
+  editSave.type = "submit";
+  const editCancel = el("button", "ghost", "\xD7");
+  editCancel.type = "button";
+  const editNote = el("div", "ce-err");
+  editNote.hidden = true;
+  editEl.append(editName, editWip, editSave, editCancel, editNote);
+  editBtn.addEventListener("click", () => {
+    editEl.hidden = !editEl.hidden;
+    editNote.hidden = true;
+    if (editEl.hidden) return;
+    editName.value = name.textContent ?? "";
+    editWip.value = section.dataset.wip ?? "";
+    editName.focus();
+  });
+  editCancel.addEventListener("click", () => {
+    editEl.hidden = true;
+    editNote.hidden = true;
+  });
+  editEl.addEventListener("submit", (ev) => {
+    ev.preventDefault();
+    const patch = { wipLimit: null };
+    const nm = editName.value.trim();
+    if (nm) patch.name = nm;
+    const wip = editWip.value.trim();
+    if (wip !== "") {
+      const n = Number(wip);
+      if (!Number.isFinite(n) || n < 0) {
+        editNote.textContent = "WIP \u4E0A\u9650\u306F 0 \u4EE5\u4E0A\u306E\u6570\u5024\u3067\u5165\u529B\u3059\u308B\uFF08\u7A7A=\u7121\u5236\u9650\uFF09";
+        editNote.hidden = false;
+        return;
+      }
+      patch.wipLimit = Math.trunc(n);
+    }
+    void h.onEditColumn(id, patch).then((err) => {
+      if (err) {
+        editNote.textContent = err;
+        editNote.hidden = false;
+        return;
+      }
+      editNote.hidden = true;
+      editEl.hidden = true;
+    });
+  });
+  const list = el("div", "cards");
+  const add = el("form", "addrow");
+  const input = el("input");
+  input.placeholder = "\u30BF\u30B9\u30AF\u3092\u8FFD\u52A0";
+  input.setAttribute("aria-label", "add card");
+  const btn = el("button", void 0, "\u8FFD\u52A0");
+  btn.type = "submit";
+  add.append(input, btn);
+  add.addEventListener("submit", (ev) => {
+    ev.preventDefault();
+    const title = input.value.trim();
+    if (!title) return;
+    void h.onAddCard(id, title).then((ok) => {
+      if (ok) input.value = "";
+    });
+  });
+  section.append(head, editEl, list, add);
+  return { el: section, name, count, list, editEl, editName, editWip, editNote };
+}
+function fillMoves(moves, card, s, key, h) {
+  moves.textContent = "";
+  for (const id of s.columnOrder) {
+    const col = s.columns[id];
+    if (!col || id === card.columnId) continue;
+    const b = el("button", "mv", `\u2192 ${col.name}`);
+    b.type = "button";
+    b.dataset.col = id;
+    moves.append(b);
+  }
+  moves.hidden = moves.childElementCount === 0;
+  moves.onclick = (ev) => {
+    const b = ev.target.closest("button[data-col]");
+    if (b) h.onMove(key, b.dataset.col);
+  };
+}
+function makeCardNode(key, h) {
+  const node = el("div", "card");
+  node.dataset.key = key;
+  const head = el("div", "card-h");
+  const prio = el("span", "prio");
+  const cid = el("span", "cid");
+  const due = el("span", "due");
+  const open = el("button", "ic", "\u2922");
+  open.type = "button";
+  open.title = "\u8A73\u7D30\u30FB\u4F9D\u5B58\u30FB\u5C65\u6B74";
+  const edit = el("button", "ic", "\u270E");
+  edit.type = "button";
+  edit.title = "\u30BF\u30A4\u30C8\u30EB\u3092\u7DE8\u96C6";
+  const del = el("button", "ic", "\xD7");
+  del.type = "button";
+  del.title = "\u524A\u9664";
+  open.addEventListener("click", () => h.onOpen(node.dataset.key));
+  edit.addEventListener("click", () => h.onEdit(node.dataset.key));
+  del.addEventListener("click", () => h.onDelete(node.dataset.key));
+  head.append(prio, cid, due, open, edit, del);
+  const title = el("div", "title");
+  const meta = el("div", "meta");
+  const body = el("div", "body");
+  const deps = el("div", "deps");
+  const moves = el("div", "moves");
+  node.addEventListener("dblclick", (ev) => {
+    if (ev.target.closest("button, input, select, textarea")) return;
+    h.onOpen(node.dataset.key);
+  });
+  node.append(head, title, meta, body, deps, moves);
+  return node;
+}
+function emptyText(s) {
+  if (!s.projectId) {
+    return s.error ? "\u30B5\u30FC\u30D0\u304B\u3089\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8\u4E00\u89A7\u3092\u53D6\u5F97\u3067\u304D\u307E\u305B\u3093\u3002\u4E0A\u90E8\u306E\u30A8\u30E9\u30FC\u3092\u78BA\u8A8D\u3057\u3066\u304F\u3060\u3055\u3044\u3002" : "\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8\u304C\u3042\u308A\u307E\u305B\u3093\u3002\u53F3\u4E0A\u306E\u6B04\u3067\u4F5C\u6210\u3057\u3066\u304F\u3060\u3055\u3044\u3002";
+  }
+  if (s.error) return "\u30DC\u30FC\u30C9\u3092\u8868\u793A\u3067\u304D\u307E\u305B\u3093\u3002";
+  return "\u30DC\u30FC\u30C9\u3092\u8AAD\u307F\u8FBC\u307F\u4E2D\u2026";
+}
+function cardSig(card) {
+  return [
+    card.title,
+    card.body ?? "",
+    card.priority,
+    card.version,
+    card.columnId,
+    card.blockedReason ?? "",
+    card.owner ?? "",
+    card.due ?? "",
+    card.closedAt ?? ""
+  ].join("");
+}
+function depsSig(s, card) {
+  return [
+    ...openBlockers(s, card.id).map((c) => `b${c.id}`),
+    ...blocksCards(s, card.id).map((c) => `o${c.id}`)
+  ].join(",");
+}
+function updateCard(node, card, s, h) {
+  const blockers = openBlockers(s, card.id);
+  const blocked = isBlocked(s, card);
+  const progress = acceptanceProgress(card.body);
+  if (node.dataset.sig !== cardSig(card)) {
+    node.dataset.sig = cardSig(card);
+    const q = (c) => node.querySelector(c);
+    q(".title").textContent = card.title;
+    const body = q(".body");
+    body.textContent = card.body ?? "";
+    body.hidden = !card.body;
+    const prio = q(".prio");
+    prio.textContent = `p${card.priority}`;
+    prio.classList.toggle("hot", card.priority > 0);
+    const cid = q(".cid");
+    cid.textContent = `#${card.id}`;
+    const due = q(".due");
+    const today = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+    due.textContent = card.due ? card.due : "";
+    due.hidden = !card.due;
+    due.classList.toggle("overdue", Boolean(card.due && card.due < today && !isClosed(card)));
+    const meta = q(".meta");
+    meta.textContent = "";
+    if (card.owner) meta.append(el("span", "chip owner", `@${card.owner}`));
+    if (progress.total > 0) {
+      const chip = el("span", "chip acc", `\u2611 ${progress.done}/${progress.total}`);
+      chip.classList.toggle("acc-done", progress.done === progress.total);
+      meta.append(chip);
+    }
+    if (card.blockedReason) meta.append(el("span", "chip blocked-chip", `\u26D4 ${card.blockedReason}`));
+    meta.hidden = meta.childElementCount === 0;
+    node.classList.toggle("blocked", blocked);
+    node.classList.toggle("closed", isClosed(card) || isDoneColumn(s, card.columnId));
+    const hints = [
+      card.blockedReason ? `blocked: ${card.blockedReason}` : null,
+      blockers.length ? `blocked by: ${blockers.map((c) => `#${c.id} ${c.title}`).join(" / ")}` : null,
+      ...progress.total ? [`acceptance: ${progress.done}/${progress.total}`] : []
+    ].filter(Boolean);
+    if (hints.length) node.title = hints.join("\n");
+    else node.removeAttribute("title");
+  }
+  if (node.dataset.depsig !== depsSig(s, card)) {
+    node.dataset.depsig = depsSig(s, card);
+    const deps = node.querySelector(".deps");
+    deps.textContent = "";
+    for (const b of blockers) {
+      const chip = el("span", "chip dep", `\u26D4 #${b.id}`);
+      chip.title = b.title;
+      deps.append(chip);
+    }
+    for (const o of blocksCards(s, card.id)) {
+      const chip = el("span", "chip dep-out", `\u2192 #${o.id}`);
+      chip.title = o.title;
+      deps.append(chip);
+    }
+    deps.hidden = deps.childElementCount === 0;
+  }
+  const colsig = `${s.projectId}|${s.columnOrder.join(",")}|${card.columnId}`;
+  if (node.dataset.colsig !== colsig) {
+    node.dataset.colsig = colsig;
+    fillMoves(node.querySelector(".moves"), card, s, node.dataset.key, h);
+  }
+  node.classList.toggle("pending", s.pending.has(node.dataset.key));
+}
+function panelSig(s) {
+  return [
+    s.projectId,
+    ...s.deliverables.map((d) => `${d.id}:${d.title}:${d.kind}:${d.cardId ?? ""}`),
+    ...s.timeline.slice(-40).map((e) => `${e.seq}:${e.kind}:${e.entityId}`)
+  ].join("");
+}
+function eventLabel(kind) {
+  const map = {
+    "project.created": "\u4F5C\u6210",
+    "project.updated": "\u66F4\u65B0",
+    "card.created": "\u30AB\u30FC\u30C9\u8FFD\u52A0",
+    "card.updated": "\u30AB\u30FC\u30C9\u66F4\u65B0",
+    "card.moved": "\u79FB\u52D5",
+    "card.deleted": "\u524A\u9664",
+    "dependency.added": "\u4F9D\u5B58\u8FFD\u52A0",
+    "dependency.removed": "\u4F9D\u5B58\u89E3\u9664",
+    "deliverable.created": "\u6210\u679C\u7269\u8FFD\u52A0",
+    "deliverable.updated": "\u6210\u679C\u7269\u66F4\u65B0",
+    "deliverable.deleted": "\u6210\u679C\u7269\u524A\u9664"
+  };
+  return map[kind] ?? kind;
+}
+function renderPanel(view2, s) {
+  const sig = panelSig(s);
+  if (view2.panelSig === sig) return;
+  view2.panelSig = sig;
+  view2.panelBody.textContent = "";
+  const delSec = el("section", "p-sec");
+  delSec.append(el("h3", "p-h", `\u6210\u679C\u7269 (${s.deliverables.length})`));
+  const addForm = el("form", "p-add");
+  const addInput = el("input");
+  addInput.placeholder = "\u6210\u679C\u7269\u3092\u8FFD\u52A0";
+  addInput.setAttribute("aria-label", "add deliverable");
+  const addBtn = el("button", void 0, "\u8FFD\u52A0");
+  addBtn.type = "submit";
+  addForm.append(addInput, addBtn);
+  addForm.addEventListener("submit", (ev) => {
+    ev.preventDefault();
+    const title = addInput.value.trim();
+    if (!title) return;
+    void view2.h.onAddDeliverable(title).then((ok) => {
+      if (ok) addInput.value = "";
+    });
+  });
+  delSec.append(addForm);
+  const list = el("div", "p-list");
+  if (!s.deliverables.length) list.append(el("div", "p-empty", "\u6210\u679C\u7269\u306F\u307E\u3060\u306A\u3044"));
+  for (const d of s.deliverables) {
+    const row = el("div", "p-row");
+    const main = el("div", "p-main");
+    const t = el("div", "p-title", d.title);
+    t.title = d.title;
+    main.append(t);
+    const sub = el("div", "p-sub");
+    sub.append(el("span", "chip kind", d.kind));
+    if (d.ref) sub.append(el("span", "chip", d.ref));
+    if (d.cardId !== null && d.cardId !== void 0) {
+      const link = el("button", "link", `#${d.cardId}`);
+      link.type = "button";
+      link.addEventListener("click", () => {
+        const key = cardKey(s.projectId, d.cardId);
+        if (s.cards[key]) view2.h.onOpen(key);
+        else showToast(view2, `\u30AB\u30FC\u30C9 #${d.cardId} \u306F\u3082\u3046\u7121\u3044`);
+      });
+      sub.append(link);
+    }
+    main.append(sub);
+    const thumbs = thumbStrip(s.attachments.filter((a) => a.deliverableId === d.id), d.projectId);
+    if (thumbs) main.append(thumbs);
+    const rm = el("button", "ic", "\xD7");
+    rm.type = "button";
+    rm.title = "\u6210\u679C\u7269\u3092\u524A\u9664";
+    rm.addEventListener("click", () => view2.h.onDeleteDeliverable(d.projectId, d.id));
+    row.append(main, rm);
+    list.append(row);
+  }
+  delSec.append(list);
+  const tlSec = el("section", "p-sec");
+  tlSec.append(el("h3", "p-h", "\u6700\u8FD1\u306E\u51FA\u6765\u4E8B"));
+  const tl = el("div", "p-list tl");
+  if (!s.timeline.length) tl.append(el("div", "p-empty", "\u51FA\u6765\u4E8B\u306F\u307E\u3060\u306A\u3044"));
+  for (const e of s.timeline.slice(-40).reverse()) {
+    const row = el("div", "tl-row");
+    const at = el("span", "tl-at", e.at.slice(5, 16).replace("T", " "));
+    const what = el("span", "tl-kind", eventLabel(e.kind));
+    row.append(at, what);
+    const target = e.entityType === "card" || e.entityType === "deliverable" ? e.entityId : "";
+    if (target) {
+      row.append(el("span", "tl-id", target.slice(target.indexOf("#") + 1)));
+      if (e.entityType === "card") {
+        const key = e.entityId;
+        if (s.cards[key]) {
+          row.classList.add("clickable");
+          row.addEventListener("click", () => view2.h.onOpen(key));
+        }
+      }
+    }
+    tl.append(row);
+  }
+  tlSec.append(tl);
+  view2.panelBody.append(delSec, tlSec);
+}
+function thumbStrip(list, projectId) {
+  if (!list.length) return null;
+  const wrap = el("div", "thumbs");
+  for (const a of list) {
+    const img = el("img", "thumb");
+    img.src = attachmentSrc(projectId, a.id);
+    img.alt = a.name;
+    img.title = a.name;
+    wrap.append(img);
+  }
+  return wrap;
+}
+function renderSearch(view2, s) {
+  const hits = s.hits;
+  view2.qres.hidden = hits === null;
+  if (hits === null) return;
+  const sig = hits.map((h) => `${h.type}:${h.id}:${h.title}`).join("");
+  if (view2.qres.dataset.sig === sig) return;
+  view2.qres.dataset.sig = sig;
+  view2.qres.textContent = "";
+  if (!hits.length) {
+    view2.qres.append(el("div", "p-empty", "\u8A72\u5F53\u306A\u3057"));
+    return;
+  }
+  for (const hit of hits) {
+    const row = el(hit.type === "card" ? "button" : "div", "q-hit");
+    row.setAttribute("role", "option");
+    if (row instanceof HTMLButtonElement) {
+      row.type = "button";
+      row.addEventListener("click", () => view2.h.onOpenCard(hit.id));
+    }
+    const top = el("div", "q-h");
+    top.append(el("span", "q-type", hit.type === "card" ? "\u30AB\u30FC\u30C9" : "\u6210\u679C\u7269"), el("span", "cid", `#${hit.id}`));
+    if (hit.columnId) top.append(el("span", "chip", s.columns[hit.columnId]?.name ?? hit.columnId));
+    const title = el("div", "q-title", hit.title);
+    row.append(top, title);
+    if (hit.snippet) row.append(el("div", "q-snip", hit.snippet));
+    view2.qres.append(row);
+  }
+}
+var LEVEL_LABEL = { danger: "\u5371\u967A", warn: "\u8B66\u544A", info: "\u60C5\u5831" };
+var LEVELS = ["danger", "warn", "info"];
+function renderNotifBadges(view2, s) {
+  const counts = LEVELS.map((level) => s.notifications.filter((n) => n.level === level).length);
+  LEVELS.forEach((level, i) => {
+    const badge = view2.notifCounts[level];
+    badge.textContent = counts[i] ? String(counts[i]) : "";
+    badge.hidden = counts[i] === 0;
+    badge.title = `${LEVEL_LABEL[level]} ${counts[i]} \u4EF6`;
+  });
+  view2.notifBtn.setAttribute("aria-label", `\u901A\u77E5 \u5371\u967A ${counts[0]} \u8B66\u544A ${counts[1]} \u60C5\u5831 ${counts[2]}`);
+}
+function renderLoop(view2, s) {
+  const loop = s.loop;
+  view2.loopBar.hidden = !s.projectId || !loop;
+  if (!s.projectId || !loop) return;
+  view2.loopStatus.textContent = loop.status === "running" ? "\u7A3C\u50CD\u4E2D" : loop.status === "halted" ? "\u505C\u6B62" : "\u5F85\u6A5F";
+  view2.loopStatus.className = `loop-st ${loop.status}`;
+  const bits = [`tick ${loop.ticks}`];
+  if (loop.haltReason) bits.push(`\u7406\u7531: ${loop.haltReason}`);
+  view2.loopText.textContent = bits.join(" \xB7 ");
+  view2.loopText.title = loop.haltReason ?? "";
+  view2.loopNext.hidden = loop.nextCardId === null;
+  if (loop.nextCardId !== null) {
+    view2.loopNext.dataset.id = String(loop.nextCardId);
+    view2.loopNext.textContent = `\u6B21: #${loop.nextCardId}`;
+  }
+  view2.loopStart.disabled = loop.status === "running";
+  view2.loopStop.disabled = loop.status !== "running";
+  view2.loopTick.disabled = loop.status !== "running";
+}
+function paneBody(aside) {
+  const body = aside.querySelector(".panel-body");
+  return body instanceof HTMLElement ? body : aside;
+}
+function renderNotifications(view2, s) {
+  if (view2.paneNotif.hidden) {
+    view2.paneSig.notif = "";
+    return;
+  }
+  const sig = [
+    s.projectId,
+    ...s.notifications.map((n) => `${n.level}:${n.kind}:${n.cardId ?? ""}:${n.title}:${n.detail}`)
+  ].join("");
+  if (view2.paneSig.notif === sig) return;
+  view2.paneSig.notif = sig;
+  const body = paneBody(view2.paneNotif);
+  body.textContent = "";
+  if (!s.notifications.length) {
+    body.append(el("div", "p-empty", "\u901A\u77E5\u306F\u306A\u3044"));
+    return;
+  }
+  for (const level of LEVELS) {
+    const group = s.notifications.filter((n) => n.level === level);
+    if (!group.length) continue;
+    const sec = el("section", "p-sec");
+    sec.append(el("h3", `p-h lv-${level}`, `${LEVEL_LABEL[level]} (${group.length})`));
+    const list = el("div", "p-list");
+    for (const n of group) {
+      const row = el("div", "p-row");
+      const main = el("div", "p-main");
+      const title = el("div", "p-title", n.title);
+      title.title = n.title;
+      main.append(title);
+      const sub = el("div", "p-sub");
+      sub.append(el("span", "chip kind", n.kind));
+      if (n.cardId != null) sub.append(el("span", "cid", `#${n.cardId}`));
+      if (n.detail) sub.append(el("span", "p-note", n.detail));
+      main.append(sub);
+      row.append(main);
+      if (n.cardId != null) {
+        row.classList.add("clickable");
+        row.addEventListener("click", () => view2.h.onOpenCard(n.cardId));
+      }
+      list.append(row);
+    }
+    sec.append(list);
+    body.append(sec);
+  }
+}
+function renderTemplates(view2, s) {
+  if (view2.paneTemplates.hidden) {
+    view2.paneSig.templates = "";
+    return;
+  }
+  const sig = [s.projectId, ...s.templates.map((t) => `${t.id}:${t.name}:${t.title}:${t.columnId ?? ""}`)].join("");
+  if (view2.paneSig.templates === sig) return;
+  view2.paneSig.templates = sig;
+  const body = paneBody(view2.paneTemplates);
+  body.textContent = "";
+  if (!s.templates.length) {
+    body.append(el("div", "p-empty", "\u30C6\u30F3\u30D7\u30EC\u30FC\u30C8\u306F\u307E\u3060\u306A\u3044\uFF08\u30AB\u30FC\u30C9\u3092\u958B\u3044\u3066\u300C\u30C6\u30F3\u30D7\u30EC\u30FC\u30C8\u5316\u300D\uFF09"));
+    return;
+  }
+  const list = el("div", "p-list");
+  for (const t of s.templates) {
+    const row = el("div", "p-row");
+    const main = el("div", "p-main");
+    const title = el("div", "p-title", t.name);
+    title.title = t.name;
+    main.append(title);
+    const sub = el("div", "p-sub");
+    sub.append(el("span", "chip", t.title));
+    sub.append(el("span", "chip", `p${t.priority}`));
+    if (t.columnId) sub.append(el("span", "chip", s.columns[t.columnId]?.name ?? t.columnId));
+    main.append(sub);
+    const use = el("button", "link", "\u4F7F\u3046");
+    use.type = "button";
+    use.title = "\u3053\u306E\u30C6\u30F3\u30D7\u30EC\u30FC\u30C8\u304B\u3089\u30AB\u30FC\u30C9\u3092\u4F5C\u308B";
+    use.addEventListener("click", () => view2.h.onUseTemplate(t.id));
+    const rm = el("button", "ic", "\xD7");
+    rm.type = "button";
+    rm.title = "\u30C6\u30F3\u30D7\u30EC\u30FC\u30C8\u3092\u524A\u9664";
+    rm.addEventListener("click", () => view2.h.onDeleteTemplate(t.id));
+    row.append(main, use, rm);
+    list.append(row);
+  }
+  body.append(list);
+}
+function renderViews(view2, s) {
+  if (view2.paneViews.hidden) {
+    view2.paneSig.views = "";
+    return;
+  }
+  let body = paneBody(view2.paneViews);
+  if (body.dataset.built !== "1") {
+    body.dataset.built = "1";
+    body.textContent = "";
+    const form = el("form", "p-add");
+    const nameInput2 = el("input");
+    nameInput2.setAttribute("aria-label", "view name");
+    const save = el("button", void 0, "\u4FDD\u5B58");
+    save.type = "submit";
+    form.append(nameInput2, save);
+    form.addEventListener("submit", (ev) => {
+      ev.preventDefault();
+      const name = nameInput2.value.trim();
+      if (!name) return;
+      void view2.h.onSaveView(name).then((ok) => {
+        if (ok) nameInput2.value = "";
+      });
+    });
+    const focus = el("label", "ce-focus");
+    const box = el("input");
+    box.type = "checkbox";
+    box.addEventListener("change", () => view2.h.onToggleFocusQuery(box.checked));
+    focus.append(box, el("span", void 0, "\u30DC\u30FC\u30C9\u3082\u3053\u306E\u6761\u4EF6\u3067\u7D5E\u308A\u8FBC\u3080"));
+    body.append(form, focus, el("div", "p-list"));
+  }
+  const nameInput = body.querySelector(".p-add input");
+  if (nameInput instanceof HTMLInputElement) nameInput.placeholder = s.q ? `\u300C${s.q}\u300D\u3092\u30D3\u30E5\u30FC\u3068\u3057\u3066\u4FDD\u5B58` : "\u30D3\u30E5\u30FC\u540D";
+  const focusLabel = body.querySelector(".ce-focus");
+  if (focusLabel instanceof HTMLElement) {
+    focusLabel.hidden = !s.q;
+    const box = focusLabel.querySelector("input");
+    if (box instanceof HTMLInputElement) box.checked = s.qFocus;
+  }
+  const sig = [s.projectId, ...s.views.map((v) => `${v.id}:${v.name}:${v.query.q ?? ""}:${v.query.focus ? 1 : 0}`)].join("");
+  if (view2.paneSig.views === sig) return;
+  view2.paneSig.views = sig;
+  const list = body.querySelector(".p-list");
+  if (!(list instanceof HTMLElement)) return;
+  list.textContent = "";
+  if (!s.views.length) list.append(el("div", "p-empty", "\u30D3\u30E5\u30FC\u306F\u307E\u3060\u306A\u3044"));
+  for (const v of s.views) {
+    const row = el("div", "p-row");
+    const main = el("div", "p-main");
+    const title = el("div", "p-title", v.name);
+    title.title = v.name;
+    main.append(title);
+    const sub = el("div", "p-sub");
+    sub.append(el("span", "chip", v.query.q ? `q: ${v.query.q}` : "\u6761\u4EF6\u306A\u3057"));
+    if (v.query.focus) sub.append(el("span", "chip", "\u7D5E\u308A\u8FBC\u307F"));
+    main.append(sub);
+    const apply = el("button", "link", "\u9069\u7528");
+    apply.type = "button";
+    apply.addEventListener("click", () => view2.h.onApplyView(v.id));
+    const rm = el("button", "ic", "\xD7");
+    rm.type = "button";
+    rm.title = "\u30D3\u30E5\u30FC\u3092\u524A\u9664";
+    rm.addEventListener("click", () => view2.h.onDeleteView(v.id));
+    row.append(main, apply, rm);
+    list.append(row);
+  }
+}
+function renderOverview(view2, s) {
+  view2.overview.hidden = !s.overview;
+  if (!s.overview) {
+    view2.overviewSig = "";
+    return;
+  }
+  const sig = s.overviewRows.map((r) => `${r.projectId}:${r.loop}:${r.counts.total}:${r.counts.blocked}:${r.counts.wipOver}:${r.columns.map((c) => `${c.id}=${c.count}/${c.wipLimit ?? "-"}`).join(",")}`).join("|");
+  if (view2.overviewSig === sig) return;
+  view2.overviewSig = sig;
+  view2.overview.textContent = "";
+  const head = el("div", "ov-h");
+  head.append(el("h2", void 0, "\u7DCF\u5408\u7BA1\u7406"), el("span", "ov-n", `${s.overviewRows.length} \u30D7\u30ED\u30B8\u30A7\u30AF\u30C8`));
+  view2.overview.append(head);
+  if (!s.overviewRows.length) {
+    view2.overview.append(el("div", "empty", "\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8\u304C\u7121\u3044"));
+    return;
+  }
+  const rows = el("div", "ov-rows");
+  for (const row of s.overviewRows) {
+    const slug = s.projects.find((p2) => p2.projectId === row.projectId)?.slug ?? row.projectId;
+    const b = el("button", "ov-row");
+    b.type = "button";
+    b.title = `${row.name} \u306E\u30DC\u30FC\u30C9\u3092\u958B\u304F`;
+    b.append(el("div", "ov-name", row.name));
+    if (row.loop !== "idle") {
+      const live = el("span", "ov-loop", row.loop === "running" ? "\u81EA\u8D70\u4E2D" : "\u505C\u6B62");
+      live.classList.add(row.loop === "running" ? "on" : "halt");
+      b.append(live);
+    }
+    const cols = el("div", "ov-cols");
+    for (const c of row.columns) {
+      const chip = el("span", "ov-col");
+      chip.append(el("span", "ov-col-n", c.name));
+      const over = c.wipLimit !== null && c.count > c.wipLimit;
+      chip.append(el("span", "ov-col-c", c.wipLimit !== null ? `${c.count}/${c.wipLimit}` : String(c.count)));
+      if (over) chip.classList.add("over");
+      if (c.kind === "done") chip.classList.add("done");
+      cols.append(chip);
+    }
+    b.append(cols);
+    const counts = el("div", "ov-counts");
+    const stats = [
+      { label: "\u5168\u4F53", value: row.counts.total, hot: false },
+      { label: "\u672A\u5B8C\u4E86", value: row.counts.open, hot: false },
+      { label: "\u7740\u624B\u53EF", value: row.counts.ready, hot: false },
+      { label: "\u30D6\u30ED\u30C3\u30AF", value: row.counts.blocked, hot: row.counts.blocked > 0 },
+      { label: "\u671F\u9650\u5207\u308C", value: row.counts.overdue, hot: row.counts.overdue > 0 },
+      { label: "WIP\u8D85", value: row.counts.wipOver, hot: row.counts.wipOver > 0 }
+    ];
+    for (const st of stats) {
+      const cell = el("span", "ov-c", `${st.label} ${st.value}`);
+      if (st.hot) cell.classList.add("hot");
+      counts.append(cell);
+    }
+    b.append(counts);
+    b.addEventListener("click", () => view2.h.onProject(slug));
+    rows.append(b);
+  }
+  view2.overview.append(rows);
+}
+var SVG_NS = "http://www.w3.org/2000/svg";
+function svgEl(tag, cls) {
+  const node = document.createElementNS(SVG_NS, tag);
+  if (cls) node.setAttribute("class", cls);
+  return node;
+}
+function renderGraph(view2, s) {
+  const on = s.graph && !s.overview && Boolean(s.projectId);
+  view2.graph.hidden = !on;
+  if (!on) {
+    view2.graphSig = "";
+    return;
+  }
+  const layout = s.graphLayout;
+  const sig = layout ? `${s.projectId}|${layout.layers}|${layout.nodes.map((n) => `${n.id}:${n.layer}:${n.closed}:${n.blocked}`).join(",")}|${layout.edges.map((e) => `${e.from}>${e.to}`).join(",")}` : `none:${s.projectId}`;
+  if (view2.graphSig === sig) return;
+  view2.graphSig = sig;
+  view2.graph.textContent = "";
+  const head = el("div", "ov-h");
+  head.append(el("h2", void 0, "\u4F9D\u5B58\u30DE\u30C3\u30D7"), el("span", "ov-n", layout ? `${layout.nodes.length} \u30CE\u30FC\u30C9 / ${layout.edges.length} \u4F9D\u5B58` : ""));
+  view2.graph.append(head);
+  if (!layout) {
+    view2.graph.append(el("div", "empty", "\u8AAD\u307F\u8FBC\u307F\u4E2D\u2026"));
+    return;
+  }
+  if (!layout.nodes.length) {
+    view2.graph.append(el("div", "empty", "\u30AB\u30FC\u30C9\u304C\u7121\u3044"));
+    return;
+  }
+  const NW = 190, NH = 34, GX = 70, GY = 46, PAD = 18;
+  const byLayer = /* @__PURE__ */ new Map();
+  for (const n of layout.nodes) {
+    const list = byLayer.get(n.layer) ?? [];
+    list.push(n);
+    byLayer.set(n.layer, list);
+  }
+  const layers = Math.max(1, layout.layers, ...[...byLayer.keys()].map((k) => k + 1));
+  const deepest = Math.max(...[...byLayer.values()].map((v) => v.length));
+  const pos = /* @__PURE__ */ new Map();
+  for (const [layer, list] of byLayer) {
+    list.sort((a, b) => a.id - b.id);
+    list.forEach((n, i) => pos.set(n.id, { x: PAD + layer * (NW + GX), y: PAD + i * (NH + GY) }));
+  }
+  const width = PAD * 2 + layers * NW + (layers - 1) * GX;
+  const height = PAD * 2 + deepest * NH + Math.max(0, deepest - 1) * GY;
+  const svg = svgEl("svg", "gsvg");
+  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  svg.setAttribute("width", String(width));
+  svg.setAttribute("height", String(height));
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", "\u4F9D\u5B58\u30DE\u30C3\u30D7\u3002\u30CE\u30FC\u30C9\u3092\u62BC\u3059\u3068\u30AB\u30FC\u30C9\u304C\u958B\u304F");
+  const defs = svgEl("defs");
+  const marker = svgEl("marker");
+  marker.setAttribute("id", "garrow");
+  marker.setAttribute("viewBox", "0 0 10 10");
+  marker.setAttribute("refX", "9");
+  marker.setAttribute("refY", "5");
+  marker.setAttribute("markerWidth", "7");
+  marker.setAttribute("markerHeight", "7");
+  marker.setAttribute("orient", "auto");
+  const tip = svgEl("path");
+  tip.setAttribute("d", "M 0 0 L 10 5 L 0 10 z");
+  tip.setAttribute("class", "garrow");
+  marker.append(tip);
+  defs.append(marker);
+  svg.append(defs);
+  for (const e of layout.edges) {
+    const from = pos.get(e.from);
+    const to = pos.get(e.to);
+    if (!from || !to) continue;
+    const x1 = from.x + NW, y1 = from.y + NH / 2;
+    const x2 = to.x, y2 = to.y + NH / 2;
+    const path = svgEl("path", "gedge");
+    const bend = Math.max(24, (x2 - x1) / 2);
+    path.setAttribute("d", `M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}`);
+    path.setAttribute("marker-end", "url(#garrow)");
+    const title = svgEl("title");
+    title.textContent = `#${e.from} \u2192 #${e.to}`;
+    path.append(title);
+    svg.append(path);
+  }
+  for (const n of layout.nodes) {
+    const p2 = pos.get(n.id);
+    if (!p2) continue;
+    const g = svgEl("g", "gnode");
+    if (n.closed) g.classList.add("closed");
+    if (n.blocked) g.classList.add("blocked");
+    g.setAttribute("tabindex", "0");
+    g.setAttribute("role", "button");
+    const rect = svgEl("rect");
+    rect.setAttribute("x", String(p2.x));
+    rect.setAttribute("y", String(p2.y));
+    rect.setAttribute("width", String(NW));
+    rect.setAttribute("height", String(NH));
+    rect.setAttribute("rx", "8");
+    const idText = svgEl("text");
+    idText.setAttribute("x", String(p2.x + 10));
+    idText.setAttribute("y", String(p2.y + NH / 2 + 4));
+    idText.setAttribute("class", "gid");
+    idText.textContent = `#${n.id}`;
+    const titleText = svgEl("text");
+    titleText.setAttribute("x", String(p2.x + 48));
+    titleText.setAttribute("y", String(p2.y + NH / 2 + 4));
+    titleText.setAttribute("class", "gtitle");
+    const short = n.title.length > 13 ? `${n.title.slice(0, 13)}\u2026` : n.title;
+    titleText.textContent = short;
+    const tip2 = svgEl("title");
+    tip2.textContent = `#${n.id} ${n.title}`;
+    g.append(rect, idText, titleText, tip2);
+    g.addEventListener("click", () => view2.h.onOpenCard(n.id));
+    g.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" || ev.key === " ") {
+        ev.preventDefault();
+        view2.h.onOpenCard(n.id);
+      }
+    });
+    svg.append(g);
+  }
+  const scroll = el("div", "gscroll");
+  scroll.append(svg);
+  view2.graph.append(scroll);
+  view2.graph.append(el("div", "ov-n", "\u9589\u3058\u305F\u30AB\u30FC\u30C9\u306F\u6DE1\u304F\u3001\u30D6\u30ED\u30C3\u30AF\u4E2D\u306F\u67A0\u7DDA\u4ED8\u304D"));
+}
+function renderView(view2, s) {
+  const projectSig = `${s.projects.map((p2) => `${p2.slug}:${p2.name}`).join("|")}#${s.projectId ?? ""}`;
+  if (view2.projectSig !== projectSig) {
+    view2.projectSig = projectSig;
+    view2.select.textContent = "";
+    if (!s.projects.length) {
+      const o = el("option", void 0, "(\u306A\u3057)");
+      o.value = "";
+      view2.select.append(o);
+    }
+    for (const p2 of s.projects) {
+      const o = el("option", void 0, p2.name || p2.slug);
+      o.value = p2.slug;
+      view2.select.append(o);
+    }
+    view2.select.value = s.projectId ?? "";
+  }
+  view2.focusBtn.classList.toggle("on", s.focus);
+  view2.focusBtn.setAttribute("aria-pressed", String(s.focus));
+  view2.panelBtn.classList.toggle("on", s.panel);
+  view2.panelBtn.setAttribute("aria-pressed", String(s.panel));
+  view2.panel.hidden = !s.panel || !s.projectId;
+  if (!view2.panel.hidden) renderPanel(view2, s);
+  else view2.panelSig = "";
+  view2.status.textContent = [
+    `build ${s.buildHash ?? "\u2013"}`,
+    s.version ? `v${s.version}` : null,
+    `project ${s.projectId ?? "\u2013"}`,
+    s.generation ? `gen ${s.generation.slice(0, 12)}` : null,
+    s.loading ? "\u2026" : null
+  ].filter(Boolean).join(" \xB7 ");
+  view2.errBar.hidden = !s.error;
+  if (s.error) view2.errBar.textContent = s.error;
+  const colEls = [];
+  for (const id of s.columnOrder) {
+    let cv = view2.cols.get(id);
+    if (!cv) {
+      cv = makeColumn(id, view2.h);
+      view2.cols.set(id, cv);
+    }
+    const col = s.columns[id];
+    cv.name.textContent = col.name;
+    cv.el.dataset.wip = col.wipLimit === null ? "" : String(col.wipLimit);
+    const n = cardsInColumn(s, id).length;
+    cv.count.textContent = col.wipLimit !== null ? `${n}/${col.wipLimit}` : String(n);
+    const over = col.wipLimit !== null && n > col.wipLimit;
+    const at = col.wipLimit !== null && n >= col.wipLimit;
+    cv.el.classList.toggle("over-wip", over);
+    cv.el.classList.toggle("at-wip", at && !over);
+    cv.count.title = at ? over ? `WIP\u4E0A\u9650\u8D85\u904E (${col.wipLimit})` : `WIP\u6E80\u676F (${col.wipLimit}) \u2014 \u3053\u308C\u4EE5\u4E0A\u5165\u308C\u3089\u308C\u306A\u3044` : "";
+    colEls.push(cv.el);
+  }
+  const staleCols = [];
+  for (const id of view2.cols.keys()) if (!s.columnOrder.includes(id)) staleCols.push(id);
+  for (const id of staleCols) {
+    view2.cols.get(id)?.el.remove();
+    view2.cols.delete(id);
+  }
+  keyedDiff(view2.board, colEls);
+  const live = /* @__PURE__ */ new Set();
+  for (const id of s.columnOrder) {
+    const cv = view2.cols.get(id);
+    if (!cv) continue;
+    const els = [];
+    for (const card of cardsInColumn(s, id)) {
+      if (s.qFocus && s.q.trim() && !cardMatches(card, s.q)) continue;
+      const key = cardKey(card.projectId, card.id);
+      live.add(key);
+      let node = view2.cards.get(key);
+      if (!node) {
+        node = makeCardNode(key, view2.h);
+        view2.cards.set(key, node);
+      }
+      updateCard(node, card, s, view2.h);
+      els.push(node);
+    }
+    keyedDiff(cv.list, els);
+  }
+  const staleCards = [];
+  for (const key of view2.cards.keys()) if (!live.has(key)) staleCards.push(key);
+  const isEmpty = !s.projectId || s.columnOrder.length === 0;
+  view2.empty.hidden = !isEmpty;
+  if (isEmpty) {
+    view2.empty.textContent = emptyText(s);
+    view2.board.hidden = true;
+    view2.focus.hidden = true;
+  } else {
+    view2.board.hidden = s.focus;
+  }
+  renderNotifBadges(view2, s);
+  renderLoop(view2, s);
+  renderSearch(view2, s);
+  renderOverview(view2, s);
+  renderGraph(view2, s);
+  view2.paneTemplates.hidden = s.pane !== "templates" || !s.projectId;
+  view2.paneViews.hidden = s.pane !== "views" || !s.projectId;
+  view2.paneNotif.hidden = s.pane !== "notifications" || !s.projectId;
+  renderNotifications(view2, s);
+  renderTemplates(view2, s);
+  renderViews(view2, s);
+  if (s.focus || s.graph || s.overview) view2.board.hidden = true;
+  if (s.graph || s.overview) view2.focus.hidden = true;
+  const toggle = (b, on) => {
+    b.classList.toggle("on", on);
+    b.setAttribute("aria-pressed", String(on));
+  };
+  toggle(view2.overviewBtn, s.overview);
+  toggle(view2.graphBtn, s.graph && !s.overview);
+  toggle(view2.viewsBtn, s.pane === "views");
+  toggle(view2.templatesBtn, s.pane === "templates");
+  toggle(view2.notifBtn, s.pane === "notifications");
+  if (view2.q.value !== s.q) view2.q.value = s.q;
+  const levels = { danger: 0, warn: 0, info: 0 };
+  for (const n of s.notifications) levels[n.level] += 1;
+  for (const level of LEVELS) {
+    const node = view2.notifCounts[level];
+    node.textContent = levels[level] ? String(levels[level]) : "";
+    node.hidden = levels[level] === 0;
+  }
+  view2.notifBtn.title = s.notifications.length ? `\u901A\u77E5 ${s.notifications.length} \u4EF6\uFF08\u5371\u967A ${levels.danger} / \u8B66\u544A ${levels.warn} / \u60C5\u5831 ${levels.info}\uFF09` : "\u901A\u77E5\u306F\u306A\u3044";
+}
+
+// web/src/detail.ts
+var IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+var isImage = (f) => IMAGE_TYPES.includes(f.type);
+function el2(tag, cls, text) {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text !== void 0) n.textContent = text;
+  return n;
+}
+function field(label, input) {
+  const wrap = el2("label", "f");
+  wrap.append(el2("span", "f-l", label), input);
+  return wrap;
+}
+function mountDetail(root2, h) {
+  let key = null;
+  let snapshot = null;
+  const dlg = el2("dialog", "detail");
+  const head = el2("div", "d-h");
+  const heading = el2("h2", "d-title");
+  const closeBtn = el2("button", "ic", "\xD7");
+  closeBtn.type = "button";
+  closeBtn.title = "\u9589\u3058\u308B";
+  head.append(heading, closeBtn);
+  const title = el2("input", "f-title");
+  title.placeholder = "\u30BF\u30A4\u30C8\u30EB";
+  title.required = true;
+  const prio = el2("input", "f-prio");
+  prio.type = "number";
+  prio.step = "1";
+  const owner = el2("input", "f-owner");
+  owner.placeholder = "\u672A\u5272\u5F53";
+  const due = el2("input", "f-due");
+  due.type = "date";
+  const blocked = el2("input", "f-blocked");
+  blocked.placeholder = "\u7406\u7531\u304C\u3042\u308C\u3070\u5165\u529B\uFF08\u7A7A\u3067\u89E3\u9664\uFF09";
+  const body = el2("textarea", "f-body");
+  body.rows = 7;
+  body.placeholder = "\u30E1\u30E2\u30FB\u53D7\u3051\u5165\u308C\u6761\u4EF6\uFF08- [ ] \u9805\u76EE\uFF09";
+  const accHint = el2("div", "acc-hint");
+  const grid = el2("div", "d-grid");
+  grid.append(
+    field("\u30BF\u30A4\u30C8\u30EB", title),
+    field("\u512A\u5148\u5EA6", prio),
+    field("\u62C5\u5F53", owner),
+    field("\u671F\u9650", due),
+    field("\u30D6\u30ED\u30C3\u30AF\u7406\u7531", blocked),
+    field("\u672C\u6587", body)
+  );
+  grid.append(accHint);
+  const depSec = el2("section", "d-sec");
+  depSec.append(el2("h3", void 0, "\u4F9D\u5B58\u95A2\u4FC2"));
+  const depList = el2("div", "d-deps");
+  const depForm = el2("form", "d-depadd");
+  const depTarget = el2("select");
+  depTarget.setAttribute("aria-label", "dependency target");
+  const depType = el2("select");
+  for (const [v, t] of [["blocks", "\u30D6\u30ED\u30C3\u30AF\u3059\u308B"], ["relates", "\u95A2\u9023"]]) {
+    const o = el2("option", void 0, t);
+    o.value = v;
+    depType.append(o);
+  }
+  const depAdd = el2("button", void 0, "\u8FFD\u52A0");
+  depAdd.type = "submit";
+  depForm.append(el2("span", "f-l", "\u5BFE\u8C61"), depTarget, depType, depAdd);
+  depForm.addEventListener("submit", (ev) => {
+    ev.preventDefault();
+    if (!key) return;
+    const to = Number(depTarget.value);
+    if (!Number.isFinite(to) || to <= 0) return;
+    void h.onAddDep(key, to, depType.value).then((ok) => {
+      if (ok) h.notify("\u4F9D\u5B58\u3092\u8FFD\u52A0\u3057\u305F");
+    });
+  });
+  depSec.append(depList, depForm);
+  const dvSec = el2("section", "d-sec");
+  dvSec.append(el2("h3", void 0, "\u6210\u679C\u7269"));
+  const dvList = el2("div", "d-dvs");
+  const dvForm = el2("form", "d-dvadd");
+  const dvTitle = el2("input");
+  dvTitle.placeholder = "\u3053\u306E\u30AB\u30FC\u30C9\u306B\u7D10\u3065\u304F\u6210\u679C\u7269";
+  dvTitle.setAttribute("aria-label", "add deliverable for card");
+  const dvAdd = el2("button", void 0, "\u8FFD\u52A0");
+  dvAdd.type = "submit";
+  dvForm.append(dvTitle, dvAdd);
+  dvForm.addEventListener("submit", (ev) => {
+    ev.preventDefault();
+    if (!key) return;
+    const t = dvTitle.value.trim();
+    if (!t) return;
+    const id = parseKey(key).id;
+    void h.onAddDeliverable(t, id).then((ok) => {
+      if (ok) dvTitle.value = "";
+    });
+  });
+  dvSec.append(dvList, dvForm);
+  const tlSec = el2("section", "d-sec");
+  tlSec.append(el2("h3", void 0, "\u3053\u306E\u30AB\u30FC\u30C9\u306E\u5C65\u6B74"));
+  const tlList = el2("div", "d-tl");
+  const atSec = el2("section", "d-sec");
+  atSec.append(el2("h3", void 0, "\u6DFB\u4ED8\u753B\u50CF"));
+  const atList = el2("div", "d-atts");
+  const atPick = el2("input", "d-file");
+  atPick.type = "file";
+  atPick.accept = IMAGE_TYPES.join(",");
+  atPick.setAttribute("aria-label", "\u753B\u50CF\u3092\u6DFB\u4ED8");
+  atPick.addEventListener("change", () => {
+    const file = atPick.files?.[0];
+    if (!file || !key) return;
+    if (!isImage(file)) {
+      h.notify("\u753B\u50CF\u30D5\u30A1\u30A4\u30EB\uFF08png/jpeg/gif/webp\uFF09\u3060\u3051\u6DFB\u4ED8\u3067\u304D\u308B");
+      atPick.value = "";
+      return;
+    }
+    const k = key;
+    void h.onUploadAttachment(k, file).then((ok) => {
+      atPick.value = "";
+      if (ok) h.notify("\u753B\u50CF\u3092\u6DFB\u4ED8\u3057\u305F");
+    });
+  });
+  atSec.append(atList, atPick);
+  const foot = el2("div", "d-foot");
+  const moveSel = el2("select");
+  moveSel.setAttribute("aria-label", "move to column");
+  const delBtn = el2("button", "danger", "\u524A\u9664");
+  delBtn.type = "button";
+  const tplBtn = el2("button", "ghost", "\u30C6\u30F3\u30D7\u30EC\u30FC\u30C8\u5316");
+  tplBtn.type = "button";
+  tplBtn.title = "\u3053\u306E\u30AB\u30FC\u30C9\u306E\u5185\u5BB9\u3092\u96DB\u5F62\u3068\u3057\u3066\u4FDD\u5B58";
+  tplBtn.addEventListener("click", () => {
+    if (key) h.onTemplateFromCard(key);
+  });
+  const cancelBtn = el2("button", "ghost", "\u9589\u3058\u308B");
+  cancelBtn.type = "button";
+  const saveBtn = el2("button", "primary", "\u4FDD\u5B58");
+  saveBtn.type = "button";
+  foot.append(el2("div", "grow"), tplBtn, moveSel, delBtn, cancelBtn, saveBtn);
+  dlg.append(head, grid, depSec, dvSec, atSec, tlSec, foot);
+  root2.append(dlg);
+  const close = () => {
+    key = null;
+    snapshot = null;
+    if (dlg.open) dlg.close();
+  };
+  closeBtn.addEventListener("click", close);
+  cancelBtn.addEventListener("click", close);
+  dlg.addEventListener("cancel", (ev) => {
+    ev.preventDefault();
+    close();
+  });
+  saveBtn.addEventListener("click", () => {
+    if (!key) return;
+    const t = title.value.trim();
+    if (!t) {
+      h.notify("\u30BF\u30A4\u30C8\u30EB\u306F\u7A7A\u306B\u3067\u304D\u306A\u3044");
+      title.focus();
+      return;
+    }
+    const p2 = Number(prio.value);
+    const patch = {
+      title: t,
+      priority: Number.isFinite(p2) ? Math.trunc(p2) : 0,
+      owner: owner.value.trim() || null,
+      due: due.value.trim() || null,
+      blockedReason: blocked.value.trim() || null,
+      body: body.value
+    };
+    void h.onSave(key, patch).then((ok) => {
+      if (ok) {
+        h.notify("\u4FDD\u5B58\u3057\u305F");
+        close();
+      }
+    });
+  });
+  delBtn.addEventListener("click", () => {
+    const k = key;
+    if (!k) return;
+    if (!window.confirm("\u3053\u306E\u30AB\u30FC\u30C9\u3092\u524A\u9664\u3059\u308B\uFF1F")) return;
+    h.onDelete(k);
+    close();
+  });
+  moveSel.addEventListener("change", () => {
+    if (!key || !moveSel.value) return;
+    h.onMove(key, moveSel.value);
+    moveSel.value = "";
+  });
+  const open = (k) => {
+    const parsed = parseKey(k);
+    const card = currentCard(k);
+    if (!card) {
+      h.notify(`\u30AB\u30FC\u30C9 #${parsed.id} \u304C\u898B\u3064\u304B\u3089\u306A\u3044`);
+      return;
+    }
+    key = k;
+    snapshot = card;
+    heading.textContent = `#${card.id} ${card.title}`;
+    title.value = card.title;
+    prio.value = String(card.priority);
+    owner.value = card.owner ?? "";
+    due.value = card.due ?? "";
+    blocked.value = card.blockedReason ?? "";
+    body.value = card.body ?? "";
+    if (store2) paint(store2, card);
+    if (!dlg.open) dlg.showModal();
+    title.focus();
+  };
+  let store2 = null;
+  function currentCard(k) {
+    return store2?.cards[k] ?? snapshot;
+  }
+  function renderDeps(s, card) {
+    const edges = edgesOf(s, card.id);
+    depList.textContent = "";
+    if (!edges.length) depList.append(el2("div", "d-empty", "\u4F9D\u5B58\u306A\u3057"));
+    for (const e of edges) {
+      const outgoing = e.fromCard === card.id;
+      const otherId = outgoing ? e.toCard : e.fromCard;
+      const other = s.cards[cardKey(s.projectId, otherId)];
+      const row = el2("div", "d-dep");
+      const label = e.type === "blocks" ? outgoing ? "\u30D6\u30ED\u30C3\u30AF\u3059\u308B" : "\u30D6\u30ED\u30C3\u30AF\u3055\u308C\u3066\u3044\u308B" : "\u95A2\u9023";
+      row.append(el2("span", `chip kind${e.type === "relates" ? " rel" : ""}`, label));
+      const name = el2("span", "d-dep-name", other ? `#${other.id} ${other.title}` : `#${otherId}\uFF08\u4E0D\u5728\uFF09`);
+      name.title = name.textContent;
+      row.append(name);
+      if (e.type === "blocks" && !outgoing && other && !isClosed(other)) row.append(el2("span", "chip warn", "\u672A\u5B8C\u4E86"));
+      const rm = el2("button", "ic", "\xD7");
+      rm.type = "button";
+      rm.title = "\u4F9D\u5B58\u3092\u89E3\u9664";
+      rm.addEventListener("click", () => {
+        void h.onRemoveDep(e.projectId, e.fromCard, e.toCard, e.type).then((ok) => {
+          if (ok) h.notify("\u4F9D\u5B58\u3092\u89E3\u9664\u3057\u305F");
+        });
+      });
+      row.append(rm);
+      depList.append(row);
+    }
+  }
+  function renderDepsPicker(s, card) {
+    const prev = depTarget.value;
+    depTarget.textContent = "";
+    for (const id of s.columnOrder) {
+      for (const c of Object.values(s.cards)) {
+        if (c.columnId !== id || c.projectId !== s.projectId || c.id === card.id) continue;
+        const o = el2("option", void 0, `#${c.id} ${c.title}`);
+        o.value = String(c.id);
+        depTarget.append(o);
+      }
+    }
+    if (prev && depTarget.querySelector(`option[value="${prev}"]`)) depTarget.value = prev;
+  }
+  function thumb(a, projectId, onRemove) {
+    const wrap = el2("span", "thumb-w");
+    const img = el2("img", "thumb");
+    img.src = attachmentSrc(projectId, a.id);
+    img.alt = a.name;
+    img.title = a.name;
+    wrap.append(img);
+    if (onRemove) {
+      const rm = el2("button", "ic thumb-x", "\xD7");
+      rm.type = "button";
+      rm.title = `${a.name} \u3092\u5916\u3059`;
+      rm.addEventListener("click", () => {
+        wrap.classList.add("gone");
+        void onRemove().then((ok) => {
+          if (!ok) wrap.classList.remove("gone");
+        });
+      });
+      wrap.append(rm);
+    }
+    return wrap;
+  }
+  const sigs = { att: "", dv: "", tl: "" };
+  function renderAttachments(s, card) {
+    const mine = s.attachments.filter((a) => a.cardId === card.id);
+    const sig = `${card.id}|${mine.map((a) => `${a.id}:${a.name}`).join(",")}`;
+    if (sigs.att === sig) return;
+    sigs.att = sig;
+    atList.textContent = "";
+    if (!mine.length) atList.append(el2("div", "d-empty", "\u6DFB\u4ED8\u306A\u3057"));
+    for (const a of mine) {
+      atList.append(thumb(a, card.projectId, () => h.onDeleteAttachment(card.projectId, a.id).then((ok) => {
+        if (ok) h.notify("\u6DFB\u4ED8\u3092\u5916\u3057\u305F");
+        return ok;
+      })));
+    }
+  }
+  function renderDeliverables(s, card) {
+    const mine = s.deliverables.filter((d) => d.cardId === card.id);
+    const sig = `${card.id}|${mine.map((d) => `${d.id}:${d.title}:${d.ref ?? ""}`).join(",")}|${s.attachments.filter((a) => a.deliverableId !== null).map((a) => `${a.id}:${a.deliverableId}`).join(",")}`;
+    if (sigs.dv === sig) return;
+    sigs.dv = sig;
+    dvList.textContent = "";
+    if (!mine.length) dvList.append(el2("div", "d-empty", "\u7D10\u3065\u304F\u6210\u679C\u7269\u306A\u3057"));
+    for (const d of mine) {
+      const row = el2("div", "d-dv");
+      const t = el2("span", "d-dv-title", d.title);
+      t.title = d.title;
+      row.append(el2("span", "chip kind", d.kind), t);
+      if (d.ref) row.append(el2("span", "chip", d.ref));
+      const rm = el2("button", "ic", "\xD7");
+      rm.type = "button";
+      rm.title = "\u6210\u679C\u7269\u3092\u524A\u9664";
+      rm.addEventListener("click", () => {
+        void h.onDeleteDeliverable(d.projectId, d.id);
+      });
+      row.append(rm);
+      dvList.append(row);
+      const atts = s.attachments.filter((a) => a.deliverableId === d.id);
+      const strip = el2("div", "d-dv-atts");
+      for (const a of atts) {
+        strip.append(thumb(a, d.projectId, () => h.onDeleteAttachment(d.projectId, a.id).then((ok) => {
+          if (ok) h.notify("\u6DFB\u4ED8\u3092\u5916\u3057\u305F");
+          return ok;
+        })));
+      }
+      const pick = el2("input", "d-file sm");
+      pick.type = "file";
+      pick.accept = IMAGE_TYPES.join(",");
+      pick.setAttribute("aria-label", `${d.title} \u306B\u753B\u50CF\u3092\u6DFB\u4ED8`);
+      pick.addEventListener("change", () => {
+        const f = pick.files?.[0];
+        if (!f) return;
+        if (!isImage(f)) {
+          h.notify("\u753B\u50CF\u30D5\u30A1\u30A4\u30EB\uFF08png/jpeg/gif/webp\uFF09\u3060\u3051\u6DFB\u4ED8\u3067\u304D\u308B");
+          pick.value = "";
+          return;
+        }
+        void h.onUploadDeliverableAttachment(d.id, f).then((ok) => {
+          pick.value = "";
+          if (ok) h.notify("\u753B\u50CF\u3092\u6DFB\u4ED8\u3057\u305F");
+        });
+      });
+      strip.append(pick);
+      dvList.append(strip);
+    }
+  }
+  function renderTimeline(s, card) {
+    const mine = s.timeline.filter((e) => e.entityType === "card" && e.entityId === keyOf(card));
+    const shown = mine.slice(-10);
+    const sig = shown.map((e) => `${e.at}:${e.kind}:${e.actor ?? ""}`).join(",");
+    if (sigs.tl === sig) return;
+    sigs.tl = sig;
+    tlList.textContent = "";
+    if (!mine.length) tlList.append(el2("div", "d-empty", "\u5C65\u6B74\u306A\u3057"));
+    for (const e of shown.slice().reverse()) {
+      const row = el2("div", "d-tl-row");
+      row.append(el2("span", "tl-at", e.at.slice(5, 16).replace("T", " ")), el2("span", "tl-kind", e.kind));
+      if (e.actor) row.append(el2("span", "tl-actor", e.actor));
+      tlList.append(row);
+    }
+  }
+  return {
+    get openKey() {
+      return key;
+    },
+    open,
+    close,
+    render(s, projects) {
+      store2 = s;
+      if (!key) return;
+      const card = s.cards[key];
+      if (!card) {
+        close();
+        return;
+      }
+      if (snapshot && snapshot.version !== card.version) {
+        const dirty = title.value !== snapshot.title || body.value !== (snapshot.body ?? "") || prio.value !== String(snapshot.priority) || owner.value !== (snapshot.owner ?? "") || due.value !== (snapshot.due ?? "") || blocked.value !== (snapshot.blockedReason ?? "");
+        if (!dirty) {
+          title.value = card.title;
+          prio.value = String(card.priority);
+          owner.value = card.owner ?? "";
+          due.value = card.due ?? "";
+          blocked.value = card.blockedReason ?? "";
+          body.value = card.body ?? "";
+        }
+        snapshot = card;
+        heading.textContent = `#${card.id} ${card.title}`;
+      }
+      paint(s, card);
+      void projects;
+    }
+  };
+  function paint(s, card) {
+    const progress = acceptanceProgress(body.value);
+    accHint.textContent = progress.total ? `\u53D7\u3051\u5165\u308C\u6761\u4EF6: ${progress.done}/${progress.total}${progress.done === progress.total ? " \u2713" : ""}` : "\u53D7\u3051\u5165\u308C\u6761\u4EF6: \u306A\u3057\uFF08- [ ] \u3067\u8FFD\u52A0\u3067\u304D\u308B\uFF09";
+    renderDeps(s, card);
+    renderDepsPicker(s, card);
+    renderDeliverables(s, card);
+    renderAttachments(s, card);
+    renderTimeline(s, card);
+    const prev = moveSel.value;
+    moveSel.textContent = "";
+    const ph = el2("option", void 0, "\u2192 \u79FB\u52D5\u5148");
+    ph.value = "";
+    moveSel.append(ph);
+    for (const id of s.columnOrder) {
+      if (id === card.columnId) continue;
+      const o = el2("option", void 0, s.columns[id]?.name ?? id);
+      o.value = id;
+      moveSel.append(o);
+    }
+    moveSel.value = prev && moveSel.querySelector(`option[value="${prev}"]`) ? prev : "";
+  }
+}
+
+// web/src/app.ts
+var PROJECT_KEY = "kb.v2.project";
+var POLL_MS = 5e3;
+var store = createStore();
+var root = document.getElementById("app");
+if (!root) throw new Error("#app not found");
+root.textContent = "";
+function describe(e) {
+  if (e instanceof ApiError) {
+    const code = e.status ? `${e.code} ${e.status}` : e.code;
+    return `${e.message} [${code}]`;
+  }
+  return e instanceof Error ? e.message : String(e);
+}
+function readSavedProject() {
+  try {
+    return localStorage.getItem(PROJECT_KEY);
+  } catch {
+    return null;
+  }
+}
+function saveProject(slug) {
+  try {
+    if (slug) localStorage.setItem(PROJECT_KEY, slug);
+    else localStorage.removeItem(PROJECT_KEY);
+  } catch {
+  }
+}
+var boardSeq = 0;
+async function loadMeta() {
+  try {
+    setMeta(store, await getMeta());
+  } catch (e) {
+    store.error = `meta: ${describe(e)}`;
+  }
+  render();
+}
+async function loadBoard() {
+  const project = store.projectId;
+  if (!project) return;
+  const seq = ++boardSeq;
+  store.loading = true;
+  render();
+  try {
+    const [snap, del, tl] = await Promise.all([
+      getBoard(project),
+      getDeliverables(project).catch(() => null),
+      getTimeline(project).catch(() => null)
+    ]);
+    if (seq !== boardSeq || store.projectId !== project) return;
+    if (!applySnapshot(store, project, snap)) {
+      store.error = `\u30DC\u30FC\u30C9\u306E\u5FDC\u7B54\u304C\u5225\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8\u3067\u3057\u305F (${snap?.project?.slug ?? "?"})`;
+      return;
+    }
+    if (del) store.deliverables = del.deliverables;
+    if (tl) store.timeline = tl.events;
+    await loadExtras(project, seq);
+    store.error = null;
+    if (store.graph) await loadGraph();
+    if (store.overview) await loadOverview();
+  } catch (e) {
+    if (seq !== boardSeq) return;
+    store.error = describe(e);
+  } finally {
+    if (seq === boardSeq) {
+      store.loading = false;
+      render();
+    }
+  }
+}
+var extrasSeq = 0;
+async function loadExtras(project, boardToken) {
+  const seq = ++extrasSeq;
+  const [att, nt, lp] = await Promise.allSettled([
+    getAttachments(project),
+    getNotifications(project),
+    getLoop(project)
+  ]);
+  if (seq !== extrasSeq || boardToken !== boardSeq || store.projectId !== project) return;
+  const failed = [];
+  if (att.status === "fulfilled") store.attachments = att.value.attachments;
+  else failed.push(att.reason);
+  if (nt.status === "fulfilled") store.notifications = nt.value.notifications;
+  else failed.push(nt.reason);
+  if (lp.status === "fulfilled") store.loop = lp.value.loop;
+  else failed.push(lp.reason);
+  if (failed.length) {
+    const message = describe(failed[0]);
+    store.error = message;
+    showToast(view, message);
+  }
+}
+async function selectProject(slug) {
+  if (store.projectId === slug) return;
+  boardSeq++;
+  resetBoard(store, slug);
+  saveProject(slug);
+  render();
+  if (slug) await loadBoard();
+}
+async function loadProjects() {
+  try {
+    const { projects } = await getProjects();
+    setProjects(store, projects);
+    const wanted = store.projectId ?? readSavedProject();
+    const pick = projects.find((x) => x.slug === wanted)?.slug ?? projects[0]?.slug ?? null;
+    if (store.projectId !== pick) await selectProject(pick);
+    else render();
+  } catch (e) {
+    store.error = `projects: ${describe(e)}`;
+    render();
+  }
+}
+async function withPending(key, task) {
+  store.pending.add(key);
+  render();
+  try {
+    await task();
+    store.error = null;
+    return true;
+  } catch (e) {
+    store.error = describe(e);
+    showToast(view, describe(e));
+    await loadBoard();
+    return false;
+  } finally {
+    store.pending.delete(key);
+    render();
+  }
+}
+function cardOf(key) {
+  const card = store.cards[key];
+  if (!card) return null;
+  const { projectId, id } = parseKey(key);
+  if (projectId !== store.projectId || card.projectId !== store.projectId) return null;
+  return { card, projectId, id };
+}
+async function doAddCard(columnId, title) {
+  const project = store.projectId;
+  if (!project) {
+    showToast(view, "\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8\u3092\u9078\u3093\u3067\u304F\u3060\u3055\u3044");
+    return false;
+  }
+  try {
+    const { card } = await createCard({ project, title, columnId });
+    if (upsertCard(store, card)) {
+      store.error = null;
+      render();
+    } else await loadBoard();
+    return true;
+  } catch (e) {
+    store.error = describe(e);
+    showToast(view, describe(e));
+    render();
+    return false;
+  }
+}
+async function doMove(key, columnId) {
+  const cur = cardOf(key);
+  if (!cur) {
+    showToast(view, "\u5225\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8\u306E\u30AB\u30FC\u30C9\u3067\u3059\u3002\u518D\u8AAD\u307F\u8FBC\u307F\u3057\u307E\u3059\u3002");
+    await loadBoard();
+    return;
+  }
+  const { card, projectId, id } = cur;
+  applyLocalMove(store, key, columnId);
+  await withPending(key, async () => {
+    const { card: saved } = await moveCard(projectId, id, { columnId, version: card.version });
+    upsertCard(store, saved);
+  });
+}
+async function doEdit(key) {
+  const cur = cardOf(key);
+  if (!cur) {
+    showToast(view, "\u5225\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8\u306E\u30AB\u30FC\u30C9\u3067\u3059\u3002\u518D\u8AAD\u307F\u8FBC\u307F\u3057\u307E\u3059\u3002");
+    await loadBoard();
+    return;
+  }
+  const { card, projectId, id } = cur;
+  const next = window.prompt("\u30BF\u30A4\u30C8\u30EB", card.title);
+  if (next === null) return;
+  const title = next.trim();
+  if (!title || title === card.title) return;
+  await withPending(key, async () => {
+    const { card: saved } = await patchCard(projectId, id, { title, version: card.version });
+    upsertCard(store, saved);
+  });
+}
+async function doDelete(key) {
+  const cur = cardOf(key);
+  if (!cur) {
+    showToast(view, "\u5225\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8\u306E\u30AB\u30FC\u30C9\u3067\u3059\u3002\u518D\u8AAD\u307F\u8FBC\u307F\u3057\u307E\u3059\u3002");
+    await loadBoard();
+    return;
+  }
+  const { card, projectId, id } = cur;
+  if (!window.confirm(`\u30AB\u30FC\u30C9 #${id}\u300C${card.title}\u300D\u3092\u524A\u9664\u3059\u308B\uFF1F`)) return;
+  removeCard(store, key);
+  await withPending(key, async () => {
+    await deleteCard(projectId, id, { version: card.version });
+  });
+  await loadBoard();
+}
+async function doSave(key, patch) {
+  const cur = cardOf(key);
+  if (!cur) {
+    showToast(view, "\u5225\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8\u306E\u30AB\u30FC\u30C9\u3067\u3059\u3002\u518D\u8AAD\u307F\u8FBC\u307F\u3057\u307E\u3059\u3002");
+    await loadBoard();
+    return false;
+  }
+  const { card, projectId, id } = cur;
+  let ok = false;
+  await withPending(key, async () => {
+    const { card: saved } = await patchCard(projectId, id, { ...patch, version: card.version });
+    upsertCard(store, saved);
+    ok = true;
+  });
+  if (ok) await loadBoard();
+  return ok;
+}
+async function doAddDep(key, toCard, type) {
+  const cur = cardOf(key);
+  if (!cur) {
+    showToast(view, "\u5225\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8\u306E\u30AB\u30FC\u30C9\u3067\u3059\u3002\u518D\u8AAD\u307F\u8FBC\u307F\u3057\u307E\u3059\u3002");
+    await loadBoard();
+    return false;
+  }
+  const { projectId, id } = cur;
+  if (!store.cards[`${projectId}#${toCard}`]) {
+    showToast(view, "\u5BFE\u8C61\u30AB\u30FC\u30C9\u304C\u540C\u3058\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8\u306B\u898B\u3064\u304B\u308A\u307E\u305B\u3093");
+    await loadBoard();
+    return false;
+  }
+  try {
+    await addDependency({ project: projectId, fromCard: id, toCard, type });
+  } catch (e) {
+    store.error = describe(e);
+    showToast(view, describe(e));
+    return false;
+  }
+  await loadBoard();
+  return true;
+}
+async function doRemoveDep(projectId, from, to, type) {
+  if (projectId !== store.projectId) {
+    await loadBoard();
+    return false;
+  }
+  try {
+    await removeDependency(projectId, from, to, type);
+  } catch (e) {
+    store.error = describe(e);
+    showToast(view, describe(e));
+    return false;
+  }
+  await loadBoard();
+  return true;
+}
+async function doAddDeliverable(title, cardId) {
+  const project = store.projectId;
+  if (!project) {
+    showToast(view, "\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8\u3092\u9078\u3093\u3067\u304F\u3060\u3055\u3044");
+    return false;
+  }
+  if (cardId !== null && !store.cards[`${project}#${cardId}`]) {
+    showToast(view, "\u5BFE\u8C61\u30AB\u30FC\u30C9\u304C\u540C\u3058\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8\u306B\u898B\u3064\u304B\u308A\u307E\u305B\u3093");
+    return false;
+  }
+  try {
+    await createDeliverable({ project, title, cardId });
+  } catch (e) {
+    store.error = describe(e);
+    showToast(view, describe(e));
+    return false;
+  }
+  await loadBoard();
+  return true;
+}
+async function doDeleteDeliverable(projectId, id) {
+  if (projectId !== store.projectId) {
+    await loadBoard();
+    return false;
+  }
+  try {
+    await deleteDeliverable(projectId, id);
+  } catch (e) {
+    store.error = describe(e);
+    showToast(view, describe(e));
+    return false;
+  }
+  await loadBoard();
+  return true;
+}
+async function doCreateProject(name) {
+  try {
+    const { project } = await createProject({ name });
+    const { projects } = await getProjects();
+    setProjects(store, projects);
+    const slug = project.slug ?? project.projectId;
+    await selectProject(slug);
+    return true;
+  } catch (e) {
+    store.error = describe(e);
+    showToast(view, describe(e));
+    render();
+    return false;
+  }
+}
+var searchSeq = 0;
+var searchTimer;
+async function runSearch(q) {
+  const project = store.projectId;
+  if (!project || !q.trim()) return;
+  const seq = ++searchSeq;
+  try {
+    const { hits } = await searchBoard(project, q);
+    if (seq !== searchSeq || store.projectId !== project || store.q !== q) return;
+    store.hits = hits;
+  } catch (e) {
+    if (seq !== searchSeq) return;
+    store.hits = null;
+    store.error = describe(e);
+    showToast(view, describe(e));
+  }
+  render();
+}
+function onSearchInput(q) {
+  store.q = q;
+  if (searchTimer) clearTimeout(searchTimer);
+  if (!q.trim()) {
+    store.hits = null;
+    searchSeq++;
+    render();
+    return;
+  }
+  searchTimer = setTimeout(() => {
+    void runSearch(q);
+  }, 200);
+}
+function onCloseSearch() {
+  searchSeq++;
+  store.hits = null;
+  render();
+}
+function openCardId(projectId, id) {
+  const key = projectId ? cardKey(projectId, id) : null;
+  if (!key || !store.cards[key]) {
+    showToast(view, `\u30AB\u30FC\u30C9 #${id} \u306F\u3053\u306E\u30DC\u30FC\u30C9\u306B\u7121\u3044`);
+    return;
+  }
+  detail.open(key);
+}
+async function loadOverview() {
+  try {
+    store.overviewRows = (await getOverview()).projects;
+    store.error = null;
+  } catch (e) {
+    store.error = describe(e);
+    showToast(view, describe(e));
+  }
+  render();
+}
+async function loadGraph() {
+  const project = store.projectId;
+  if (!project) return;
+  try {
+    const layout = await getGraph(project);
+    if (store.projectId !== project) return;
+    store.graphLayout = layout;
+  } catch (e) {
+    store.error = describe(e);
+    showToast(view, describe(e));
+  }
+  render();
+}
+async function loadTemplates() {
+  const project = store.projectId;
+  if (!project) return;
+  try {
+    const { templates } = await getTemplates(project);
+    if (store.projectId !== project) return;
+    store.templates = templates;
+    store.error = null;
+  } catch (e) {
+    store.error = describe(e);
+    showToast(view, describe(e));
+  }
+  render();
+}
+async function loadViews() {
+  const project = store.projectId;
+  if (!project) return;
+  try {
+    const { views } = await getViews(project);
+    if (store.projectId !== project) return;
+    store.views = views;
+    store.error = null;
+  } catch (e) {
+    store.error = describe(e);
+    showToast(view, describe(e));
+  }
+  render();
+}
+function openPane(pane) {
+  store.pane = store.pane === pane ? "none" : pane;
+  if (store.pane !== "none") store.panel = false;
+  render();
+  if (store.pane === "templates") void loadTemplates();
+  else if (store.pane === "views") void loadViews();
+}
+async function doEditColumn(columnId, patch) {
+  const project = store.projectId;
+  if (!project) {
+    showToast(view, "\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8\u3092\u9078\u3093\u3067\u304F\u3060\u3055\u3044");
+    return "\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8\u672A\u9078\u629E";
+  }
+  try {
+    const { column } = await patchColumn(project, columnId, patch);
+    if (store.projectId === project) {
+      store.columns[column.id] = column;
+      store.error = null;
+      render();
+    }
+    return null;
+  } catch (e) {
+    const message = describe(e);
+    store.error = message;
+    showToast(view, message);
+    render();
+    return message;
+  }
+}
+async function doUseTemplate(id) {
+  const project = store.projectId;
+  if (!project) return;
+  try {
+    const { card } = await useTemplate(project, id);
+    upsertCard(store, card);
+  } catch (e) {
+    store.error = describe(e);
+    showToast(view, describe(e));
+    render();
+    return;
+  }
+  await loadBoard();
+  showToast(view, "\u30C6\u30F3\u30D7\u30EC\u30FC\u30C8\u304B\u3089\u30AB\u30FC\u30C9\u3092\u4F5C\u6210\u3057\u305F");
+}
+async function doDeleteTemplate(id) {
+  const project = store.projectId;
+  if (!project) return;
+  try {
+    await deleteTemplate(project, id);
+  } catch (e) {
+    store.error = describe(e);
+    showToast(view, describe(e));
+    render();
+    return;
+  }
+  await loadTemplates();
+}
+async function doSaveTemplate(key) {
+  const cur = cardOf(key);
+  if (!cur) {
+    showToast(view, "\u5225\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8\u306E\u30AB\u30FC\u30C9\u3067\u3059\u3002\u518D\u8AAD\u307F\u8FBC\u307F\u3057\u307E\u3059\u3002");
+    await loadBoard();
+    return false;
+  }
+  const { card, projectId } = cur;
+  const asked = window.prompt("\u30C6\u30F3\u30D7\u30EC\u30FC\u30C8\u540D", card.title);
+  if (asked === null) return false;
+  const name = asked.trim();
+  if (!name) {
+    showToast(view, "\u30C6\u30F3\u30D7\u30EC\u30FC\u30C8\u540D\u306F\u7A7A\u306B\u3067\u304D\u306A\u3044");
+    return false;
+  }
+  try {
+    await createTemplate({
+      project: projectId,
+      name,
+      title: card.title,
+      body: card.body ?? "",
+      columnId: card.columnId,
+      priority: card.priority,
+      ...card.labels && card.labels.length ? { labels: card.labels } : {}
+    });
+  } catch (e) {
+    store.error = describe(e);
+    showToast(view, describe(e));
+    render();
+    return false;
+  }
+  store.panel = false;
+  store.pane = "templates";
+  await loadTemplates();
+  showToast(view, "\u30C6\u30F3\u30D7\u30EC\u30FC\u30C8\u306B\u4FDD\u5B58\u3057\u305F");
+  return true;
+}
+async function doSaveView(name) {
+  const project = store.projectId;
+  if (!project) {
+    showToast(view, "\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8\u3092\u9078\u3093\u3067\u304F\u3060\u3055\u3044");
+    return false;
+  }
+  try {
+    await createView({
+      project,
+      name,
+      query: { ...store.q.trim() ? { q: store.q.trim() } : {}, ...store.qFocus ? { focus: true } : {} }
+    });
+  } catch (e) {
+    store.error = describe(e);
+    showToast(view, describe(e));
+    render();
+    return false;
+  }
+  await loadViews();
+  return true;
+}
+async function doDeleteView(id) {
+  const project = store.projectId;
+  if (!project) return;
+  try {
+    await deleteView(project, id);
+  } catch (e) {
+    store.error = describe(e);
+    showToast(view, describe(e));
+    render();
+    return;
+  }
+  await loadViews();
+}
+function doApplyView(id) {
+  const view_ = store.views.find((v) => v.id === id);
+  if (!view_) return;
+  store.q = view_.query.q ?? "";
+  store.qFocus = Boolean(view_.query.focus);
+  store.hits = null;
+  if (store.q) void runSearch(store.q);
+  else render();
+  showToast(view, store.qFocus ? "\u30D3\u30E5\u30FC\u3092\u9069\u7528\uFF08\u30DC\u30FC\u30C9\u3092\u7D5E\u308A\u8FBC\u307F\uFF09" : "\u30D3\u30E5\u30FC\u3092\u9069\u7528");
+}
+async function doLoop(action) {
+  const project = store.projectId;
+  if (!project) return;
+  let loop;
+  let next = null;
+  try {
+    if (action === "start") loop = (await startLoop(project)).loop;
+    else if (action === "stop") loop = (await stopLoop(project)).loop;
+    else {
+      const res = await tickLoop(project);
+      loop = res.loop;
+      next = res.nextCard;
+    }
+  } catch (e) {
+    store.error = describe(e);
+    showToast(view, describe(e));
+    render();
+    return;
+  }
+  if (store.projectId !== project) return;
+  store.loop = loop;
+  store.error = null;
+  if (next) upsertCard(store, next);
+  if (action === "tick") showToast(view, next ? `\u6B21\u306F #${next.id} ${next.title}` : loop.haltReason ?? "ready \u306A\u30AB\u30FC\u30C9\u304C\u7121\u3057");
+  render();
+  if (action === "tick") await loadBoard();
+}
+async function doUpload(key, file) {
+  const cur = cardOf(key);
+  if (!cur) {
+    showToast(view, "\u5225\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8\u306E\u30AB\u30FC\u30C9\u3067\u3059\u3002\u518D\u8AAD\u307F\u8FBC\u307F\u3057\u307E\u3059\u3002");
+    await loadBoard();
+    return false;
+  }
+  try {
+    await uploadAttachment(cur.projectId, { cardId: cur.id }, file.name, file);
+  } catch (e) {
+    store.error = describe(e);
+    showToast(view, describe(e));
+    return false;
+  }
+  await loadBoard();
+  return true;
+}
+async function doUploadDeliverable(deliverableId, file) {
+  const project = store.projectId;
+  if (!project) {
+    showToast(view, "\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8\u3092\u9078\u3093\u3067\u304F\u3060\u3055\u3044");
+    return false;
+  }
+  try {
+    await uploadAttachment(project, { deliverableId }, file.name, file);
+  } catch (e) {
+    store.error = describe(e);
+    showToast(view, describe(e));
+    return false;
+  }
+  await loadBoard();
+  return true;
+}
+async function doDeleteAttachment(projectId, id) {
+  if (projectId !== store.projectId) {
+    await loadBoard();
+    return false;
+  }
+  try {
+    await deleteAttachment(projectId, id);
+  } catch (e) {
+    store.error = describe(e);
+    showToast(view, describe(e));
+    return false;
+  }
+  await loadBoard();
+  return true;
+}
+var view = mount(root, {
+  onProject: (slug) => {
+    store.overview = false;
+    void selectProject(slug || null);
+  },
+  onCreateProject: doCreateProject,
+  onAddCard: doAddCard,
+  onMove: (key, columnId) => {
+    void doMove(key, columnId);
+  },
+  onEdit: (key) => {
+    void doEdit(key);
+  },
+  onDelete: (key) => {
+    void doDelete(key);
+  },
+  onOpen: (key) => detail.open(key),
+  onToggleFocus: () => {
+    store.focus = !store.focus;
+    render();
+  },
+  onTogglePanel: () => {
+    store.panel = !store.panel;
+    if (store.panel) store.pane = "none";
+    render();
+  },
+  onAddDeliverable: (title) => doAddDeliverable(title, null),
+  onDeleteDeliverable: (projectId, id) => {
+    void doDeleteDeliverable(projectId, id);
+  },
+  onSearch: (q) => onSearchInput(q),
+  onCloseSearch,
+  onOpenCard: (id) => openCardId(store.projectId, id),
+  onTogglePane: (pane) => openPane(pane),
+  onToggleOverview: () => {
+    store.overview = !store.overview;
+    if (store.overview) {
+      store.pane = "none";
+      void loadOverview();
+    } else render();
+  },
+  onToggleGraph: () => {
+    store.graph = !store.graph;
+    render();
+    if (store.graph) void loadGraph();
+  },
+  onEditColumn: (columnId, patch) => doEditColumn(columnId, patch),
+  onUseTemplate: (id) => {
+    void doUseTemplate(id);
+  },
+  onDeleteTemplate: (id) => {
+    void doDeleteTemplate(id);
+  },
+  onApplyView: (id) => doApplyView(id),
+  onSaveView: (name) => doSaveView(name),
+  onDeleteView: (id) => {
+    void doDeleteView(id);
+  },
+  onLoop: (action) => {
+    void doLoop(action);
+  },
+  onToggleFocusQuery: (on) => {
+    store.qFocus = on;
+    render();
+  }
+});
+var detail = mountDetail(root, {
+  onSave: doSave,
+  onAddDep: doAddDep,
+  onRemoveDep: (projectId, from, to, type) => doRemoveDep(projectId, from, to, type),
+  onAddDeliverable: doAddDeliverable,
+  onDeleteDeliverable: doDeleteDeliverable,
+  onMove: (key, columnId) => {
+    void doMove(key, columnId);
+  },
+  onDelete: (key) => {
+    void doDelete(key);
+  },
+  onUploadAttachment: (key, file) => doUpload(key, file),
+  onDeleteAttachment: (projectId, id) => doDeleteAttachment(projectId, id),
+  onUploadDeliverableAttachment: (deliverableId, file) => doUploadDeliverable(deliverableId, file),
+  onTemplateFromCard: (key) => {
+    void doSaveTemplate(key);
+  },
+  notify: (message) => showToast(view, message)
+});
+function render() {
+  renderView(view, store);
+  detail.render(store, store.projects);
+}
+async function boot() {
+  render();
+  await Promise.allSettled([loadMeta(), loadProjects()]);
+}
+void boot();
+setInterval(() => {
+  if (!document.hidden) void loadBoard();
+}, POLL_MS);
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) return;
+  void loadBoard();
+});
+window.addEventListener("focus", () => {
+  void loadBoard();
+});

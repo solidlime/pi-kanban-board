@@ -1,0 +1,12 @@
+{
+  "extends": "../../tsconfig.v2.json",
+  "compilerOptions": {
+    "types": [
+      "node"
+    ]
+  },
+  "include": [
+    "./*.ts",
+    "./*.mjs"
+  ]
+}

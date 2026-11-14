@@ -41,10 +41,22 @@
     "pretest": "node scripts/build-web.mjs --check",
     "prepack": "node scripts/build-web.mjs",
     "test": "node --test \"tests/**/*.test.mjs\"",
-    "test:stable": "node --test --test-concurrency=2 \"tests/**/*.test.mjs\""
+    "test:stable": "node --test --test-concurrency=2 \"tests/**/*.test.mjs\"",
+    "build:v2": "node scripts/build-v2.mjs",
+    "serve:v2": "node src/api/serve.ts",
+    "dev:v2": "node scripts/dev-v2.mjs",
+    "typecheck:v2": "tsc -p tsconfig.v2.json && tsc -p web/tsconfig.json",
+    "test:v2:unit": "node --test tests/unit/*.test.mjs",
+    "test:v2:integration": "node --test tests/integration/*.test.mjs",
+    "test:v2": "npm run typecheck:v2 && node --test tests/unit/*.test.mjs tests/integration/*.test.mjs tests/e2e/*.test.mjs",
+    "test:v2:smoke": "node scripts/smoke-v2.mjs",
+    "test:v2:e2e": "node --test tests/e2e/*.test.mjs"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "^1.2.0",
-    "typebox": "^1.4.2"
+    "@types/node": "^26.6.6",
+    "esbuild": "^0.28.2",
+    "typebox": "^1.4.2",
+    "typescript": "^5.9.3"
   }
 }
