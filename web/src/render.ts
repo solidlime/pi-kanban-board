@@ -2,13 +2,14 @@
 // The v1 regression this prevents: a full innerHTML wipe on every poll, which threw away focus,
 // scroll position, and let stale nodes survive with the previous board's data.
 import type {
-  Attachment, Card, CardTemplate, ColumnDef, Deliverable, GraphLayout, GraphNode, NotificationLevel, OverviewRow,
+  Attachment, Card, ColumnDef, GraphLayout, GraphNode, NotificationLevel, SearchHit,
 } from '../../src/shared/dto.js';
 import { attachmentSrc } from './api.js';
 import {
   acceptanceProgress, blocksCards, cardKey, cardMatches, cardsInColumn, isBlocked, isClosed, isDoneColumn,
-  openBlockers, readyCards, type CardKey, type Store,
+  lastActorOf, openBlockers, readyCards, type CardKey, type Store,
 } from './store.js';
+import { renderGantt, type GanttScale } from './gantt.js';
 
 export interface Handlers {
   onProject(slug: string): void;
@@ -27,8 +28,14 @@ export interface Handlers {
   /** Search box text (the caller debounces) and closing the results overlay. */
   onSearch(q: string): void;
   onCloseSearch(): void;
-  /** Open a card by id on the current board (search hit, notification, loop next). */
+  /** Open a card by id on the current board (notification, loop next, graph node). */
   onOpenCard(id: number): void;
+  /** Open a search hit, switching boards first when the hit lives on another one (A1). */
+  onOpenHit(hit: SearchHit): void;
+  /** Search every board instead of the current one. */
+  onToggleSearchAll(): void;
+  onToggleGantt(): void;
+  onGanttScale(scale: GanttScale): void;
   onTogglePane(pane: 'templates' | 'views' | 'notifications'): void;
   onToggleOverview(): void;
   onToggleGraph(): void;
@@ -82,10 +89,12 @@ export interface View {
   // ---- v2 surfaces
   q: HTMLInputElement;
   qres: HTMLElement;
+  searchAllBtn: HTMLButtonElement;
   notifBtn: HTMLButtonElement;
   notifCounts: { danger: HTMLElement; warn: HTMLElement; info: HTMLElement };
   overviewBtn: HTMLButtonElement;
   graphBtn: HTMLButtonElement;
+  ganttBtn: HTMLButtonElement;
   viewsBtn: HTMLButtonElement;
   templatesBtn: HTMLButtonElement;
   loopBar: HTMLElement;
@@ -99,6 +108,10 @@ export interface View {
   overviewSig: string;
   graph: HTMLElement;
   graphSig: string;
+  gantt: HTMLElement;
+  locks: HTMLElement;
+  locksText: HTMLElement;
+  locksSig: string;
   paneTemplates: HTMLElement;
   paneViews: HTMLElement;
   paneNotif: HTMLElement;
@@ -176,7 +189,12 @@ export function mount(root: HTMLElement, h: Handlers): View {
   const qres = el('div', 'qres');
   qres.hidden = true;
   qres.setAttribute('role', 'listbox');
-  searchWrap.append(q, qres);
+  // 全板: the box sends no project, the server answers for every board and each hit carries its own.
+  const searchAllBtn = el('button', 'toggle searchall', '全板');
+  searchAllBtn.type = 'button';
+  searchAllBtn.title = '全プロジェクトをまとめて検索';
+  searchAllBtn.addEventListener('click', () => h.onToggleSearchAll());
+  searchWrap.append(q, searchAllBtn, qres);
 
   // ---- view switches
   const overviewBtn = el('button', 'toggle', '全体');
@@ -187,6 +205,10 @@ export function mount(root: HTMLElement, h: Handlers): View {
   graphBtn.type = 'button';
   graphBtn.title = '依存関係をレイヤで表示';
   graphBtn.addEventListener('click', () => h.onToggleGraph());
+  const ganttBtn = el('button', 'toggle', '時間');
+  ganttBtn.type = 'button';
+  ganttBtn.title = 'due・移動・完了から時間の棒を出す（読み取り専用）';
+  ganttBtn.addEventListener('click', () => h.onToggleGantt());
   const viewsBtn = el('button', 'toggle', 'ビュー');
   viewsBtn.type = 'button';
   viewsBtn.title = '保存した検索ビュー';
@@ -205,7 +227,7 @@ export function mount(root: HTMLElement, h: Handlers): View {
   notifBtn.addEventListener('click', () => h.onTogglePane('notifications'));
 
   const status = el('div', 'status');
-  top.append(brand, pick, newForm, searchWrap, focusBtn, panelBtn, overviewBtn, graphBtn, viewsBtn, templatesBtn, notifBtn, el('div', 'grow'), status);
+  top.append(brand, pick, newForm, searchWrap, focusBtn, panelBtn, overviewBtn, graphBtn, ganttBtn, viewsBtn, templatesBtn, notifBtn, el('div', 'grow'), status);
 
   const errBar = el('div', 'err');
   errBar.hidden = true;
@@ -232,6 +254,13 @@ export function mount(root: HTMLElement, h: Handlers): View {
     if (Number.isFinite(id) && id > 0) h.onOpenCard(id);
   });
   loopBar.append(loopStatus, loopText, loopNext, el('div', 'grow'), loopStart, loopStop, loopTick);
+
+  // ---- A6: who holds this board. Display only: the UI never takes or releases a lock.
+  const locksBar = el('section', 'locks');
+  locksBar.hidden = true;
+  locksBar.setAttribute('role', 'status');
+  const locksText = el('span', 'loop-txt');
+  locksBar.append(el('span', 'lock-ic', '🔒'), locksText);
 
   const empty = el('div', 'empty');
   empty.hidden = true;
@@ -279,6 +308,8 @@ export function mount(root: HTMLElement, h: Handlers): View {
   overview.hidden = true;
   const graph = el('section', 'graph');
   graph.hidden = true;
+  const gantt = el('section', 'gantt');
+  gantt.hidden = true;
 
   // ---- right-hand panes (same look as the deliverables panel, one at a time)
   const mkPane = (title: string, onClose: () => void) => {
@@ -298,14 +329,14 @@ export function mount(root: HTMLElement, h: Handlers): View {
   const viewPane = mkPane('ビュー', () => h.onTogglePane('views'));
   const notifPane = mkPane('通知', () => h.onTogglePane('notifications'));
 
-  root.append(top, errBar, loopBar, empty, board, overview, graph, focus, panel,
+  root.append(top, errBar, loopBar, locksBar, empty, board, overview, graph, gantt, focus, panel,
     tplPane.aside, viewPane.aside, notifPane.aside, toast);
   return {
     root, h, select, newName, status, errBar, empty, board,
     focus, focusCount, focusList, focusEmpty, panel, panelBody, focusBtn, panelBtn, toast,
-    q, qres, notifBtn, notifCounts, overviewBtn, graphBtn, viewsBtn, templatesBtn,
+    q, qres, searchAllBtn, notifBtn, notifCounts, overviewBtn, graphBtn, ganttBtn, viewsBtn, templatesBtn,
     loopBar, loopStatus, loopText, loopNext, loopStart, loopStop, loopTick,
-    overview, overviewSig: '', graph, graphSig: '',
+    overview, overviewSig: '', graph, graphSig: '', gantt, locks: locksBar, locksText, locksSig: '',
     paneTemplates: tplPane.aside, paneViews: viewPane.aside, paneNotif: notifPane.aside,
     paneSig: { templates: '', views: '', notif: '' },
     cols: new Map(), cards: new Map(), focusRows: new Map(), projectSig: '', focusSig: '', panelSig: '',
@@ -459,10 +490,11 @@ function emptyText(s: Store): string {
   return 'ボードを読み込み中…';
 }
 
-/** Everything on a card that is not the title/body: priority, owner, due, blocked, acceptance. */
+/** Everything on a card that is not the title/body: priority, owner, due, blocked, acceptance, actor. */
 function cardSig(card: Card): string {
   return [card.title, card.body ?? '', card.priority, card.version, card.columnId,
-    card.blockedReason ?? '', card.owner ?? '', card.due ?? '', card.closedAt ?? ''].join('\u0001');
+    card.blockedReason ?? '', card.owner ?? '', card.due ?? '', card.closedAt ?? '',
+    lastActorOf(card) ?? ''].join('\u0001');
 }
 
 function depsSig(s: Store, card: Card): string {
@@ -500,6 +532,13 @@ function updateCard(node: HTMLElement, card: Card, s: Store, h: Handlers): void 
     const meta = q('.meta');
     meta.textContent = '';
     if (card.owner) meta.append(el('span', 'chip owner', `@${card.owner}`));
+    // A2: who last touched it. Null/undefined means "nobody we can name", so nothing is drawn.
+    const actor = lastActorOf(card);
+    if (actor) {
+      const chip = el('span', 'chip actor', `↻ ${actor}`);
+      chip.title = `最終更新者: ${actor}`;
+      meta.append(chip);
+    }
     if (progress.total > 0) {
       const chip = el('span', 'chip acc', `☑ ${progress.done}/${progress.total}`);
       chip.classList.toggle('acc-done', progress.done === progress.total);
@@ -728,7 +767,7 @@ function renderSearch(view: View, s: Store): void {
   const hits = s.hits;
   view.qres.hidden = hits === null;
   if (hits === null) return;
-  const sig = hits.map(h => `${h.type}:${h.id}:${h.title}`).join('\u0001');
+  const sig = `${s.searchAll}|${hits.map(h => `${h.projectId}:${h.type}:${h.id}:${h.title}`).join('\u0001')}`;
   if (view.qres.dataset.sig === sig) return;
   view.qres.dataset.sig = sig;
   view.qres.textContent = '';
@@ -741,14 +780,22 @@ function renderSearch(view: View, s: Store): void {
     row.setAttribute('role', 'option');
     if (row instanceof HTMLButtonElement) {
       row.type = 'button';
-      row.addEventListener('click', () => view.h.onOpenCard(hit.id));
+      row.addEventListener('click', () => view.h.onOpenHit(hit));
     }
     const top = el('div', 'q-h');
     top.append(el('span', 'q-type', hit.type === 'card' ? 'カード' : '成果物'), el('span', 'cid', `#${hit.id}`));
-    if (hit.columnId) top.append(el('span', 'chip', s.columns[hit.columnId]?.name ?? hit.columnId));
+    // 全板: the hit's board is the only thing that tells two #12s apart, so name it.
+    if (s.searchAll) {
+      const name = s.projects.find(x => x.slug === hit.projectId)?.name ?? hit.projectId;
+      const onBoard = hit.projectId === s.projectId;
+      top.append(el('span', onBoard ? 'chip' : 'chip other-board', name));
+    }
+    if (hit.columnId && hit.projectId === s.projectId) {
+      top.append(el('span', 'chip', s.columns[hit.columnId]?.name ?? hit.columnId));
+    }
     const title = el('div', 'q-title', hit.title);
     row.append(top, title);
-    if (hit.snippet) row.append(el('div', 'q-snip', hit.snippet));
+    if (hit.snippet && hit.snippet !== hit.title) row.append(el('div', 'q-snip', hit.snippet));
     view.qres.append(row);
   }
 }
@@ -1128,6 +1175,18 @@ function renderGraph(view: View, s: Store): void {
   view.graph.append(el('div', 'ov-n', '閉じたカードは淡く、ブロック中は枠線付き'));
 }
 
+function renderLocks(view: View, s: Store): void {
+  const locks = s.projectId ? s.locks : [];
+  view.locks.hidden = locks.length === 0;
+  if (!locks.length) { view.locksSig = ''; return; }
+  const sig = locks.map(l => `${l.resource}:${l.owner}:${l.expiresAt}`).join('\u0001');
+  if (view.locksSig === sig) return;
+  view.locksSig = sig;
+  view.locksText.textContent = locks
+    .map(l => `板${s.projectName ? `「${s.projectName}」` : ''}を ${l.owner} が保持${l.expiresAt ? `（〜${l.expiresAt.slice(5, 16).replace('T', ' ')}）` : ''}`)
+    .join(' · ');
+}
+
 export function renderView(view: View, s: Store): void {
   const projectSig = `${s.projects.map(p => `${p.slug}:${p.name}`).join('|')}#${s.projectId ?? ''}`;
   if (view.projectSig !== projectSig) {
@@ -1224,23 +1283,39 @@ export function renderView(view: View, s: Store): void {
   }
   renderNotifBadges(view, s);
   renderLoop(view, s);
+  renderLocks(view, s);
   renderSearch(view, s);
   renderOverview(view, s);
   renderGraph(view, s);
+
+  // A3: the time view owns its own DOM diff (see renderGantt) — it is rebuilt only when the
+  // bars, the axis or the scale actually change, so the 5s poll never steals focus.
+  const ganttOn = s.gantt && !s.overview && !s.graph && Boolean(s.projectId);
+  view.gantt.hidden = !ganttOn;
+  if (ganttOn) {
+    renderGantt(view.gantt, Object.values(s.cards), {
+      projectId: s.projectId as string, scale: s.ganttScale, now: Date.now(), columns: s.columns,
+      onScale: scale => view.h.onGanttScale(scale),
+      onOpen: card => view.h.onOpen(cardKey(card.projectId, card.id)),
+    });
+  }
   view.paneTemplates.hidden = s.pane !== 'templates' || !s.projectId;
   view.paneViews.hidden = s.pane !== 'views' || !s.projectId;
   view.paneNotif.hidden = s.pane !== 'notifications' || !s.projectId;
   renderNotifications(view, s);
   renderTemplates(view, s);
   renderViews(view, s);
-  if (s.focus || s.graph || s.overview) view.board.hidden = true;
-  if (s.graph || s.overview) view.focus.hidden = true;
+  renderFocus(view, s);
+  if (s.focus || s.graph || s.overview || s.gantt) view.board.hidden = true;
+  if (s.graph || s.overview || s.gantt) view.focus.hidden = true;
   const toggle = (b: HTMLButtonElement, on: boolean): void => {
     b.classList.toggle('on', on);
     b.setAttribute('aria-pressed', String(on));
   };
   toggle(view.overviewBtn, s.overview);
   toggle(view.graphBtn, s.graph && !s.overview);
+  toggle(view.ganttBtn, s.gantt && !s.overview && !s.graph);
+  toggle(view.searchAllBtn, s.searchAll);
   toggle(view.viewsBtn, s.pane === 'views');
   toggle(view.templatesBtn, s.pane === 'templates');
   toggle(view.notifBtn, s.pane === 'notifications');

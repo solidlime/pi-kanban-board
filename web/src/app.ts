@@ -5,12 +5,12 @@ import {
   ApiError, getMeta, getProjects, getBoard, createProject, createCard, moveCard, patchCard, deleteCard,
   getDeliverables, getTimeline, createDeliverable, deleteDeliverable, addDependency, removeDependency,
   patchColumn, getViews, createView, deleteView, getTemplates, createTemplate, useTemplate, deleteTemplate,
-  getAttachments, uploadAttachment, deleteAttachment, searchBoard, getNotifications, getGraph, getOverview,
+  getAttachments, uploadAttachment, deleteAttachment, searchBoard, getLocks, getNotifications, getGraph, getOverview,
   getLoop, startLoop, stopLoop, tickLoop,
 } from './api.js';
 import {
   createStore, applySnapshot, upsertCard, removeCard, resetBoard, setProjects, setMeta,
-  applyLocalMove, parseKey, cardKey, type CardKey, type Store,
+  applyLocalMove, parseKey, cardKey, type CardKey, type Store, type SearchHit,
 } from './store.js';
 import { mount, renderView, showToast, type View } from './render.js';
 import { mountDetail, type DetailView } from './detail.js';
@@ -97,14 +97,16 @@ let extrasSeq = 0;
 
 async function loadExtras(project: string, boardToken: number): Promise<void> {
   const seq = ++extrasSeq;
-  const [att, nt, lp] = await Promise.allSettled([
-    getAttachments(project), getNotifications(project), getLoop(project),
+  const [att, nt, lp, lk] = await Promise.allSettled([
+    getAttachments(project), getNotifications(project), getLoop(project), getLocks(project),
   ]);
   if (seq !== extrasSeq || boardToken !== boardSeq || store.projectId !== project) return;
   const failed: unknown[] = [];
   if (att.status === 'fulfilled') store.attachments = att.value.attachments; else failed.push(att.reason);
   if (nt.status === 'fulfilled') store.notifications = nt.value.notifications; else failed.push(nt.reason);
   if (lp.status === 'fulfilled') store.loop = lp.value.loop; else failed.push(lp.reason);
+  // A6 is decoration: a board without locks (or a server without the route) says nothing, quietly.
+  store.locks = lk.status === 'fulfilled' ? lk.value.locks ?? [] : [];
   if (failed.length) {
     const message = describe(failed[0]);
     store.error = message;
@@ -315,12 +317,14 @@ let searchSeq = 0;
 let searchTimer: ReturnType<typeof setTimeout> | undefined;
 
 async function runSearch(q: string): Promise<void> {
-  const project = store.projectId;
-  if (!project || !q.trim()) return;
+  const all = store.searchAll;
+  const board = store.projectId;
+  if (!all && !board) return;
   const seq = ++searchSeq;
   try {
-    const { hits } = await searchBoard(project, q);
-    if (seq !== searchSeq || store.projectId !== project || store.q !== q) return; // stale
+    // 全板 sends no project: the hits then carry their own projectId (A1 contract).
+    const { hits } = await searchBoard(all ? null : board, q, all ? 50 : 20);
+    if (seq !== searchSeq || store.searchAll !== all || store.projectId !== board || store.q !== q) return; // stale
     store.hits = hits;
   } catch (e) {
     if (seq !== searchSeq) return;
@@ -348,6 +352,21 @@ function openCardId(projectId: string | null, id: number): void {
   const key = projectId ? cardKey(projectId, id) : null;
   if (!key || !store.cards[key]) { showToast(view, `カード #${id} はこのボードに無い`); return; }
   detail.open(key);
+}
+
+/** A1: a hit can live on another board. Switch first, then open — the board must be loaded. */
+async function openHit(hit: SearchHit): Promise<void> {
+  if (hit.projectId !== store.projectId) await selectProject(hit.projectId);
+  store.hits = null;
+  render();
+  if (hit.type === 'card') openCardId(hit.projectId, hit.id);
+}
+
+/** The query is board-scoped by default; 全板 keeps the same text and re-runs it. */
+function onToggleSearchAll(): void {
+  store.searchAll = !store.searchAll;
+  if (store.q.trim()) void runSearch(store.q);
+  else render();
 }
 
 async function loadOverview(): Promise<void> {
@@ -621,13 +640,22 @@ const view: View = mount(root, {
   onSearch: q => onSearchInput(q),
   onCloseSearch,
   onOpenCard: id => openCardId(store.projectId, id),
+  onOpenHit: hit => { void openHit(hit); },
+  onToggleSearchAll,
+  onToggleGantt: () => {
+    store.gantt = !store.gantt;
+    if (store.gantt) { store.overview = false; store.graph = false; store.pane = 'none'; }
+    render();
+  },
+  onGanttScale: scale => { store.ganttScale = scale; render(); },
   onTogglePane: pane => openPane(pane),
   onToggleOverview: () => {
     store.overview = !store.overview;
-    if (store.overview) { store.pane = 'none'; void loadOverview(); } else render();
+    if (store.overview) { store.pane = 'none'; store.gantt = false; void loadOverview(); } else render();
   },
   onToggleGraph: () => {
     store.graph = !store.graph;
+    if (store.graph) store.gantt = false;
     render();
     if (store.graph) void loadGraph();
   },

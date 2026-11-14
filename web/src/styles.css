@@ -143,8 +143,8 @@ button.ghost{background:transparent}
 .link:hover{background:transparent;text-decoration:underline}
 
 /* search box + results overlay */
-.search{position:relative;flex:1 1 200px;min-width:160px;max-width:380px}
-.search .q{width:100%}
+.search{position:relative;flex:1 1 240px;min-width:160px;max-width:420px;display:flex;gap:6px;align-items:center}
+.search .q{width:auto;flex:1;min-width:0}
 .qres{position:absolute;top:calc(100% + 6px);left:0;right:0;z-index:3;max-height:min(60vh,460px);overflow-y:auto;background:#0e1427;border:1px solid var(--line);border-radius:10px;box-shadow:0 12px 30px rgba(0,0,0,.5);padding:6px;display:flex;flex-direction:column;gap:4px}
 .q-hit{display:block;width:100%;text-align:left;background:transparent;border:1px solid transparent;border-radius:8px;padding:6px 8px;cursor:pointer}
 div.q-hit{cursor:default}
@@ -153,6 +153,33 @@ button.q-hit:hover{background:#1a2238;border-color:var(--line)}
 .q-type{letter-spacing:.04em}
 .q-title{font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .q-snip{font-size:11px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px}
+.chip.other-board{color:#fcd34d;border-color:#7a5b20}
+/* A2: last actor — small on the card face, larger in the dialog */
+.chip.actor{color:#c4b5fd;border-color:#3b2f66;max-width:20ch;font-variant-numeric:tabular-nums}
+.d-actor{font-size:13px;color:#c4b5fd;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:22ch}
+
+/* A6: board lock strip (display only) */
+.locks{display:flex;gap:8px;align-items:center;margin:8px 16px 0;padding:6px 12px;border:1px solid #3b2f66;border-radius:10px;background:#151329;font-size:12px}
+.lock-ic{font-size:13px}
+
+/* A3: time view (gantt) — bars are positioned in %, so the axis and the rows share one grid */
+.gantt{padding:16px;display:flex;flex-direction:column;gap:8px}
+.gseg{display:flex;gap:4px;margin-left:auto}
+.gantt-rows{display:flex;flex-direction:column;gap:2px}
+.gantt-row{display:grid;grid-template-columns:minmax(120px,230px) minmax(0,1fr);gap:10px;align-items:center;padding:3px 6px;border:1px solid transparent;border-radius:8px}
+div.gantt-row{cursor:pointer}
+div.gantt-row:hover,div.gantt-row:focus-visible{background:#141a2e;border-color:var(--line)}
+.gantt-row.axis{padding-bottom:6px;border-bottom:1px solid var(--line);margin-bottom:4px}
+.g-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
+.g-label .cid{margin-right:6px;color:var(--muted);font-variant-numeric:tabular-nums}
+.g-track{position:relative;height:16px;background:#101728;border:1px solid var(--line);border-radius:999px}
+.g-bar{position:absolute;top:0;bottom:0;border-radius:999px;background:#2f5da8;border:1px solid #3b74c9;min-width:8px}
+.g-bar.closed{background:#1f5545;border-color:#2b6f5b}
+.g-bar.late{background:#5b2430;border-color:#8d3b4a}
+.g-bar.open{border-right-style:dashed}
+.g-due{position:absolute;top:-4px;bottom:-4px;width:2px;background:#fbbf24;border-radius:1px}
+.g-tick{position:absolute;top:0;transform:translateX(-50%);font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap}
+.g-tick.major{color:var(--fg);font-weight:600}
 
 /* notification counts on the toolbar button */
 .notif{display:inline-flex;align-items:center;gap:4px}
@@ -234,4 +261,43 @@ button.q-hit:hover{background:#1a2238;border-color:var(--line)}
   .ov-counts{justify-content:flex-start}
   .search{max-width:none;flex-basis:100%}
   .loop{gap:6px}
+}
+
+/* ---- M: mobile. Below 900px the columns stack (no horizontal scroll), the toolbar wraps,
+   every tap target is ≥44px and form text is ≥16px so iOS does not zoom on focus.
+   Nothing here sets touch-action, so pinch-zoom still works. ---- */
+@media (max-width:900px){
+  body{font-size:16px}
+  .top{padding:8px 12px;gap:8px}
+  .board{grid-auto-flow:row;grid-auto-columns:auto;grid-template-columns:minmax(0,1fr);overflow-x:visible;min-height:0;padding:12px;gap:10px}
+  .col{max-height:none}
+  .cards{overflow-y:visible}
+  input:not([type=checkbox]):not([type=radio]),select,textarea{font-size:16px;min-height:44px}
+  .d-file{font-size:16px}
+  .toggle,.ic,.mv,.q-hit,.link,.d-foot button,.p-add button,.newproj button,.addrow button,.loop button{min-height:44px}
+  .ic{min-width:44px}
+  .thumb-x{min-width:0;min-height:0}
+  .card{padding:10px 12px}
+  .q-hit{padding:10px 12px}
+  .qres{max-height:min(70vh,520px)}
+  .gantt-row{grid-template-columns:minmax(90px,1fr) minmax(0,2fr)}
+  .g-tick{font-size:10px}
+  .detail{width:96vw}
+  .panel{width:min(420px,100vw)}
+}
+
+@media (max-width:600px){
+  .top{gap:6px}
+  .brand{font-size:15px}
+  .status{font-size:12px;flex-basis:100%}
+  .search{gap:4px}
+  .board{padding:10px}
+  .ov,.graph,.gantt,.focus{padding:12px}
+  .loop,.locks{margin:8px 10px 0}
+  .card-h{font-size:12px}
+  .meta,.chip{font-size:12px}
+  .gantt-row{grid-template-columns:minmax(0,1fr);gap:2px}
+  .gantt-axis .g-tick:not(.major),.gantt-row.axis .g-tick:not(.major){display:none}
+  .g-label{font-size:14px}
+  .d-actor{max-width:none}
 }

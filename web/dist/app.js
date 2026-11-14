@@ -91,7 +91,12 @@ var getAttachments = (project, target) => req("GET", attachQuery(project, target
 var attachmentSrc = (project, id) => `/api/attachments/${p(project)}/${p(String(id))}`;
 var uploadAttachment = (project, target, name, file) => postBlob(`${attachQuery(project, target)}&name=${p(name)}`, file);
 var deleteAttachment = (project, id) => req("DELETE", `/api/attachments/${p(project)}/${p(String(id))}`);
-var searchBoard = (project, q, limit = 20) => req("GET", `/api/search?project=${p(project)}&q=${p(q)}&limit=${p(String(limit))}`);
+var searchBoard = (project, q, limit = 20) => req(
+  "GET",
+  project ? `/api/search?project=${p(project)}&q=${p(q)}&limit=${p(String(limit))}` : `/api/search?q=${p(q)}&limit=${p(String(limit))}`
+  // no project = every board (A1)
+);
+var getLocks = (project) => req("GET", `/api/locks?project=${p(project)}`);
 var getNotifications = (project) => req(
   "GET",
   project ? `/api/notifications?project=${p(project)}` : "/api/notifications"
@@ -132,11 +137,15 @@ function createStore() {
     overviewRows: [],
     graph: false,
     graphLayout: null,
+    gantt: false,
+    ganttScale: "week",
     q: "",
     hits: null,
+    searchAll: false,
     qFocus: false,
     notifications: [],
     attachments: [],
+    locks: [],
     loop: null,
     templates: [],
     views: [],
@@ -168,11 +177,13 @@ function resetBoard(s, projectId) {
   s.hits = null;
   s.notifications = [];
   s.attachments = [];
+  s.locks = [];
   s.loop = null;
   s.templates = [];
   s.views = [];
   s.graphLayout = null;
   s.graph = false;
+  s.gantt = false;
   s.pane = "none";
   s.qFocus = false;
   s.generation = null;
@@ -247,6 +258,19 @@ function isBlocked(s, card) {
   if (card.blockedReason) return true;
   return openBlockers(s, card.id).length > 0;
 }
+function isReady(s, card) {
+  if (isClosed(card)) return false;
+  if (isDoneColumn(s, card.columnId)) return false;
+  return !isBlocked(s, card);
+}
+function lastActorOf(card) {
+  const actor = card.lastActor;
+  return actor === void 0 || actor === null || actor === "" ? null : actor;
+}
+var dueRank = (c) => c.due ?? "9999-12-31";
+function readyCards(s) {
+  return Object.values(s.cards).filter((c) => c.projectId === s.projectId && isReady(s, c)).sort((a, b) => b.priority - a.priority || dueRank(a).localeCompare(dueRank(b)) || a.id - b.id);
+}
 function acceptanceProgress(body) {
   let fenced = false;
   let total = 0;
@@ -271,8 +295,169 @@ function cardMatches(card, q) {
   return hay.includes(needle);
 }
 
-// web/src/render.ts
+// web/src/gantt.ts
+var DAY = 864e5;
+var WEEK = 7 * DAY;
+function ts(value) {
+  if (!value) return null;
+  const t = Date.parse(value.length === 10 ? `${value}T00:00:00Z` : value);
+  return Number.isFinite(t) ? t : null;
+}
+function dayStart(t) {
+  const d = new Date(t);
+  d.setUTCHours(0, 0, 0, 0);
+  return d.getTime();
+}
+function weekStart(t) {
+  const d = dayStart(t);
+  return d - (new Date(d).getUTCDay() + 6) % 7 * DAY;
+}
+function monthStart(t) {
+  const d = new Date(dayStart(t));
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1);
+}
+function addMonths(t, n) {
+  const d = new Date(monthStart(t));
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + n, 1);
+}
+var M = (t) => {
+  const d = new Date(t);
+  return `${d.getUTCMonth() + 1}/${d.getUTCDate()}`;
+};
+var YM = (t) => {
+  const d = new Date(t);
+  return `${d.getUTCFullYear()}/${d.getUTCMonth() + 1}`;
+};
+function ganttRows(cards, now) {
+  const out = [];
+  for (const card of cards) {
+    const created = ts(card.createdAt);
+    const moved = ts(card.movedAt);
+    const due = ts(card.due);
+    const closedAt = ts(card.closedAt);
+    const start = Math.min(created ?? moved ?? now, moved ?? created ?? now);
+    const end = closedAt ?? due ?? now;
+    out.push({
+      card,
+      start,
+      end: Math.max(start, end),
+      due,
+      moved,
+      closed: closedAt !== null,
+      openEnded: closedAt === null && due === null
+    });
+  }
+  return out.sort((a, b) => a.start - b.start || a.card.id - b.card.id);
+}
+function ganttAxis(rows, scale, now) {
+  const lo = rows.length ? Math.min(...rows.map((r) => r.start)) : now;
+  const hi = rows.length ? Math.max(...rows.map((r) => r.end)) : now;
+  const from = scale === "week" ? weekStart(Math.min(lo, now) - WEEK) : monthStart(Math.min(lo, now) - 2 * WEEK);
+  const to = scale === "week" ? weekStart(Math.max(hi, now) + WEEK) + WEEK : addMonths(hi, 2);
+  const ticks = [];
+  if (scale === "week") {
+    for (let t = from; t < to; t += DAY) ticks.push({ at: t, label: M(t), major: new Date(t).getUTCDay() === 1 });
+  } else {
+    for (let t = from; t < to; t += WEEK) {
+      const major = new Date(monthStart(t)).getTime() === t;
+      ticks.push({ at: t, label: major ? YM(t) : M(t), major });
+    }
+  }
+  return { from, to, ticks };
+}
 function el(tag, cls, text) {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text !== void 0) n.textContent = text;
+  return n;
+}
+var pct = (t, axis) => axis.to === axis.from ? 0 : Math.min(100, Math.max(0, (t - axis.from) / (axis.to - axis.from) * 100));
+function renderGantt(host, cards, o) {
+  const rows = ganttRows(cards, o.now);
+  const axis = ganttAxis(rows, o.scale, o.now);
+  const today = Math.floor(o.now / DAY);
+  const sig = [
+    o.projectId,
+    o.scale,
+    axis.from,
+    axis.to,
+    today,
+    ...rows.map((r) => `${r.card.id}:${r.start}:${r.end}:${r.card.title}:${r.card.columnId}`)
+  ].join("|");
+  if (host.dataset.sig === sig) return;
+  host.dataset.sig = sig;
+  host.textContent = "";
+  const head = el("div", "ov-h");
+  head.append(el("h2", void 0, "\u6642\u9593"), el("span", "ov-n", `${rows.length} \u4EF6`));
+  const seg = el("div", "gseg");
+  for (const scale of ["week", "month"]) {
+    const b = el("button", `toggle${o.scale === scale ? " on" : ""}`, scale === "week" ? "\u9031" : "\u6708");
+    b.type = "button";
+    b.setAttribute("aria-pressed", String(o.scale === scale));
+    b.title = scale === "week" ? "\u65E5\u523B\u307F\u30674\u9031\u524D\u5F8C" : "\u9031\u523B\u307F\u3067\u6570\u304B\u6708";
+    b.addEventListener("click", () => o.onScale(scale));
+    seg.append(b);
+  }
+  head.append(seg);
+  host.append(head);
+  host.append(el("div", "ov-n", "\u8AAD\u307F\u53D6\u308A\u5C02\u7528\uFF08due\u30FB\u79FB\u52D5\u30FB\u5B8C\u4E86\u304B\u3089\u5C0E\u51FA\u3002\u30C9\u30E9\u30C3\u30B0\u3057\u3066\u3082\u4FDD\u5B58\u3057\u306A\u3044\uFF09"));
+  if (!rows.length) {
+    host.append(el("div", "empty", "\u30AB\u30FC\u30C9\u304C\u7121\u3044"));
+    return;
+  }
+  const axisRow = el("div", "gantt-row axis");
+  axisRow.append(el("div", "g-label"));
+  const axisTrack = el("div", "g-track");
+  for (const t of axis.ticks) {
+    const tick = el("span", `g-tick${t.major ? " major" : ""}`, t.label);
+    tick.style.left = `${pct(t.at, axis)}%`;
+    axisTrack.append(tick);
+  }
+  axisRow.append(axisTrack);
+  host.append(axisRow);
+  const body = el("div", "gantt-rows");
+  for (const r of rows) {
+    const row = el("div", "gantt-row");
+    row.setAttribute("role", "button");
+    row.setAttribute("tabindex", "0");
+    const range = `${M(r.start)} \u2192 ${r.openEnded ? "\u672A\u5B9A" : M(r.end)}`;
+    row.setAttribute("aria-label", `#${r.card.id} ${r.card.title} ${range}`);
+    const label = el("div", "g-label");
+    label.append(el("span", "cid", `#${r.card.id}`), el("span", void 0, r.card.title));
+    const track = el("div", "g-track");
+    const bar = el("div", "g-bar");
+    const left = pct(r.start, axis);
+    bar.style.left = `${left}%`;
+    bar.style.width = `${Math.max(0, pct(r.end, axis) - left)}%`;
+    bar.classList.toggle("closed", r.closed);
+    bar.classList.toggle("late", !r.closed && r.due !== null && r.due < o.now);
+    bar.classList.toggle("open", r.openEnded);
+    const col = o.columns[r.card.columnId]?.name ?? r.card.columnId;
+    bar.title = `#${r.card.id} ${r.card.title}
+${col} \xB7 ${range}${r.card.due ? ` \xB7 due ${r.card.due}` : ""}`;
+    track.append(bar);
+    if (r.due !== null && r.due >= axis.from && r.due <= axis.to) {
+      const mark = el("span", "g-due");
+      mark.style.left = `${pct(r.due, axis)}%`;
+      mark.title = `due ${r.card.due}`;
+      track.append(mark);
+    }
+    row.append(label, track);
+    row.addEventListener("click", () => o.onOpen(r.card));
+    row.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" || ev.key === " ") {
+        ev.preventDefault();
+        o.onOpen(r.card);
+      }
+    });
+    body.append(row);
+  }
+  host.append(body);
+  host.append(el("div", "ov-n", "\u9752=\u9032\u884C\u4E2D / \u7DD1=\u5B8C\u4E86 / \u8D64=\u671F\u9650\u8D85\u904E\u3002\u9EC4\u8272\u306E\u7E26\u7DDA\u304C due"));
+}
+
+// web/src/render.ts
+function el2(tag, cls, text) {
   const n = document.createElement(tag);
   if (cls) n.className = cls;
   if (text !== void 0) n.textContent = text;
@@ -300,18 +485,18 @@ function showToast(view2, message) {
   }, 5e3);
 }
 function mount(root2, h) {
-  const top = el("div", "top");
-  const brand = el("div", "brand", "Kanban v2");
-  const pick = el("label", "pick");
-  const select = el("select");
+  const top = el2("div", "top");
+  const brand = el2("div", "brand", "Kanban v2");
+  const pick = el2("label", "pick");
+  const select = el2("select");
   select.setAttribute("aria-label", "project");
   select.addEventListener("change", () => h.onProject(select.value));
-  pick.append(el("span", "lbl", "project"), select);
-  const newForm = el("form", "newproj");
-  const newName = el("input");
+  pick.append(el2("span", "lbl", "project"), select);
+  const newForm = el2("form", "newproj");
+  const newName = el2("input");
   newName.placeholder = "new project name";
   newName.setAttribute("aria-label", "new project name");
-  const newBtn = el("button", void 0, "\u4F5C\u6210");
+  const newBtn = el2("button", void 0, "\u4F5C\u6210");
   newBtn.type = "submit";
   newForm.append(newName, newBtn);
   newForm.addEventListener("submit", (ev) => {
@@ -322,16 +507,16 @@ function mount(root2, h) {
       if (ok) newName.value = "";
     });
   });
-  const focusBtn = el("button", "toggle", "\u30D5\u30A9\u30FC\u30AB\u30B9");
+  const focusBtn = el2("button", "toggle", "\u30D5\u30A9\u30FC\u30AB\u30B9");
   focusBtn.type = "button";
   focusBtn.title = "\u3044\u307E\u7740\u624B\u3067\u304D\u308B\u30AB\u30FC\u30C9\u3060\u3051\u3092\u8868\u793A";
   focusBtn.addEventListener("click", () => h.onToggleFocus());
-  const panelBtn = el("button", "toggle", "\u6210\u679C\u7269/\u5C65\u6B74");
+  const panelBtn = el2("button", "toggle", "\u6210\u679C\u7269/\u5C65\u6B74");
   panelBtn.type = "button";
   panelBtn.title = "\u6210\u679C\u7269\u3068\u6700\u8FD1\u306E\u51FA\u6765\u4E8B\u3092\u958B\u304F";
   panelBtn.addEventListener("click", () => h.onTogglePanel());
-  const searchWrap = el("div", "search");
-  const q = el("input", "q");
+  const searchWrap = el2("div", "search");
+  const q = el2("input", "q");
   q.type = "search";
   q.placeholder = "\u691C\u7D22\u2026";
   q.setAttribute("aria-label", "\u30AB\u30FC\u30C9\u30FB\u6210\u679C\u7269\u3092\u691C\u7D22");
@@ -342,48 +527,56 @@ function mount(root2, h) {
       q.blur();
     }
   });
-  const qres = el("div", "qres");
+  const qres = el2("div", "qres");
   qres.hidden = true;
   qres.setAttribute("role", "listbox");
-  searchWrap.append(q, qres);
-  const overviewBtn = el("button", "toggle", "\u5168\u4F53");
+  const searchAllBtn = el2("button", "toggle searchall", "\u5168\u677F");
+  searchAllBtn.type = "button";
+  searchAllBtn.title = "\u5168\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8\u3092\u307E\u3068\u3081\u3066\u691C\u7D22";
+  searchAllBtn.addEventListener("click", () => h.onToggleSearchAll());
+  searchWrap.append(q, searchAllBtn, qres);
+  const overviewBtn = el2("button", "toggle", "\u5168\u4F53");
   overviewBtn.type = "button";
   overviewBtn.title = "\u5168\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8\u3092\u4E00\u753B\u9762\u3067\uFF08\u7DCF\u5408\u7BA1\u7406\uFF09";
   overviewBtn.addEventListener("click", () => h.onToggleOverview());
-  const graphBtn = el("button", "toggle", "\u4F9D\u5B58\u30DE\u30C3\u30D7");
+  const graphBtn = el2("button", "toggle", "\u4F9D\u5B58\u30DE\u30C3\u30D7");
   graphBtn.type = "button";
   graphBtn.title = "\u4F9D\u5B58\u95A2\u4FC2\u3092\u30EC\u30A4\u30E4\u3067\u8868\u793A";
   graphBtn.addEventListener("click", () => h.onToggleGraph());
-  const viewsBtn = el("button", "toggle", "\u30D3\u30E5\u30FC");
+  const ganttBtn = el2("button", "toggle", "\u6642\u9593");
+  ganttBtn.type = "button";
+  ganttBtn.title = "due\u30FB\u79FB\u52D5\u30FB\u5B8C\u4E86\u304B\u3089\u6642\u9593\u306E\u68D2\u3092\u51FA\u3059\uFF08\u8AAD\u307F\u53D6\u308A\u5C02\u7528\uFF09";
+  ganttBtn.addEventListener("click", () => h.onToggleGantt());
+  const viewsBtn = el2("button", "toggle", "\u30D3\u30E5\u30FC");
   viewsBtn.type = "button";
   viewsBtn.title = "\u4FDD\u5B58\u3057\u305F\u691C\u7D22\u30D3\u30E5\u30FC";
   viewsBtn.addEventListener("click", () => h.onTogglePane("views"));
-  const templatesBtn = el("button", "toggle", "\u30C6\u30F3\u30D7\u30EC\u30FC\u30C8");
+  const templatesBtn = el2("button", "toggle", "\u30C6\u30F3\u30D7\u30EC\u30FC\u30C8");
   templatesBtn.type = "button";
   templatesBtn.title = "\u30AB\u30FC\u30C9\u306E\u96DB\u5F62";
   templatesBtn.addEventListener("click", () => h.onTogglePane("templates"));
-  const notifBtn = el("button", "toggle notif", "\u901A\u77E5");
+  const notifBtn = el2("button", "toggle notif", "\u901A\u77E5");
   notifBtn.type = "button";
   notifBtn.title = "\u8B66\u544A\u30FB\u901A\u77E5\u3092\u958B\u304F";
-  const notifCounts = { danger: el("span", "nb danger"), warn: el("span", "nb warn"), info: el("span", "nb info") };
+  const notifCounts = { danger: el2("span", "nb danger"), warn: el2("span", "nb warn"), info: el2("span", "nb info") };
   notifBtn.append(notifCounts.danger, notifCounts.warn, notifCounts.info);
   notifBtn.addEventListener("click", () => h.onTogglePane("notifications"));
-  const status = el("div", "status");
-  top.append(brand, pick, newForm, searchWrap, focusBtn, panelBtn, overviewBtn, graphBtn, viewsBtn, templatesBtn, notifBtn, el("div", "grow"), status);
-  const errBar = el("div", "err");
+  const status = el2("div", "status");
+  top.append(brand, pick, newForm, searchWrap, focusBtn, panelBtn, overviewBtn, graphBtn, ganttBtn, viewsBtn, templatesBtn, notifBtn, el2("div", "grow"), status);
+  const errBar = el2("div", "err");
   errBar.hidden = true;
-  const loopBar = el("section", "loop");
+  const loopBar = el2("section", "loop");
   loopBar.hidden = true;
-  const loopStatus = el("span", "loop-st");
-  const loopText = el("span", "loop-txt");
-  const loopNext = el("button", "link next");
+  const loopStatus = el2("span", "loop-st");
+  const loopText = el2("span", "loop-txt");
+  const loopNext = el2("button", "link next");
   loopNext.type = "button";
   loopNext.hidden = true;
-  const loopStart = el("button", void 0, "\u958B\u59CB");
+  const loopStart = el2("button", void 0, "\u958B\u59CB");
   loopStart.type = "button";
-  const loopStop = el("button", void 0, "\u505C\u6B62");
+  const loopStop = el2("button", void 0, "\u505C\u6B62");
   loopStop.type = "button";
-  const loopTick = el("button", "primary", "\u6B21\u3092\u5F15\u304F");
+  const loopTick = el2("button", "primary", "\u6B21\u3092\u5F15\u304F");
   loopTick.type = "button";
   loopStart.addEventListener("click", () => h.onLoop("start"));
   loopStop.addEventListener("click", () => h.onLoop("stop"));
@@ -392,31 +585,36 @@ function mount(root2, h) {
     const id = Number(loopNext.dataset.id ?? "");
     if (Number.isFinite(id) && id > 0) h.onOpenCard(id);
   });
-  loopBar.append(loopStatus, loopText, loopNext, el("div", "grow"), loopStart, loopStop, loopTick);
-  const empty = el("div", "empty");
+  loopBar.append(loopStatus, loopText, loopNext, el2("div", "grow"), loopStart, loopStop, loopTick);
+  const locksBar = el2("section", "locks");
+  locksBar.hidden = true;
+  locksBar.setAttribute("role", "status");
+  const locksText = el2("span", "loop-txt");
+  locksBar.append(el2("span", "lock-ic", "\u{1F512}"), locksText);
+  const empty = el2("div", "empty");
   empty.hidden = true;
   empty.setAttribute("role", "status");
-  const board = el("div", "board");
-  const focus = el("section", "focus");
+  const board = el2("div", "board");
+  const focus = el2("section", "focus");
   focus.hidden = true;
-  const focusHead = el("div", "focus-h");
-  const focusTitle = el("h2", void 0, "\u3044\u307E\u3084\u308B");
-  const focusCount = el("span", "focus-n");
+  const focusHead = el2("div", "focus-h");
+  const focusTitle = el2("h2", void 0, "\u3044\u307E\u3084\u308B");
+  const focusCount = el2("span", "focus-n");
   focusHead.append(focusTitle, focusCount);
-  const focusList = el("div", "focus-list");
-  const focusEmpty = el("div", "focus-empty", "\u7740\u624B\u3067\u304D\u308B\u30AB\u30FC\u30C9\u306F\u306A\u3044\uFF08\u5168\u90E8\u30D6\u30ED\u30C3\u30AF\u4E2D\u304B\u5B8C\u4E86\uFF09");
+  const focusList = el2("div", "focus-list");
+  const focusEmpty = el2("div", "focus-empty", "\u7740\u624B\u3067\u304D\u308B\u30AB\u30FC\u30C9\u306F\u306A\u3044\uFF08\u5168\u90E8\u30D6\u30ED\u30C3\u30AF\u4E2D\u304B\u5B8C\u4E86\uFF09");
   focusEmpty.hidden = true;
   focus.append(focusHead, focusList, focusEmpty);
-  const panel = el("aside", "panel");
+  const panel = el2("aside", "panel");
   panel.hidden = true;
-  const panelHead = el("div", "panel-h");
-  const panelTitle = el("h2", void 0, "\u6210\u679C\u7269 / \u5C65\u6B74");
-  const panelClose = el("button", "ic", "\xD7");
+  const panelHead = el2("div", "panel-h");
+  const panelTitle = el2("h2", void 0, "\u6210\u679C\u7269 / \u5C65\u6B74");
+  const panelClose = el2("button", "ic", "\xD7");
   panelClose.type = "button";
   panelClose.title = "\u9589\u3058\u308B";
   panelClose.addEventListener("click", () => h.onTogglePanel());
   panelHead.append(panelTitle, panelClose);
-  const panelBody = el("div", "panel-body");
+  const panelBody = el2("div", "panel-body");
   panel.append(panelHead, panelBody);
   document.addEventListener("pointerdown", (ev) => {
     const target = ev.target;
@@ -426,22 +624,24 @@ function mount(root2, h) {
   document.addEventListener("keydown", (ev) => {
     if (ev.key === "Escape" && !qres.hidden) h.onCloseSearch();
   });
-  const toast = el("div", "toast");
+  const toast = el2("div", "toast");
   toast.hidden = true;
-  const overview = el("section", "ov");
+  const overview = el2("section", "ov");
   overview.hidden = true;
-  const graph = el("section", "graph");
+  const graph = el2("section", "graph");
   graph.hidden = true;
+  const gantt = el2("section", "gantt");
+  gantt.hidden = true;
   const mkPane = (title, onClose) => {
-    const aside = el("aside", "panel pane");
+    const aside = el2("aside", "panel pane");
     aside.hidden = true;
-    const head = el("div", "panel-h");
-    const close = el("button", "ic", "\xD7");
+    const head = el2("div", "panel-h");
+    const close = el2("button", "ic", "\xD7");
     close.type = "button";
     close.title = "\u9589\u3058\u308B";
     close.addEventListener("click", onClose);
-    head.append(el("h2", void 0, title), close);
-    const body = el("div", "panel-body");
+    head.append(el2("h2", void 0, title), close);
+    const body = el2("div", "panel-body");
     aside.append(head, body);
     return { aside, body };
   };
@@ -452,10 +652,12 @@ function mount(root2, h) {
     top,
     errBar,
     loopBar,
+    locksBar,
     empty,
     board,
     overview,
     graph,
+    gantt,
     focus,
     panel,
     tplPane.aside,
@@ -483,10 +685,12 @@ function mount(root2, h) {
     toast,
     q,
     qres,
+    searchAllBtn,
     notifBtn,
     notifCounts,
     overviewBtn,
     graphBtn,
+    ganttBtn,
     viewsBtn,
     templatesBtn,
     loopBar,
@@ -500,6 +704,10 @@ function mount(root2, h) {
     overviewSig: "",
     graph,
     graphSig: "",
+    gantt,
+    locks: locksBar,
+    locksText,
+    locksSig: "",
     paneTemplates: tplPane.aside,
     paneViews: viewPane.aside,
     paneNotif: notifPane.aside,
@@ -513,31 +721,31 @@ function mount(root2, h) {
   };
 }
 function makeColumn(id, h) {
-  const section = el("section", "col");
+  const section = el2("section", "col");
   section.dataset.col = id;
-  const head = el("div", "col-h");
-  const name = el("h2", "col-name");
-  const count = el("span", "col-count");
-  const editBtn = el("button", "ic", "\u2699");
+  const head = el2("div", "col-h");
+  const name = el2("h2", "col-name");
+  const count = el2("span", "col-count");
+  const editBtn = el2("button", "ic", "\u2699");
   editBtn.type = "button";
   editBtn.title = "\u5217\u540D\u3068 WIP \u4E0A\u9650\u3092\u7DE8\u96C6";
   head.append(name, count, editBtn);
-  const editEl = el("form", "col-edit");
+  const editEl = el2("form", "col-edit");
   editEl.hidden = true;
-  const editName = el("input", "ce-name");
+  const editName = el2("input", "ce-name");
   editName.placeholder = "\u5217\u540D";
   editName.setAttribute("aria-label", "column name");
-  const editWip = el("input", "ce-wip");
+  const editWip = el2("input", "ce-wip");
   editWip.type = "number";
   editWip.min = "0";
   editWip.step = "1";
   editWip.placeholder = "WIP\u4E0A\u9650\uFF08\u7A7A=\u7121\u5236\u9650\uFF09";
   editWip.setAttribute("aria-label", "wip limit");
-  const editSave = el("button", "primary", "\u4FDD\u5B58");
+  const editSave = el2("button", "primary", "\u4FDD\u5B58");
   editSave.type = "submit";
-  const editCancel = el("button", "ghost", "\xD7");
+  const editCancel = el2("button", "ghost", "\xD7");
   editCancel.type = "button";
-  const editNote = el("div", "ce-err");
+  const editNote = el2("div", "ce-err");
   editNote.hidden = true;
   editEl.append(editName, editWip, editSave, editCancel, editNote);
   editBtn.addEventListener("click", () => {
@@ -577,12 +785,12 @@ function makeColumn(id, h) {
       editEl.hidden = true;
     });
   });
-  const list = el("div", "cards");
-  const add = el("form", "addrow");
-  const input = el("input");
+  const list = el2("div", "cards");
+  const add = el2("form", "addrow");
+  const input = el2("input");
   input.placeholder = "\u30BF\u30B9\u30AF\u3092\u8FFD\u52A0";
   input.setAttribute("aria-label", "add card");
-  const btn = el("button", void 0, "\u8FFD\u52A0");
+  const btn = el2("button", void 0, "\u8FFD\u52A0");
   btn.type = "submit";
   add.append(input, btn);
   add.addEventListener("submit", (ev) => {
@@ -601,7 +809,7 @@ function fillMoves(moves, card, s, key, h) {
   for (const id of s.columnOrder) {
     const col = s.columns[id];
     if (!col || id === card.columnId) continue;
-    const b = el("button", "mv", `\u2192 ${col.name}`);
+    const b = el2("button", "mv", `\u2192 ${col.name}`);
     b.type = "button";
     b.dataset.col = id;
     moves.append(b);
@@ -613,30 +821,30 @@ function fillMoves(moves, card, s, key, h) {
   };
 }
 function makeCardNode(key, h) {
-  const node = el("div", "card");
+  const node = el2("div", "card");
   node.dataset.key = key;
-  const head = el("div", "card-h");
-  const prio = el("span", "prio");
-  const cid = el("span", "cid");
-  const due = el("span", "due");
-  const open = el("button", "ic", "\u2922");
+  const head = el2("div", "card-h");
+  const prio = el2("span", "prio");
+  const cid = el2("span", "cid");
+  const due = el2("span", "due");
+  const open = el2("button", "ic", "\u2922");
   open.type = "button";
   open.title = "\u8A73\u7D30\u30FB\u4F9D\u5B58\u30FB\u5C65\u6B74";
-  const edit = el("button", "ic", "\u270E");
+  const edit = el2("button", "ic", "\u270E");
   edit.type = "button";
   edit.title = "\u30BF\u30A4\u30C8\u30EB\u3092\u7DE8\u96C6";
-  const del = el("button", "ic", "\xD7");
+  const del = el2("button", "ic", "\xD7");
   del.type = "button";
   del.title = "\u524A\u9664";
   open.addEventListener("click", () => h.onOpen(node.dataset.key));
   edit.addEventListener("click", () => h.onEdit(node.dataset.key));
   del.addEventListener("click", () => h.onDelete(node.dataset.key));
   head.append(prio, cid, due, open, edit, del);
-  const title = el("div", "title");
-  const meta = el("div", "meta");
-  const body = el("div", "body");
-  const deps = el("div", "deps");
-  const moves = el("div", "moves");
+  const title = el2("div", "title");
+  const meta = el2("div", "meta");
+  const body = el2("div", "body");
+  const deps = el2("div", "deps");
+  const moves = el2("div", "moves");
   node.addEventListener("dblclick", (ev) => {
     if (ev.target.closest("button, input, select, textarea")) return;
     h.onOpen(node.dataset.key);
@@ -661,7 +869,8 @@ function cardSig(card) {
     card.blockedReason ?? "",
     card.owner ?? "",
     card.due ?? "",
-    card.closedAt ?? ""
+    card.closedAt ?? "",
+    lastActorOf(card) ?? ""
   ].join("");
 }
 function depsSig(s, card) {
@@ -693,13 +902,19 @@ function updateCard(node, card, s, h) {
     due.classList.toggle("overdue", Boolean(card.due && card.due < today && !isClosed(card)));
     const meta = q(".meta");
     meta.textContent = "";
-    if (card.owner) meta.append(el("span", "chip owner", `@${card.owner}`));
+    if (card.owner) meta.append(el2("span", "chip owner", `@${card.owner}`));
+    const actor = lastActorOf(card);
+    if (actor) {
+      const chip = el2("span", "chip actor", `\u21BB ${actor}`);
+      chip.title = `\u6700\u7D42\u66F4\u65B0\u8005: ${actor}`;
+      meta.append(chip);
+    }
     if (progress.total > 0) {
-      const chip = el("span", "chip acc", `\u2611 ${progress.done}/${progress.total}`);
+      const chip = el2("span", "chip acc", `\u2611 ${progress.done}/${progress.total}`);
       chip.classList.toggle("acc-done", progress.done === progress.total);
       meta.append(chip);
     }
-    if (card.blockedReason) meta.append(el("span", "chip blocked-chip", `\u26D4 ${card.blockedReason}`));
+    if (card.blockedReason) meta.append(el2("span", "chip blocked-chip", `\u26D4 ${card.blockedReason}`));
     meta.hidden = meta.childElementCount === 0;
     node.classList.toggle("blocked", blocked);
     node.classList.toggle("closed", isClosed(card) || isDoneColumn(s, card.columnId));
@@ -716,12 +931,12 @@ function updateCard(node, card, s, h) {
     const deps = node.querySelector(".deps");
     deps.textContent = "";
     for (const b of blockers) {
-      const chip = el("span", "chip dep", `\u26D4 #${b.id}`);
+      const chip = el2("span", "chip dep", `\u26D4 #${b.id}`);
       chip.title = b.title;
       deps.append(chip);
     }
     for (const o of blocksCards(s, card.id)) {
-      const chip = el("span", "chip dep-out", `\u2192 #${o.id}`);
+      const chip = el2("span", "chip dep-out", `\u2192 #${o.id}`);
       chip.title = o.title;
       deps.append(chip);
     }
@@ -733,6 +948,23 @@ function updateCard(node, card, s, h) {
     fillMoves(node.querySelector(".moves"), card, s, node.dataset.key, h);
   }
   node.classList.toggle("pending", s.pending.has(node.dataset.key));
+}
+function focusRow(key, h) {
+  const row = el2("div", "focus-row");
+  row.dataset.key = key;
+  const head = el2("div", "fr-h");
+  const prio = el2("span", "prio");
+  const cid = el2("span", "cid");
+  const open = el2("button", "ic", "\u2922");
+  open.type = "button";
+  open.title = "\u8A73\u7D30";
+  open.addEventListener("click", () => h.onOpen(row.dataset.key));
+  head.append(prio, cid, el2("div", "grow"), open);
+  const title = el2("div", "title");
+  const meta = el2("div", "meta");
+  const moves = el2("div", "moves");
+  row.append(head, title, meta, moves);
+  return row;
 }
 function panelSig(s) {
   return [
@@ -762,13 +994,13 @@ function renderPanel(view2, s) {
   if (view2.panelSig === sig) return;
   view2.panelSig = sig;
   view2.panelBody.textContent = "";
-  const delSec = el("section", "p-sec");
-  delSec.append(el("h3", "p-h", `\u6210\u679C\u7269 (${s.deliverables.length})`));
-  const addForm = el("form", "p-add");
-  const addInput = el("input");
+  const delSec = el2("section", "p-sec");
+  delSec.append(el2("h3", "p-h", `\u6210\u679C\u7269 (${s.deliverables.length})`));
+  const addForm = el2("form", "p-add");
+  const addInput = el2("input");
   addInput.placeholder = "\u6210\u679C\u7269\u3092\u8FFD\u52A0";
   addInput.setAttribute("aria-label", "add deliverable");
-  const addBtn = el("button", void 0, "\u8FFD\u52A0");
+  const addBtn = el2("button", void 0, "\u8FFD\u52A0");
   addBtn.type = "submit";
   addForm.append(addInput, addBtn);
   addForm.addEventListener("submit", (ev) => {
@@ -780,19 +1012,19 @@ function renderPanel(view2, s) {
     });
   });
   delSec.append(addForm);
-  const list = el("div", "p-list");
-  if (!s.deliverables.length) list.append(el("div", "p-empty", "\u6210\u679C\u7269\u306F\u307E\u3060\u306A\u3044"));
+  const list = el2("div", "p-list");
+  if (!s.deliverables.length) list.append(el2("div", "p-empty", "\u6210\u679C\u7269\u306F\u307E\u3060\u306A\u3044"));
   for (const d of s.deliverables) {
-    const row = el("div", "p-row");
-    const main = el("div", "p-main");
-    const t = el("div", "p-title", d.title);
+    const row = el2("div", "p-row");
+    const main = el2("div", "p-main");
+    const t = el2("div", "p-title", d.title);
     t.title = d.title;
     main.append(t);
-    const sub = el("div", "p-sub");
-    sub.append(el("span", "chip kind", d.kind));
-    if (d.ref) sub.append(el("span", "chip", d.ref));
+    const sub = el2("div", "p-sub");
+    sub.append(el2("span", "chip kind", d.kind));
+    if (d.ref) sub.append(el2("span", "chip", d.ref));
     if (d.cardId !== null && d.cardId !== void 0) {
-      const link = el("button", "link", `#${d.cardId}`);
+      const link = el2("button", "link", `#${d.cardId}`);
       link.type = "button";
       link.addEventListener("click", () => {
         const key = cardKey(s.projectId, d.cardId);
@@ -804,7 +1036,7 @@ function renderPanel(view2, s) {
     main.append(sub);
     const thumbs = thumbStrip(s.attachments.filter((a) => a.deliverableId === d.id), d.projectId);
     if (thumbs) main.append(thumbs);
-    const rm = el("button", "ic", "\xD7");
+    const rm = el2("button", "ic", "\xD7");
     rm.type = "button";
     rm.title = "\u6210\u679C\u7269\u3092\u524A\u9664";
     rm.addEventListener("click", () => view2.h.onDeleteDeliverable(d.projectId, d.id));
@@ -812,18 +1044,18 @@ function renderPanel(view2, s) {
     list.append(row);
   }
   delSec.append(list);
-  const tlSec = el("section", "p-sec");
-  tlSec.append(el("h3", "p-h", "\u6700\u8FD1\u306E\u51FA\u6765\u4E8B"));
-  const tl = el("div", "p-list tl");
-  if (!s.timeline.length) tl.append(el("div", "p-empty", "\u51FA\u6765\u4E8B\u306F\u307E\u3060\u306A\u3044"));
+  const tlSec = el2("section", "p-sec");
+  tlSec.append(el2("h3", "p-h", "\u6700\u8FD1\u306E\u51FA\u6765\u4E8B"));
+  const tl = el2("div", "p-list tl");
+  if (!s.timeline.length) tl.append(el2("div", "p-empty", "\u51FA\u6765\u4E8B\u306F\u307E\u3060\u306A\u3044"));
   for (const e of s.timeline.slice(-40).reverse()) {
-    const row = el("div", "tl-row");
-    const at = el("span", "tl-at", e.at.slice(5, 16).replace("T", " "));
-    const what = el("span", "tl-kind", eventLabel(e.kind));
+    const row = el2("div", "tl-row");
+    const at = el2("span", "tl-at", e.at.slice(5, 16).replace("T", " "));
+    const what = el2("span", "tl-kind", eventLabel(e.kind));
     row.append(at, what);
     const target = e.entityType === "card" || e.entityType === "deliverable" ? e.entityId : "";
     if (target) {
-      row.append(el("span", "tl-id", target.slice(target.indexOf("#") + 1)));
+      row.append(el2("span", "tl-id", target.slice(target.indexOf("#") + 1)));
       if (e.entityType === "card") {
         const key = e.entityId;
         if (s.cards[key]) {
@@ -837,11 +1069,53 @@ function renderPanel(view2, s) {
   tlSec.append(tl);
   view2.panelBody.append(delSec, tlSec);
 }
+function renderFocus(view2, s) {
+  view2.focus.hidden = !s.focus || !s.projectId;
+  if (!view2.focus.hidden) {
+    const ready = readyCards(s);
+    const sig = [s.projectId, ...ready.map((c) => `${c.id}:${c.version}:${c.title}:${c.priority}:${c.owner ?? ""}:${c.due ?? ""}`)].join("|");
+    view2.focusCount.textContent = String(ready.length);
+    if (view2.focusSig !== sig) {
+      view2.focusSig = sig;
+      const els = [];
+      for (const card of ready) {
+        const key = cardKey(card.projectId, card.id);
+        let row = view2.focusRows.get(key);
+        if (!row) {
+          row = focusRow(key, view2.h);
+          view2.focusRows.set(key, row);
+        }
+        row.querySelector(".prio").textContent = `p${card.priority}`;
+        row.querySelector(".cid").textContent = `#${card.id}`;
+        row.querySelector(".title").textContent = card.title;
+        const meta = row.querySelector(".meta");
+        meta.textContent = "";
+        meta.append(el2("span", "chip", s.columns[card.columnId]?.name ?? card.columnId));
+        if (card.owner) meta.append(el2("span", "chip owner", `@${card.owner}`));
+        if (card.due) meta.append(el2("span", "chip", `due ${card.due}`));
+        const progress = acceptanceProgress(card.body);
+        if (progress.total) meta.append(el2("span", "chip acc", `\u2611 ${progress.done}/${progress.total}`));
+        fillMoves(row.querySelector(".moves"), card, s, key, view2.h);
+        row.classList.toggle("pending", s.pending.has(key));
+        els.push(row);
+      }
+      keyedDiff(view2.focusList, els);
+    }
+    view2.focusEmpty.hidden = ready.length > 0;
+  }
+  const staleRows = [];
+  const live = new Set(s.focus && s.projectId ? readyCards(s).map((c) => cardKey(c.projectId, c.id)) : []);
+  for (const key of view2.focusRows.keys()) if (!live.has(key)) staleRows.push(key);
+  for (const key of staleRows) {
+    view2.focusRows.get(key)?.remove();
+    view2.focusRows.delete(key);
+  }
+}
 function thumbStrip(list, projectId) {
   if (!list.length) return null;
-  const wrap = el("div", "thumbs");
+  const wrap = el2("div", "thumbs");
   for (const a of list) {
-    const img = el("img", "thumb");
+    const img = el2("img", "thumb");
     img.src = attachmentSrc(projectId, a.id);
     img.alt = a.name;
     img.title = a.name;
@@ -853,27 +1127,34 @@ function renderSearch(view2, s) {
   const hits = s.hits;
   view2.qres.hidden = hits === null;
   if (hits === null) return;
-  const sig = hits.map((h) => `${h.type}:${h.id}:${h.title}`).join("");
+  const sig = `${s.searchAll}|${hits.map((h) => `${h.projectId}:${h.type}:${h.id}:${h.title}`).join("")}`;
   if (view2.qres.dataset.sig === sig) return;
   view2.qres.dataset.sig = sig;
   view2.qres.textContent = "";
   if (!hits.length) {
-    view2.qres.append(el("div", "p-empty", "\u8A72\u5F53\u306A\u3057"));
+    view2.qres.append(el2("div", "p-empty", "\u8A72\u5F53\u306A\u3057"));
     return;
   }
   for (const hit of hits) {
-    const row = el(hit.type === "card" ? "button" : "div", "q-hit");
+    const row = el2(hit.type === "card" ? "button" : "div", "q-hit");
     row.setAttribute("role", "option");
     if (row instanceof HTMLButtonElement) {
       row.type = "button";
-      row.addEventListener("click", () => view2.h.onOpenCard(hit.id));
+      row.addEventListener("click", () => view2.h.onOpenHit(hit));
     }
-    const top = el("div", "q-h");
-    top.append(el("span", "q-type", hit.type === "card" ? "\u30AB\u30FC\u30C9" : "\u6210\u679C\u7269"), el("span", "cid", `#${hit.id}`));
-    if (hit.columnId) top.append(el("span", "chip", s.columns[hit.columnId]?.name ?? hit.columnId));
-    const title = el("div", "q-title", hit.title);
+    const top = el2("div", "q-h");
+    top.append(el2("span", "q-type", hit.type === "card" ? "\u30AB\u30FC\u30C9" : "\u6210\u679C\u7269"), el2("span", "cid", `#${hit.id}`));
+    if (s.searchAll) {
+      const name = s.projects.find((x) => x.slug === hit.projectId)?.name ?? hit.projectId;
+      const onBoard = hit.projectId === s.projectId;
+      top.append(el2("span", onBoard ? "chip" : "chip other-board", name));
+    }
+    if (hit.columnId && hit.projectId === s.projectId) {
+      top.append(el2("span", "chip", s.columns[hit.columnId]?.name ?? hit.columnId));
+    }
+    const title = el2("div", "q-title", hit.title);
     row.append(top, title);
-    if (hit.snippet) row.append(el("div", "q-snip", hit.snippet));
+    if (hit.snippet && hit.snippet !== hit.title) row.append(el2("div", "q-snip", hit.snippet));
     view2.qres.append(row);
   }
 }
@@ -926,25 +1207,25 @@ function renderNotifications(view2, s) {
   const body = paneBody(view2.paneNotif);
   body.textContent = "";
   if (!s.notifications.length) {
-    body.append(el("div", "p-empty", "\u901A\u77E5\u306F\u306A\u3044"));
+    body.append(el2("div", "p-empty", "\u901A\u77E5\u306F\u306A\u3044"));
     return;
   }
   for (const level of LEVELS) {
     const group = s.notifications.filter((n) => n.level === level);
     if (!group.length) continue;
-    const sec = el("section", "p-sec");
-    sec.append(el("h3", `p-h lv-${level}`, `${LEVEL_LABEL[level]} (${group.length})`));
-    const list = el("div", "p-list");
+    const sec = el2("section", "p-sec");
+    sec.append(el2("h3", `p-h lv-${level}`, `${LEVEL_LABEL[level]} (${group.length})`));
+    const list = el2("div", "p-list");
     for (const n of group) {
-      const row = el("div", "p-row");
-      const main = el("div", "p-main");
-      const title = el("div", "p-title", n.title);
+      const row = el2("div", "p-row");
+      const main = el2("div", "p-main");
+      const title = el2("div", "p-title", n.title);
       title.title = n.title;
       main.append(title);
-      const sub = el("div", "p-sub");
-      sub.append(el("span", "chip kind", n.kind));
-      if (n.cardId != null) sub.append(el("span", "cid", `#${n.cardId}`));
-      if (n.detail) sub.append(el("span", "p-note", n.detail));
+      const sub = el2("div", "p-sub");
+      sub.append(el2("span", "chip kind", n.kind));
+      if (n.cardId != null) sub.append(el2("span", "cid", `#${n.cardId}`));
+      if (n.detail) sub.append(el2("span", "p-note", n.detail));
       main.append(sub);
       row.append(main);
       if (n.cardId != null) {
@@ -968,26 +1249,26 @@ function renderTemplates(view2, s) {
   const body = paneBody(view2.paneTemplates);
   body.textContent = "";
   if (!s.templates.length) {
-    body.append(el("div", "p-empty", "\u30C6\u30F3\u30D7\u30EC\u30FC\u30C8\u306F\u307E\u3060\u306A\u3044\uFF08\u30AB\u30FC\u30C9\u3092\u958B\u3044\u3066\u300C\u30C6\u30F3\u30D7\u30EC\u30FC\u30C8\u5316\u300D\uFF09"));
+    body.append(el2("div", "p-empty", "\u30C6\u30F3\u30D7\u30EC\u30FC\u30C8\u306F\u307E\u3060\u306A\u3044\uFF08\u30AB\u30FC\u30C9\u3092\u958B\u3044\u3066\u300C\u30C6\u30F3\u30D7\u30EC\u30FC\u30C8\u5316\u300D\uFF09"));
     return;
   }
-  const list = el("div", "p-list");
+  const list = el2("div", "p-list");
   for (const t of s.templates) {
-    const row = el("div", "p-row");
-    const main = el("div", "p-main");
-    const title = el("div", "p-title", t.name);
+    const row = el2("div", "p-row");
+    const main = el2("div", "p-main");
+    const title = el2("div", "p-title", t.name);
     title.title = t.name;
     main.append(title);
-    const sub = el("div", "p-sub");
-    sub.append(el("span", "chip", t.title));
-    sub.append(el("span", "chip", `p${t.priority}`));
-    if (t.columnId) sub.append(el("span", "chip", s.columns[t.columnId]?.name ?? t.columnId));
+    const sub = el2("div", "p-sub");
+    sub.append(el2("span", "chip", t.title));
+    sub.append(el2("span", "chip", `p${t.priority}`));
+    if (t.columnId) sub.append(el2("span", "chip", s.columns[t.columnId]?.name ?? t.columnId));
     main.append(sub);
-    const use = el("button", "link", "\u4F7F\u3046");
+    const use = el2("button", "link", "\u4F7F\u3046");
     use.type = "button";
     use.title = "\u3053\u306E\u30C6\u30F3\u30D7\u30EC\u30FC\u30C8\u304B\u3089\u30AB\u30FC\u30C9\u3092\u4F5C\u308B";
     use.addEventListener("click", () => view2.h.onUseTemplate(t.id));
-    const rm = el("button", "ic", "\xD7");
+    const rm = el2("button", "ic", "\xD7");
     rm.type = "button";
     rm.title = "\u30C6\u30F3\u30D7\u30EC\u30FC\u30C8\u3092\u524A\u9664";
     rm.addEventListener("click", () => view2.h.onDeleteTemplate(t.id));
@@ -1005,10 +1286,10 @@ function renderViews(view2, s) {
   if (body.dataset.built !== "1") {
     body.dataset.built = "1";
     body.textContent = "";
-    const form = el("form", "p-add");
-    const nameInput2 = el("input");
+    const form = el2("form", "p-add");
+    const nameInput2 = el2("input");
     nameInput2.setAttribute("aria-label", "view name");
-    const save = el("button", void 0, "\u4FDD\u5B58");
+    const save = el2("button", void 0, "\u4FDD\u5B58");
     save.type = "submit";
     form.append(nameInput2, save);
     form.addEventListener("submit", (ev) => {
@@ -1019,12 +1300,12 @@ function renderViews(view2, s) {
         if (ok) nameInput2.value = "";
       });
     });
-    const focus = el("label", "ce-focus");
-    const box = el("input");
+    const focus = el2("label", "ce-focus");
+    const box = el2("input");
     box.type = "checkbox";
     box.addEventListener("change", () => view2.h.onToggleFocusQuery(box.checked));
-    focus.append(box, el("span", void 0, "\u30DC\u30FC\u30C9\u3082\u3053\u306E\u6761\u4EF6\u3067\u7D5E\u308A\u8FBC\u3080"));
-    body.append(form, focus, el("div", "p-list"));
+    focus.append(box, el2("span", void 0, "\u30DC\u30FC\u30C9\u3082\u3053\u306E\u6761\u4EF6\u3067\u7D5E\u308A\u8FBC\u3080"));
+    body.append(form, focus, el2("div", "p-list"));
   }
   const nameInput = body.querySelector(".p-add input");
   if (nameInput instanceof HTMLInputElement) nameInput.placeholder = s.q ? `\u300C${s.q}\u300D\u3092\u30D3\u30E5\u30FC\u3068\u3057\u3066\u4FDD\u5B58` : "\u30D3\u30E5\u30FC\u540D";
@@ -1040,21 +1321,21 @@ function renderViews(view2, s) {
   const list = body.querySelector(".p-list");
   if (!(list instanceof HTMLElement)) return;
   list.textContent = "";
-  if (!s.views.length) list.append(el("div", "p-empty", "\u30D3\u30E5\u30FC\u306F\u307E\u3060\u306A\u3044"));
+  if (!s.views.length) list.append(el2("div", "p-empty", "\u30D3\u30E5\u30FC\u306F\u307E\u3060\u306A\u3044"));
   for (const v of s.views) {
-    const row = el("div", "p-row");
-    const main = el("div", "p-main");
-    const title = el("div", "p-title", v.name);
+    const row = el2("div", "p-row");
+    const main = el2("div", "p-main");
+    const title = el2("div", "p-title", v.name);
     title.title = v.name;
     main.append(title);
-    const sub = el("div", "p-sub");
-    sub.append(el("span", "chip", v.query.q ? `q: ${v.query.q}` : "\u6761\u4EF6\u306A\u3057"));
-    if (v.query.focus) sub.append(el("span", "chip", "\u7D5E\u308A\u8FBC\u307F"));
+    const sub = el2("div", "p-sub");
+    sub.append(el2("span", "chip", v.query.q ? `q: ${v.query.q}` : "\u6761\u4EF6\u306A\u3057"));
+    if (v.query.focus) sub.append(el2("span", "chip", "\u7D5E\u308A\u8FBC\u307F"));
     main.append(sub);
-    const apply = el("button", "link", "\u9069\u7528");
+    const apply = el2("button", "link", "\u9069\u7528");
     apply.type = "button";
     apply.addEventListener("click", () => view2.h.onApplyView(v.id));
-    const rm = el("button", "ic", "\xD7");
+    const rm = el2("button", "ic", "\xD7");
     rm.type = "button";
     rm.title = "\u30D3\u30E5\u30FC\u3092\u524A\u9664";
     rm.addEventListener("click", () => view2.h.onDeleteView(v.id));
@@ -1072,37 +1353,37 @@ function renderOverview(view2, s) {
   if (view2.overviewSig === sig) return;
   view2.overviewSig = sig;
   view2.overview.textContent = "";
-  const head = el("div", "ov-h");
-  head.append(el("h2", void 0, "\u7DCF\u5408\u7BA1\u7406"), el("span", "ov-n", `${s.overviewRows.length} \u30D7\u30ED\u30B8\u30A7\u30AF\u30C8`));
+  const head = el2("div", "ov-h");
+  head.append(el2("h2", void 0, "\u7DCF\u5408\u7BA1\u7406"), el2("span", "ov-n", `${s.overviewRows.length} \u30D7\u30ED\u30B8\u30A7\u30AF\u30C8`));
   view2.overview.append(head);
   if (!s.overviewRows.length) {
-    view2.overview.append(el("div", "empty", "\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8\u304C\u7121\u3044"));
+    view2.overview.append(el2("div", "empty", "\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8\u304C\u7121\u3044"));
     return;
   }
-  const rows = el("div", "ov-rows");
+  const rows = el2("div", "ov-rows");
   for (const row of s.overviewRows) {
     const slug = s.projects.find((p2) => p2.projectId === row.projectId)?.slug ?? row.projectId;
-    const b = el("button", "ov-row");
+    const b = el2("button", "ov-row");
     b.type = "button";
     b.title = `${row.name} \u306E\u30DC\u30FC\u30C9\u3092\u958B\u304F`;
-    b.append(el("div", "ov-name", row.name));
+    b.append(el2("div", "ov-name", row.name));
     if (row.loop !== "idle") {
-      const live = el("span", "ov-loop", row.loop === "running" ? "\u81EA\u8D70\u4E2D" : "\u505C\u6B62");
+      const live = el2("span", "ov-loop", row.loop === "running" ? "\u81EA\u8D70\u4E2D" : "\u505C\u6B62");
       live.classList.add(row.loop === "running" ? "on" : "halt");
       b.append(live);
     }
-    const cols = el("div", "ov-cols");
+    const cols = el2("div", "ov-cols");
     for (const c of row.columns) {
-      const chip = el("span", "ov-col");
-      chip.append(el("span", "ov-col-n", c.name));
+      const chip = el2("span", "ov-col");
+      chip.append(el2("span", "ov-col-n", c.name));
       const over = c.wipLimit !== null && c.count > c.wipLimit;
-      chip.append(el("span", "ov-col-c", c.wipLimit !== null ? `${c.count}/${c.wipLimit}` : String(c.count)));
+      chip.append(el2("span", "ov-col-c", c.wipLimit !== null ? `${c.count}/${c.wipLimit}` : String(c.count)));
       if (over) chip.classList.add("over");
       if (c.kind === "done") chip.classList.add("done");
       cols.append(chip);
     }
     b.append(cols);
-    const counts = el("div", "ov-counts");
+    const counts = el2("div", "ov-counts");
     const stats = [
       { label: "\u5168\u4F53", value: row.counts.total, hot: false },
       { label: "\u672A\u5B8C\u4E86", value: row.counts.open, hot: false },
@@ -1112,7 +1393,7 @@ function renderOverview(view2, s) {
       { label: "WIP\u8D85", value: row.counts.wipOver, hot: row.counts.wipOver > 0 }
     ];
     for (const st of stats) {
-      const cell = el("span", "ov-c", `${st.label} ${st.value}`);
+      const cell = el2("span", "ov-c", `${st.label} ${st.value}`);
       if (st.hot) cell.classList.add("hot");
       counts.append(cell);
     }
@@ -1140,15 +1421,15 @@ function renderGraph(view2, s) {
   if (view2.graphSig === sig) return;
   view2.graphSig = sig;
   view2.graph.textContent = "";
-  const head = el("div", "ov-h");
-  head.append(el("h2", void 0, "\u4F9D\u5B58\u30DE\u30C3\u30D7"), el("span", "ov-n", layout ? `${layout.nodes.length} \u30CE\u30FC\u30C9 / ${layout.edges.length} \u4F9D\u5B58` : ""));
+  const head = el2("div", "ov-h");
+  head.append(el2("h2", void 0, "\u4F9D\u5B58\u30DE\u30C3\u30D7"), el2("span", "ov-n", layout ? `${layout.nodes.length} \u30CE\u30FC\u30C9 / ${layout.edges.length} \u4F9D\u5B58` : ""));
   view2.graph.append(head);
   if (!layout) {
-    view2.graph.append(el("div", "empty", "\u8AAD\u307F\u8FBC\u307F\u4E2D\u2026"));
+    view2.graph.append(el2("div", "empty", "\u8AAD\u307F\u8FBC\u307F\u4E2D\u2026"));
     return;
   }
   if (!layout.nodes.length) {
-    view2.graph.append(el("div", "empty", "\u30AB\u30FC\u30C9\u304C\u7121\u3044"));
+    view2.graph.append(el2("div", "empty", "\u30AB\u30FC\u30C9\u304C\u7121\u3044"));
     return;
   }
   const NW = 190, NH = 34, GX = 70, GY = 46, PAD = 18;
@@ -1240,10 +1521,22 @@ function renderGraph(view2, s) {
     });
     svg.append(g);
   }
-  const scroll = el("div", "gscroll");
+  const scroll = el2("div", "gscroll");
   scroll.append(svg);
   view2.graph.append(scroll);
-  view2.graph.append(el("div", "ov-n", "\u9589\u3058\u305F\u30AB\u30FC\u30C9\u306F\u6DE1\u304F\u3001\u30D6\u30ED\u30C3\u30AF\u4E2D\u306F\u67A0\u7DDA\u4ED8\u304D"));
+  view2.graph.append(el2("div", "ov-n", "\u9589\u3058\u305F\u30AB\u30FC\u30C9\u306F\u6DE1\u304F\u3001\u30D6\u30ED\u30C3\u30AF\u4E2D\u306F\u67A0\u7DDA\u4ED8\u304D"));
+}
+function renderLocks(view2, s) {
+  const locks = s.projectId ? s.locks : [];
+  view2.locks.hidden = locks.length === 0;
+  if (!locks.length) {
+    view2.locksSig = "";
+    return;
+  }
+  const sig = locks.map((l) => `${l.resource}:${l.owner}:${l.expiresAt}`).join("");
+  if (view2.locksSig === sig) return;
+  view2.locksSig = sig;
+  view2.locksText.textContent = locks.map((l) => `\u677F${s.projectName ? `\u300C${s.projectName}\u300D` : ""}\u3092 ${l.owner} \u304C\u4FDD\u6301${l.expiresAt ? `\uFF08\u301C${l.expiresAt.slice(5, 16).replace("T", " ")}\uFF09` : ""}`).join(" \xB7 ");
 }
 function renderView(view2, s) {
   const projectSig = `${s.projects.map((p2) => `${p2.slug}:${p2.name}`).join("|")}#${s.projectId ?? ""}`;
@@ -1251,12 +1544,12 @@ function renderView(view2, s) {
     view2.projectSig = projectSig;
     view2.select.textContent = "";
     if (!s.projects.length) {
-      const o = el("option", void 0, "(\u306A\u3057)");
+      const o = el2("option", void 0, "(\u306A\u3057)");
       o.value = "";
       view2.select.append(o);
     }
     for (const p2 of s.projects) {
-      const o = el("option", void 0, p2.name || p2.slug);
+      const o = el2("option", void 0, p2.name || p2.slug);
       o.value = p2.slug;
       view2.select.append(o);
     }
@@ -1336,23 +1629,39 @@ function renderView(view2, s) {
   }
   renderNotifBadges(view2, s);
   renderLoop(view2, s);
+  renderLocks(view2, s);
   renderSearch(view2, s);
   renderOverview(view2, s);
   renderGraph(view2, s);
+  const ganttOn = s.gantt && !s.overview && !s.graph && Boolean(s.projectId);
+  view2.gantt.hidden = !ganttOn;
+  if (ganttOn) {
+    renderGantt(view2.gantt, Object.values(s.cards), {
+      projectId: s.projectId,
+      scale: s.ganttScale,
+      now: Date.now(),
+      columns: s.columns,
+      onScale: (scale) => view2.h.onGanttScale(scale),
+      onOpen: (card) => view2.h.onOpen(cardKey(card.projectId, card.id))
+    });
+  }
   view2.paneTemplates.hidden = s.pane !== "templates" || !s.projectId;
   view2.paneViews.hidden = s.pane !== "views" || !s.projectId;
   view2.paneNotif.hidden = s.pane !== "notifications" || !s.projectId;
   renderNotifications(view2, s);
   renderTemplates(view2, s);
   renderViews(view2, s);
-  if (s.focus || s.graph || s.overview) view2.board.hidden = true;
-  if (s.graph || s.overview) view2.focus.hidden = true;
+  renderFocus(view2, s);
+  if (s.focus || s.graph || s.overview || s.gantt) view2.board.hidden = true;
+  if (s.graph || s.overview || s.gantt) view2.focus.hidden = true;
   const toggle = (b, on) => {
     b.classList.toggle("on", on);
     b.setAttribute("aria-pressed", String(on));
   };
   toggle(view2.overviewBtn, s.overview);
   toggle(view2.graphBtn, s.graph && !s.overview);
+  toggle(view2.ganttBtn, s.gantt && !s.overview && !s.graph);
+  toggle(view2.searchAllBtn, s.searchAll);
   toggle(view2.viewsBtn, s.pane === "views");
   toggle(view2.templatesBtn, s.pane === "templates");
   toggle(view2.notifBtn, s.pane === "notifications");
@@ -1370,44 +1679,46 @@ function renderView(view2, s) {
 // web/src/detail.ts
 var IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 var isImage = (f) => IMAGE_TYPES.includes(f.type);
-function el2(tag, cls, text) {
+function el3(tag, cls, text) {
   const n = document.createElement(tag);
   if (cls) n.className = cls;
   if (text !== void 0) n.textContent = text;
   return n;
 }
 function field(label, input) {
-  const wrap = el2("label", "f");
-  wrap.append(el2("span", "f-l", label), input);
+  const wrap = el3("label", "f");
+  wrap.append(el3("span", "f-l", label), input);
   return wrap;
 }
 function mountDetail(root2, h) {
   let key = null;
   let snapshot = null;
-  const dlg = el2("dialog", "detail");
-  const head = el2("div", "d-h");
-  const heading = el2("h2", "d-title");
-  const closeBtn = el2("button", "ic", "\xD7");
+  const dlg = el3("dialog", "detail");
+  const head = el3("div", "d-h");
+  const heading = el3("h2", "d-title");
+  const actorLine = el3("div", "d-actor");
+  actorLine.hidden = true;
+  const closeBtn = el3("button", "ic", "\xD7");
   closeBtn.type = "button";
   closeBtn.title = "\u9589\u3058\u308B";
-  head.append(heading, closeBtn);
-  const title = el2("input", "f-title");
+  head.append(heading, actorLine, closeBtn);
+  const title = el3("input", "f-title");
   title.placeholder = "\u30BF\u30A4\u30C8\u30EB";
   title.required = true;
-  const prio = el2("input", "f-prio");
+  const prio = el3("input", "f-prio");
   prio.type = "number";
   prio.step = "1";
-  const owner = el2("input", "f-owner");
+  const owner = el3("input", "f-owner");
   owner.placeholder = "\u672A\u5272\u5F53";
-  const due = el2("input", "f-due");
+  const due = el3("input", "f-due");
   due.type = "date";
-  const blocked = el2("input", "f-blocked");
+  const blocked = el3("input", "f-blocked");
   blocked.placeholder = "\u7406\u7531\u304C\u3042\u308C\u3070\u5165\u529B\uFF08\u7A7A\u3067\u89E3\u9664\uFF09";
-  const body = el2("textarea", "f-body");
+  const body = el3("textarea", "f-body");
   body.rows = 7;
   body.placeholder = "\u30E1\u30E2\u30FB\u53D7\u3051\u5165\u308C\u6761\u4EF6\uFF08- [ ] \u9805\u76EE\uFF09";
-  const accHint = el2("div", "acc-hint");
-  const grid = el2("div", "d-grid");
+  const accHint = el3("div", "acc-hint");
+  const grid = el3("div", "d-grid");
   grid.append(
     field("\u30BF\u30A4\u30C8\u30EB", title),
     field("\u512A\u5148\u5EA6", prio),
@@ -1417,21 +1728,21 @@ function mountDetail(root2, h) {
     field("\u672C\u6587", body)
   );
   grid.append(accHint);
-  const depSec = el2("section", "d-sec");
-  depSec.append(el2("h3", void 0, "\u4F9D\u5B58\u95A2\u4FC2"));
-  const depList = el2("div", "d-deps");
-  const depForm = el2("form", "d-depadd");
-  const depTarget = el2("select");
+  const depSec = el3("section", "d-sec");
+  depSec.append(el3("h3", void 0, "\u4F9D\u5B58\u95A2\u4FC2"));
+  const depList = el3("div", "d-deps");
+  const depForm = el3("form", "d-depadd");
+  const depTarget = el3("select");
   depTarget.setAttribute("aria-label", "dependency target");
-  const depType = el2("select");
+  const depType = el3("select");
   for (const [v, t] of [["blocks", "\u30D6\u30ED\u30C3\u30AF\u3059\u308B"], ["relates", "\u95A2\u9023"]]) {
-    const o = el2("option", void 0, t);
+    const o = el3("option", void 0, t);
     o.value = v;
     depType.append(o);
   }
-  const depAdd = el2("button", void 0, "\u8FFD\u52A0");
+  const depAdd = el3("button", void 0, "\u8FFD\u52A0");
   depAdd.type = "submit";
-  depForm.append(el2("span", "f-l", "\u5BFE\u8C61"), depTarget, depType, depAdd);
+  depForm.append(el3("span", "f-l", "\u5BFE\u8C61"), depTarget, depType, depAdd);
   depForm.addEventListener("submit", (ev) => {
     ev.preventDefault();
     if (!key) return;
@@ -1442,14 +1753,14 @@ function mountDetail(root2, h) {
     });
   });
   depSec.append(depList, depForm);
-  const dvSec = el2("section", "d-sec");
-  dvSec.append(el2("h3", void 0, "\u6210\u679C\u7269"));
-  const dvList = el2("div", "d-dvs");
-  const dvForm = el2("form", "d-dvadd");
-  const dvTitle = el2("input");
+  const dvSec = el3("section", "d-sec");
+  dvSec.append(el3("h3", void 0, "\u6210\u679C\u7269"));
+  const dvList = el3("div", "d-dvs");
+  const dvForm = el3("form", "d-dvadd");
+  const dvTitle = el3("input");
   dvTitle.placeholder = "\u3053\u306E\u30AB\u30FC\u30C9\u306B\u7D10\u3065\u304F\u6210\u679C\u7269";
   dvTitle.setAttribute("aria-label", "add deliverable for card");
-  const dvAdd = el2("button", void 0, "\u8FFD\u52A0");
+  const dvAdd = el3("button", void 0, "\u8FFD\u52A0");
   dvAdd.type = "submit";
   dvForm.append(dvTitle, dvAdd);
   dvForm.addEventListener("submit", (ev) => {
@@ -1463,13 +1774,13 @@ function mountDetail(root2, h) {
     });
   });
   dvSec.append(dvList, dvForm);
-  const tlSec = el2("section", "d-sec");
-  tlSec.append(el2("h3", void 0, "\u3053\u306E\u30AB\u30FC\u30C9\u306E\u5C65\u6B74"));
-  const tlList = el2("div", "d-tl");
-  const atSec = el2("section", "d-sec");
-  atSec.append(el2("h3", void 0, "\u6DFB\u4ED8\u753B\u50CF"));
-  const atList = el2("div", "d-atts");
-  const atPick = el2("input", "d-file");
+  const tlSec = el3("section", "d-sec");
+  tlSec.append(el3("h3", void 0, "\u3053\u306E\u30AB\u30FC\u30C9\u306E\u5C65\u6B74"));
+  const tlList = el3("div", "d-tl");
+  const atSec = el3("section", "d-sec");
+  atSec.append(el3("h3", void 0, "\u6DFB\u4ED8\u753B\u50CF"));
+  const atList = el3("div", "d-atts");
+  const atPick = el3("input", "d-file");
   atPick.type = "file";
   atPick.accept = IMAGE_TYPES.join(",");
   atPick.setAttribute("aria-label", "\u753B\u50CF\u3092\u6DFB\u4ED8");
@@ -1488,22 +1799,22 @@ function mountDetail(root2, h) {
     });
   });
   atSec.append(atList, atPick);
-  const foot = el2("div", "d-foot");
-  const moveSel = el2("select");
+  const foot = el3("div", "d-foot");
+  const moveSel = el3("select");
   moveSel.setAttribute("aria-label", "move to column");
-  const delBtn = el2("button", "danger", "\u524A\u9664");
+  const delBtn = el3("button", "danger", "\u524A\u9664");
   delBtn.type = "button";
-  const tplBtn = el2("button", "ghost", "\u30C6\u30F3\u30D7\u30EC\u30FC\u30C8\u5316");
+  const tplBtn = el3("button", "ghost", "\u30C6\u30F3\u30D7\u30EC\u30FC\u30C8\u5316");
   tplBtn.type = "button";
   tplBtn.title = "\u3053\u306E\u30AB\u30FC\u30C9\u306E\u5185\u5BB9\u3092\u96DB\u5F62\u3068\u3057\u3066\u4FDD\u5B58";
   tplBtn.addEventListener("click", () => {
     if (key) h.onTemplateFromCard(key);
   });
-  const cancelBtn = el2("button", "ghost", "\u9589\u3058\u308B");
+  const cancelBtn = el3("button", "ghost", "\u9589\u3058\u308B");
   cancelBtn.type = "button";
-  const saveBtn = el2("button", "primary", "\u4FDD\u5B58");
+  const saveBtn = el3("button", "primary", "\u4FDD\u5B58");
   saveBtn.type = "button";
-  foot.append(el2("div", "grow"), tplBtn, moveSel, delBtn, cancelBtn, saveBtn);
+  foot.append(el3("div", "grow"), tplBtn, moveSel, delBtn, cancelBtn, saveBtn);
   dlg.append(head, grid, depSec, dvSec, atSec, tlSec, foot);
   root2.append(dlg);
   const close = () => {
@@ -1580,19 +1891,19 @@ function mountDetail(root2, h) {
   function renderDeps(s, card) {
     const edges = edgesOf(s, card.id);
     depList.textContent = "";
-    if (!edges.length) depList.append(el2("div", "d-empty", "\u4F9D\u5B58\u306A\u3057"));
+    if (!edges.length) depList.append(el3("div", "d-empty", "\u4F9D\u5B58\u306A\u3057"));
     for (const e of edges) {
       const outgoing = e.fromCard === card.id;
       const otherId = outgoing ? e.toCard : e.fromCard;
       const other = s.cards[cardKey(s.projectId, otherId)];
-      const row = el2("div", "d-dep");
+      const row = el3("div", "d-dep");
       const label = e.type === "blocks" ? outgoing ? "\u30D6\u30ED\u30C3\u30AF\u3059\u308B" : "\u30D6\u30ED\u30C3\u30AF\u3055\u308C\u3066\u3044\u308B" : "\u95A2\u9023";
-      row.append(el2("span", `chip kind${e.type === "relates" ? " rel" : ""}`, label));
-      const name = el2("span", "d-dep-name", other ? `#${other.id} ${other.title}` : `#${otherId}\uFF08\u4E0D\u5728\uFF09`);
+      row.append(el3("span", `chip kind${e.type === "relates" ? " rel" : ""}`, label));
+      const name = el3("span", "d-dep-name", other ? `#${other.id} ${other.title}` : `#${otherId}\uFF08\u4E0D\u5728\uFF09`);
       name.title = name.textContent;
       row.append(name);
-      if (e.type === "blocks" && !outgoing && other && !isClosed(other)) row.append(el2("span", "chip warn", "\u672A\u5B8C\u4E86"));
-      const rm = el2("button", "ic", "\xD7");
+      if (e.type === "blocks" && !outgoing && other && !isClosed(other)) row.append(el3("span", "chip warn", "\u672A\u5B8C\u4E86"));
+      const rm = el3("button", "ic", "\xD7");
       rm.type = "button";
       rm.title = "\u4F9D\u5B58\u3092\u89E3\u9664";
       rm.addEventListener("click", () => {
@@ -1610,7 +1921,7 @@ function mountDetail(root2, h) {
     for (const id of s.columnOrder) {
       for (const c of Object.values(s.cards)) {
         if (c.columnId !== id || c.projectId !== s.projectId || c.id === card.id) continue;
-        const o = el2("option", void 0, `#${c.id} ${c.title}`);
+        const o = el3("option", void 0, `#${c.id} ${c.title}`);
         o.value = String(c.id);
         depTarget.append(o);
       }
@@ -1618,14 +1929,14 @@ function mountDetail(root2, h) {
     if (prev && depTarget.querySelector(`option[value="${prev}"]`)) depTarget.value = prev;
   }
   function thumb(a, projectId, onRemove) {
-    const wrap = el2("span", "thumb-w");
-    const img = el2("img", "thumb");
+    const wrap = el3("span", "thumb-w");
+    const img = el3("img", "thumb");
     img.src = attachmentSrc(projectId, a.id);
     img.alt = a.name;
     img.title = a.name;
     wrap.append(img);
     if (onRemove) {
-      const rm = el2("button", "ic thumb-x", "\xD7");
+      const rm = el3("button", "ic thumb-x", "\xD7");
       rm.type = "button";
       rm.title = `${a.name} \u3092\u5916\u3059`;
       rm.addEventListener("click", () => {
@@ -1645,7 +1956,7 @@ function mountDetail(root2, h) {
     if (sigs.att === sig) return;
     sigs.att = sig;
     atList.textContent = "";
-    if (!mine.length) atList.append(el2("div", "d-empty", "\u6DFB\u4ED8\u306A\u3057"));
+    if (!mine.length) atList.append(el3("div", "d-empty", "\u6DFB\u4ED8\u306A\u3057"));
     for (const a of mine) {
       atList.append(thumb(a, card.projectId, () => h.onDeleteAttachment(card.projectId, a.id).then((ok) => {
         if (ok) h.notify("\u6DFB\u4ED8\u3092\u5916\u3057\u305F");
@@ -1659,14 +1970,14 @@ function mountDetail(root2, h) {
     if (sigs.dv === sig) return;
     sigs.dv = sig;
     dvList.textContent = "";
-    if (!mine.length) dvList.append(el2("div", "d-empty", "\u7D10\u3065\u304F\u6210\u679C\u7269\u306A\u3057"));
+    if (!mine.length) dvList.append(el3("div", "d-empty", "\u7D10\u3065\u304F\u6210\u679C\u7269\u306A\u3057"));
     for (const d of mine) {
-      const row = el2("div", "d-dv");
-      const t = el2("span", "d-dv-title", d.title);
+      const row = el3("div", "d-dv");
+      const t = el3("span", "d-dv-title", d.title);
       t.title = d.title;
-      row.append(el2("span", "chip kind", d.kind), t);
-      if (d.ref) row.append(el2("span", "chip", d.ref));
-      const rm = el2("button", "ic", "\xD7");
+      row.append(el3("span", "chip kind", d.kind), t);
+      if (d.ref) row.append(el3("span", "chip", d.ref));
+      const rm = el3("button", "ic", "\xD7");
       rm.type = "button";
       rm.title = "\u6210\u679C\u7269\u3092\u524A\u9664";
       rm.addEventListener("click", () => {
@@ -1675,14 +1986,14 @@ function mountDetail(root2, h) {
       row.append(rm);
       dvList.append(row);
       const atts = s.attachments.filter((a) => a.deliverableId === d.id);
-      const strip = el2("div", "d-dv-atts");
+      const strip = el3("div", "d-dv-atts");
       for (const a of atts) {
         strip.append(thumb(a, d.projectId, () => h.onDeleteAttachment(d.projectId, a.id).then((ok) => {
           if (ok) h.notify("\u6DFB\u4ED8\u3092\u5916\u3057\u305F");
           return ok;
         })));
       }
-      const pick = el2("input", "d-file sm");
+      const pick = el3("input", "d-file sm");
       pick.type = "file";
       pick.accept = IMAGE_TYPES.join(",");
       pick.setAttribute("aria-label", `${d.title} \u306B\u753B\u50CF\u3092\u6DFB\u4ED8`);
@@ -1710,11 +2021,11 @@ function mountDetail(root2, h) {
     if (sigs.tl === sig) return;
     sigs.tl = sig;
     tlList.textContent = "";
-    if (!mine.length) tlList.append(el2("div", "d-empty", "\u5C65\u6B74\u306A\u3057"));
+    if (!mine.length) tlList.append(el3("div", "d-empty", "\u5C65\u6B74\u306A\u3057"));
     for (const e of shown.slice().reverse()) {
-      const row = el2("div", "d-tl-row");
-      row.append(el2("span", "tl-at", e.at.slice(5, 16).replace("T", " ")), el2("span", "tl-kind", e.kind));
-      if (e.actor) row.append(el2("span", "tl-actor", e.actor));
+      const row = el3("div", "d-tl-row");
+      row.append(el3("span", "tl-at", e.at.slice(5, 16).replace("T", " ")), el3("span", "tl-kind", e.kind));
+      if (e.actor) row.append(el3("span", "tl-actor", e.actor));
       tlList.append(row);
     }
   }
@@ -1750,6 +2061,9 @@ function mountDetail(root2, h) {
     }
   };
   function paint(s, card) {
+    const actor = lastActorOf(card);
+    actorLine.hidden = actor === null;
+    actorLine.textContent = actor === null ? "" : `\u6700\u7D42\u66F4\u65B0\u8005: ${actor}`;
     const progress = acceptanceProgress(body.value);
     accHint.textContent = progress.total ? `\u53D7\u3051\u5165\u308C\u6761\u4EF6: ${progress.done}/${progress.total}${progress.done === progress.total ? " \u2713" : ""}` : "\u53D7\u3051\u5165\u308C\u6761\u4EF6: \u306A\u3057\uFF08- [ ] \u3067\u8FFD\u52A0\u3067\u304D\u308B\uFF09";
     renderDeps(s, card);
@@ -1759,12 +2073,12 @@ function mountDetail(root2, h) {
     renderTimeline(s, card);
     const prev = moveSel.value;
     moveSel.textContent = "";
-    const ph = el2("option", void 0, "\u2192 \u79FB\u52D5\u5148");
+    const ph = el3("option", void 0, "\u2192 \u79FB\u52D5\u5148");
     ph.value = "";
     moveSel.append(ph);
     for (const id of s.columnOrder) {
       if (id === card.columnId) continue;
-      const o = el2("option", void 0, s.columns[id]?.name ?? id);
+      const o = el3("option", void 0, s.columns[id]?.name ?? id);
       o.value = id;
       moveSel.append(o);
     }
@@ -1845,10 +2159,11 @@ async function loadBoard() {
 var extrasSeq = 0;
 async function loadExtras(project, boardToken) {
   const seq = ++extrasSeq;
-  const [att, nt, lp] = await Promise.allSettled([
+  const [att, nt, lp, lk] = await Promise.allSettled([
     getAttachments(project),
     getNotifications(project),
-    getLoop(project)
+    getLoop(project),
+    getLocks(project)
   ]);
   if (seq !== extrasSeq || boardToken !== boardSeq || store.projectId !== project) return;
   const failed = [];
@@ -1858,6 +2173,7 @@ async function loadExtras(project, boardToken) {
   else failed.push(nt.reason);
   if (lp.status === "fulfilled") store.loop = lp.value.loop;
   else failed.push(lp.reason);
+  store.locks = lk.status === "fulfilled" ? lk.value.locks ?? [] : [];
   if (failed.length) {
     const message = describe(failed[0]);
     store.error = message;
@@ -2083,12 +2399,13 @@ async function doCreateProject(name) {
 var searchSeq = 0;
 var searchTimer;
 async function runSearch(q) {
-  const project = store.projectId;
-  if (!project || !q.trim()) return;
+  const all = store.searchAll;
+  const board = store.projectId;
+  if (!all && !board) return;
   const seq = ++searchSeq;
   try {
-    const { hits } = await searchBoard(project, q);
-    if (seq !== searchSeq || store.projectId !== project || store.q !== q) return;
+    const { hits } = await searchBoard(all ? null : board, q, all ? 50 : 20);
+    if (seq !== searchSeq || store.searchAll !== all || store.projectId !== board || store.q !== q) return;
     store.hits = hits;
   } catch (e) {
     if (seq !== searchSeq) return;
@@ -2123,6 +2440,17 @@ function openCardId(projectId, id) {
     return;
   }
   detail.open(key);
+}
+async function openHit(hit) {
+  if (hit.projectId !== store.projectId) await selectProject(hit.projectId);
+  store.hits = null;
+  render();
+  if (hit.type === "card") openCardId(hit.projectId, hit.id);
+}
+function onToggleSearchAll() {
+  store.searchAll = !store.searchAll;
+  if (store.q.trim()) void runSearch(store.q);
+  else render();
 }
 async function loadOverview() {
   try {
@@ -2421,16 +2749,35 @@ var view = mount(root, {
   onSearch: (q) => onSearchInput(q),
   onCloseSearch,
   onOpenCard: (id) => openCardId(store.projectId, id),
+  onOpenHit: (hit) => {
+    void openHit(hit);
+  },
+  onToggleSearchAll,
+  onToggleGantt: () => {
+    store.gantt = !store.gantt;
+    if (store.gantt) {
+      store.overview = false;
+      store.graph = false;
+      store.pane = "none";
+    }
+    render();
+  },
+  onGanttScale: (scale) => {
+    store.ganttScale = scale;
+    render();
+  },
   onTogglePane: (pane) => openPane(pane),
   onToggleOverview: () => {
     store.overview = !store.overview;
     if (store.overview) {
       store.pane = "none";
+      store.gantt = false;
       void loadOverview();
     } else render();
   },
   onToggleGraph: () => {
     store.graph = !store.graph;
+    if (store.graph) store.gantt = false;
     render();
     if (store.graph) void loadGraph();
   },

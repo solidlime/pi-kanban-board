@@ -175,8 +175,21 @@ export const uploadAttachment = (project: string, target: AttachmentTarget, name
 export const deleteAttachment = (project: string, id: number) =>
   req<{ deleted: { projectId: string; id: number } }>('DELETE', `/api/attachments/${p(project)}/${p(String(id))}`);
 
-export const searchBoard = (project: string, q: string, limit = 20) =>
-  req<{ hits: SearchHit[] }>('GET', `/api/search?project=${p(project)}&q=${p(q)}&limit=${p(String(limit))}`);
+export const searchBoard = (project: string | null, q: string, limit = 20) =>
+  req<{ hits: SearchHit[] }>(
+    'GET',
+    project
+      ? `/api/search?project=${p(project)}&q=${p(q)}&limit=${p(String(limit))}`
+      : `/api/search?q=${p(q)}&limit=${p(String(limit))}`, // no project = every board (A1)
+  );
+
+/**
+ * A6: a daemon lock on one board, as the server reports it. The UI draws it and never takes it —
+ * acquiring/releasing is the agent's job, so there is no POST/DELETE here on purpose.
+ */
+export interface BoardLock { resource: string; owner: string; at: string; expiresAt: string }
+
+export const getLocks = (project: string) => req<{ locks: BoardLock[] }>('GET', `/api/locks?project=${p(project)}`);
 
 /** Omit `project` for every board at once. */
 export const getNotifications = (project?: string) =>

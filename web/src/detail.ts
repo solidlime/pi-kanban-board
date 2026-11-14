@@ -6,7 +6,7 @@ import type { ProjectRef } from '../../src/shared/api.js';
 import type { TimelineEvent } from '../../src/shared/events.js';
 import type { DependencyType, PatchCardReq } from '../../src/shared/api.js';
 import {
-  acceptanceProgress, cardKey, edgesOf, isClosed, keyOf, parseKey, type CardKey, type Store,
+  acceptanceProgress, cardKey, edgesOf, isClosed, keyOf, lastActorOf, parseKey, type CardKey, type Store,
 } from './store.js';
 import { attachmentSrc } from './api.js';
 
@@ -59,10 +59,13 @@ export function mountDetail(root: HTMLElement, h: DetailHandlers): DetailView {
   const dlg = el('dialog', 'detail');
   const head = el('div', 'd-h');
   const heading = el('h2', 'd-title');
+  // A2: the full actor, one size up from the card chip. Empty when the server has no name.
+  const actorLine = el('div', 'd-actor');
+  actorLine.hidden = true;
   const closeBtn = el('button', 'ic', '×');
   closeBtn.type = 'button';
   closeBtn.title = '閉じる';
-  head.append(heading, closeBtn);
+  head.append(heading, actorLine, closeBtn);
 
   const title = el('input', 'f-title');
   title.placeholder = 'タイトル';
@@ -417,6 +420,10 @@ export function mountDetail(root: HTMLElement, h: DetailHandlers): DetailView {
 
   /** Everything below the input fields: criteria hint, edges, linked deliverables, history, move list. */
   function paint(s: Store, card: Card) {
+    const actor = lastActorOf(card);
+    actorLine.hidden = actor === null;
+    actorLine.textContent = actor === null ? '' : `最終更新者: ${actor}`;
+
     const progress = acceptanceProgress(body.value);
     accHint.textContent = progress.total
       ? `受け入れ条件: ${progress.done}/${progress.total}${progress.done === progress.total ? ' ✓' : ''}`

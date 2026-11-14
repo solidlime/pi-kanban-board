@@ -6,6 +6,7 @@ import type {
 } from '../../src/shared/dto.js';
 import type { ProjectRef } from '../../src/shared/api.js';
 import type { TimelineEvent } from '../../src/shared/events.js';
+import type { BoardLock } from './api.js';
 
 export type {
   BoardSnapshot, Card, ColumnDef, Deliverable, Dependency, Project, ProjectRef, TimelineEvent,
@@ -46,13 +47,20 @@ export interface Store {
   /** Dependency map replaces the board while true. */
   graph: boolean;
   graphLayout: GraphLayout | null;
+  /** Time view (gantt) replaces the board while true; the axis granularity is `ganttScale`. */
+  gantt: boolean;
+  ganttScale: 'week' | 'month';
   /** Search box text; `hits === null` means the results overlay is closed. */
   q: string;
   hits: SearchHit[] | null;
+  /** Search every board instead of the current one; hits then carry their own projectId. */
+  searchAll: boolean;
   /** A saved view with focus filters the board down to cards matching `q`. */
   qFocus: boolean;
   notifications: Notification[];
   attachments: Attachment[];
+  /** A6: display only — who holds this board right now. Empty when the endpoint says nothing. */
+  locks: BoardLock[];
   loop: LoopState | null;
   templates: CardTemplate[];
   views: SavedView[];
@@ -76,7 +84,8 @@ export function createStore(): Store {
     columns: {}, columnOrder: [], cards: {},
     dependencies: [], deliverables: [], timeline: [], focus: false, panel: false,
     pane: 'none', overview: false, overviewRows: [], graph: false, graphLayout: null,
-    q: '', hits: null, qFocus: false, notifications: [], attachments: [], loop: null,
+    gantt: false, ganttScale: 'week',
+    q: '', hits: null, searchAll: false, qFocus: false, notifications: [], attachments: [], locks: [], loop: null,
     templates: [], views: [],
     generation: null, buildHash: null, version: null,
     loaded: false, loading: false, error: null, pending: new Set(),
@@ -106,11 +115,13 @@ export function resetBoard(s: Store, projectId: string | null): void {
   s.hits = null;
   s.notifications = [];
   s.attachments = [];
+  s.locks = [];
   s.loop = null;
   s.templates = [];
   s.views = [];
   s.graphLayout = null;
   s.graph = false;
+  s.gantt = false;
   // Overlay panes are board-scoped too: their contents were fetched for the old project.
   s.pane = 'none';
   s.qFocus = false;
@@ -220,6 +231,16 @@ export function isReady(s: Store, card: Card): boolean {
   if (isClosed(card)) return false;
   if (isDoneColumn(s, card.columnId)) return false;
   return !isBlocked(s, card);
+}
+
+/**
+ * A2: the actor of the card's latest timeline event, projected by the server (read-only).
+ * Read through this one helper so the UI keeps working when the field is absent, and so
+ * `null`/`undefined` both mean "say nothing" — an empty chip would read as "unknown user".
+ */
+export function lastActorOf(card: Card): string | null {
+  const actor = card.lastActor;
+  return actor === undefined || actor === null || actor === '' ? null : actor;
 }
 
 /** 'YYYY-MM-DD' or null-last, used as the focus-mode tiebreaker after priority. */
