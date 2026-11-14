@@ -1019,7 +1019,6 @@
     return Promise.all(jobs).then(function () {
       state.offline = false;
       apiDone();
-      if (state.allview) { state.allview = true; }
       // 起動直後は state.cur が dashboard の応答で決まるので、板だけが未取得になる。
       // ここで取り直さないと次の poll（数分後）まで列が空のまま。
       if (!state.board && state.cur && state.cur !== "__all__") return pick(state.cur, true);
