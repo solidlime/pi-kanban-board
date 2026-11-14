@@ -217,18 +217,19 @@ html[data-density="compact"] .chips,html[data-density="compact"] .meta{display:n
 .del-tile.msel{outline:2px solid var(--accent); outline-offset:-2px}
 /* #114: 矩形ドラッグ中はキャプションのネイティブ選択を止める（.mq は body 直下）。 */
 body.mq-on{user-select:none}
+/* #114: 矩形が重なっているアイテム（確定前の候補）。.msel の実線と区別する破線。 */
+.del-tile.mq-on, .card.mq-on { outline: 2px dashed var(--accent); outline-offset: -2px; }
 /* #115: カードの選択。アウトラインにして列の高さを変えない（.sel はキーボードカーソル専用で別物）。 */
 .card.msel{outline:2px solid var(--accent); outline-offset:-2px}
 /* #114: 選択中の操作バー。summary の直下に 1 行だけ。 */
 /* #115: カード側（#cardbar）と見た目を共有する。 */
 .selbar{
   display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+  grid-column:1/-1; /* #delbar（帯）も #cardbar も .layout（2 列 grid）の直下なので、行を 1 つ跨ぐ。 */
   padding:6px 12px; border-bottom:1px solid var(--line);
   font-family:var(--font-mono); font-size:11px; color:var(--muted);
 }
 .selbar .n{margin-right:auto}
-/* #cardbar は .layout（2 列 grid）の直下なので、行を 1 つ跨いで持分を全部使う。 */
-#cardbar{grid-column:1/-1}
 
 /* ── lightbox ───────────────────────────── */
 .lb{

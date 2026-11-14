@@ -362,18 +362,19 @@ html[data-density="compact"] .chips,html[data-density="compact"] .meta{display:n
 .del-tile.msel{outline:2px solid var(--accent); outline-offset:-2px}
 /* #114: 矩形ドラッグ中はキャプションのネイティブ選択を止める（.mq は body 直下）。 */
 body.mq-on{user-select:none}
+/* #114: 矩形が重なっているアイテム（確定前の候補）。.msel の実線と区別する破線。 */
+.del-tile.mq-on, .card.mq-on { outline: 2px dashed var(--accent); outline-offset: -2px; }
 /* #115: カードの選択。アウトラインにして列の高さを変えない（.sel はキーボードカーソル専用で別物）。 */
 .card.msel{outline:2px solid var(--accent); outline-offset:-2px}
 /* #114: 選択中の操作バー。summary の直下に 1 行だけ。 */
 /* #115: カード側（#cardbar）と見た目を共有する。 */
 .selbar{
   display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+  grid-column:1/-1; /* #delbar（帯）も #cardbar も .layout（2 列 grid）の直下なので、行を 1 つ跨ぐ。 */
   padding:6px 12px; border-bottom:1px solid var(--line);
   font-family:var(--font-mono); font-size:11px; color:var(--muted);
 }
 .selbar .n{margin-right:auto}
-/* #cardbar は .layout（2 列 grid）の直下なので、行を 1 つ跨いで持分を全部使う。 */
-#cardbar{grid-column:1/-1}
 
 /* ── lightbox ───────────────────────────── */
 .lb{
@@ -1456,8 +1457,8 @@ __KB_MD_JS__
       }
       d.dataset.col = col;
       var p = prev[out.length];
-      // #78: applySel() がレンダ後に付ける .sel は markup に出ないので、比較前に落とす（直後に付け直される）。
-      if (p) Array.prototype.forEach.call(p.querySelectorAll(".card.sel"), function (n) { n.classList.remove("sel"); });
+      // #78: applySel() がレンダ後に付ける .sel / #115 の .msel は markup に出ないので、比較前に落とす（直後に付け直される）。
+      if (p) Array.prototype.forEach.call(p.querySelectorAll(".card.sel, .card.msel"), function (n) { n.classList.remove("sel", "msel"); });
       out.push(p && p.dataset.col === col && p.innerHTML === d.innerHTML ? p : d);
     });
     var same = out.length === prev.length;
@@ -1647,26 +1648,21 @@ __KB_MD_JS__
   // box に 1 回だけ配線する（render は box の中身を入れ替えるだけで、box 自体は残る）。
   function marquee(box, itemSel, onPick) {
     var drag = null;
-    // #114: capture 中は click が捕獲要素（#deliverables / #board）に付け替わるので、
-    // 直接 onclick のボタン（#delbar / #cardbar / .addbtn）が無反応になる。押下を奪わない。
-    var skip = "summary, button, input, textarea, select, .selbar, .addrow, a";
+    // #114: 押下を奪う条件。アイテムの上でも操作要素の上でもない＝余白だけが矩形を始められる。
+    // capture は使わない（click の再ターゲットも capture 解放の順序依存も、子の capture 巻き込みも消える）。
+    var skip = "summary, button, [role=button], input, textarea, select, a, .selbar, .addrow";
     // shortcut: タッチは矩形を作らない（スマフォのタイル操作を壊さない）, 要るなら長押し起点を足す
     function stop() {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", cancel);
+      window.removeEventListener("blur", stop);
       if (drag && drag.rect && drag.rect.parentNode) drag.rect.parentNode.removeChild(drag.rect);
       Array.prototype.forEach.call(box.querySelectorAll(".mq-on"), function (n) { n.classList.remove("mq-on"); });
       document.body.classList.remove("mq-on");
       drag = null;
     }
-    box.addEventListener("pointerdown", function (ev) {
-      if (ev.pointerType === "touch" || ev.button) return;
-      // タイル上の押下は従来動作（横ドラッグ / lightbox / × / ✎）に渡す。
-      if (ev.target.closest && (ev.target.closest(itemSel) || ev.target.closest(skip))) return;
-      stop(); // 前回の pointerup を取りこぼしていても途中状態を残さない
-      drag = { id: ev.pointerId, x: ev.clientX, y: ev.clientY, rect: null, hits: [] };
-      // ボックス外へ出ても pointerup を落とさない（マウスは implicit capture が無い）。
-      if (box.setPointerCapture) { try { box.setPointerCapture(ev.pointerId); } catch (err) { void err; } }
-    });
-    box.addEventListener("pointermove", function (ev) {
+    function move(ev) {
       if (!drag || drag.id !== ev.pointerId) return;
       if (!drag.rect) {
         // 4px 動くまではクリックの可能性を残す（矩形を出さない）。
@@ -1689,18 +1685,27 @@ __KB_MD_JS__
         n.classList.toggle("mq-on", on);
         if (on) drag.hits.push(n);
       });
-    });
-    box.addEventListener("pointerup", function (ev) {
+    }
+    function up(ev) {
       if (!drag || drag.id !== ev.pointerId) return;
       var d = drag;
-      stop();
-      // 4px 未満はクリック扱い。onPick を呼ばない = 既存の選択を消さない。
-      if (!d.rect) return;
+      stop(); // 矩形と .mq-on を先に消す（onPick は dsel/csel を張り替えて render する）
+      if (!d.rect) return; // 4px 未満はクリック扱い。onPick を呼ばない = 既存の選択を消さない。
       onPick(d.hits.map(function (n) { return Number(n.dataset.deliv != null ? n.dataset.deliv : n.dataset.id); }));
+    }
+    function cancel() { stop(); } // 中断なので onPick は呼ばない（選択は現状維持）
+    box.addEventListener("pointerdown", function (ev) {
+      if (ev.pointerType === "touch" || ev.button !== 0) return;
+      // タイル上の押下は従来動作（横ドラッグ / lightbox / × / ✎）に渡す。
+      if (ev.target.closest && (ev.target.closest(itemSel) || ev.target.closest(skip))) return;
+      stop(); // 前回の up を取りこぼしていても途中状態を残さない
+      drag = { id: ev.pointerId, x: ev.clientX, y: ev.clientY, rect: null, hits: [] };
+      // capture の代わりに window で受ける（box の外で離しても up/cancel が来る）。
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", up);
+      window.addEventListener("pointercancel", cancel);
+      window.addEventListener("blur", stop); // ウィンドウ外で離した時の取りこぼし対策
     });
-    // capture が外れた（pointerup / pointercancel / ウィンドウ外で離す / 別ウィンドウへ）でも残さない。
-    // onPick は呼ばない（中断なので選択を動かさない）。
-    box.addEventListener("lostpointercapture", stop);
   }
 
   function renderDeliverables() {
@@ -1888,7 +1893,10 @@ __KB_MD_JS__
   // sig（選択 id をソートして join）が同じなら作り直さない: 5 秒ポーリングの render() が
   // 押している最中のボタンを差し替えて click を消すのを防ぐ（renderDeliverables の dataset.sig と同じ流儀）。
   function renderSelBar(box, itemSel, idAttr, barId, build) {
-    var ids = Array.prototype.map.call(box.querySelectorAll(itemSel), function (n) { return Number(n.dataset[idAttr]); });
+    // #114: 横断ビューでは成果物のバーを出さない（全行 sid === "" で一括削除が必ず空振りする）。
+    // カード側（applyCSel）と同じ扱いに揃える。
+    var off = state.allview && barId === "delbar";
+    var ids = off ? [] : Array.prototype.map.call(box.querySelectorAll(itemSel), function (n) { return Number(n.dataset[idAttr]); });
     var bar = $("#" + barId);
     if (!ids.length) { if (bar && bar.parentNode) bar.parentNode.removeChild(bar); return; }
     if (!bar) {

@@ -370,9 +370,18 @@ test("#114: 帯は空き領域からの矩形選択で一括削除できる", ()
 	const marq = app.slice(q0, qEnd);
 	assert.ok(marq.includes('ev.pointerType === "touch"'), "タッチで矩形を作っている（スマフォのタイル操作が壊れる）");
 	assert.ok(marq.includes("ev.target.closest(itemSel)"), "タイル上から始まった押下を奪っている");
-	// capture 中は click が捕獲要素に付け替わるので、button を除外しないと直接 onclick のボタンが死ぬ。
-	assert.ok(marq.includes("summary, button, input"), "除外リストに button が無い（capture 中にボタンの click が死ぬ）");
-	assert.ok(marq.includes('"lostpointercapture", stop'), "capture の後始末が無い（矩形が残る）");
+	// 除外リストは完全一致で固定する（.donefold は div[role=button] なので [role=button] が要る）。
+	assert.ok(marq.includes('var skip = "summary, button, [role=button], input, textarea, select, a, .selbar, .addrow";'), "押下を奪う除外リストが仕様と違う");
+	assert.ok(marq.includes("ev.button !== 0"), "右クリック・中クリックで矩形が始まる");
+	// capture は使わない（click の再ターゲット・lostpointercapture の順序依存・子の capture 巻き込みを消す）。
+	assert.ok(!app.includes("box.setPointerCapture"), "矩形選択が pointer capture を使っている");
+	assert.ok(marq.includes('window.addEventListener("pointermove", move)'), "pointermove を window に張っていない");
+	assert.ok(marq.includes('window.addEventListener("pointerup", up)'), "pointerup を window に張っていない");
+	assert.ok(marq.includes('window.addEventListener("pointercancel", cancel)'), "pointercancel を window に張っていない");
+	assert.ok(marq.includes('window.removeEventListener("pointercancel", cancel)'), "window のリスナーを外していない（stop が冪等でない）");
+	assert.ok(marq.includes('window.addEventListener("blur", stop)'), "ウィンドウ外で離した時の取りこぼし対策が無い");
+	assert.ok(marq.includes("function cancel() { stop(); }"), "cancel が選択を変えている");
+	assert.ok(!marq.includes("lostpointercapture"), "lostpointercapture への依存が残っている");
 	assert.ok(marq.includes("stop(); //"), "pointerdown で前回の途中状態を止めていない");
 	assert.ok(marq.includes('el("div", "mq")'), "矩形の要素が無い");
 	assert.ok(marq.includes("getBoundingClientRect()"), "交差判定が矩形ベースでない");
@@ -415,10 +424,13 @@ test("#114: 帯は空き領域からの矩形選択で一括削除できる", ()
 	assert.ok(s1 > s0, "renderSelBar のブロック境界が取れない（アサートが空振りする）");
 	const sel = app.slice(s0, s1);
 	assert.ok(sel.includes("bar.dataset.sig"), "sig で再構築を止めていない（ポーリングでボタンが差し替わる）");
+	assert.ok(sel.includes("if (bar.dataset.sig === sig) return;"), "sig を比較せず書き込みだけで終わっている");
 	assert.ok(sel.includes("sort("), "sig が選択 id のソート済み文字列でない");
 	assert.ok(sel.includes("件選択"), "件数が出ていない");
 
 	assert.ok(css.includes(".del-tile.msel{outline:2px solid var(--accent)"), ".msel の見た目が無い");
+	// 矩形で選ばれる候補がドラッグ中に見えないと機能の核が死ぬ（.msel の実線と区別する破線）。
+	assert.ok(css.includes(".del-tile.mq-on, .card.mq-on { outline: 2px dashed var(--accent); outline-offset: -2px; }"), "矩形中の選択候補の見た目が無い");
 	assert.ok(css.includes(".mq{"), "矩形の CSS が無い");
 	assert.ok(css.includes("position:fixed"), "矩形が fixed でない（スクロール中にズレる）");
 });
@@ -477,5 +489,17 @@ test("#115: カードは矩形選択で一括移動・一括削除できる", ()
 	assert.ok(css.includes(".card.msel{outline:2px solid var(--accent)"), ".card.msel の見た目が無い");
 	assert.ok(css.includes(".selbar{"), "操作バーの共通クラスが無い（#delbar と 2 つに割れている）");
 	assert.ok(app.includes('el("div", "selbar")'), "バーが .selbar を使っていない");
-	assert.ok(css.includes("#cardbar{grid-column:1/-1}"), "#cardbar が .layout の行を跨いでいない");
+	// #delbar（帯）も .layout の直下に入るので、行を跨ぐ指定は共通クラス側に置く。
+	assert.match(css, /\.selbar\{[^}]*grid-column:1\/-1/, ".selbar が .layout の行を跨いでいない");
+	assert.ok(!css.includes("#cardbar{grid-column"), "#cardbar の重複指定が残っている");
+
+	// 横断ビューでは成果物のバーを出さない（全行 sid === "" で一括削除が必ず空振りする）。
+	const sb0 = app.indexOf("function renderSelBar(");
+	const sb1 = app.indexOf("\n  }", sb0);
+	assert.ok(sb1 > sb0, "renderSelBar のブロック境界が取れない");
+	assert.ok(app.slice(sb0, sb1).includes("state.allview"), "横断ビューで成果物のバーを止めていない");
+
+	// 列の再利用判定が .msel を見ていないと、選択のたびに列が総入れ替えになる（チカチカ・スクロール消失）。
+	assert.ok(app.includes('".card.sel, .card.msel"'), "renderBoard の列再利用判定が .msel を見ていない");
+	assert.ok(app.includes('classList.remove("sel", "msel")'), ".msel を比較前に落としていない");
 });
