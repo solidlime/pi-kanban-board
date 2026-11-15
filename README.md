@@ -8,6 +8,8 @@
 
 プロジェクトごとに1枚の板。あなたとエージェントが同じ板を見て、同じ順番で仕事を進める。
 
+**日本語** · [English](./README.en.md)
+
 [![version](https://img.shields.io/badge/version-0.3.0-e8c547)](https://github.com/solidlime/pi-kanban-board/releases)
 [![license](https://img.shields.io/github/license/solidlime/pi-kanban-board?color=33415c)](LICENSE)
 [![node](https://img.shields.io/badge/node-%E2%89%A522.5-5fa04e)](https://nodejs.org)
