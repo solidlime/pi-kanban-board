@@ -11,6 +11,9 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { parseCommandArgs } from "../src/core/command.ts";
+import { WIDGET_KEY, footerLine, footerText } from "../src/agent/footer.ts";
+import type { Feed } from "../src/agent/footer.ts";
+import type { OverviewRow } from "../src/shared/dto.ts";
 
 // Node strips types but does not rewrite NodeNext's `./x.js` specifiers onto the sibling
 // `./x.ts`, so src/**/*.ts cannot be imported without this bridge (same as src/api/serve.ts).
@@ -53,6 +56,92 @@ function cwdOfCtx(ctx: ExtensionContext): string {
 
 const KANBAN_CUSTOM_TYPE = "kanban-board";
 
+const WIDGET_POLL_MS = 15_000;
+
+// One footer per session: pi shares this module scope across every session in the same cwd.
+const footers = new Map<string, { stop: () => void; draw: () => void }>();
+
+/** Session id for the per-session footer; hosts without one share a single slot. */
+function sessionKeyOf(ctx: ExtensionContext): string {
+	try {
+		const id = (ctx as { sessionManager?: { getSessionId?: () => string } }).sessionManager?.getSessionId?.();
+		if (typeof id === "string" && id !== "") return id;
+	} catch {
+		// fall through to the shared slot
+	}
+	return "default";
+}
+
+/** A disposed ctx must never take the process down: setWidget throws on a dead UI. */
+function safeWidget(ctx: ExtensionContext, content: string[] | undefined): void {
+	try {
+		ctx.ui.setWidget(WIDGET_KEY, content, { placement: "aboveEditor" });
+	} catch {
+		// dead ctx / host: the footer is cosmetic
+	}
+}
+
+/** One project's row from the running server (the extension and the server share the process). */
+async function footerFeed(slug: string): Promise<Feed> {
+	const m = await load();
+	const rt = await m.kanbanRuntime();
+	const url = `${rt.url.replace(/\/+$/, "")}/api/overview`;
+	const res = await fetch(url, { headers: rt.token === null ? {} : { authorization: `Bearer ${rt.token}` } });
+	if (!res.ok) {
+		await res.body?.cancel().catch(() => {});
+		return { kind: "api", tag: `API: ${res.status}` };
+	}
+	const body = (await res.json()) as { data?: { projects?: OverviewRow[] } };
+	const row = body.data?.projects?.find((p) => p.projectId === slug);
+	if (row === undefined) return { kind: "empty" };
+	const line = footerLine(row);
+	return line === "" ? { kind: "empty" } : { kind: "line", line };
+}
+
+/**
+ * Poll the overview and keep one footer line for this session. The timer is unref'd, but a
+ * session that ends must not leave a loopback fetch behind: `stop` is per session.
+ */
+function startFooter(ctx: ExtensionContext, cwd: string): { stop: () => void; draw: () => void } {
+	let last: string | null = null;
+	let slug: string | null = null;
+	let busy = false;
+	let stopped = false;
+	const run = async (): Promise<void> => {
+		try {
+			// projectSlugOf shells out to git: resolve it once, not on every poll.
+			slug ??= (await load()).projectSlugOf(cwd);
+			const feed = await footerFeed(slug);
+			if (stopped) return;
+			// A failing API keeps the last numbers and names the failure.
+			if (feed.kind === "line") last = feed.line;
+			if (feed.kind === "empty") last = null;
+			safeWidget(ctx, footerText(feed, last));
+		} catch {
+			// The server may not be up yet (first boot) or the home may be unreadable.
+			if (!stopped) safeWidget(ctx, footerText({ kind: "api", tag: "API: DOWN" }, last));
+		}
+	};
+	const draw = (): void => {
+		if (busy || stopped) return;
+		busy = true;
+		void run().finally(() => {
+			busy = false;
+		});
+	};
+	draw();
+	const timer = setInterval(draw, WIDGET_POLL_MS);
+	timer.unref();
+	return {
+		stop: () => {
+			stopped = true;
+			clearInterval(timer);
+			safeWidget(ctx, undefined);
+		},
+		draw,
+	};
+}
+
 /** v1 `/kanban` subcommands that v2 has no backing for: answer, never add a card. */
 const V1_ONLY = new Set(["loop", "pick", "take", "interval", "stuck", "maxloops", "priority"]);
 
@@ -85,10 +174,10 @@ export default function kanbanV2Extension(pi: ExtensionAPI): void {
 		name: "kanban",
 		label: "Kanban board (v2)",
 		description:
-			"Shared kanban board for this project: columns todo / doing / done, persisted in ~/.pi/kanban (v2 SQLite), shown in the GUI. Holds what you owe — one card per promise; done only when it actually works.\n" +
-			"Actions: list reads; add creates (text, col, priority, labels, session, commit, blocked, nextFireAt); move sets col; edit rewrites text/priority/labels/session/commit/blocked/nextFireAt; remove deletes; check self-tests db/schema/home; edit also rewrites ref; resume starts the doing-loop (state only); url returns the token link; img copies a local image into the media store and attaches it; ref records a local path on the card.\n" +
-			"A deliverable is not a card: it is a row in the belt under the board (deliverable tool). No column is called deliverable.\n" +
-			"scope picks the board: project (default — the git root of the cwd, shared by every session in it) or global (read-only aggregate). Ids are per board, so a global id is always named as <project>/#<id>. project=<slug> selects a board explicitly instead of the cwd's.\n" +
+			"Shared kanban board for this project: columns todo / doing / done, persisted in ~/.pi/kanban (v2 SQLite), shown in the GUI. Holds what you owe — one card per promise; done only when it actually works.n" +
+			"Actions: list reads; add creates (text, col, priority, labels, session, commit, blocked, nextFireAt); move sets col; edit rewrites text/priority/labels/session/commit/blocked/nextFireAt; remove deletes; check self-tests db/schema/home; edit also rewrites ref; resume starts the doing-loop (state only); url returns the token link; img copies a local image into the media store and attaches it; ref records a local path on the card.n" +
+			"A deliverable is not a card: it is a row in the belt under the board (deliverable tool). No column is called deliverable.n" +
+			"scope picks the board: project (default — the git root of the cwd, shared by every session in it) or global (read-only aggregate). Ids are per board, so a global id is always named as <project>/#<id>. project=<slug> selects a board explicitly instead of the cwd's.n" +
 			"Cards are (project, id) in v2: an id alone is only meaningful inside one board.",
 		parameters: Type.Object({
 			action: Type.Union([
@@ -137,6 +226,7 @@ export default function kanbanV2Extension(pi: ExtensionAPI): void {
 			const out = await m.executeKanban(params, { cwd: cwdOfCtx(ctx), actor: "agent" });
 			// Keep the per-turn injection in step with the board this call just touched.
 			void m.refreshInjection(cwdOfCtx(ctx)).catch(() => {});
+			footers.get(sessionKeyOf(ctx))?.draw();
 			return {
 				content: [{ type: "text" as const, text: out.text }],
 				details: out.details,
@@ -149,9 +239,9 @@ export default function kanbanV2Extension(pi: ExtensionAPI): void {
 		name: "deliverable",
 		label: "Deliverables",
 		description:
-			"Output you want the user to see: a screenshot, a report, a video, a file. Shown in the belt under the board, not in a column - do not create a TODO card for output.\n" +
-			"Actions: add posts one (text, optional ref/cardId); list shows them; edit rewrites the text; remove deletes it; ref stores a local path in place (not copied); img copies a local image into the media store and attaches it.\n" +
-			"A deliverable is a row, not a card: no column, no owner, no phase. Ids are the deliverable space, so #3 here and card #3 are different things.\n" +
+			"Output you want the user to see: a screenshot, a report, a video, a file. Shown in the belt under the board, not in a column - do not create a TODO card for output.n" +
+			"Actions: add posts one (text, optional ref/cardId); list shows them; edit rewrites the text; remove deletes it; ref stores a local path in place (not copied); img copies a local image into the media store and attaches it.n" +
+			"A deliverable is a row, not a card: no column, no owner, no phase. Ids are the deliverable space, so #3 here and card #3 are different things.n" +
 			"scope: project (default, this repo — or project=<slug>) or global (read-only aggregate; ids repeat per board, so a global listing names the board with each id).",
 		parameters: Type.Object({
 			action: Type.Union(
@@ -181,6 +271,7 @@ export default function kanbanV2Extension(pi: ExtensionAPI): void {
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const m = await load();
 			const out = await m.executeDeliverable(params, { cwd: cwdOfCtx(ctx), actor: "agent" });
+			footers.get(sessionKeyOf(ctx))?.draw();
 			return {
 				content: [{ type: "text" as const, text: out.text }],
 				details: out.details,
@@ -214,6 +305,7 @@ export default function kanbanV2Extension(pi: ExtensionAPI): void {
 			if (head === "resume") {
 				const out = await m.executeKanban({ action: "resume" }, { cwd, actor: "user" });
 				ctx.ui.notify(out.text);
+				footers.get(sessionKeyOf(ctx))?.draw();
 				return;
 			}
 			if (head === "list") {
@@ -250,6 +342,7 @@ export default function kanbanV2Extension(pi: ExtensionAPI): void {
 				}
 				const out = await m.executeKanban({ action: "move", id, col }, { cwd, actor: "user" });
 				ctx.ui.notify(out.ok ? out.text : `kanban: ${out.text}`);
+				footers.get(sessionKeyOf(ctx))?.draw();
 				return;
 			}
 			if (head === "remove") {
@@ -260,6 +353,7 @@ export default function kanbanV2Extension(pi: ExtensionAPI): void {
 				}
 				const out = await m.executeKanban({ action: "remove", id }, { cwd, actor: "user" });
 				ctx.ui.notify(out.ok ? out.text : `kanban: ${out.text}`);
+				footers.get(sessionKeyOf(ctx))?.draw();
 				return;
 			}
 			// Anything else is card text: `/kanban 買い物` and `/kanban add 買い物` are the same.
@@ -271,6 +365,7 @@ export default function kanbanV2Extension(pi: ExtensionAPI): void {
 			try {
 				const out = await m.executeKanban({ action: "add", text }, { cwd, actor: "user" });
 				ctx.ui.notify(out.ok ? out.text : `kanban: ${out.text}`);
+				footers.get(sessionKeyOf(ctx))?.draw();
 			} catch (err) {
 				ctx.ui.notify(`kanban: ${err instanceof Error ? err.message : String(err)}`);
 			}
@@ -284,6 +379,11 @@ export default function kanbanV2Extension(pi: ExtensionAPI): void {
 		void load()
 			.then((m) => m.refreshInjection(cwdOfCtx(ctx)))
 			.catch(() => {});
+		// A host without a UI has no footer: do not start a timer or a fetch for one.
+		if ((ctx as { hasUI?: boolean }).hasUI === false) return;
+		const key = sessionKeyOf(ctx);
+		footers.get(key)?.stop();
+		footers.set(key, startFooter(ctx, cwdOfCtx(ctx)));
 	});
 
 	// Per-turn injection: this cwd's project board as a request-only trailing message.
@@ -296,6 +396,11 @@ export default function kanbanV2Extension(pi: ExtensionAPI): void {
 		return { message: { customType: KANBAN_CUSTOM_TYPE, content: text, display: false } };
 	});
 
-	// No session_shutdown work: the DB handle and the HTTP server are process-wide (shared by
-	// every session, like v1's), and there is no per-session timer in this adapter.
+	// The DB handle and the HTTP server are process-wide (shared by every session, like v1's),
+	// so the footer's timer is the only per-session thing to stop — and only its own.
+	pi.on("session_shutdown", (_event, ctx) => {
+		const key = sessionKeyOf(ctx);
+		footers.get(key)?.stop();
+		footers.delete(key);
+	});
 }

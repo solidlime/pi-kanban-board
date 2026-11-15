@@ -93,5 +93,5 @@ export interface OverviewRow {
   projectId: ProjectId; name: string;
   loop: LoopStatus;
   columns: { id: string; name: string; kind: ColumnKind; count: number; wipLimit: number | null }[];
-  counts: { total: number; open: number; done: number; ready: number; blocked: number; overdue: number; wipOver: number };
+  counts: { total: number; open: number; done: number; ready: number; blocked: number; overdue: number; stale: number; wipOver: number };
 }

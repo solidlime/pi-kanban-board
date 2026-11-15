@@ -21,7 +21,7 @@ import {
   readBoard, removeDependency, saveLoop, updateCard, updateColumn, updateView, addDependency, digestInput,
   type UpdateCardPatch,
 } from "../persistence/repos.js";
-import { defaultColumnId, makeBoard } from "../core/board.js";
+import { defaultColumnId, makeBoard, staleDoingCount } from "../core/board.js";
 import { assertDependencyAddable, assertDependencyType, closedLookup, openBlockersOf } from "../core/dependency.js";
 import { MAX_ATTACHMENT_BYTES, safeAttachmentName } from "../core/attachment.js";
 import { blobPath, storeBlob } from "../media.js";
@@ -740,6 +740,7 @@ function getOverview(ctx: Ctx): void {
         ready: open.filter(c => openBlockersOf(deps, c.id, isDone).length === 0).length,
         blocked: open.filter(c => openBlockersOf(deps, c.id, isDone).length > 0 || Boolean(c.blockedReason)).length,
         overdue: open.filter(c => c.due !== null && c.due !== undefined && c.due !== "" && c.due < today).length,
+        stale: staleDoingCount(snapshot.columns, cards),
         wipOver: snapshot.columns.filter(c => c.wipLimit != null
           && cards.filter(card => card.columnId === c.id).length > c.wipLimit).length,
       },

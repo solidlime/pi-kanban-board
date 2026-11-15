@@ -1,4 +1,4 @@
-// W3F: the v2 agent adapter (extensions/kanban-v2.ts + src/agent/adapter.ts).
+// W3F: the v2 sgent sdspter (extensions/ksnban-v2.ts + src/agent/adapter.ts).
 // Temp home only — ~/.pi/kanban is never touched.
 import "./_ts-hooks.mjs";
 import assert from "node:assert/strict";
@@ -298,4 +298,48 @@ test("extension: tools register `kanban` then `deliverable`, plus the /kanban co
   assert.match(res.content[0].text, /added #\d+/);
 
   await A.closeRuntime();
+});
+
+test("footer: two sessions in one cwd each get their own widget", async () => {
+  process.env.KANBAN_HOME = home;
+  const ext = (await import("../../extensions/kanban-v2.ts")).default;
+  const tools = [];
+  const events = new Map();
+  ext({
+    registerTool: (t) => tools.push(t),
+    registerCommand: () => {},
+    on: (name, cb) => events.set(name, cb),
+  });
+
+  // An empty board keeps the footer quiet on purpose, so make sure this one has a card.
+  const added = await tools[0].execute("call-2", { action: "add", text: "footer card" }, null, null, {
+    sessionManager: { getCwd: () => cwd },
+  });
+  assert.equal(added.isError, undefined, added.content[0].text);
+
+  const widgets = new Map();
+  const ctxFor = (sid) => ({
+    hasUI: true,
+    ui: { notify: () => {}, setWidget: (_key, value) => widgets.set(sid, value) },
+    sessionManager: { getCwd: () => cwd, getSessionId: () => sid },
+  });
+  const ctxA = ctxFor("A");
+  const ctxB = ctxFor("B");
+  try {
+    events.get("session_start")({}, ctxA);
+    events.get("session_start")({}, ctxB);
+    for (let i = 0; i < 100 && !(widgets.get("A") && widgets.get("B")); i++) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    assert.match(String(widgets.get("A")), /^PROJECT: /, "session A must get a footer");
+    assert.match(String(widgets.get("B")), /^PROJECT: /, "session B must get a footer too");
+
+    events.get("session_shutdown")({}, ctxA);
+    assert.ok(widgets.get("B"), "closing session A must not clear session B's footer");
+    assert.equal(widgets.get("A"), undefined, "session A's own footer is cleared on shutdown");
+  } finally {
+    // B's interval is unref()ed, but leaving it running leaks into the next test.
+    events.get("session_shutdown")({}, ctxB);
+    await A.closeRuntime();
+  }
 });

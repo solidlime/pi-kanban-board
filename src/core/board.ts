@@ -9,6 +9,7 @@ import {
   sortCards, upsertCard, assertCardVersion,
   type CardPatch, type CreateCardInput, type MoveOptions,
 } from "./card.js";
+import { STALE_DOING_MS } from "../shared/constants.js";
 import {
   assertDependencyAddable, closedLookup, makeDependency, openBlockersOf, type Dependency, type DependencyType,
 } from "./dependency.js";
@@ -224,6 +225,16 @@ export function isReady(state: BoardState, card: Card): boolean {
 
 export function readyCards(state: BoardState): Card[] {
   return sortCards(state.cards.filter(c => isReady(state, c)));
+}
+
+/** Doing-kind cards whose last move is older than `ms`. Unparseable movedAt is not stale. */
+export function staleDoingCount(columns: ColumnDef[], cards: Card[], now: number = Date.now(), ms: number = STALE_DOING_MS): number {
+  const doing = new Set(columns.filter(c => c.kind === "doing").map(c => c.id));
+  return cards.filter(c => {
+    if (!doing.has(c.columnId)) return false;
+    const movedAt = Date.parse(c.movedAt);
+    return !Number.isNaN(movedAt) && movedAt <= now - ms;
+  }).length;
 }
 
 /** Normalized "now" for a caller that needs the same clock value twice. */
