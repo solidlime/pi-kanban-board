@@ -62,16 +62,15 @@ pi -e git:github.com/solidlime/pi-kanban-board
 
 ### 初回起動
 
-ホームが無い・空・v1 のときは、サーバーが起動時に自分で初期化する。**普通は何もしなくてよい。** v1 のデータは `~/.pi/kanban.v1.bak-<日時>` に**移動**される（消さない）。
+ホームが無い・空のときは、サーバーが起動時に自分で初期化する。**普通は何もしなくてよい。**
 
 先に中身を確認したいときは、手で回せる:
 
 ```bash
-node src/cli/init.ts --inspect          # 何が作られるかを見るだけ（書かない）
-node src/cli/init.ts --confirm --backup # 退避してから作り直す
+node src/cli/init.ts --inspect   # 何が作られるかを見るだけ（書かない）
 ```
 
-`--inspect` は何も書かないが `Refusing:` で終わる（exit 2）。`--delete` は退避せずに消す。`--home=<path>` は `…/.pi/kanban` で終わるパスでなければ拒否される（誤爆防止）。
+`--inspect` は何も書かずに、作られる予定を出して終わる（exit 2）。
 
 ## 使い方
 
@@ -113,8 +112,6 @@ node src/cli/init.ts --confirm --backup # 退避してから作り直す
 | `/kanban digest [--since 7d]` | 期間の完了・成果物・コミットを Markdown に |
 | `/kanban url` | ダッシュボードの URL |
 | `/kanban resume` | ループを running にする（状態だけ） |
-
-v1 の `loop` / `pick` / `take` / `interval` / `stuck` / `maxloops` / `priority` は v2 では受け付けない（カードを作らずに断る）。
 
 ## ダッシュボード
 
@@ -187,8 +184,6 @@ pi のセッションが始まると、HTTP サーバーが `0.0.0.0:8789` で�
 ├── token              認証トークン（0600）
 └── servers.json       起動中のサーバー
 ```
-
-v1 の `boards.sqlite` / `modes.json` / `dashboard.html` は初期化時に退避される。中身は外に出ない。
 
 ## 動作環境
 

@@ -62,16 +62,15 @@ pi -e git:github.com/solidlime/pi-kanban-board
 
 ### First start
 
-The server initializes a home that is missing, empty or still v1, on boot. **In practice you do nothing.** v1 data is **moved** to `~/.pi/kanban.v1.bak-<stamp>`, never deleted.
+The server initializes a home that is missing or empty, on boot. **In practice you do nothing.**
 
 To look before it happens, you can run the same step by hand:
 
 ```bash
-node src/cli/init.ts --inspect          # show what would be created (writes nothing)
-node src/cli/init.ts --confirm --backup # move the old home aside and rebuild
+node src/cli/init.ts --inspect   # show what would be created (writes nothing)
 ```
 
-`--inspect` writes nothing and ends with `Refusing:` (exit 2). `--delete` drops the old home instead of backing it up. `--home=<path>` is refused unless the path ends in `…/.pi/kanban`, so a typo cannot land on the wrong directory.
+`--inspect` writes nothing and stops after printing the plan (exit 2).
 
 ## Usage
 
@@ -113,8 +112,6 @@ Screenshots, reports, videos. Actions: `add` / `list` / `edit` / `remove` / `img
 | `/kanban digest [--since 7d]` | Markdown of completions, deliverables and commits |
 | `/kanban url` | Dashboard URL |
 | `/kanban resume` | Set the loop to running (state only) |
-
-The v1 commands `loop` / `pick` / `take` / `interval` / `stuck` / `maxloops` / `priority` are refused in v2 — they answer without creating a card.
 
 ## Dashboard
 
@@ -187,8 +184,6 @@ Even so, do not forward 8789 to the internet.
 ├── token              auth token (0600)
 └── servers.json       running servers
 ```
-
-The v1 files `boards.sqlite` / `modes.json` / `dashboard.html` are moved aside on init. Nothing leaves the machine.
 
 ## Requirements
 
