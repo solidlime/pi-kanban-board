@@ -146,19 +146,19 @@ function startFooter(ctx: ExtensionContext, cwd: string): { stop: () => void; dr
 const V1_ONLY = new Set(["loop", "pick", "take", "interval", "stuck", "maxloops", "priority"]);
 
 const HELP =
-	"/kanban <タスク内容>  TODO に追加（add は省略可）n" +
-	"/kanban add <タスク内容>  同じ（空のカードは作りません）n" +
-	"/kanban list  このプロジェクトの板を表示n" +
-	"/kanban move <id> <col>  列を移す（col は todo|doing|done）n" +
-	"/kanban remove <id>  カードを削除n" +
-	"/kanban check  DB/スキーマ/板の自己診断n" +
-	"/kanban digest [--since 7d]  期間の完了・成果物・コミットを Markdown 1 枚に（既定 7d、ISO も可）n" +
-	"/kanban url  ダッシュボードの URL（トークン付き）n" +
-	"/kanban resume  そのプロジェクトの自走ループを running にする（実行器は無い・状態だけ）n" +
-	"v1 の loop / pick / take / interval / stuck / maxloops / priority は v2 未実装（カードは作りません）n" +
-	"kanban ツール: list/add/move/remove/edit/check/url/img/ref（img は画像を media に取り込み添付、ref はカードの参照パス）n" +
-	"deliverable ツール: add/list/edit/remove/ref（見せたい出力はカードではなくこちら）n" +
-	"ボードは project（既定 = cwd のリポジトリ）/ global（読み取り専用の集約）。project=<slug> で明示指定n" +
+	"/kanban <タスク内容>  TODO に追加（add は省略可）\n" +
+	"/kanban add <タスク内容>  同じ（空のカードは作りません）\n" +
+	"/kanban list  このプロジェクトの板を表示\n" +
+	"/kanban move <id> <col>  列を移す（col は todo|doing|done）\n" +
+	"/kanban remove <id>  カードを削除\n" +
+	"/kanban check  DB/スキーマ/板の自己診断\n" +
+	"/kanban digest [--since 7d]  期間の完了・成果物・コミットを Markdown 1 枚に（既定 7d、ISO も可）\n" +
+	"/kanban url  ダッシュボードの URL（トークン付き）\n" +
+	"/kanban resume  そのプロジェクトの自走ループを running にする（実行器は無い・状態だけ）\n" +
+	"v1 の loop / pick / take / interval / stuck / maxloops / priority は v2 未実装（カードは作りません）\n" +
+	"kanban ツール: list/add/move/remove/edit/check/url/img/ref（img は画像を media に取り込み添付、ref はカードの参照パス）\n" +
+	"deliverable ツール: add/list/edit/remove/ref（見せたい出力はカードではなくこちら）\n" +
+	"ボードは project（既定 = cwd のリポジトリ）/ global（読み取り専用の集約）。project=<slug> で明示指定\n" +
 	"/kanban  このメニュー";
 
 export default function kanbanV2Extension(pi: ExtensionAPI): void {
@@ -174,10 +174,10 @@ export default function kanbanV2Extension(pi: ExtensionAPI): void {
 		name: "kanban",
 		label: "Kanban board (v2)",
 		description:
-			"Shared kanban board for this project: columns todo / doing / done, persisted in ~/.pi/kanban (v2 SQLite), shown in the GUI. Holds what you owe — one card per promise; done only when it actually works.n" +
-			"Actions: list reads; add creates (text, col, priority, labels, session, commit, blocked, nextFireAt); move sets col; edit rewrites text/priority/labels/session/commit/blocked/nextFireAt; remove deletes; check self-tests db/schema/home; edit also rewrites ref; resume starts the doing-loop (state only); url returns the token link; img copies a local image into the media store and attaches it; ref records a local path on the card.n" +
-			"A deliverable is not a card: it is a row in the belt under the board (deliverable tool). No column is called deliverable.n" +
-			"scope picks the board: project (default — the git root of the cwd, shared by every session in it) or global (read-only aggregate). Ids are per board, so a global id is always named as <project>/#<id>. project=<slug> selects a board explicitly instead of the cwd's.n" +
+			"Shared kanban board for this project: columns todo / doing / done, persisted in ~/.pi/kanban (v2 SQLite), shown in the GUI. Holds what you owe — one card per promise; done only when it actually works.\n" +
+			"Actions: list reads; add creates (text, col, priority, labels, session, commit, blocked, nextFireAt); move sets col; edit rewrites text/priority/labels/session/commit/blocked/nextFireAt; remove deletes; check self-tests db/schema/home; edit also rewrites ref; resume starts the doing-loop (state only); url returns the token link; img copies a local image into the media store and attaches it; ref records a local path on the card.\n" +
+			"A deliverable is not a card: it is a row in the belt under the board (deliverable tool). No column is called deliverable.\n" +
+			"scope picks the board: project (default — the git root of the cwd, shared by every session in it) or global (read-only aggregate). Ids are per board, so a global id is always named as <project>/#<id>. project=<slug> selects a board explicitly instead of the cwd's.\n" +
 			"Cards are (project, id) in v2: an id alone is only meaningful inside one board.",
 		parameters: Type.Object({
 			action: Type.Union([
@@ -239,9 +239,9 @@ export default function kanbanV2Extension(pi: ExtensionAPI): void {
 		name: "deliverable",
 		label: "Deliverables",
 		description:
-			"Output you want the user to see: a screenshot, a report, a video, a file. Shown in the belt under the board, not in a column - do not create a TODO card for output.n" +
-			"Actions: add posts one (text, optional ref/cardId); list shows them; edit rewrites the text; remove deletes it; ref stores a local path in place (not copied); img copies a local image into the media store and attaches it.n" +
-			"A deliverable is a row, not a card: no column, no owner, no phase. Ids are the deliverable space, so #3 here and card #3 are different things.n" +
+			"Output you want the user to see: a screenshot, a report, a video, a file. Shown in the belt under the board, not in a column - do not create a TODO card for output.\n" +
+			"Actions: add posts one (text, optional ref/cardId); list shows them; edit rewrites the text; remove deletes it; ref stores a local path in place (not copied); img copies a local image into the media store and attaches it.\n" +
+			"A deliverable is a row, not a card: no column, no owner, no phase. Ids are the deliverable space, so #3 here and card #3 are different things.\n" +
 			"scope: project (default, this repo — or project=<slug>) or global (read-only aggregate; ids repeat per board, so a global listing names the board with each id).",
 		parameters: Type.Object({
 			action: Type.Union(
