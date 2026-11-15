@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="pi-kanban-board">
+  <title>pi-kanban-board</title>
+  <rect width="512" height="512" rx="112" fill="#0d1424"/>
+  <g fill="#1a2337">
+    <rect x="80" y="120" width="104" height="272" rx="26"/>
+    <rect x="204" y="120" width="104" height="272" rx="26"/>
+    <rect x="328" y="120" width="104" height="272" rx="26"/>
+  </g>
+  <g fill="#33415c">
+    <rect x="96" y="148" width="72" height="44" rx="13"/>
+    <rect x="96" y="204" width="72" height="44" rx="13"/>
+    <rect x="220" y="204" width="72" height="44" rx="13"/>
+    <rect x="344" y="148" width="72" height="44" rx="13"/>
+    <rect x="344" y="204" width="72" height="44" rx="13"/>
+  </g>
+  <rect x="220" y="148" width="72" height="44" rx="13" fill="#e8c547"/>
+</svg>
