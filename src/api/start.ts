@@ -1,14 +1,18 @@
 // DB lifecycle + server start. This is the only place that opens the home DB: it opens
 // once, migrates pending steps, and hands the handle to the server and to tests.
-// It NEVER initializes or destroys ~/.pi/kanban — an uninitialized home still serves
-// meta/selftest (so the UI can say "run init") and refuses writes.
+// It initializes a home that is not v2 yet (a v1 layout is MOVED to a dated backup, never
+// deleted), then opens the DB once and migrates pending steps. startServer({ init: false })
+// keeps the old refusal: an uninitialized home still serves meta/selftest but refuses writes.
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import type { AddressInfo } from "node:net";
 import { HOST_DEFAULT, PORT_DEFAULT } from "../shared/constants.js";
 import { closeDb, type Db } from "../persistence/db.js";
-import { detectState, kanbanHome, openHomeDatabase, readToken, type HomeState } from "../persistence/init.js";
+import {
+  detectState, initHomeIfNeeded, kanbanHome, openHomeDatabase, readToken,
+  type HomeState, type InitResult,
+} from "../persistence/init.js";
 import { createServer, type ServerDeps } from "./server.js";
 import { startSupervisor, type Supervisor } from "../supervisor.js";
 import type http from "node:http";
@@ -26,6 +30,8 @@ export interface StartOptions {
   loop?: { intervalMs?: number } | number | false;
   /** Token gate for the HTTP surface. Default: KANBAN_AUTH=on, else off. */
   auth?: boolean;
+  /** Initialize a home that is not v2 yet. Default true; false keeps the old 503 refusal. */
+  init?: boolean;
 }
 
 export interface RunningServer {
@@ -67,9 +73,15 @@ export async function readBuildHash(webRoot: string): Promise<string> {
 export async function startServer(opts: StartOptions = {}): Promise<RunningServer> {
   const home = opts.home ?? kanbanHome();
   const webRoot = opts.webRoot ?? path.join(repoRoot, "web/dist");
+  let autoInit: InitResult | null = null;
+  if (opts.init !== false) {
+    try { autoInit = initHomeIfNeeded(home); }
+    catch (err) { console.error(`kanban: could not initialize ${home}:`, err); }
+  }
+  if (autoInit) {
+    console.log(`kanban: initialized ${home}` + (autoInit.backupDir ? ` (previous layout moved to ${autoInit.backupDir})` : ""));
+  }
   const state = detectState(home);
-  // Open once. openHomeDatabase migrates pending steps and throws if the home is not v2,
-  // which is exactly why detectState gates it.
   const db: Db | null = state.initialized ? openHomeDatabase(home).db : null;
   const token = readToken(home);
   const buildHash = await readBuildHash(webRoot);

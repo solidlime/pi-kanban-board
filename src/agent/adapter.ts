@@ -145,8 +145,9 @@ async function dbOf(): Promise<{ rt: Runtime; db: Db }> {
     return { rt, db: rt.db };
   }
   throw new DomainError("INTERNAL",
-    `kanban home ${rt.home} is not initialized (${state.status}); the adapter never initializes it — ` +
-    `run the v2 init (backup + --confirm) first, then retry`);}
+    `kanban home ${rt.home} is not initialized (${state.status}); boot initializes a home that needs ` +
+    `it, so this only happens when the server was started with init:false — run the v2 init first`);
+}
 
 // ---------------------------------------------------------------- project resolution
 

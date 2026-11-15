@@ -230,17 +230,17 @@ test("injection: bounded, board-scoped, and it never carries the token", async (
   assert.equal(A.injectionTextSync(), null);
 });
 
-test("not initialized: writes refuse, check explains, nothing is created", async () => {
-  const empty = path.join(root, "uninit", ".pi", "kanban");
+test("a home that does not exist yet is initialized on first use", async () => {
+  const fresh = path.join(root, "fresh", ".pi", "kanban");
   const previous = process.env.KANBAN_HOME;
   await A.closeRuntime();
-  process.env.KANBAN_HOME = empty;
+  process.env.KANBAN_HOME = fresh;
   try {
-    await assert.rejects(() => A.executeKanban({ action: "add", text: "x" }, env), /not initialized/);
+    const added = await A.executeKanban({ action: "add", text: "x" }, env);
+    assert.equal(added.ok, true, "no init ceremony: the write just works on a new machine");
+    assert.equal((await stat(path.join(fresh, "state.sqlite"))).isFile(), true);
     const check = await A.executeKanban({ action: "check" }, env);
-    assert.equal(check.ok, false);
-    assert.equal(JSON.parse(check.text).db.ok, false);
-    await assert.rejects(() => stat(empty));
+    assert.equal(JSON.parse(check.text).db.ok, true);
   } finally {
     process.env.KANBAN_HOME = previous;
     await A.closeRuntime();

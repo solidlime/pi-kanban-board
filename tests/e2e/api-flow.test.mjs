@@ -47,7 +47,7 @@ function makeV1Home(home) {
 async function boot(t, { box, init = true } = {}) {
   const b = box ?? sandbox();
   if (init) executeInit(planInit(new Date(), b.home), { confirmed: true });
-  const run = await startServer({ home: b.home, port: 0, host: "127.0.0.1", auth: true });
+  const run = await startServer({ home: b.home, port: 0, host: "127.0.0.1", auth: true, init });
   t.after(() => run.close());
   t.after(b.cleanup);
   const base = run.url.replace(/\/$/, "");

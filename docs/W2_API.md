@@ -14,6 +14,15 @@ node -e "…"                      # or: startServer({ home, port: 0 }) from src
 
 Binds `HOST_DEFAULT` (`0.0.0.0`) on `PORT_DEFAULT` (`8789`). `PORT=0` picks a free port (tests).
 
+## A fresh home (no ceremony)
+
+`startServer` initializes a home that is not v2 yet — missing, empty, or still holding a v1/partial
+layout — and carries on. Nothing is deleted: the old home is **moved** to `<home>.v1.bak-<stamp>`
+first, so the previous board is one `cp` away, and only *board data* counts as v1 (a home holding
+just `token`/`server.log`, which v2 writes too, is simply empty). `startServer({ init: false })`
+keeps the old behaviour: meta/selftest answer, every write is `503 INTERNAL` naming init. The CLI
+`kanban init` remains for an explicit re-init.
+
 ## Auth
 
 **Off by default.** The gate exists for the case where the board is reachable by something other than

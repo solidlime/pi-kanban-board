@@ -208,7 +208,8 @@ test("static: shell, assets, mime, and no traversal", async (t) => {
 
 test("uninitialized home: diagnostics answer, writes name the init", async (t) => {
   const home = await tempHome("kb-api-empty-");
-  const run = await startServer({ home, port: 0, auth: true });
+  // init:false is the opt-out: boot does not touch the home, so the refusal path stays reachable
+  const run = await startServer({ home, port: 0, auth: true, init: false });
   t.after(() => run.close());
   assert.equal(run.db, null, "an uninitialized home must not be opened");
 

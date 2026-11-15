@@ -3,6 +3,7 @@
 //   inspectInit  → what actually exists right now, and how big
 //   executeInit  → requires confirmed === true, then backup|delete, recreate, migrate
 //   detectState  → classify a home (missing/empty/v1/v2) and NEVER touch it
+//   initHomeIfNeeded → boot-time init: a v1/partial home is MOVED to a dated backup, never deleted
 //   ensureInitialized → same answer for a caller that must then refuse and ask the user
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -17,12 +18,14 @@ import { migrate, schemaVersion, tableExists } from "./migrations.js";
 
 export function kanbanHome(): string { return join(homedir(), ".pi", KANBAN_DIR_NAME); }
 
-/** v1 layout names (docs/REWRITE_V2_PLAN.md §1.4). Kept exported for the CLI/prompt. */
-export const V1_CONTENTS = [
+/** v1 names that carry board data — presence of any of these means there is something to lose. */
+export const V1_DATA = [
   "boards.sqlite", "global.json", "projects", "board.json", "modes.json",
-  "serve.json", "inbox-seen.json", "dashboard.html", "media", "serve-allow.json",
-  "token", "server.log"
+  "inbox-seen.json", "dashboard.html", "media", "serve.json", "serve-allow.json"
 ] as const;
+
+/** Everything init owns inside the home: v1 leftovers plus the two files v2 also writes. */
+export const V1_CONTENTS = [...V1_DATA, "token", "server.log"] as const;
 
 /** Everything init owns inside the home: v1 leftovers plus v2 artifacts. */
 export const MANAGED_CONTENTS = [
@@ -206,7 +209,7 @@ export interface HomeState {
 /** Classify a home. Read-only by contract — this never creates, moves or deletes. */
 export function detectState(home: string = kanbanHome()): HomeState {
   const dbPath = join(home, DB_FILE);
-  const v1Paths = V1_CONTENTS.map(n => join(home, n)).filter(p => existsSync(p));
+  const v1Paths = V1_DATA.map(n => join(home, n)).filter(p => existsSync(p));
 
   if (!existsSync(home)) return { home, status: "missing", initialized: false, schemaVersion: null, v1Paths };
 
@@ -229,8 +232,10 @@ export function detectState(home: string = kanbanHome()): HomeState {
     return { home, status: "v1", initialized: false, schemaVersion: null, v1Paths };
   }
 
-  const leftovers = existsSync(home) ? readdirSync(home) : [];
-  return { home, status: leftovers.length === 0 ? "empty" : "v1", initialized: false, schemaVersion: null, v1Paths };
+  // Nothing worth keeping: token/server.log and stray files are not board data, and init moves
+  // the whole home into the backup anyway. Calling this "v1" made a fresh machine demand a
+  // human confirmation it had no reason to.
+  return { home, status: "empty", initialized: false, schemaVersion: null, v1Paths };
 }
 
 export interface EnsureResult {
@@ -242,8 +247,8 @@ export interface EnsureResult {
 }
 
 /**
- * The refusal path: never auto-destroys. A caller that gets initialized:false must stop,
- * show state/plan to the user, and only then call executeInit with confirmed:true.
+ * The opt-out path (startServer({ init: false }), tests): never auto-destroys. A caller that gets
+ * initialized:false must stop, show state/plan to the user, and only then call executeInit.
  */
 export function ensureInitialized(home: string = kanbanHome(), now: Date = new Date()): EnsureResult {
   const state = detectState(home);
@@ -254,6 +259,17 @@ export function ensureInitialized(home: string = kanbanHome(), now: Date = new D
       : "kanban home holds a v1 (or partial) layout";
   return { initialized: false, state, plan, reason };
 }
+
+/**
+ * Boot-time init. A home that is missing, empty or still holds a v1/partial layout is brought to
+ * v2 without asking: the whole old home is MOVED to `<home>.v1.bak-<stamp>` first, so nothing is
+ * destroyed and the previous board is one `cp` away. Returns null when the home was already v2.
+ */
+export function initHomeIfNeeded(home: string = kanbanHome(), now: Date = new Date()): InitResult | null {
+  if (detectState(home).initialized) return null;
+  return executeInit(planInit(now, home), { confirmed: true, mode: "backup" });
+}
+
 
 /** Open+migrate an already initialized home. Throws instead of initializing. */
 export function openHomeDatabase(home: string = kanbanHome()): { db: Db; home: string; schemaVersion: number } {

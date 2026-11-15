@@ -242,3 +242,29 @@ test("a half-written home (state.sqlite without kv_meta) counts as v1, not v2", 
   assert.equal(state.status, "v1");
   assert.equal(state.initialized, false);
 });
+
+test("detectState: token, server.log and stray files are not v1 data", (t) => {
+  const { home } = sandbox(t);
+  mkdirSync(home, { recursive: true });
+  writeFileSync(join(home, "token"), "deadbeef");
+  writeFileSync(join(home, "server.log"), "");
+  writeFileSync(join(home, ".DS_Store"), "junk");
+  const state = P.detectState(home);
+  // v2 writes token/server.log too, so treating them as v1 data made a fresh machine demand a
+  // confirmation it had no reason to. Only board data counts.
+  assert.deepEqual([state.status, state.initialized, state.v1Paths.length], ["empty", false, 0]);
+});
+
+test("initHomeIfNeeded: a v1 home is migrated on boot, whole home kept in a backup", (t) => {
+  const { home } = sandbox(t);
+  makeV1Home(home);
+  const init = P.initHomeIfNeeded(home, fixedNow);
+  assert.ok(init, "a v1 home is initialized without asking");
+  assert.equal(init.mode, "backup", "never delete: the old home is moved, not removed");
+  assert.equal(init.backupDir, `${home}.v1.bak-${expectedStamp}`);
+  assert.equal(existsSync(join(init.backupDir, "boards.sqlite")), true);
+  assert.equal(existsSync(join(init.backupDir, "media", "shot.png")), true);
+  const state = P.detectState(home);
+  assert.deepEqual([state.status, state.initialized], ["v2", true]);
+  assert.equal(P.initHomeIfNeeded(home, fixedNow), null, "already v2: nothing to do");
+});

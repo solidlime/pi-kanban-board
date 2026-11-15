@@ -114,8 +114,8 @@ export function sendError(ctx: Ctx, err: unknown): void {
 
 const notInitialized = (ctx: Ctx): HttpError => new HttpError(503, "INTERNAL",
   `kanban home ${ctx.home} is not initialized (${ctx.state.status}). ` +
-  `Run the v2 init (backup + --confirm) after reviewing the targets — it destroys the v1 layout ` +
-  `and therefore needs explicit user confirmation.`);
+  `Start the server without init:false to let it initialize (any old layout is moved to a dated ` +
+  `backup, never deleted), or run the v2 init with --confirm after reviewing the targets.`);
 
 function requireDb(ctx: Ctx): Db {
   if (!ctx.db) throw notInitialized(ctx);
