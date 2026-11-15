@@ -7,6 +7,13 @@ function fmtBytes(n: number): string {
 }
 
 export async function runInit(argv: string[]) {
+  if (argv.includes('--help') || argv.includes('-h')) {
+    console.log(`usage: init [--home=<path>] [--inspect] [--confirm (--backup | --delete)]
+  --inspect   report what would be created and stop (exit 2, writes nothing)
+  --confirm   apply the plan; needs exactly one of --backup or --delete
+  --home      target directory, must end in .pi/kanban`);
+    return { ok: true, usage: true };
+  }
   const homeArg = argv.find(a => a.startsWith('--home='));
   const home = homeArg ? homeArg.slice('--home='.length) : kanbanHome();
   const doBackup = argv.includes('--backup');
