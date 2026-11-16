@@ -407,6 +407,12 @@ body.mq-on {
   border-color: var(--warn-line);
   background: var(--blocked-bg);
 }
+.card.stale {
+  border-color: var(--warn-line);
+}
+.card.stale:not(.blocked) {
+  background: var(--blocked-bg);
+}
 .card-h {
   display: flex;
   align-items: center;
@@ -485,6 +491,28 @@ body.mq-on {
 .col-more:hover {
   background: var(--sunken);
   color: var(--fg);
+}
+.stale-set {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.stale-days {
+  width: 4.6em;
+  font: inherit;
+  font-size: 12px;
+  text-align: right;
+  color: var(--fg);
+  background: var(--sunken);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 1px 4px;
+}
+.stale-days:focus {
+  outline: none;
+  border-color: var(--accent);
 }
 .addrow input {
   flex: 1;

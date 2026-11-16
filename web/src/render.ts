@@ -6,8 +6,8 @@ import type {
 } from '../../src/shared/dto.js';
 import { attachmentSrc, attachmentViewSrc, deliverableFileSrc, deliverableViewSrc, type LoopInfo } from './api.js';
 import {
-  acceptanceProgress, blocksCards, cardKey, cardMatches, cardsInColumn, isBlocked, isClosed, isDoneColumn,
-  lastActorOf, openBlockers, readyCards, DONE_PREVIEW, type CardKey, type Store,
+  acceptanceProgress, blocksCards, cardKey, cardMatches, cardsInColumn, daysSinceMoved, isBlocked, isClosed,
+  isDoneColumn, isStalled, lastActorOf, openBlockers, readyCards, DONE_PREVIEW, type CardKey, type Store,
 } from './store.js';
 import { renderGantt, type GanttScale } from './gantt.js';
 
@@ -30,6 +30,8 @@ export interface Handlers {
   onTogglePanel(which?: PanelKey): void;
   /** Fold/unfold the done column (its newest DONE_PREVIEW stay visible). */
   onToggleDone(): void;
+  /** How many days in DOING count as stalled; 0 turns the flag off. */
+  onStaleDays(days: number): void;
   onAddDeliverable(title: string): Promise<boolean>;
   onDeleteDeliverable(projectId: string, id: number): void;
   /** Search box text (the caller debounces) and closing the results overlay. */
@@ -102,6 +104,8 @@ export interface View {
   panelHistBody: HTMLElement;
   panelHistSig: string;
   focusBtn: HTMLButtonElement;
+  /** Days-in-DOING threshold for the 停滞 flag; persisted with the panel toggles. */
+  stale: HTMLInputElement;
   panelBtns: Record<PanelKey, HTMLButtonElement>;
   toast: HTMLElement;
   toastMsg: HTMLElement;
@@ -356,6 +360,19 @@ export function mount(root: HTMLElement, h: Handlers): View {
   focusBtn.type = 'button';
   focusBtn.title = 'いま着手できるカードだけを表示';
   focusBtn.addEventListener('click', () => h.onToggleFocus());
+  // ---- stale threshold: v1 hard-coded 7 days; the header makes it a setting.
+  const staleWrap = el('label', 'stale-set');
+  staleWrap.title = 'DOING のカードが動かないまま何日で「停滞」とするか（0 で無効）';
+  const stale = el('input', 'stale-days');
+  stale.type = 'number';
+  stale.min = '0';
+  stale.max = '365';
+  stale.step = '1';
+  stale.setAttribute('aria-label', '停滞とみなす日数');
+  // valueAsNumber, so an empty field restores the default instead of silently meaning 0.
+  stale.addEventListener('change', () => h.onStaleDays(stale.valueAsNumber));
+  staleWrap.append(el('span', 'lbl', '停滞'), stale, el('span', 'unit', '日'));
+
   // Two buttons, not one: either surface opens without the other.
   const panelBtns: Record<PanelKey, HTMLButtonElement> = {
     deliverables: el('button', 'toggle', '成果物'),
@@ -448,7 +465,7 @@ export function mount(root: HTMLElement, h: Handlers): View {
     applyDensity(localStorage.getItem('kb-density') === 'compact');
   } catch { applyTheme(false); applyDensity(false); }
 
-  top.append(brand, pick, newForm, searchWrap, focusBtn, panelBtns.deliverables, panelBtns.timeline, overviewBtn, graphBtn, ganttBtn, viewsBtn, templatesBtn, notifBtn, themeBtn, densityBtn, el('div', 'grow'), status);
+  top.append(brand, pick, newForm, searchWrap, focusBtn, staleWrap, panelBtns.deliverables, panelBtns.timeline, overviewBtn, graphBtn, ganttBtn, viewsBtn, templatesBtn, notifBtn, themeBtn, densityBtn, el('div', 'grow'), status);
 
   const errBar = el('div', 'err');
   errBar.hidden = true;
@@ -570,7 +587,7 @@ export function mount(root: HTMLElement, h: Handlers): View {
     tplPane.aside, viewPane.aside, notifPane.aside, toast);
   return {
     root, top, h, select, newName, status, errBar, empty, board, selbar,
-    focus, focusCount, focusList, focusEmpty, focusBtn, panelBtns, toast, toastMsg, toastUndo,
+    focus, focusCount, focusList, focusEmpty, focusBtn, stale, panelBtns, toast, toastMsg, toastUndo,
     panelWrap,
     panelDeliv: delivPanel.aside, panelDelivHead: delivPanel.head, panelDelivBody: delivPanel.body, panelDelivSig: '',
     panelHist: histPanel.aside, panelHistHead: histPanel.head, panelHistBody: histPanel.body, panelHistSig: '',
@@ -816,7 +833,6 @@ function updateCard(node: HTMLElement, card: Card, s: Store, h: Handlers): void 
       meta.append(chip);
     }
     if (card.blockedReason) meta.append(el('span', 'chip blocked-chip', `⛔ ${card.blockedReason}`));
-    meta.hidden = meta.childElementCount === 0;
 
     node.classList.toggle('blocked', blocked);
     node.classList.toggle('closed', isClosed(card) || isDoneColumn(s, card.columnId));
@@ -852,6 +868,18 @@ function updateCard(node: HTMLElement, card: Card, s: Store, h: Handlers): void 
     node.dataset.colsig = colsig;
     fillMoves(node.querySelector('.moves') as HTMLElement, card, s, node.dataset.key as CardKey, h);
   }
+
+  // v1's 停滞 flag. Neither the threshold nor elapsed time lives in cardSig, and movedAt only
+  // changes on a move, so this rides outside the sig to follow both.
+  const stalled = isStalled(s, card, s.staleDays);
+  node.classList.toggle('stale', stalled);
+  const metaEl = node.querySelector('.meta') as HTMLElement | null;
+  let staleChip = metaEl?.querySelector('.chip.stale-chip') as HTMLElement | null | undefined;
+  if (stalled) {
+    if (!staleChip && metaEl) staleChip = metaEl.appendChild(el('span', 'chip warn stale-chip'));
+    if (staleChip) staleChip.textContent = `${daysSinceMoved(card)}日停滞`;
+  } else if (staleChip) staleChip.remove();
+  if (metaEl) metaEl.hidden = metaEl.childElementCount === 0;
 
   node.classList.toggle('pending', s.pending.has(node.dataset.key as CardKey));
 }
@@ -1574,6 +1602,8 @@ function renderSelectionBar(view: View, s: Store): void {
 }
 
 export function renderView(view: View, s: Store): void {
+  // A number being typed must survive the poll that lands mid-keystroke.
+  if (document.activeElement !== view.stale) view.stale.value = String(s.staleDays);
   const projectSig = `${s.projects.map(p => `${p.slug}:${p.name}`).join('|')}#${s.projectId ?? ''}`;
   if (view.projectSig !== projectSig) {
     view.projectSig = projectSig;

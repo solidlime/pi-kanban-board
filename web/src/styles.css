@@ -81,6 +81,9 @@ body.mq-on{user-select:none;cursor:crosshair}
 .ctxmenu button.danger{color:var(--danger)}
 .ctxmenu .sep{height:1px;margin:4px 6px;background:var(--line)}
 .card.blocked{border-color:var(--warn-line);background:var(--blocked-bg)}
+/* 停滞: border only — .card.blocked already owns the background, and a long DOING card can be both. */
+.card.stale{border-color:var(--warn-line)}
+.card.stale:not(.blocked){background:var(--blocked-bg)}
 .card-h{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--muted);margin-bottom:4px}
 .prio{font-variant-numeric:tabular-nums}
 .prio.hot{color:var(--warn);font-weight:600}
@@ -98,6 +101,9 @@ body.mq-on{user-select:none;cursor:crosshair}
 /* Only the done column shows it; hidden everywhere else by renderView. */
 .col-more{font:inherit;font-size:12px;color:var(--muted);background:transparent;border:0;padding:6px 10px;cursor:pointer;text-align:left}
 .col-more:hover{background:var(--sunken);color:var(--fg)}
+.stale-set{display:flex;align-items:center;gap:4px;font-size:12px;color:var(--muted)}
+.stale-days{width:4.6em;font:inherit;font-size:12px;text-align:right;color:var(--fg);background:var(--sunken);border:1px solid var(--line);border-radius:6px;padding:1px 4px}
+.stale-days:focus{outline:none;border-color:var(--accent)}
 .addrow input{flex:1;min-width:0}
 
 /* card meta: owner / due / acceptance / blocked (one line, hidden when empty) */

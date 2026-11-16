@@ -113,6 +113,8 @@ var stopLoop = (project, reason) => req("POST", "/api/loop/stop", reason === voi
 var tickLoop = (project) => req("POST", "/api/loop/tick", { project });
 
 // web/src/store.ts
+var STALE_DAYS_DEFAULT = 7;
+var DAY_MS = 864e5;
 function cardKey(projectId, id) {
   return `${projectId}#${id}`;
 }
@@ -142,6 +144,7 @@ function createStore() {
     graph: false,
     graphLayout: null,
     doneOpen: false,
+    staleDays: STALE_DAYS_DEFAULT,
     gantt: false,
     ganttScale: "week",
     q: "",
@@ -249,6 +252,15 @@ function isClosed(card) {
 }
 function isDoneColumn(s, columnId) {
   return s.columns[columnId]?.kind === "done";
+}
+function isStalled(s, card, days, now = Date.now()) {
+  if (days <= 0 || s.columns[card.columnId]?.kind !== "doing") return false;
+  const at = Date.parse(card.movedAt);
+  return Number.isFinite(at) && now - at >= days * DAY_MS;
+}
+function daysSinceMoved(card, now = Date.now()) {
+  const at = Date.parse(card.movedAt);
+  return Number.isFinite(at) ? Math.floor((now - at) / DAY_MS) : 0;
 }
 function openBlockers(s, cardId) {
   const out = [];
@@ -668,6 +680,16 @@ function mount(root2, h) {
   focusBtn.type = "button";
   focusBtn.title = "\u3044\u307E\u7740\u624B\u3067\u304D\u308B\u30AB\u30FC\u30C9\u3060\u3051\u3092\u8868\u793A";
   focusBtn.addEventListener("click", () => h.onToggleFocus());
+  const staleWrap = el2("label", "stale-set");
+  staleWrap.title = "DOING \u306E\u30AB\u30FC\u30C9\u304C\u52D5\u304B\u306A\u3044\u307E\u307E\u4F55\u65E5\u3067\u300C\u505C\u6EDE\u300D\u3068\u3059\u308B\u304B\uFF080 \u3067\u7121\u52B9\uFF09";
+  const stale = el2("input", "stale-days");
+  stale.type = "number";
+  stale.min = "0";
+  stale.max = "365";
+  stale.step = "1";
+  stale.setAttribute("aria-label", "\u505C\u6EDE\u3068\u307F\u306A\u3059\u65E5\u6570");
+  stale.addEventListener("change", () => h.onStaleDays(stale.valueAsNumber));
+  staleWrap.append(el2("span", "lbl", "\u505C\u6EDE"), stale, el2("span", "unit", "\u65E5"));
   const panelBtns = {
     deliverables: el2("button", "toggle", "\u6210\u679C\u7269"),
     timeline: el2("button", "toggle", "\u5C65\u6B74")
@@ -761,7 +783,7 @@ function mount(root2, h) {
     applyTheme(false);
     applyDensity(false);
   }
-  top.append(brand, pick, newForm, searchWrap, focusBtn, panelBtns.deliverables, panelBtns.timeline, overviewBtn, graphBtn, ganttBtn, viewsBtn, templatesBtn, notifBtn, themeBtn, densityBtn, el2("div", "grow"), status);
+  top.append(brand, pick, newForm, searchWrap, focusBtn, staleWrap, panelBtns.deliverables, panelBtns.timeline, overviewBtn, graphBtn, ganttBtn, viewsBtn, templatesBtn, notifBtn, themeBtn, densityBtn, el2("div", "grow"), status);
   const errBar = el2("div", "err");
   errBar.hidden = true;
   const loopBar = el2("section", "loop");
@@ -895,6 +917,7 @@ function mount(root2, h) {
     focusList,
     focusEmpty,
     focusBtn,
+    stale,
     panelBtns,
     toast,
     toastMsg,
@@ -1165,7 +1188,6 @@ function updateCard(node, card, s, h) {
       meta.append(chip);
     }
     if (card.blockedReason) meta.append(el2("span", "chip blocked-chip", `\u26D4 ${card.blockedReason}`));
-    meta.hidden = meta.childElementCount === 0;
     node.classList.toggle("blocked", blocked);
     node.classList.toggle("closed", isClosed(card) || isDoneColumn(s, card.columnId));
     const hints = [
@@ -1197,6 +1219,15 @@ function updateCard(node, card, s, h) {
     node.dataset.colsig = colsig;
     fillMoves(node.querySelector(".moves"), card, s, node.dataset.key, h);
   }
+  const stalled = isStalled(s, card, s.staleDays);
+  node.classList.toggle("stale", stalled);
+  const metaEl = node.querySelector(".meta");
+  let staleChip = metaEl?.querySelector(".chip.stale-chip");
+  if (stalled) {
+    if (!staleChip && metaEl) staleChip = metaEl.appendChild(el2("span", "chip warn stale-chip"));
+    if (staleChip) staleChip.textContent = `${daysSinceMoved(card)}\u65E5\u505C\u6EDE`;
+  } else if (staleChip) staleChip.remove();
+  if (metaEl) metaEl.hidden = metaEl.childElementCount === 0;
   node.classList.toggle("pending", s.pending.has(node.dataset.key));
 }
 function focusRow(key, h) {
@@ -1882,6 +1913,7 @@ function renderSelectionBar(view2, s) {
   bar.append(del, clear);
 }
 function renderView(view2, s) {
+  if (document.activeElement !== view2.stale) view2.stale.value = String(s.staleDays);
   const projectSig = `${s.projects.map((p2) => `${p2.slug}:${p2.name}`).join("|")}#${s.projectId ?? ""}`;
   if (view2.projectSig !== projectSig) {
     view2.projectSig = projectSig;
@@ -2507,6 +2539,7 @@ var savedUi = readSavedUi();
 store.panels.deliverables = savedUi.deliverables;
 store.panels.timeline = savedUi.timeline;
 store.doneOpen = savedUi.doneOpen;
+store.staleDays = savedUi.staleDays;
 var root = document.getElementById("app");
 if (!root) throw new Error("#app not found");
 root.textContent = "";
@@ -2532,12 +2565,17 @@ function saveProject(slug) {
   }
 }
 function readSavedUi() {
-  const none = { deliverables: false, timeline: false, doneOpen: false };
+  const none = { deliverables: false, timeline: false, doneOpen: false, staleDays: STALE_DAYS_DEFAULT };
   try {
     const raw = JSON.parse(localStorage.getItem(UI_KEY) ?? "{}");
     if (!raw || typeof raw !== "object") return none;
     const o = raw;
-    return { deliverables: o.deliverables === true, timeline: o.timeline === true, doneOpen: o.doneOpen === true };
+    return {
+      deliverables: o.deliverables === true,
+      timeline: o.timeline === true,
+      doneOpen: o.doneOpen === true,
+      staleDays: typeof o.staleDays === "number" ? clampStale(o.staleDays) : STALE_DAYS_DEFAULT
+    };
   } catch {
     return none;
   }
@@ -2547,10 +2585,14 @@ function saveUi(s) {
     localStorage.setItem(UI_KEY, JSON.stringify({
       deliverables: s.panels.deliverables,
       timeline: s.panels.timeline,
-      doneOpen: s.doneOpen
+      doneOpen: s.doneOpen,
+      staleDays: s.staleDays
     }));
   } catch {
   }
+}
+function clampStale(days) {
+  return Number.isFinite(days) ? Math.min(365, Math.max(0, Math.round(days))) : STALE_DAYS_DEFAULT;
 }
 var boardSeq = 0;
 var UNDO_MS = 6e3;
@@ -3267,6 +3309,11 @@ var view = mount(root, {
   },
   onToggleDone: () => {
     store.doneOpen = !store.doneOpen;
+    saveUi(store);
+    render();
+  },
+  onStaleDays: (days) => {
+    store.staleDays = clampStale(days);
     saveUi(store);
     render();
   },

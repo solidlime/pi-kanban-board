@@ -15,6 +15,10 @@ export type {
 
 export type CardKey = string; // `${projectId}#${id}` — never a bare id
 
+/** Days a DOING card may sit unmoved before it is flagged (v1's STALE); the header can change it. */
+export const STALE_DAYS_DEFAULT = 7;
+const DAY_MS = 86_400_000;
+
 export function cardKey(projectId: string, id: number): CardKey { return `${projectId}#${id}`; }
 export function keyOf(card: Card): CardKey { return cardKey(card.projectId, card.id); }
 
@@ -43,6 +47,8 @@ export interface Store {
   pane: Pane;
   /** Done column expanded past its newest few cards. Persisted: a long done list is the reason. */
   doneOpen: boolean;
+  /** Days in DOING before a card is flagged as stalled; 0 turns the flag off. Persisted. */
+  staleDays: number;
   /** Overview (総合管理) replaces the board while true. */
   overview: boolean;
   overviewRows: OverviewRow[];
@@ -94,6 +100,7 @@ export function createStore(): Store {
     dependencies: [], deliverables: [], timeline: [], focus: false, panels: { deliverables: false, timeline: false },
     pane: 'none', overview: false, overviewRows: [], graph: false, graphLayout: null,
     doneOpen: false,
+    staleDays: STALE_DAYS_DEFAULT,
     gantt: false, ganttScale: 'week',
     q: '', hits: null, searchAll: false, qFocus: false, notifications: [], attachments: [], locks: [], loop: null,
     templates: [], views: [],
@@ -225,6 +232,24 @@ export function isClosed(card: Pick<Card, 'closedAt'>): boolean {
 
 export function isDoneColumn(s: Store, columnId: string): boolean {
   return s.columns[columnId]?.kind === 'done';
+}
+
+/**
+ * 停滞: a doing-kind card nobody has moved for `days`. `movedAt` is when it entered the column.
+ * Judge the column by kind, not by id — `isDoneColumn` does the same, and an id is a name.
+ */
+export function isStalled(
+  s: Store, card: Pick<Card, 'columnId' | 'movedAt'>, days: number, now = Date.now(),
+): boolean {
+  if (days <= 0 || s.columns[card.columnId]?.kind !== 'doing') return false;
+  const at = Date.parse(card.movedAt);
+  return Number.isFinite(at) && now - at >= days * DAY_MS;
+}
+
+/** Whole days a card has sat where it is; 0 when `movedAt` is unreadable. */
+export function daysSinceMoved(card: Pick<Card, 'movedAt'>, now = Date.now()): number {
+  const at = Date.parse(card.movedAt);
+  return Number.isFinite(at) ? Math.floor((now - at) / DAY_MS) : 0;
 }
 
 /** Open 'blocks' edges arriving at `cardId`: the blockers that have not closed yet. */
