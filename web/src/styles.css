@@ -11,9 +11,9 @@ body{margin:0;font:14px/1.45 system-ui,"Segoe UI",sans-serif;background:var(--bg
 .pick{display:flex;gap:6px;align-items:center;color:var(--muted);font-size:12px}
 .newproj{display:flex;gap:6px;align-items:center}
 
-input,select,button{font:inherit;color:inherit}
-input,select{background:#101728;border:1px solid var(--line);border-radius:6px;padding:5px 8px}
-input:focus-visible,select:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+input,select,textarea,button{font:inherit;color:inherit}
+input,select,textarea{background:#101728;border:1px solid var(--line);border-radius:6px;padding:5px 8px}
+input:focus-visible,select:focus-visible,textarea:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
 button{background:#1c2440;border:1px solid var(--line);border-radius:6px;padding:5px 10px;cursor:pointer}
 button:hover{background:#243052}
 button:disabled{opacity:.5;cursor:default}
@@ -258,6 +258,7 @@ div.gantt-row:hover,div.gantt-row:focus-visible{background:#141a2e;border-color:
 .thumb-w{position:relative;display:inline-flex}
 .thumb-w.gone{display:none}
 .thumb{width:52px;height:52px;object-fit:cover;border-radius:6px;border:1px solid var(--line);background:#101728;display:block}
+.thumb.doc{display:flex;align-items:center;justify-content:center;color:#9fb0cc;font-size:11px;text-decoration:none}
 .thumb-x{position:absolute;top:-6px;right:-6px;background:#2a1520;border-color:#5b2430;color:#ffd7de;padding:0 4px;line-height:1.4;border-radius:999px}
 .d-atts{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:8px}
 .d-dv-atts{display:flex;gap:6px;flex-wrap:wrap;align-items:center;padding:0 8px 6px}

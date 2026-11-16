@@ -63,12 +63,14 @@ body {
 }
 input,
 select,
+textarea,
 button {
   font: inherit;
   color: inherit;
 }
 input,
-select {
+select,
+textarea {
   background: #101728;
   border: 1px solid var(--line);
   border-radius: 6px;
@@ -76,6 +78,7 @@ select {
 }
 input:focus-visible,
 select:focus-visible,
+textarea:focus-visible,
 button:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
@@ -1227,6 +1230,14 @@ div.gantt-row:focus-visible {
   border: 1px solid var(--line);
   background: #101728;
   display: block;
+}
+.thumb.doc {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #9fb0cc;
+  font-size: 11px;
+  text-decoration: none;
 }
 .thumb-x {
   position: absolute;

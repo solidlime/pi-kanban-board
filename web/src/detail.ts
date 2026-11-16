@@ -8,11 +8,10 @@ import type { DependencyType, PatchCardReq, SessionRef } from '../../src/shared/
 import {
   acceptanceProgress, cardKey, edgesOf, isClosed, keyOf, lastActorOf, parseKey, type CardKey, type Store,
 } from './store.js';
-import { attachmentSrc, deliverableViewSrc } from './api.js';
+import { attachmentSrc, attachmentViewSrc, deliverableViewSrc } from './api.js';
 
 /** The server sniffs bytes anyway; this is only to fail fast with a friendlier sentence. */
-const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
-const isImage = (f: File): boolean => IMAGE_TYPES.includes(f.type);
+const ATTACH_ACCEPT = 'image/*,application/pdf,video/*,audio/*,.md,.txt,.csv,.json,.log,.yaml,.yml,.zip';
 
 export interface DetailHandlers {
   /** Resolves false when the API rejected the patch (details stay open). */
@@ -180,20 +179,19 @@ export function mountDetail(root: HTMLElement, h: DetailHandlers): DetailView {
   tlSec.append(el('h3', undefined, 'このカードの履歴'));
   const tlList = el('div', 'd-tl');
 
-  // ---- attachments (images only; the server sniffs the bytes as a second gate)
+  // ---- attachments (the server sniffs the bytes; this list just filters the file picker)
   const atSec = el('section', 'd-sec');
-  atSec.append(el('h3', undefined, '添付画像'));
+  atSec.append(el('h3', undefined, '添付ファイル'));
   const atList = el('div', 'd-atts');
   const atPick = el('input', 'd-file');
   atPick.type = 'file';
-  atPick.accept = IMAGE_TYPES.join(',');
-  atPick.setAttribute('aria-label', '画像を添付');
+  atPick.accept = ATTACH_ACCEPT;
+  atPick.setAttribute('aria-label', 'ファイルを添付');
   atPick.addEventListener('change', () => {
     const file = atPick.files?.[0];
     if (!file || !key) return;
-    if (!isImage(file)) { h.notify('画像ファイル（png/jpeg/gif/webp）だけ添付できる'); atPick.value = ''; return; }
     const k = key;
-    void h.onUploadAttachment(k, file).then(ok => { atPick.value = ''; if (ok) h.notify('画像を添付した'); });
+    void h.onUploadAttachment(k, file).then(ok => { atPick.value = ''; if (ok) h.notify('ファイルを添付した'); });
   });
   atSec.append(atList, atPick);
 
@@ -337,13 +335,32 @@ export function mountDetail(root: HTMLElement, h: DetailHandlers): DetailView {
     if (prev && depTarget.querySelector(`option[value="${prev}"]`)) depTarget.value = prev;
   }
 
-  function thumb(a: { id: number; name: string }, projectId: string, onRemove?: () => Promise<boolean>): HTMLElement {
+  const docLabel = (mime: string): string => {
+    if (mime === 'application/pdf') return 'PDF';
+    if (mime.startsWith('video/')) return '動画';
+    if (mime.startsWith('audio/')) return '音声';
+    if (mime.includes('zip')) return 'ZIP';
+    return '文書';
+  };
+
+  function thumb(a: { id: number; name: string; mime: string; size: number }, projectId: string, onRemove?: () => Promise<boolean>): HTMLElement {
     const wrap = el('span', 'thumb-w');
-    const img = el('img', 'thumb');
-    img.src = attachmentSrc(projectId, a.id);
-    img.alt = a.name;
-    img.title = a.name;
-    wrap.append(img);
+    if (a.mime.startsWith('image/')) {
+      const img = el('img', 'thumb');
+      img.src = attachmentSrc(projectId, a.id);
+      img.alt = a.name;
+      img.title = a.name;
+      wrap.append(img);
+    } else {
+      // Only images paint in the strip; everything else opens through the shared /view wrapper.
+      const link = el('a', 'thumb doc');
+      link.href = attachmentViewSrc(projectId, a.id);
+      link.target = '_blank';
+      link.rel = 'noopener';
+      link.textContent = docLabel(a.mime);
+      link.title = `${a.name}（${Math.max(1, Math.round(a.size / 1024))} KB）`;
+      wrap.append(link);
+    }
     if (onRemove) {
       const rm = el('button', 'ic thumb-x', '×');
       rm.type = 'button';
@@ -416,13 +433,12 @@ export function mountDetail(root: HTMLElement, h: DetailHandlers): DetailView {
       }
       const pick = el('input', 'd-file sm');
       pick.type = 'file';
-      pick.accept = IMAGE_TYPES.join(',');
-      pick.setAttribute('aria-label', `${d.title} に画像を添付`);
+      pick.accept = ATTACH_ACCEPT;
+      pick.setAttribute('aria-label', `${d.title} にファイルを添付`);
       pick.addEventListener('change', () => {
         const f = pick.files?.[0];
         if (!f) return;
-        if (!isImage(f)) { h.notify('画像ファイル（png/jpeg/gif/webp）だけ添付できる'); pick.value = ''; return; }
-        void h.onUploadDeliverableAttachment(d.id, f).then(ok => { pick.value = ''; if (ok) h.notify('画像を添付した'); });
+        void h.onUploadDeliverableAttachment(d.id, f).then(ok => { pick.value = ''; if (ok) h.notify('ファイルを添付した'); });
       });
       strip.append(pick);
       dvList.append(strip);

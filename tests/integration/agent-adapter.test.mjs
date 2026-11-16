@@ -173,18 +173,24 @@ test("kanban: img stores a real image and attaches it, ref records the path", as
   await writeFile(pngPath, png);
   const txtPath = path.join(root, "assets", "notes.txt");
   await writeFile(txtPath, "not an image");
+  const htmlPath = path.join(root, "assets", "page.html");
+  await writeFile(htmlPath, "<script>alert(1)</script>");
 
   const missing = await A.executeKanban({ action: "img", id: 1, image: "/tmp/nope.png" }, env);
   assert.equal(missing.ok, false);
   assert.match(missing.text, /cannot read/);
 
-  const notImage = await A.executeKanban({ action: "img", id: 1, image: txtPath }, env);
-  assert.equal(notImage.ok, false);
-  assert.match(notImage.text, /not a png, jpeg, gif or webp/);
+  // Text passes; a page that would run as our own origin does not.
+  const text = await A.executeKanban({ action: "img", id: 1, image: txtPath }, env);
+  assert.equal(text.ok, true, text.text);
+  assert.match(text.text, /text\/plain/);
+  const notAllowed = await A.executeKanban({ action: "img", id: 1, image: htmlPath }, env);
+  assert.equal(notAllowed.ok, false);
+  assert.match(notAllowed.text, /not an image, pdf, media, zip or plain-text file/);
 
   const ok = await A.executeKanban({ action: "img", id: 1, image: pngPath }, env);
   assert.equal(ok.ok, true, ok.text);
-  assert.match(ok.text, /attached #1 to card #1 \(image\/png/);
+  assert.match(ok.text, /attached #\d+ to card #1 \(image\/png/);
 
   const ref = await A.executeKanban({ action: "ref", id: 1, image: "/tmp/report.html" }, env);
   assert.equal(ref.ok, true, ref.text);

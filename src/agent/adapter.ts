@@ -394,8 +394,8 @@ export function renderInjection(rt: Runtime, projectId: string, columns: ColumnD
 }
 
 /**
- * Copy one local file into the media store. Only images pass (sniffImage), so an agent cannot
- * park arbitrary bytes under our origin. Paths are resolved against the cwd by the caller.
+ * Copy one local file into the media store. Only the allowlisted kinds pass (sniffAttachment),
+ * so an agent cannot park arbitrary bytes under our origin. Paths are resolved against the cwd.
  */
 function attachFile(home: string, path: string): { ok: true; blobName: string; mime: string; size: number } | { ok: false; text: string } {
   let bytes: Buffer;
@@ -407,8 +407,8 @@ function attachFile(home: string, path: string): { ok: true; blobName: string; m
   if (bytes.length > MAX_ATTACHMENT_BYTES) {
     return { ok: false, text: `${path} is larger than ${MAX_ATTACHMENT_BYTES} bytes` };
   }
-  const stored = storeBlob(home, bytes);
-  if (!stored) return { ok: false, text: `${path} is not a png, jpeg, gif or webp image` };
+  const stored = storeBlob(home, bytes, path);
+  if (!stored) return { ok: false, text: `${path} is not an image, pdf, media, zip or plain-text file` };
   return { ok: true, ...stored };
 }
 

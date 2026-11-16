@@ -483,6 +483,18 @@ const EXT_MIME: Record<string, string> = {
   ".jpeg": "image/jpeg",
   ".gif": "image/gif",
   ".webp": "image/webp",
+  ".mp3": "audio/mpeg",
+  ".wav": "audio/wav",
+  ".ogg": "audio/ogg",
+  ".m4a": "audio/mp4",
+  ".flac": "audio/flac",
+  ".mov": "video/quicktime",
+  ".zip": "application/zip",
+  ".csv": "text/csv; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".log": "text/plain; charset=utf-8",
+  ".yaml": "text/yaml; charset=utf-8",
+  ".yml": "text/yaml; charset=utf-8",
 };
 
 /**
@@ -503,7 +515,18 @@ function resolveRef(home: string, ref: string): string {
   }
 }
 
-function deliverableRef(ctx: Ctx, m: RegExpExecArray): { file: string; name: string; src: string; mime: string } {
+interface FileSource {
+  file: string;
+  name: string;
+  mime: string;
+  /** Where the raw bytes live, for the viewer's <img>/<video>/<iframe>. */
+  src: string;
+  /** Serve the bytes as an inline download under this name (attachments). */
+  download?: string;
+  cache?: string;
+}
+
+function deliverableRef(ctx: Ctx, m: RegExpExecArray): FileSource {
   const db = requireDb(ctx);
   const project = projectOr404(db, decodeSegment(m[1]));
   const id = assertId(Number(m[2]));
@@ -537,10 +560,9 @@ function parseRange(header: string | undefined, size: number): { start: number; 
   return { start, end };
 }
 
-/** Raw bytes: Range/206 keeps a video seekable. */
-function getDeliverableFile(ctx: Ctx, m: RegExpExecArray): void {
-  const { file, mime } = deliverableRef(ctx, m);
-  const { size } = statSync(file);
+/** Raw bytes: Range/206 keeps a video seekable. Deliverables and attachments share this. */
+function sendFileBytes(ctx: Ctx, f: FileSource): void {
+  const { size } = statSync(f.file);
   let range: { start: number; end: number } | null;
   try {
     range = parseRange(ctx.req.headers.range, size);
@@ -552,29 +574,36 @@ function getDeliverableFile(ctx: Ctx, m: RegExpExecArray): void {
   const start = range?.start ?? 0;
   const end = range?.end ?? size - 1;
   ctx.res.writeHead(range === null ? 200 : 206, {
-    "content-type": mime,
+    "content-type": f.mime,
     "content-length": String(range === null ? size : end - start + 1),
     "accept-ranges": "bytes",
     "x-content-type-options": "nosniff",
-    "cache-control": "private, no-cache",
+    "cache-control": f.cache ?? "private, no-cache",
+    ...(f.download === undefined ? {} : { "content-disposition": `inline; filename="${encodeURIComponent(f.download)}"` }),
     ...(range === null ? {} : { "content-range": `bytes ${start}-${end}/${size}` }),
   });
   if (size === 0) return void ctx.res.end();
-  createReadStream(file, { start, end }).pipe(ctx.res);
+  createReadStream(f.file, { start, end }).pipe(ctx.res);
 }
 
 const VIEW_CSS = "html,body{margin:0;height:100%;background:#16161a;color:#e8e8ea;" +
   "font:15px/1.7 system-ui,-apple-system,sans-serif}.md{padding:24px 28px;max-width:56rem;margin:0 auto}" +
   ".md code{background:#26262e;padding:1px 4px;border-radius:3px}img.media{display:block;margin:auto;max-width:100%;" +
   "max-height:100vh}video.media{display:block;width:100%;height:100vh}.dl{padding:24px 28px}a{color:#8ab4f8}";
+// md() backtracks quadratically on pathological input, and attachments are user uploads now.
+const VIEW_TEXT_MAX = 256 * 1024;
 
 /**
  * The readable form of the same bytes. HTML is served as-is (the sandbox CSP keeps it off our
  * origin); everything else gets the smallest wrapper that shows or plays it.
  */
-function getDeliverableView(ctx: Ctx, m: RegExpExecArray): void {
-  const { file, name, src, mime } = deliverableRef(ctx, m);
+function sendFileView(ctx: Ctx, f: FileSource): void {
+  const { file, name, src, mime } = f;
   const ext = extname(file).toLowerCase();
+  const readViewText = (): string => {
+    const raw = readFileSync(file, "utf8");
+    return raw.length > VIEW_TEXT_MAX ? `${raw.slice(0, VIEW_TEXT_MAX)}\n\n（先頭 256KB のみ表示）` : raw;
+  };
   const head = '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">';
   let body: string;
   let csp = "";
@@ -582,15 +611,17 @@ function getDeliverableView(ctx: Ctx, m: RegExpExecArray): void {
     body = readFileSync(file, "utf8");
     csp = "sandbox allow-scripts allow-forms allow-popups";
   } else if (ext === ".md" || ext === ".markdown") {
-    body = `${head}<title>${esc(name)}</title><style>${VIEW_CSS}</style><article class="md">${md(readFileSync(file, "utf8"))}</article>`;
+    body = `${head}<title>${esc(name)}</title><style>${VIEW_CSS}</style><article class="md">${md(readViewText())}</article>`;
   } else if (mime.startsWith("image/")) {
     body = `${head}<title>${esc(name)}</title><style>${VIEW_CSS}</style><img class="media" src="${src}" alt="${esc(name)}">`;
   } else if (mime.startsWith("video/")) {
-    body = `${head}<title>${esc(name)}</title><style>${VIEW_CSS}</style><video class="media" controls autoplay src="${src}"></video>`;
+    body = `${head}<title>${esc(name)}</title><style>${VIEW_CSS}</style><video class="media" controls autoplay src="${src}"></video><p class="dl"><a href="${src}">ダウンロード</a></p>`;
+  } else if (mime.startsWith("audio/")) {
+    body = `${head}<title>${esc(name)}</title><style>${VIEW_CSS}</style><audio class="media" controls autoplay src="${src}"></audio><p class="dl"><a href="${src}">ダウンロード</a></p>`;
   } else if (mime === "application/pdf") {
     body = `${head}<title>${esc(name)}</title><iframe src="${src}" style="width:100%;height:100vh;border:0"></iframe>`;
-  } else if (mime.startsWith("text/")) {
-    body = `${head}<title>${esc(name)}</title><style>${VIEW_CSS}</style><article class="md">${md(readFileSync(file, "utf8"))}</article>`;
+  } else if (mime.startsWith("text/") || mime.startsWith("application/json")) {
+    body = `${head}<title>${esc(name)}</title><style>${VIEW_CSS}</style><article class="md">${md(readViewText())}</article>`;
   } else {
     body = `${head}<title>${esc(name)}</title><style>${VIEW_CSS}</style>` +
       `<div class="dl"><p>${esc(name)}</p><p><a href="${src}">ダウンロード</a></p></div>`;
@@ -749,34 +780,37 @@ async function postAttachment(ctx: Ctx): Promise<void> {
   }
   const bytes = await readRaw(ctx, MAX_ATTACHMENT_BYTES);
   if (bytes.length === 0) throw new HttpError(400, "BAD_REQUEST", "body is empty");
-  // Content-addressed: the same picture twice costs one file, and the stored name cannot escape.
-  const stored = storeBlob(ctx.home, bytes);
-  if (!stored) throw new HttpError(422, "VALIDATION", "only png, jpeg, gif and webp images can be stored");
-  const name = safeAttachmentName(String(q.get("name") ?? ""), stored.blobName);
+  const name = safeAttachmentName(String(q.get("name") ?? ""), "");
+  // Content-addressed: the same file twice costs one file, and the stored name cannot escape.
+  const stored = storeBlob(ctx.home, bytes, name);
+  if (!stored) {
+    throw new HttpError(422, "VALIDATION", "unsupported file: images, pdf, video/audio, zip and plain text (md/txt/csv/json/log/yaml) are accepted");
+  }
   const attachment = createAttachment(db, project.projectId, {
-    cardId, deliverableId, name, mime: stored.mime, size: stored.size,
+    cardId, deliverableId, name: name === "" ? stored.blobName : name, mime: stored.mime, size: stored.size,
   }, stored.blobName);
   sendJson(ctx, 201, ok({ attachment }));
 }
 
-function getAttachmentBytes(ctx: Ctx, m: RegExpExecArray): void {
+/** The bytes live in the media store, not at any path the attachment row names. */
+function attachmentRef(ctx: Ctx, m: RegExpExecArray): FileSource {
   const db = requireDb(ctx);
   const project = projectOr404(db, decodeSegment(m[1]));
   const id = assertId(Number(m[2]));
   const att = getAttachment(db, project.projectId, id);
-  const blob = attachmentBlobName(db, project.projectId, id);
+  const blob = att ? attachmentBlobName(db, project.projectId, id) : null;
   if (!att || blob === null) throw new DomainError("NOT_FOUND", `attachment ${project.projectId}#${id} not found`);
   const file = blobPath(ctx.home, blob);
   if (file === null) throw new HttpError(410, "NOT_FOUND", `blob for attachment #${id} is missing on disk`);
-  ctx.res.writeHead(200, {
-    "content-type": att.mime,
-    "content-length": att.size,
-    // Uploads are user bytes served from our origin: never let the browser guess the type.
-    "x-content-type-options": "nosniff",
-    "content-disposition": `inline; filename="${encodeURIComponent(att.name)}"`,
-    "cache-control": "private, max-age=31536000, immutable",
-  });
-  createReadStream(file).pipe(ctx.res);
+  return {
+    file, name: att.name, mime: att.mime,
+    src: `/api/attachments/${encodeURIComponent(project.slug)}/${id}`,
+    download: att.name, cache: "private, max-age=31536000, immutable",
+  };
+}
+
+function getAttachmentBytes(ctx: Ctx, m: RegExpExecArray): void {
+  sendFileBytes(ctx, attachmentRef(ctx, m));
 }
 
 function deleteAttachmentRoute(ctx: Ctx, m: RegExpExecArray): void {
@@ -995,8 +1029,8 @@ const routes: Route[] = [
   { m: "GET", re: /^\/api\/deliverables$/, h: getDeliverables },
   { m: "POST", re: /^\/api\/deliverables$/, h: postDeliverable },
   { m: "DELETE", re: /^\/api\/deliverables\/([^/]+)\/(\d+)$/, h: deleteDeliverableRoute },
-  { m: "GET", re: /^\/api\/deliverables\/([^/]+)\/(\d+)\/file$/, h: getDeliverableFile },
-  { m: "GET", re: /^\/api\/deliverables\/([^/]+)\/(\d+)\/view$/, h: getDeliverableView },
+  { m: "GET", re: /^\/api\/deliverables\/([^/]+)\/(\d+)\/file$/, h: (c, m) => sendFileBytes(c, deliverableRef(c, m)) },
+  { m: "GET", re: /^\/api\/deliverables\/([^/]+)\/(\d+)\/view$/, h: (c, m) => sendFileView(c, deliverableRef(c, m)) },
   { m: "PATCH", re: /^\/api\/columns\/([^/]+)\/([^/]+)$/, h: patchColumn },
   { m: "GET", re: /^\/api\/views$/, h: getViews },
   { m: "POST", re: /^\/api\/views$/, h: postView },
@@ -1008,6 +1042,7 @@ const routes: Route[] = [
   { m: "DELETE", re: /^\/api\/templates\/([^/]+)\/(\d+)$/, h: deleteTemplateRoute },
   { m: "GET", re: /^\/api\/attachments$/, h: getAttachments },
   { m: "POST", re: /^\/api\/attachments$/, h: postAttachment },
+  { m: "GET", re: /^\/api\/attachments\/([^/]+)\/(\d+)\/view$/, h: (c, m) => sendFileView(c, attachmentRef(c, m)) },
   { m: "GET", re: /^\/api\/attachments\/([^/]+)\/(\d+)$/, h: getAttachmentBytes },
   { m: "DELETE", re: /^\/api\/attachments\/([^/]+)\/(\d+)$/, h: deleteAttachmentRoute },
   { m: "GET", re: /^\/api\/search$/, h: getSearch },

@@ -26,7 +26,7 @@
 - [~] テンプレート: `card_template` CRUD + instantiate API 実装済み。UI は designer 待ち。
 - [~] 通知: `GET /api/notifications`(overdue/blocked/deps/wip/acceptance、重大度順) 実装済み。外部フックは未着手。
 - [~] 横断ボード可観測性: `GET /api/overview`(板ごとの ready/blocked/wip/overdue/done) と `GET /api/graph`(blocker 鎖の層) 実装済み。
-- [~] 添付/画像: 画像のみ(PNG/JPEG/GIF/WebP をマジックバイト判定、≤8MiB)+ content-addressed ブロブ + `nosniff` 配信。同一オリジンからの HTML 配信は XSS になるため非画像は 422。
+- [x] 添付: 画像/PDF/動画/音声/zip/テキスト(md/txt/csv/json/log/yaml) をマジックバイト（テキストは UTF-8 妥当性＋拡張子）で判定、≤8MiB、content-addressed ブロブ。配信は成果物と同一の `sendFileBytes`（Range/206 + `nosniff`）、表示は `GET /api/attachments/:p/:id/view`（md→HTML、pdf iframe、mp4 は video）。HTML/SVG は同一オリジン XSS になるため保存しない。
 
 ## Remaining (UI + polish)
 - [x] Web UI: 検索/ビュー/通知/テンプレート/添付/ループ/概要/グラフ/列 WIP はすべて `web/src/app.ts` に配線済み（searchBoard:326, getViews:416, getTemplates:401, getNotifications:101, getOverview:374, getGraph:387）。右パネルは成果物と履歴の 2 枚。

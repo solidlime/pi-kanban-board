@@ -150,7 +150,7 @@ test("templates: create, instantiate into a card, reject an unknown column, dele
   assert.equal((await call("DELETE", `/api/templates/tpl/${made.data.template.id}`)).status, 404);
 });
 
-test("attachments: png is stored and served with nosniff, anything else is 422", async (t) => {
+test("attachments: png is stored and served with nosniff, html is 422", async (t) => {
   const { call, upload, getBytes, home } = await server(t);
   await call("POST", "/api/projects", { slug: "att" });
   const card = (await call("POST", "/api/cards", { project: "att", title: "has a picture" })).data.card;
@@ -189,6 +189,60 @@ test("attachments: png is stored and served with nosniff, anything else is 422",
   assert.equal((await call("DELETE", `/api/attachments/att/${id}`)).status, 200);
   assert.equal((await call("GET", "/api/attachments?project=att")).data.attachments.length, 0);
   assert.equal((await call("DELETE", `/api/attachments/att/${id}`)).status, 404);
+});
+
+test("attachments: pdf, mp4, zip and markdown pass, and share the deliverable viewer", async (t) => {
+  const { call, upload, getBytes, getText } = await server(t);
+  await call("POST", "/api/projects", { slug: "att2" });
+  const card = (await call("POST", "/api/cards", { project: "att2", title: "files" })).data.card;
+  const up = (name, bytes) => upload(`/api/attachments?project=att2&cardId=${card.id}&name=${name}`, bytes);
+  const PDF = Buffer.from("%PDF-1.7\n1 0 obj\n<<>>\nendobj\ntrailer<<>>\n%%EOF\n");
+
+  const pdf = await up("paper.pdf", PDF);
+  assert.equal(pdf.status, 201, JSON.stringify(pdf.json));
+  assert.equal(pdf.data.attachment.mime, "application/pdf");
+
+  const md = await up("notes.md", Buffer.from("# 見出し\n\n本文です。\n"));
+  assert.equal(md.status, 201, JSON.stringify(md.json));
+  assert.equal(md.data.attachment.mime, "text/markdown; charset=utf-8");
+
+  const mp4 = await up("clip.mp4", Buffer.concat([Buffer.from([0, 0, 0, 0x18]), Buffer.from("ftypisom"), Buffer.alloc(8)]));
+  assert.equal(mp4.status, 201, JSON.stringify(mp4.json));
+  assert.equal(mp4.data.attachment.mime, "video/mp4");
+
+  const zip = await up("bundle.zip", Buffer.from([0x50, 0x4b, 0x03, 0x04, 0, 0, 0, 0]));
+  assert.equal(zip.status, 201, JSON.stringify(zip.json));
+  assert.equal(zip.data.attachment.mime, "application/zip");
+
+  // Bytes keep Range support, so a video can seek exactly like a deliverable file.
+  const pdfId = pdf.data.attachment.id;
+  const part = await getBytes(`/api/attachments/att2/${pdfId}`, { range: "bytes=0-3" });
+  assert.equal(part.status, 206);
+  assert.equal(part.headers.get("content-range"), `bytes 0-3/${PDF.length}`);
+  assert.equal(part.headers.get("content-disposition"), "inline; filename=\"paper.pdf\"");
+
+  // /view is the deliverable wrapper: markdown becomes HTML, pdf becomes an iframe.
+  const mdView = await getText(`/api/attachments/att2/${md.data.attachment.id}/view`);
+  assert.equal(mdView.status, 200);
+  assert.match(mdView.text, /<article class="md">/);
+  const pdfView = await getText(`/api/attachments/att2/${pdfId}/view`);
+  assert.match(pdfView.text, /<iframe src="\/api\/attachments\/att2\/\d+"/);
+
+  // Nothing that would run as our own origin, and nothing we cannot sniff.
+  assert.equal((await up("x.html", Buffer.from("<script>alert(1)</script>"))).status, 422);
+  assert.equal((await up("x.shtml", Buffer.from("hello"))).status, 422, "a plain body needs an allowlisted name");
+  assert.equal((await up("x.bin", Buffer.from([0, 1, 2, 3, 0xff, 0xfe]))).status, 422);
+
+  // ANSI colour is normal in build logs; a UTF-16LE BOM is not an mp3 frame header.
+  const log = await up("build.log", Buffer.from("\u001b[32mok\u001b[0m\n"));
+  assert.equal(log.status, 201, JSON.stringify(log.json));
+  assert.equal(log.data.attachment.mime, "text/plain; charset=utf-8");
+  assert.equal((await up("bom.txt", Buffer.from([0xff, 0xfe, 0x41, 0x00]))).status, 422);
+
+  const wav = await up("tone.wav", Buffer.from("RIFF\u0000\u0000\u0000\u0000WAVEfmt "));
+  assert.equal(wav.status, 201, JSON.stringify(wav.json));
+  const wavView = await getText(`/api/attachments/att2/${wav.data.attachment.id}/view`);
+  assert.match(wavView.text, /<audio class="media"/);
 });
 
 test("card ref: recorded on PATCH, cleared by null, survives a re-read", async (t) => {

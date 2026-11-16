@@ -39,6 +39,15 @@ test("`- ` lines become one list, everything else is joined with <br>", () => {
   assert.equal(md("# head\n- one\n- two\ntail"), "# head<br><ul><li>one</li><li>two</li></ul><br>tail");
 });
 
+test("a long run of unmatched '[' stays linear", () => {
+  // Attachments are user uploads now: [^\]] here backtracked quadratically and hung the
+  // synchronous /view handler for minutes on a 256 KiB file. 200k brackets is a hard guard.
+  const started = Date.now();
+  const out = md("[".repeat(200_000));
+  assert.equal(out.length, 200_000);
+  assert.ok(Date.now() - started < 2000, `took ${Date.now() - started}ms`);
+});
+
 test("an empty string renders empty", () => {
   assert.equal(md(""), "");
 });

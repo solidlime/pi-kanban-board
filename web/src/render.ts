@@ -4,7 +4,7 @@
 import type {
   Attachment, Card, ColumnDef, Deliverable, GraphLayout, GraphNode, NotificationLevel, SearchHit,
 } from '../../src/shared/dto.js';
-import { attachmentSrc, deliverableFileSrc, deliverableViewSrc, type LoopInfo } from './api.js';
+import { attachmentSrc, attachmentViewSrc, deliverableFileSrc, deliverableViewSrc, type LoopInfo } from './api.js';
 import {
   acceptanceProgress, blocksCards, cardKey, cardMatches, cardsInColumn, isBlocked, isClosed, isDoneColumn,
   lastActorOf, openBlockers, readyCards, type CardKey, type Store,
@@ -851,13 +851,33 @@ export function thumbStrip(list: Attachment[], projectId: string): HTMLElement |
   if (!list.length) return null;
   const wrap = el('div', 'thumbs');
   for (const a of list) {
-    const img = el('img', 'thumb');
-    img.src = attachmentSrc(projectId, a.id);
-    img.alt = a.name;
-    img.title = a.name;
-    wrap.append(img);
+    if (a.mime.startsWith('image/')) {
+      const img = el('img', 'thumb');
+      img.loading = 'lazy';
+      img.src = attachmentSrc(projectId, a.id);
+      img.alt = a.name;
+      img.title = a.name;
+      wrap.append(img);
+    } else {
+      // Same split as the detail strip: only images paint, everything else opens through /view.
+      const doc = el('a', 'thumb doc');
+      doc.href = attachmentViewSrc(projectId, a.id);
+      doc.target = '_blank';
+      doc.rel = 'noopener';
+      doc.textContent = docLabel(a.mime);
+      doc.title = a.name;
+      wrap.append(doc);
+    }
   }
   return wrap;
+}
+
+function docLabel(mime: string): string {
+  if (mime === 'application/pdf') return 'PDF';
+  if (mime.startsWith('video/')) return '動画';
+  if (mime.startsWith('audio/')) return '音声';
+  if (mime.includes('zip')) return 'ZIP';
+  return '文書';
 }
 
 // ---------------------------------------------------------------- v2 surfaces

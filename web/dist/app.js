@@ -90,6 +90,7 @@ var attachQuery = (project, target) => {
 };
 var getAttachments = (project, target) => req("GET", attachQuery(project, target));
 var attachmentSrc = (project, id) => `/api/attachments/${p(project)}/${p(String(id))}`;
+var attachmentViewSrc = (project, id) => `${attachmentSrc(project, id)}/view`;
 var uploadAttachment = (project, target, name, file) => postBlob(`${attachQuery(project, target)}&name=${p(name)}`, file);
 var deleteAttachment = (project, id) => req("DELETE", `/api/attachments/${p(project)}/${p(String(id))}`);
 var deliverableFileSrc = (project, id) => `/api/deliverables/${p(project)}/${p(String(id))}/file`;
@@ -1196,13 +1197,31 @@ function thumbStrip(list, projectId) {
   if (!list.length) return null;
   const wrap = el2("div", "thumbs");
   for (const a of list) {
-    const img = el2("img", "thumb");
-    img.src = attachmentSrc(projectId, a.id);
-    img.alt = a.name;
-    img.title = a.name;
-    wrap.append(img);
+    if (a.mime.startsWith("image/")) {
+      const img = el2("img", "thumb");
+      img.loading = "lazy";
+      img.src = attachmentSrc(projectId, a.id);
+      img.alt = a.name;
+      img.title = a.name;
+      wrap.append(img);
+    } else {
+      const doc = el2("a", "thumb doc");
+      doc.href = attachmentViewSrc(projectId, a.id);
+      doc.target = "_blank";
+      doc.rel = "noopener";
+      doc.textContent = docLabel(a.mime);
+      doc.title = a.name;
+      wrap.append(doc);
+    }
   }
   return wrap;
+}
+function docLabel(mime) {
+  if (mime === "application/pdf") return "PDF";
+  if (mime.startsWith("video/")) return "\u52D5\u753B";
+  if (mime.startsWith("audio/")) return "\u97F3\u58F0";
+  if (mime.includes("zip")) return "ZIP";
+  return "\u6587\u66F8";
 }
 function renderSearch(view2, s) {
   const hits = s.hits;
@@ -1773,8 +1792,7 @@ function renderView(view2, s) {
 }
 
 // web/src/detail.ts
-var IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
-var isImage = (f) => IMAGE_TYPES.includes(f.type);
+var ATTACH_ACCEPT = "image/*,application/pdf,video/*,audio/*,.md,.txt,.csv,.json,.log,.yaml,.yml,.zip";
 function el3(tag, cls, text) {
   const n = document.createElement(tag);
   if (cls) n.className = cls;
@@ -1897,24 +1915,19 @@ function mountDetail(root2, h) {
   tlSec.append(el3("h3", void 0, "\u3053\u306E\u30AB\u30FC\u30C9\u306E\u5C65\u6B74"));
   const tlList = el3("div", "d-tl");
   const atSec = el3("section", "d-sec");
-  atSec.append(el3("h3", void 0, "\u6DFB\u4ED8\u753B\u50CF"));
+  atSec.append(el3("h3", void 0, "\u6DFB\u4ED8\u30D5\u30A1\u30A4\u30EB"));
   const atList = el3("div", "d-atts");
   const atPick = el3("input", "d-file");
   atPick.type = "file";
-  atPick.accept = IMAGE_TYPES.join(",");
-  atPick.setAttribute("aria-label", "\u753B\u50CF\u3092\u6DFB\u4ED8");
+  atPick.accept = ATTACH_ACCEPT;
+  atPick.setAttribute("aria-label", "\u30D5\u30A1\u30A4\u30EB\u3092\u6DFB\u4ED8");
   atPick.addEventListener("change", () => {
     const file = atPick.files?.[0];
     if (!file || !key) return;
-    if (!isImage(file)) {
-      h.notify("\u753B\u50CF\u30D5\u30A1\u30A4\u30EB\uFF08png/jpeg/gif/webp\uFF09\u3060\u3051\u6DFB\u4ED8\u3067\u304D\u308B");
-      atPick.value = "";
-      return;
-    }
     const k = key;
     void h.onUploadAttachment(k, file).then((ok) => {
       atPick.value = "";
-      if (ok) h.notify("\u753B\u50CF\u3092\u6DFB\u4ED8\u3057\u305F");
+      if (ok) h.notify("\u30D5\u30A1\u30A4\u30EB\u3092\u6DFB\u4ED8\u3057\u305F");
     });
   });
   atSec.append(atList, atPick);
@@ -2066,13 +2079,30 @@ function mountDetail(root2, h) {
     }
     if (prev && depTarget.querySelector(`option[value="${prev}"]`)) depTarget.value = prev;
   }
+  const docLabel2 = (mime) => {
+    if (mime === "application/pdf") return "PDF";
+    if (mime.startsWith("video/")) return "\u52D5\u753B";
+    if (mime.startsWith("audio/")) return "\u97F3\u58F0";
+    if (mime.includes("zip")) return "ZIP";
+    return "\u6587\u66F8";
+  };
   function thumb(a, projectId, onRemove) {
     const wrap = el3("span", "thumb-w");
-    const img = el3("img", "thumb");
-    img.src = attachmentSrc(projectId, a.id);
-    img.alt = a.name;
-    img.title = a.name;
-    wrap.append(img);
+    if (a.mime.startsWith("image/")) {
+      const img = el3("img", "thumb");
+      img.src = attachmentSrc(projectId, a.id);
+      img.alt = a.name;
+      img.title = a.name;
+      wrap.append(img);
+    } else {
+      const link = el3("a", "thumb doc");
+      link.href = attachmentViewSrc(projectId, a.id);
+      link.target = "_blank";
+      link.rel = "noopener";
+      link.textContent = docLabel2(a.mime);
+      link.title = `${a.name}\uFF08${Math.max(1, Math.round(a.size / 1024))} KB\uFF09`;
+      wrap.append(link);
+    }
     if (onRemove) {
       const rm = el3("button", "ic thumb-x", "\xD7");
       rm.type = "button";
@@ -2140,19 +2170,14 @@ function mountDetail(root2, h) {
       }
       const pick = el3("input", "d-file sm");
       pick.type = "file";
-      pick.accept = IMAGE_TYPES.join(",");
-      pick.setAttribute("aria-label", `${d.title} \u306B\u753B\u50CF\u3092\u6DFB\u4ED8`);
+      pick.accept = ATTACH_ACCEPT;
+      pick.setAttribute("aria-label", `${d.title} \u306B\u30D5\u30A1\u30A4\u30EB\u3092\u6DFB\u4ED8`);
       pick.addEventListener("change", () => {
         const f = pick.files?.[0];
         if (!f) return;
-        if (!isImage(f)) {
-          h.notify("\u753B\u50CF\u30D5\u30A1\u30A4\u30EB\uFF08png/jpeg/gif/webp\uFF09\u3060\u3051\u6DFB\u4ED8\u3067\u304D\u308B");
-          pick.value = "";
-          return;
-        }
         void h.onUploadDeliverableAttachment(d.id, f).then((ok) => {
           pick.value = "";
-          if (ok) h.notify("\u753B\u50CF\u3092\u6DFB\u4ED8\u3057\u305F");
+          if (ok) h.notify("\u30D5\u30A1\u30A4\u30EB\u3092\u6DFB\u4ED8\u3057\u305F");
         });
       });
       strip.append(pick);

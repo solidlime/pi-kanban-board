@@ -7,7 +7,8 @@ export const esc = (s: unknown): string => String(s).replace(/[&<>"]/g, c => ESC
 
 export function md(s: string): string {
   let e = esc(s);
-  e = e.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, label: string, url: string) => {
+  // [^\[\]] not [^\]]: a run of unmatched "[" makes the latter backtrack quadratically.
+  e = e.replace(/\[([^\[\]]+)\]\(([^)\s]+)\)/g, (m, label: string, url: string) => {
     const low = url.toLowerCase();
     const ok = low.indexOf("http://") === 0 || low.indexOf("https://") === 0;
     return ok ? '<a href="' + url + '" target="_blank" rel="noopener noreferrer">' + label + "</a>" : m;

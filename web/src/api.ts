@@ -172,6 +172,8 @@ export const getAttachments = (project: string, target?: AttachmentTarget) =>
 
 /** Use straight as an `<img src>`: the bytes are served from the same origin. */
 export const attachmentSrc = (project: string, id: number) => `/api/attachments/${p(project)}/${p(String(id))}`;
+/** The readable page for an attachment: md→HTML, pdf/mp4 in a wrapper, everything else a download. */
+export const attachmentViewSrc = (project: string, id: number) => `${attachmentSrc(project, id)}/view`;
 
 export const uploadAttachment = (project: string, target: AttachmentTarget, name: string, file: Blob) =>
   postBlob<{ attachment: Attachment }>(`${attachQuery(project, target)}&name=${p(name)}`, file);
