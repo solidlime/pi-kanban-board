@@ -88,7 +88,10 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   const token = readToken(home);
   const buildHash = await readBuildHash(webRoot);
   const auth = opts.auth ?? process.env.KANBAN_AUTH === "on";
-  const deps: ServerDeps = { db, home, state, token, auth, webRoot, buildHash, version: opts.version };
+  // No DB, no loop: an uninitialized home has nowhere to record a tick.
+  const loopOpt = opts.loop;
+  const loopMs = typeof loopOpt === "number" ? loopOpt : loopOpt === false || loopOpt === undefined ? 0 : loopOpt.intervalMs ?? 0;
+  const deps: ServerDeps = { db, home, state, token, auth, webRoot, buildHash, version: opts.version, loopMs };
 
   const server = createServer(deps);
   const host = opts.host ?? HOST_DEFAULT;
@@ -104,9 +107,6 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
 
   const addr = server.address() as AddressInfo;
   const shown = addr.address === "0.0.0.0" || addr.address === "::" ? "127.0.0.1" : addr.address;
-  // No DB, no loop: an uninitialized home has nowhere to record a tick.
-  const loopOpt = opts.loop;
-  const loopMs = typeof loopOpt === "number" ? loopOpt : loopOpt === false || loopOpt === undefined ? 0 : loopOpt.intervalMs ?? 0;
   const supervisor = db && loopMs > 0
     ? startSupervisor(db, { intervalMs: loopMs, ...(opts.wake === undefined ? {} : { wake: opts.wake }) })
     : null;

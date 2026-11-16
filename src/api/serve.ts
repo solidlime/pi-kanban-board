@@ -24,8 +24,9 @@ registerHooks({
 const { startServer } = await import("./start.js");
 
 const home = process.env.KANBAN_HOME;
-// Cross-board loop heartbeat. 0 disables it; any other number is the interval in ms.
-const loopMs = Number(process.env.KANBAN_LOOP_MS ?? 15000);
+// Cross-board loop heartbeat. Empty or 0 disables it; any other number is the interval in ms.
+const rawLoop = (process.env.KANBAN_LOOP_MS ?? "").trim();
+const loopMs = rawLoop === "" ? 15000 : Number(rawLoop);
 const run = await startServer({ ...(home ? { home } : {}), loop: Number.isFinite(loopMs) && loopMs > 0 ? { intervalMs: loopMs } : false });
 
 console.log(`kanban v2 listening on ${run.url}`);
@@ -44,3 +45,13 @@ const stop = (): void => {
 };
 process.on("SIGINT", stop);
 process.on("SIGTERM", stop);
+
+// Spawned by a session: a Node child outlives its parent, so watch the PID we were given and
+// leave with it. Without this a pi restart would leave an orphan holding the port forever.
+const parentPid = Number(process.env.KANBAN_PARENT_PID ?? 0);
+if (Number.isInteger(parentPid) && parentPid > 0) {
+  const watch = setInterval(() => {
+    try { process.kill(parentPid, 0); } catch { stop(); }
+  }, 5000);
+  watch.unref();
+}

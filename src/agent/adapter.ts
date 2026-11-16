@@ -2,7 +2,7 @@
 // v2 stack. pi-facing wiring (schemas, registration order, events) lives in
 // extensions/kanban-v2.ts; everything here is DB + text, so it is testable without a pi
 // host. Composites are always (projectId, id): no call below resolves a bare id.
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { PORT_DEFAULT } from "../shared/constants.js";
@@ -10,14 +10,14 @@ import type { Card, ColumnDef, Deliverable } from "../shared/dto.js";
 import { DomainError } from "../shared/errors.js";
 import type { Db } from "../persistence/db.js";
 import { closeDb, one } from "../persistence/db.js";
-import { detectState, kanbanHome, openHomeDatabase, readToken, type HomeState } from "../persistence/init.js";
+import { detectState, initHomeIfNeeded, kanbanHome, openHomeDatabase, readToken, type HomeState } from "../persistence/init.js";
 import { schemaVersion } from "../persistence/migrations.js";
 import {
   createAttachment, createCard, createDeliverable, createProject, deleteCard, deleteDeliverable, digestInput,
   getLoop, getProjectBySlug, listCards, listColumns, listDeliverables, listProjects, moveCard, peekNextId,
   saveLoop, updateCard, updateDeliverable, type UpdateCardPatch,
 } from "../persistence/repos.js";
-import { startServer, type RunningServer } from "../api/start.js";
+import type { RunningServer } from "../api/start.js";
 import { columnsByOrd } from "../core/project.js";
 import { sortCards } from "../core/card.js";
 import { assertBlockedReason, assertLabels, assertPriority, assertTitle, invalid, TITLE_MAX } from "../core/validation.js";
@@ -104,27 +104,49 @@ export async function closeRuntime(): Promise<void> {
   }
 }
 
-const isAddrInUse = (err: unknown): boolean => (err as { code?: string } | null)?.code === "EADDRINUSE";
+
+/** One GET; false on any failure (not up yet, wrong port, hung). */
+async function alive(url: string, ms: number): Promise<boolean> {
+  try {
+    return (await fetch(`${url}api/meta`, { signal: AbortSignal.timeout(ms) })).ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The server runs as its own process: same port, its own supervisor, and a loop that keeps
+ * ticking when no session is open. The parent PID is handed over so it dies with us instead
+ * of lingering — `detached` is deliberately not used.
+ */
+async function ensureServer(url: string): Promise<void> {
+  if (await alive(url, 800)) return;
+  const entry = resolve(import.meta.dirname, "../api/serve.ts");
+  const child = spawn(process.execPath, [entry], {
+    stdio: "ignore", windowsHide: true,
+    env: { ...process.env, KANBAN_PARENT_PID: String(process.pid) },
+  });
+  child.unref();
+  const deadline = Date.now() + 8000;
+  while (Date.now() < deadline) {
+    if (await alive(url, 400)) return;
+    await new Promise((r) => setTimeout(r, 120));
+  }
+  console.warn(`kanban: no server answering on ${url} — the board will not update`);
+}
 
 async function openRuntime(): Promise<Runtime> {
   const home = homeOf();
-  try {
-    const run = await startServer({ home });
-    return { home, state: run.state, db: run.db, url: run.url, server: run, token: run.token };
-  } catch (err) {
-    if (!isAddrInUse(err)) throw err;
-    // Something already serves the port (an external `serve:v2`, or v1's own extension).
-    // Attach: our own DB handle, the URL of whoever holds the port.
-    const state = detectState(home);
-    const port = Number(process.env.KANBAN_PORT ?? PORT_DEFAULT);
-    return {
-      home, state,
-      db: state.initialized ? openHomeDatabase(home).db : null,
-      url: `http://${process.env.KANBAN_HOST ?? "127.0.0.1"}:${port}/`,
-      server: null,
-      token: readToken(home),
-    };
-  }
+  // startServer used to do this; the server is a separate process now, so the adapter owns it.
+  try { initHomeIfNeeded(home); } catch { /* serve.ts logs the same failure */ }
+  const url = `http://${process.env.KANBAN_HOST ?? "127.0.0.1"}:${Number(process.env.KANBAN_PORT ?? PORT_DEFAULT)}/`;
+  await ensureServer(url);
+  const state = detectState(home);
+  return {
+    home, state,
+    db: state.initialized ? openHomeDatabase(home).db : null,
+    url, server: null, token: readToken(home),
+  };
 }
 
 /** One line for /kanban: the URL that sets the auth cookie. Null when there is no token. */
@@ -673,7 +695,7 @@ export async function selfTest(): Promise<Result> {
   }
   const report = {
     ok: dbOk && rt.state.initialized,
-    server: rt.server ? "in-process" : "attached (port already served)",
+    server: rt.server ? "in-process" : "external process",
     url: rt.url,
     home: { path: rt.home, status: rt.state.status, initialized: rt.state.initialized },
     schemaVersion: version,

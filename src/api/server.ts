@@ -23,6 +23,8 @@ export interface ServerDeps {
   webRoot: string;
   buildHash: string;
   version?: string;
+  /** Supervisor cadence, echoed by /api/loop as nextTickAt. 0 = no loop runs. */
+  loopMs: number;
 }
 
 const MIME: Record<string, string> = {
@@ -104,6 +106,7 @@ export function createServer(deps: ServerDeps) {
       return {
         req: r, res: s, url: url!, db: deps.db, home: deps.home, state: deps.state,
         token: deps.token, auth: deps.auth, version: deps.version ?? API_VERSION, buildHash: deps.buildHash,
+        loopMs: deps.loopMs,
       };
     }
     const ctx = rawCtx(req, res);

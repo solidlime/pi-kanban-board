@@ -3,6 +3,7 @@
 import "./_ts-hooks.mjs";
 import assert from "node:assert/strict";
 import { mkdtemp, rm, stat } from "node:fs/promises";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, test } from "node:test";
@@ -13,7 +14,17 @@ const root = await mkdtemp(path.join(tmpdir(), "kb-adapter-"));
 const home = path.join(root, ".pi", "kanban");
 await executeInit(planInit(new Date(), home), { confirmed: true });
 process.env.KANBAN_HOME = home;
-process.env.KANBAN_PORT = "0"; // ephemeral: never fight a real dashboard for 8789
+// A real free port: the server now runs as its own process, so a KANBAN_PORT of 0 would make
+// the URL we poll (`:0`) unreachable. Same dance as tests/kanban-auto-tick.test.mjs.
+process.env.KANBAN_PORT = String(
+  await new Promise((resolve) => {
+    const s = createServer();
+    s.listen(0, "127.0.0.1", () => {
+      const { port } = s.address();
+      s.close(() => resolve(port));
+    });
+  }),
+);
 
 const A = await import("../../src/agent/adapter.ts");
 

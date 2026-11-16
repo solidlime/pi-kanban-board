@@ -15,11 +15,11 @@ const PNG = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
   "base64");
 
-async function server(t) {
+async function server(t, startOpts = {}) {
   const dir = await mkdtemp(path.join(tmpdir(), "kb-extras-"));
   const home = path.join(dir, ".pi", "kanban");
   await executeInit(planInit(new Date(), home), { confirmed: true });
-  const run = await startServer({ home, port: 0 });
+  const run = await startServer({ home, port: 0, ...startOpts });
   t.after(() => run.close());
   const base = run.url.replace(/\/$/, "");
 
@@ -386,4 +386,24 @@ test("loop: tick moves the next TODO into DOING (WIP=1) and halts when the TODOs
   assert.ok(events.includes("loop.tick"));
   assert.ok(events.includes("loop.halted"));
   assert.equal((await call("GET", "/api/loop?project=nope")).status, 404);
+});
+
+test("loop: nextTickAt is lastTickAt + loopMs, and null when no supervisor runs", async (t) => {
+  const quiet = await server(t);
+  await quiet.call("POST", "/api/projects", { slug: "nt" });
+  await quiet.call("POST", "/api/loop/start", { project: "nt" });
+  await quiet.call("POST", "/api/cards", { project: "nt", title: "one" });
+  const ticked = (await quiet.call("POST", "/api/loop/tick", { project: "nt" })).data.loop;
+  assert.ok(ticked.lastTickAt, "the tick records when it ran");
+  // loopMs 0: nothing will tick again, so there is no next tick to name.
+  assert.equal((await quiet.call("GET", "/api/loop?project=nt")).data.loop.nextTickAt, null);
+
+  const looped = await server(t, { loop: { intervalMs: 15000 }, wake: async () => {} });
+  await looped.call("POST", "/api/projects", { slug: "nt" });
+  await looped.call("POST", "/api/loop/start", { project: "nt" });
+  await looped.call("POST", "/api/cards", { project: "nt", title: "one" });
+  await looped.call("POST", "/api/loop/tick", { project: "nt" });
+  const running = (await looped.call("GET", "/api/loop?project=nt")).data.loop;
+  assert.equal(running.status, "running");
+  assert.equal(Date.parse(running.nextTickAt), Date.parse(running.lastTickAt) + 15000);
 });

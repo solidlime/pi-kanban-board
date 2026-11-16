@@ -61,6 +61,8 @@ export interface Ctx {
   auth: boolean;
   version: string;
   buildHash: string;
+  /** Supervisor cadence, so /api/loop can say when the next tick is due. 0 = no loop. */
+  loopMs: number;
 }
 
 /** A transport-level failure (status is not derivable from the domain ErrorCode alone). */
@@ -766,7 +768,13 @@ function getOverview(ctx: Ctx): void {
 function getLoopRoute(ctx: Ctx): void {
   const db = requireDb(ctx);
   const project = projectOr404(db, str(ctx.url.searchParams.get("project"), "project"));
-  sendJson(ctx, 200, ok({ loop: getLoop(db, project.projectId) }));
+  const loop = getLoop(db, project.projectId);
+  // A client cannot know the supervisor's cadence, so the deadline is computed here: one place
+  // decides what "next tick" means, and a stopped loop (or no supervisor) schedules nothing.
+  const nextTickAt = loop.status === "running" && ctx.loopMs > 0 && loop.lastTickAt
+    ? new Date(Date.parse(loop.lastTickAt) + ctx.loopMs).toISOString()
+    : null;
+  sendJson(ctx, 200, ok({ loop: { ...loop, nextTickAt } }));
 }
 
 /**
