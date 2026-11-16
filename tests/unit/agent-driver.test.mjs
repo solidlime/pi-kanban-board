@@ -266,6 +266,38 @@ test("a new session answered without an id is not a wake", async (t) => {
   assert.equal(spawned.length, 0);
 });
 
+test("a 500 that names the prompt as rejected is a refusal, not an absence", async (t) => {
+  const db = memDb(t);
+  const { project, card } = board(db, "piweb-busy");
+  const sid = "ff11aa22-1111-2222-3333-444455556666";
+  repos.updateCard(db, project.projectId, card.id, { sessionId: sid }, { actor: "test" });
+  const stored = getCard(db, project.projectId, card.id);
+  const { calls: spawned, spawn } = fakeSpawn();
+  // pi-web answers 500 while a turn is running: alive, knows the session, refused this prompt.
+  const busy = async () => ({ ok: false, status: 500, json: async () => ({ error: "Agent is already processing.", code: "prompt_rejected", accepted: false }) });
+
+  const out = await wakeCardSession(db, project, stored, { spawn, fetch: busy });
+
+  assert.equal(out, null);
+  assert.equal(spawned.length, 0, "a refused prompt is not a reason to spawn a second writer");
+});
+
+test("a wake queues behind a turn the session is already running", async (t) => {
+  const db = memDb(t);
+  const { project, card } = board(db, "piweb-followup");
+  const sid = "ee22ff33-1111-2222-3333-444455556666";
+  repos.updateCard(db, project.projectId, card.id, { sessionId: sid }, { actor: "test" });
+  const stored = getCard(db, project.projectId, card.id);
+  const { spawn } = fakeSpawn();
+  const { calls, fetch } = fakePiWeb([sid], null);
+
+  const out = await wakeCardSession(db, project, stored, { spawn, fetch });
+
+  assert.equal(out?.via, "pi-web");
+  const post = calls.find(c => c.url.endsWith(`/api/agent/${sid}`));
+  assert.equal(post.body.streamingBehavior, "followUp", "a busy session must not swallow the wake");
+});
+
 test("two concurrent wakes start one session, not two", async (t) => {
   const db = memDb(t);
   const { project, card } = board(db, "race-board");

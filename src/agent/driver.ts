@@ -87,16 +87,21 @@ async function wakeInPiWeb(project: Project, sessionId: string | null, prompt: s
       method: "POST",
       headers: { "content-type": "application/json" },
       // pi's own RPC body: pi-web forwards it to the session untouched, and only a `prompt`
-      // command starts a turn.
+      // command starts a turn. `followUp` queues behind a turn the session is already running
+      // instead of failing it — a card moved while its session is busy still has to arrive.
       body: JSON.stringify(sessionId === null
         ? { cwd: sessionCwd(project), type: "prompt", message: prompt }
-        : { type: "prompt", message: prompt }),
+        : { type: "prompt", message: prompt, streamingBehavior: "followUp" }),
       signal: AbortSignal.timeout(PIWEB_WAKE_TIMEOUT_MS),
     });
     // A 4xx is pi-web saying no to *this* session while it stays alive — spawning pi on top of
     // a JSONL pi-web may still open is the corruption the lock exists to prevent. A 5xx is
-    // pi-web failing at its job, which is the same as it being absent.
-    if (!res.ok) return res.status >= 500 ? null : "unclear";
+    // pi-web failing at its job, which is the same as it being absent — unless it names this
+    // prompt as rejected, which means it is alive and knows the session.
+    if (!res.ok) {
+      const why = await res.json().catch(() => ({})) as { accepted?: unknown };
+      return res.status >= 500 && why.accepted !== false ? null : "unclear";
+    }
     // A refused prompt still comes back 200 with success:false (a 4xx carries
     // `accepted:false` instead); claiming delivery then is how a wake goes missing in silence.
     // Any other 2xx is pi-web taking it, even with an empty or non-JSON body — reading that as
