@@ -134,7 +134,7 @@ function createStore() {
     deliverables: [],
     timeline: [],
     focus: false,
-    panel: false,
+    panels: { deliverables: false, timeline: false },
     pane: "none",
     overview: false,
     overviewRows: [],
@@ -514,10 +514,15 @@ function mount(root2, h) {
   focusBtn.type = "button";
   focusBtn.title = "\u3044\u307E\u7740\u624B\u3067\u304D\u308B\u30AB\u30FC\u30C9\u3060\u3051\u3092\u8868\u793A";
   focusBtn.addEventListener("click", () => h.onToggleFocus());
-  const panelBtn = el2("button", "toggle", "\u6210\u679C\u7269/\u5C65\u6B74");
-  panelBtn.type = "button";
-  panelBtn.title = "\u6210\u679C\u7269\u3068\u6700\u8FD1\u306E\u51FA\u6765\u4E8B\u3092\u958B\u304F";
-  panelBtn.addEventListener("click", () => h.onTogglePanel());
+  const panelBtns = {
+    deliverables: el2("button", "toggle", "\u6210\u679C\u7269"),
+    timeline: el2("button", "toggle", "\u5C65\u6B74")
+  };
+  for (const [id, btn] of Object.entries(panelBtns)) {
+    btn.type = "button";
+    btn.title = id === "deliverables" ? "\u6210\u679C\u7269\u3092\u958B\u304F" : "\u6700\u8FD1\u306E\u51FA\u6765\u4E8B\u3092\u958B\u304F";
+    btn.addEventListener("click", () => h.onTogglePanel(id));
+  }
   const searchWrap = el2("div", "search");
   const q = el2("input", "q");
   q.type = "search";
@@ -565,7 +570,7 @@ function mount(root2, h) {
   notifBtn.append(notifCounts.danger, notifCounts.warn, notifCounts.info);
   notifBtn.addEventListener("click", () => h.onTogglePane("notifications"));
   const status = el2("div", "status");
-  top.append(brand, pick, newForm, searchWrap, focusBtn, panelBtn, overviewBtn, graphBtn, ganttBtn, viewsBtn, templatesBtn, notifBtn, el2("div", "grow"), status);
+  top.append(brand, pick, newForm, searchWrap, focusBtn, panelBtns.deliverables, panelBtns.timeline, overviewBtn, graphBtn, ganttBtn, viewsBtn, templatesBtn, notifBtn, el2("div", "grow"), status);
   const errBar = el2("div", "err");
   errBar.hidden = true;
   const loopBar = el2("section", "loop");
@@ -684,7 +689,7 @@ function mount(root2, h) {
     panel,
     panelBody,
     focusBtn,
-    panelBtn,
+    panelBtns,
     toast,
     q,
     qres,
@@ -720,8 +725,7 @@ function mount(root2, h) {
     focusRows: /* @__PURE__ */ new Map(),
     projectSig: "",
     focusSig: "",
-    panelSig: "",
-    panels: { deliverables: true, timeline: false }
+    panelSig: ""
   };
 }
 function makeColumn(id, h) {
@@ -996,20 +1000,16 @@ function eventLabel(kind) {
   return map[kind] ?? kind;
 }
 function renderPanel(view2, s) {
-  const sig = panelSig(s, view2.panels);
+  const sig = panelSig(s, s.panels);
   if (view2.panelSig === sig) return;
   view2.panelSig = sig;
   view2.panelBody.textContent = "";
   const tabs = el2("div", "panel-tabs");
   const makeTab = (id, label) => {
-    const btn = el2("button", `panel-tab${view2.panels[id] ? " on" : ""}`, label);
+    const btn = el2("button", `panel-tab${s.panels[id] ? " on" : ""}`, label);
     btn.type = "button";
-    btn.setAttribute("aria-pressed", String(view2.panels[id]));
-    btn.addEventListener("click", () => {
-      view2.panels[id] = !view2.panels[id];
-      view2.panelSig = "";
-      renderPanel(view2, s);
-    });
+    btn.setAttribute("aria-pressed", String(s.panels[id]));
+    btn.addEventListener("click", () => view2.h.onTogglePanel(id));
     return btn;
   };
   tabs.append(makeTab("deliverables", `\u6210\u679C\u7269 (${s.deliverables.length})`), makeTab("timeline", "\u5C65\u6B74"));
@@ -1088,8 +1088,8 @@ function renderPanel(view2, s) {
     tl.append(row);
   }
   tlSec.append(tl);
-  delSec.hidden = !view2.panels.deliverables;
-  tlSec.hidden = !view2.panels.timeline;
+  delSec.hidden = !s.panels.deliverables;
+  tlSec.hidden = !s.panels.timeline;
   view2.panelBody.append(tabs, delSec, tlSec);
 }
 function renderFocus(view2, s) {
@@ -1612,9 +1612,11 @@ function renderView(view2, s) {
   }
   view2.focusBtn.classList.toggle("on", s.focus);
   view2.focusBtn.setAttribute("aria-pressed", String(s.focus));
-  view2.panelBtn.classList.toggle("on", s.panel);
-  view2.panelBtn.setAttribute("aria-pressed", String(s.panel));
-  view2.panel.hidden = !s.panel || !s.projectId;
+  for (const [id, btn] of Object.entries(view2.panelBtns)) {
+    btn.classList.toggle("on", s.panels[id]);
+    btn.setAttribute("aria-pressed", String(s.panels[id]));
+  }
+  view2.panel.hidden = !(s.panels.deliverables || s.panels.timeline) || !s.projectId;
   if (!view2.panel.hidden) renderPanel(view2, s);
   else view2.panelSig = "";
   view2.status.textContent = [
@@ -2298,8 +2300,8 @@ async function loadProjects() {
     setProjects(store, projects);
     const wanted = store.projectId ?? readSavedProject();
     const pick = projects.find((x) => x.slug === wanted)?.slug ?? projects[0]?.slug ?? null;
-    if (store.projectId !== pick) await selectProject(pick);
-    else render();
+    if (store.projectId === pick) render();
+    else await selectProject(pick);
   } catch (e) {
     store.error = `projects: ${describe(e)}`;
     render();
@@ -2609,7 +2611,10 @@ async function loadViews() {
 }
 function openPane(pane) {
   store.pane = store.pane === pane ? "none" : pane;
-  if (store.pane !== "none") store.panel = false;
+  if (store.pane !== "none") {
+    store.panels.deliverables = false;
+    store.panels.timeline = false;
+  }
   render();
   if (store.pane === "templates") void loadTemplates();
   else if (store.pane === "views") void loadViews();
@@ -2695,7 +2700,8 @@ async function doSaveTemplate(key) {
     render();
     return false;
   }
-  store.panel = false;
+  store.panels.deliverables = false;
+  store.panels.timeline = false;
   store.pane = "templates";
   await loadTemplates();
   showToast(view, "\u30C6\u30F3\u30D7\u30EC\u30FC\u30C8\u306B\u4FDD\u5B58\u3057\u305F");
@@ -2841,9 +2847,13 @@ var view = mount(root, {
     store.focus = !store.focus;
     render();
   },
-  onTogglePanel: () => {
-    store.panel = !store.panel;
-    if (store.panel) store.pane = "none";
+  onTogglePanel: (which) => {
+    if (which) store.panels[which] = !store.panels[which];
+    else {
+      store.panels.deliverables = false;
+      store.panels.timeline = false;
+    }
+    if (store.panels.deliverables || store.panels.timeline) store.pane = "none";
     render();
   },
   onAddDeliverable: (title) => doAddDeliverable(title, null),

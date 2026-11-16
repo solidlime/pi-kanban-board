@@ -37,8 +37,8 @@ export interface Store {
   timeline: TimelineEvent[];
   /** Focus mode: only "ready now" cards are shown. */
   focus: boolean;
-  /** Side panel (deliverables + recent events) is open. */
-  panel: boolean;
+  /** Side panel surfaces; either may be open on its own. */
+  panels: { deliverables: boolean; timeline: boolean };
   /** Right-hand overlay pane; never two at once (opening one closes `panel`). */
   pane: Pane;
   /** Overview (総合管理) replaces the board while true. */
@@ -82,7 +82,7 @@ export function createStore(): Store {
   return {
     projectId: null, projectName: null, projects: [],
     columns: {}, columnOrder: [], cards: {},
-    dependencies: [], deliverables: [], timeline: [], focus: false, panel: false,
+    dependencies: [], deliverables: [], timeline: [], focus: false, panels: { deliverables: false, timeline: false },
     pane: 'none', overview: false, overviewRows: [], graph: false, graphLayout: null,
     gantt: false, ganttScale: 'week',
     q: '', hits: null, searchAll: false, qFocus: false, notifications: [], attachments: [], locks: [], loop: null,

@@ -22,7 +22,7 @@ export interface Handlers {
   /** Open the full detail dialog (fields, dependencies, deliverables, history). */
   onOpen(key: CardKey): void;
   onToggleFocus(): void;
-  onTogglePanel(): void;
+  onTogglePanel(which?: PanelKey): void;
   onAddDeliverable(title: string): Promise<boolean>;
   onDeleteDeliverable(projectId: string, id: number): void;
   /** Search box text (the caller debounces) and closing the results overlay. */
@@ -62,6 +62,9 @@ interface ColView {
   editNote: HTMLElement;
 }
 
+/** The two independent right-panel surfaces. */
+export type PanelKey = 'deliverables' | 'timeline';
+
 export interface View {
   root: HTMLElement;
   h: Handlers;
@@ -78,7 +81,7 @@ export interface View {
   panel: HTMLElement;
   panelBody: HTMLElement;
   focusBtn: HTMLButtonElement;
-  panelBtn: HTMLButtonElement;
+  panelBtns: Record<PanelKey, HTMLButtonElement>;
   toast: HTMLElement;
   cols: Map<string, ColView>;
   cards: Map<CardKey, HTMLElement>;
@@ -87,7 +90,6 @@ export interface View {
   focusSig: string;
   panelSig: string;
   /** The two panel views are independent toggles, so both can be open at once. */
-  panels: { deliverables: boolean; timeline: boolean };
   // ---- v2 surfaces
   q: HTMLInputElement;
   qres: HTMLElement;
@@ -175,10 +177,16 @@ export function mount(root: HTMLElement, h: Handlers): View {
   focusBtn.type = 'button';
   focusBtn.title = 'いま着手できるカードだけを表示';
   focusBtn.addEventListener('click', () => h.onToggleFocus());
-  const panelBtn = el('button', 'toggle', '成果物/履歴');
-  panelBtn.type = 'button';
-  panelBtn.title = '成果物と最近の出来事を開く';
-  panelBtn.addEventListener('click', () => h.onTogglePanel());
+  // Two buttons, not one: either surface opens without the other.
+  const panelBtns: Record<PanelKey, HTMLButtonElement> = {
+    deliverables: el('button', 'toggle', '成果物'),
+    timeline: el('button', 'toggle', '履歴'),
+  };
+  for (const [id, btn] of Object.entries(panelBtns) as [PanelKey, HTMLButtonElement][]) {
+    btn.type = 'button';
+    btn.title = id === 'deliverables' ? '成果物を開く' : '最近の出来事を開く';
+    btn.addEventListener('click', () => h.onTogglePanel(id));
+  }
 
   // ---- search
   const searchWrap = el('div', 'search');
@@ -229,7 +237,7 @@ export function mount(root: HTMLElement, h: Handlers): View {
   notifBtn.addEventListener('click', () => h.onTogglePane('notifications'));
 
   const status = el('div', 'status');
-  top.append(brand, pick, newForm, searchWrap, focusBtn, panelBtn, overviewBtn, graphBtn, ganttBtn, viewsBtn, templatesBtn, notifBtn, el('div', 'grow'), status);
+  top.append(brand, pick, newForm, searchWrap, focusBtn, panelBtns.deliverables, panelBtns.timeline, overviewBtn, graphBtn, ganttBtn, viewsBtn, templatesBtn, notifBtn, el('div', 'grow'), status);
 
   const errBar = el('div', 'err');
   errBar.hidden = true;
@@ -335,14 +343,13 @@ export function mount(root: HTMLElement, h: Handlers): View {
     tplPane.aside, viewPane.aside, notifPane.aside, toast);
   return {
     root, h, select, newName, status, errBar, empty, board,
-    focus, focusCount, focusList, focusEmpty, panel, panelBody, focusBtn, panelBtn, toast,
+    focus, focusCount, focusList, focusEmpty, panel, panelBody, focusBtn, panelBtns, toast,
     q, qres, searchAllBtn, notifBtn, notifCounts, overviewBtn, graphBtn, ganttBtn, viewsBtn, templatesBtn,
     loopBar, loopStatus, loopText, loopNext, loopStart, loopStop, loopTick,
     overview, overviewSig: '', graph, graphSig: '', gantt, locks: locksBar, locksText, locksSig: '',
     paneTemplates: tplPane.aside, paneViews: viewPane.aside, paneNotif: notifPane.aside,
     paneSig: { templates: '', views: '', notif: '' },
     cols: new Map(), cards: new Map(), focusRows: new Map(), projectSig: '', focusSig: '', panelSig: '',
-    panels: { deliverables: true, timeline: false },
   };
 }
 
@@ -606,7 +613,7 @@ function focusRow(key: CardKey, h: Handlers): HTMLElement {
   return row;
 }
 
-function panelSig(s: Store, p: View['panels']): string {
+function panelSig(s: Store, p: Store['panels']): string {
   return [
     p.deliverables ? 'd' : '', p.timeline ? 't' : '',
     s.projectId,
@@ -627,7 +634,7 @@ function eventLabel(kind: string): string {
 }
 
 function renderPanel(view: View, s: Store): void {
-  const sig = panelSig(s, view.panels);
+  const sig = panelSig(s, s.panels);
   if (view.panelSig === sig) return;
   view.panelSig = sig;
   view.panelBody.textContent = '';
@@ -635,14 +642,10 @@ function renderPanel(view: View, s: Store): void {
   // ---- two independent toggles: opening one must not close the other
   const tabs = el('div', 'panel-tabs');
   const makeTab = (id: 'deliverables' | 'timeline', label: string) => {
-    const btn = el('button', `panel-tab${view.panels[id] ? ' on' : ''}`, label);
+    const btn = el('button', `panel-tab${s.panels[id] ? ' on' : ''}`, label);
     btn.type = 'button';
-    btn.setAttribute('aria-pressed', String(view.panels[id]));
-    btn.addEventListener('click', () => {
-      view.panels[id] = !view.panels[id];
-      view.panelSig = ''; // force the re-render the toggle itself needs
-      renderPanel(view, s);
-    });
+    btn.setAttribute('aria-pressed', String(s.panels[id]));
+    btn.addEventListener('click', () => view.h.onTogglePanel(id));
     return btn;
   };
   tabs.append(makeTab('deliverables', `成果物 (${s.deliverables.length})`), makeTab('timeline', '履歴'));
@@ -726,8 +729,8 @@ function renderPanel(view: View, s: Store): void {
   }
   tlSec.append(tl);
 
-  delSec.hidden = !view.panels.deliverables;
-  tlSec.hidden = !view.panels.timeline;
+  delSec.hidden = !s.panels.deliverables;
+  tlSec.hidden = !s.panels.timeline;
   view.panelBody.append(tabs, delSec, tlSec);
 }
 
@@ -1271,9 +1274,11 @@ export function renderView(view: View, s: Store): void {
 
   view.focusBtn.classList.toggle('on', s.focus);
   view.focusBtn.setAttribute('aria-pressed', String(s.focus));
-  view.panelBtn.classList.toggle('on', s.panel);
-  view.panelBtn.setAttribute('aria-pressed', String(s.panel));
-  view.panel.hidden = !s.panel || !s.projectId;
+  for (const [id, btn] of Object.entries(view.panelBtns) as [PanelKey, HTMLButtonElement][]) {
+    btn.classList.toggle('on', s.panels[id]);
+    btn.setAttribute('aria-pressed', String(s.panels[id]));
+  }
+  view.panel.hidden = !(s.panels.deliverables || s.panels.timeline) || !s.projectId;
   if (!view.panel.hidden) renderPanel(view, s);
   else view.panelSig = '';
 

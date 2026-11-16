@@ -129,8 +129,8 @@ async function loadProjects(): Promise<void> {
     setProjects(store, projects);
     const wanted = store.projectId ?? readSavedProject();
     const pick = projects.find(x => x.slug === wanted)?.slug ?? projects[0]?.slug ?? null;
-    if (store.projectId !== pick) await selectProject(pick);
-    else render();
+    if (store.projectId === pick) render();
+    else await selectProject(pick);
   } catch (e) {
     store.error = `projects: ${describe(e)}`;
     render();
@@ -427,7 +427,7 @@ async function loadViews(): Promise<void> {
 /** One pane at a time: the deliverables panel and the overlay panes share the right edge. */
 function openPane(pane: Store['pane']): void {
   store.pane = store.pane === pane ? 'none' : pane;
-  if (store.pane !== 'none') store.panel = false;
+  if (store.pane !== 'none') { store.panels.deliverables = false; store.panels.timeline = false; }
   render();
   if (store.pane === 'templates') void loadTemplates();
   else if (store.pane === 'views') void loadViews();
@@ -503,7 +503,8 @@ async function doSaveTemplate(key: CardKey): Promise<boolean> {
     render();
     return false;
   }
-  store.panel = false;
+  store.panels.deliverables = false;
+  store.panels.timeline = false;
   store.pane = 'templates';
   await loadTemplates();
   showToast(view, 'テンプレートに保存した');
@@ -631,9 +632,10 @@ const view: View = mount(root, {
   onDelete: (key) => { void doDelete(key); },
   onOpen: key => detail.open(key),
   onToggleFocus: () => { store.focus = !store.focus; render(); },
-  onTogglePanel: () => {
-    store.panel = !store.panel;
-    if (store.panel) store.pane = 'none'; // one right-hand surface at a time
+  onTogglePanel: (which) => {
+    if (which) store.panels[which] = !store.panels[which];
+    else { store.panels.deliverables = false; store.panels.timeline = false; }
+    if (store.panels.deliverables || store.panels.timeline) store.pane = 'none'; // one right-hand surface at a time
     render();
   },
   onAddDeliverable: title => doAddDeliverable(title, null),
