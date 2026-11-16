@@ -7,7 +7,7 @@ import type {
 import type { TimelineEvent } from '../../src/shared/events.js';
 import type {
   Meta, ProjectRef, CreateCardReq, PatchCardReq, MoveCardReq, DeleteCardReq,
-  AddDependencyReq, DependencyType, CreateDeliverableReq,
+  AddDependencyReq, DependencyType, CreateDeliverableReq, SessionRef,
 } from '../../src/shared/api.js';
 
 export type {
@@ -94,6 +94,10 @@ export const moveCard = (project: string, id: number, body: MoveCardReq) =>
 
 export const patchCard = (project: string, id: number, body: PatchCardReq) =>
   req<{ card: Card }>('PATCH', cardPath(project, id), body);
+
+/** The pi sessions of a board's cwd: the card's session picker shows these names. */
+export const getSessions = (project: string) =>
+  req<{ sessions: SessionRef[] }>('GET', `/api/sessions?project=${p(project)}`);
 
 export const deleteCard = (project: string, id: number, body?: DeleteCardReq) =>
   req<{ deleted: { projectId: string; id: number } }>('DELETE', cardPath(project, id), body);

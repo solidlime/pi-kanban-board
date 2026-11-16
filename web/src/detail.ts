@@ -4,7 +4,7 @@
 import type { Card, Dependency, Deliverable } from '../../src/shared/dto.js';
 import type { ProjectRef } from '../../src/shared/api.js';
 import type { TimelineEvent } from '../../src/shared/events.js';
-import type { DependencyType, PatchCardReq } from '../../src/shared/api.js';
+import type { DependencyType, PatchCardReq, SessionRef } from '../../src/shared/api.js';
 import {
   acceptanceProgress, cardKey, edgesOf, isClosed, keyOf, lastActorOf, parseKey, type CardKey, type Store,
 } from './store.js';
@@ -29,6 +29,8 @@ export interface DetailHandlers {
   onUploadDeliverableAttachment(deliverableId: number, file: File): Promise<boolean>;
   /** Snapshot this card's fields as a card template. */
   onTemplateFromCard(key: CardKey): void;
+  /** The pi sessions of this board's cwd, for the session-name picker. */
+  onSessions(projectId: string): Promise<SessionRef[]>;
   notify(message: string): void;
 }
 
@@ -52,9 +54,35 @@ function field(label: string, input: HTMLElement): HTMLElement {
   return wrap;
 }
 
+const SESSION_LIST_ID = 'kb-session-names';
+
+/** What the picker shows: the session's own name when the id matches one, else the id's head. */
+function sessionLabel(card: Card | null, list: SessionRef[]): string {
+  const id = card?.sessionId ?? null;
+  if (!id) return '';
+  const hit = list.find(s => s.id === id);
+  return hit ? hit.name : id.slice(0, 8);
+}
+
+/**
+ * A known name maps to its id, an empty field clears the session, and an unknown name is a new
+ * session: pi mints that id at wake, so the card keeps none (and the user is told).
+ */
+function sessionIdOfInput(value: string, card: Card | null, list: SessionRef[], unknown: () => void): string | null {
+  const wanted = value.trim();
+  if (wanted === '') return null;
+  const hit = list.find(s => s.name === wanted);
+  if (hit) return hit.id;
+  if (wanted === sessionLabel(card, list)) return card?.sessionId ?? null;
+  unknown();
+  return null;
+}
+
 export function mountDetail(root: HTMLElement, h: DetailHandlers): DetailView {
   let key: CardKey | null = null;
   let snapshot: Card | null = null;
+  // The card stores a session id; the picker shows names, so this is what a name resolves against.
+  let sessions: SessionRef[] = [];
 
   const dlg = el('dialog', 'detail');
   const head = el('div', 'd-h');
@@ -83,6 +111,11 @@ export function mountDetail(root: HTMLElement, h: DetailHandlers): DetailView {
   body.rows = 7;
   body.placeholder = 'メモ・受け入れ条件（- [ ] 項目）';
   const accHint = el('div', 'acc-hint');
+  const sessionPick = el('input', 'f-session');
+  sessionPick.placeholder = '空なら新規セッション';
+  sessionPick.setAttribute('list', SESSION_LIST_ID);
+  const sessionOpts = el('datalist');
+  sessionOpts.id = SESSION_LIST_ID;
 
   const grid = el('div', 'd-grid');
   grid.append(
@@ -91,9 +124,10 @@ export function mountDetail(root: HTMLElement, h: DetailHandlers): DetailView {
     field('担当', owner),
     field('期限', due),
     field('ブロック理由', blocked),
+    field('セッション', sessionPick),
     field('本文', body),
   );
-  grid.append(accHint);
+  grid.append(accHint, sessionOpts);
 
   // ---- dependencies
   const depSec = el('section', 'd-sec');
@@ -202,6 +236,8 @@ export function mountDetail(root: HTMLElement, h: DetailHandlers): DetailView {
       owner: owner.value.trim() || null,
       due: due.value.trim() || null,
       blockedReason: blocked.value.trim() || null,
+      sessionId: sessionIdOfInput(sessionPick.value, currentCard(key), sessions,
+        () => h.notify('その名前のセッションは無い。新規セッションとして起動する')),
       body: body.value,
     };
     void h.onSave(key, patch).then(ok => { if (ok) { h.notify('保存した'); close(); } });
@@ -234,6 +270,20 @@ export function mountDetail(root: HTMLElement, h: DetailHandlers): DetailView {
     due.value = card.due ?? '';
     blocked.value = card.blockedReason ?? '';
     body.value = card.body ?? '';
+    // Until the list lands, an id with no name of its own shows as its 8-char prefix.
+    sessionPick.value = sessionLabel(card, sessions);
+    sessions = [];
+    const openedAs = k;
+    void h.onSessions(parsed.projectId).then(list => {
+      sessions = list;
+      sessionOpts.replaceChildren(...list.map(s => {
+        const o = el('option');
+        o.value = s.name;
+        return o;
+      }));
+      // A slower response must not overwrite a card the user opened meanwhile.
+      if (key === openedAs) sessionPick.value = sessionLabel(currentCard(openedAs), list);
+    }).catch(() => { /* no list: the field stays free text */ });
     if (store) paint(store, card);
     if (!dlg.open) dlg.showModal();
     title.focus();

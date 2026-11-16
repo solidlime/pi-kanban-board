@@ -62,6 +62,7 @@ var createCard = (body) => req("POST", "/api/cards", body);
 var cardPath = (project, id) => `/api/cards/${p(project)}/${p(String(id))}`;
 var moveCard = (project, id, body) => req("POST", `${cardPath(project, id)}/move`, body);
 var patchCard = (project, id, body) => req("PATCH", cardPath(project, id), body);
+var getSessions = (project) => req("GET", `/api/sessions?project=${p(project)}`);
 var deleteCard = (project, id, body) => req("DELETE", cardPath(project, id), body);
 var getTimeline = (project, limit = 200) => req("GET", `/api/timeline?project=${p(project)}&limit=${p(String(limit))}`);
 var getDeliverables = (project) => req("GET", `/api/deliverables?project=${p(project)}`);
@@ -1716,9 +1717,26 @@ function field(label, input) {
   wrap.append(el3("span", "f-l", label), input);
   return wrap;
 }
+var SESSION_LIST_ID = "kb-session-names";
+function sessionLabel(card, list) {
+  const id = card?.sessionId ?? null;
+  if (!id) return "";
+  const hit = list.find((s) => s.id === id);
+  return hit ? hit.name : id.slice(0, 8);
+}
+function sessionIdOfInput(value, card, list, unknown) {
+  const wanted = value.trim();
+  if (wanted === "") return null;
+  const hit = list.find((s) => s.name === wanted);
+  if (hit) return hit.id;
+  if (wanted === sessionLabel(card, list)) return card?.sessionId ?? null;
+  unknown();
+  return null;
+}
 function mountDetail(root2, h) {
   let key = null;
   let snapshot = null;
+  let sessions = [];
   const dlg = el3("dialog", "detail");
   const head = el3("div", "d-h");
   const heading = el3("h2", "d-title");
@@ -1744,6 +1762,11 @@ function mountDetail(root2, h) {
   body.rows = 7;
   body.placeholder = "\u30E1\u30E2\u30FB\u53D7\u3051\u5165\u308C\u6761\u4EF6\uFF08- [ ] \u9805\u76EE\uFF09";
   const accHint = el3("div", "acc-hint");
+  const sessionPick = el3("input", "f-session");
+  sessionPick.placeholder = "\u7A7A\u306A\u3089\u65B0\u898F\u30BB\u30C3\u30B7\u30E7\u30F3";
+  sessionPick.setAttribute("list", SESSION_LIST_ID);
+  const sessionOpts = el3("datalist");
+  sessionOpts.id = SESSION_LIST_ID;
   const grid = el3("div", "d-grid");
   grid.append(
     field("\u30BF\u30A4\u30C8\u30EB", title),
@@ -1751,9 +1774,10 @@ function mountDetail(root2, h) {
     field("\u62C5\u5F53", owner),
     field("\u671F\u9650", due),
     field("\u30D6\u30ED\u30C3\u30AF\u7406\u7531", blocked),
+    field("\u30BB\u30C3\u30B7\u30E7\u30F3", sessionPick),
     field("\u672C\u6587", body)
   );
-  grid.append(accHint);
+  grid.append(accHint, sessionOpts);
   const depSec = el3("section", "d-sec");
   depSec.append(el3("h3", void 0, "\u4F9D\u5B58\u95A2\u4FC2"));
   const depList = el3("div", "d-deps");
@@ -1869,6 +1893,12 @@ function mountDetail(root2, h) {
       owner: owner.value.trim() || null,
       due: due.value.trim() || null,
       blockedReason: blocked.value.trim() || null,
+      sessionId: sessionIdOfInput(
+        sessionPick.value,
+        currentCard(key),
+        sessions,
+        () => h.notify("\u305D\u306E\u540D\u524D\u306E\u30BB\u30C3\u30B7\u30E7\u30F3\u306F\u7121\u3044\u3002\u65B0\u898F\u30BB\u30C3\u30B7\u30E7\u30F3\u3068\u3057\u3066\u8D77\u52D5\u3059\u308B")
+      ),
       body: body.value
     };
     void h.onSave(key, patch).then((ok) => {
@@ -1906,6 +1936,19 @@ function mountDetail(root2, h) {
     due.value = card.due ?? "";
     blocked.value = card.blockedReason ?? "";
     body.value = card.body ?? "";
+    sessionPick.value = sessionLabel(card, sessions);
+    sessions = [];
+    const openedAs = k;
+    void h.onSessions(parsed.projectId).then((list) => {
+      sessions = list;
+      sessionOpts.replaceChildren(...list.map((s) => {
+        const o = el3("option");
+        o.value = s.name;
+        return o;
+      }));
+      if (key === openedAs) sessionPick.value = sessionLabel(currentCard(openedAs), list);
+    }).catch(() => {
+    });
     if (store2) paint(store2, card);
     if (!dlg.open) dlg.showModal();
     title.focus();
@@ -2845,6 +2888,7 @@ var detail = mountDetail(root, {
   onTemplateFromCard: (key) => {
     void doSaveTemplate(key);
   },
+  onSessions: (projectId) => getSessions(projectId).then((r) => r.sessions),
   notify: (message) => showToast(view, message)
 });
 function render() {

@@ -6,7 +6,7 @@ import {
   getDeliverables, getTimeline, createDeliverable, deleteDeliverable, addDependency, removeDependency,
   patchColumn, getViews, createView, deleteView, getTemplates, createTemplate, useTemplate, deleteTemplate,
   getAttachments, uploadAttachment, deleteAttachment, searchBoard, getLocks, getNotifications, getGraph, getOverview,
-  getLoop, startLoop, stopLoop, tickLoop,
+  getLoop, startLoop, stopLoop, tickLoop, getSessions,
 } from './api.js';
 import {
   createStore, applySnapshot, upsertCard, removeCard, resetBoard, setProjects, setMeta,
@@ -682,6 +682,7 @@ const detail: DetailView = mountDetail(root, {
   onDeleteAttachment: (projectId, id) => doDeleteAttachment(projectId, id),
   onUploadDeliverableAttachment: (deliverableId, file) => doUploadDeliverable(deliverableId, file),
   onTemplateFromCard: key => { void doSaveTemplate(key); },
+  onSessions: projectId => getSessions(projectId).then(r => r.sessions),
   notify: message => showToast(view, message),
 });
 
