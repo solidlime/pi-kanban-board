@@ -62,6 +62,7 @@ test("buildCardPrompt names the board, the card, its title and the done step", (
     body: "右パネルが落ちる\n- [ ] タブが切り替わる",
   });
   const prompt = buildCardPrompt(project, card);
+  assert.ok(prompt.startsWith(`[kanban ${project.slug}#${card.id}]`), "the card's origin leads the message");
   for (const needle of ["prompt-board", "1", "配線を直す", "右パネルが落ちる", "タブが切り替わる", "done"]) {
     assert.ok(prompt.includes(needle), `prompt is missing "${needle}"`);
   }
@@ -143,6 +144,10 @@ test("an existing card session is handed to pi-web and no process is spawned", a
   assert.equal(post.body.type, "prompt");
   assert.equal(post.body.cwd, undefined, "an existing session keeps its own cwd");
   assert.ok(post.body.message.includes("カードを実装してください"));
+  assert.ok(
+    post.body.message.startsWith(`[kanban ${project.slug}#${card.id}]`),
+    "pi-web receives the same tagged message the pi fallback gets",
+  );
 });
 
 test("a session pi-web already runs still receives the prompt", async (t) => {

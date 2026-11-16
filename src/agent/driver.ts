@@ -22,13 +22,19 @@ export function sessionCwd(project: Project): string {
   return typeof cwd === "string" && cwd.trim() !== "" ? cwd : process.cwd();
 }
 
-/** Kept short on purpose: the card is the spec, the tool call is the exit condition. */
+/**
+ * Kept short on purpose: the card is the spec, the tool call is the exit condition.
+ * The first line tags the origin so a session can tell a card's text (which anything on the
+ * board can write) from the human speaking now. It stays in the message, not a system header:
+ * a prefix that changes every turn would miss the prompt cache (same reason as `[NOUS STATE]`).
+ */
 export function buildCardPrompt(project: Project, card: Card): string {
   const acceptance = parseAcceptance(card.body);
   const criteria = acceptance.length === 0
     ? "- （なし）"
     : acceptance.map(a => `- [${a.done ? "x" : " "}] ${a.text}`).join("\n");
   return [
+    `[kanban ${project.slug}#${card.id}]`,
     `カードを実装してください。`,
     ``,
     `project: ${project.slug}`,

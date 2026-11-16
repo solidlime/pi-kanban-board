@@ -149,6 +149,11 @@ and the timeline (`loop.tick` / `loop.resumed` / `loop.halted`) read.
 fire-and-forget: a slow session start must not delay the drop, and a failed wake is logged rather
 than turning the move into an error.
 
+The prompt both paths send is the card's own text (`buildCardPrompt` in `src/agent/driver.ts`),
+led by a `[kanban <slug>#<id>]` line. It rides in the user message, not a system header: a header
+that changes every turn would miss the prompt cache each time. The tag is what lets the session
+tell a card — which any session or the UI can write — from the human speaking now.
+
 `tests/integration/loop-supervisor.test.mjs` pins the part that matters: a drained board halts
 without stopping its neighbour, and `stop()` really stops the timer.
 
