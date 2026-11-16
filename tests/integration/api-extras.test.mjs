@@ -2,7 +2,7 @@
 // graph/overview/loop. Real server, temp home, temp DB — ~/.pi/kanban is never touched.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readdir } from "node:fs/promises";
+import { mkdtemp, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import "./_ts-hooks.mjs";
@@ -45,11 +45,15 @@ async function server(t, startOpts = {}) {
     try { json = JSON.parse(text); } catch { /* not json */ }
     return { status: res.status, json, data: json?.data };
   };
-  const getBytes = async (p) => {
-    const res = await fetch(base + p, { headers: { authorization: `Bearer ${run.token}` } });
+  const getBytes = async (p, extra = {}) => {
+    const res = await fetch(base + p, { headers: { authorization: `Bearer ${run.token}`, ...extra } });
     return { status: res.status, headers: res.headers, bytes: Buffer.from(await res.arrayBuffer()) };
   };
-  return { run, base, home, call, upload, getBytes };
+  const getText = async (p) => {
+    const r = await getBytes(p);
+    return { ...r, text: r.bytes.toString("utf8") };
+  };
+  return { run, base, home, call, upload, getBytes, getText };
 }
 
 test("meta advertises the new capabilities and schema v3", async (t) => {
@@ -434,4 +438,110 @@ test("card sessionId: writable on PATCH, \"\" clears it, and the picker lists no
   assert.deepEqual(sorted, [...sorted].sort().reverse(), "newest first");
   assert.equal((await call("GET", "/api/sessions")).status, 400, "project is required");
   assert.equal((await call("GET", "/api/sessions?project=nope")).status, 404);
+});
+
+// A deliverable's `ref` is a path on disk. `/file` serves the raw bytes (video needs Range to
+// seek); `/view` wraps them in the smallest page that makes each kind readable.
+test("deliverable file: raw bytes, Range seek, and 404 for a missing, directory or `..` ref", async (t) => {
+  const { call, getBytes } = await server(t);
+  await call("POST", "/api/projects", { slug: "dv" });
+  const dir = await mkdtemp(path.join(tmpdir(), "kb-ref-"));
+  const clip = Buffer.from([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  const note = path.join(dir, "note.md");
+  const video = path.join(dir, "clip.mp4");
+  const bin = path.join(dir, "blob.bin");
+  await writeFile(note, "# title\n- one\n");
+  await writeFile(video, clip);
+  await writeFile(bin, "raw");
+
+  const add = async (title, ref) => (await call("POST", "/api/deliverables", { project: "dv", title, ref })).data.deliverable;
+  const d = await add("note", note);
+  const v = await add("clip", video);
+  const b = await add("bin", bin);
+
+  const full = await getBytes(`/api/deliverables/dv/${d.id}/file`);
+  assert.equal(full.status, 200);
+  assert.equal(full.headers.get("content-type"), "text/markdown; charset=utf-8");
+  assert.equal(full.headers.get("accept-ranges"), "bytes");
+  assert.equal(full.bytes.toString(), "# title\n- one\n");
+  assert.equal((await getBytes(`/api/deliverables/dv/${b.id}/file`)).headers.get("content-type"), "application/octet-stream");
+
+  const part = await getBytes(`/api/deliverables/dv/${v.id}/file`, { range: "bytes=2-5" });
+  assert.equal(part.status, 206);
+  assert.equal(part.headers.get("content-range"), `bytes 2-5/${clip.length}`);
+  assert.deepEqual(part.bytes, Buffer.from([2, 3, 4, 5]));
+  const tail = await getBytes(`/api/deliverables/dv/${v.id}/file`, { range: "bytes=-3" });
+  assert.equal(tail.status, 206);
+  assert.deepEqual(tail.bytes, Buffer.from([7, 8, 9]));
+  const past = await getBytes(`/api/deliverables/dv/${v.id}/file`, { range: "bytes=99-100" });
+  assert.equal(past.status, 416);
+  assert.equal(past.headers.get("content-range"), `bytes */${clip.length}`);
+
+  assert.equal((await getBytes("/api/deliverables/dv/999/file")).status, 404, "no such deliverable");
+  assert.equal((await getBytes(`/api/deliverables/nope/${d.id}/file`)).status, 404, "no such project");
+  const noRef = await add("no ref", "");
+  assert.equal((await getBytes(`/api/deliverables/dv/${noRef.id}/file`)).status, 404, "no ref set");
+  const gone = await add("gone", path.join(dir, "nope.md"));
+  assert.equal((await getBytes(`/api/deliverables/dv/${gone.id}/file`)).status, 404, "ref does not exist");
+  const asDir = await add("dir", dir);
+  assert.equal((await getBytes(`/api/deliverables/dv/${asDir.id}/file`)).status, 404, "a directory is not a file");
+  const trav = await add("trav", dir + "/../../../../../../etc/passwd");
+  assert.equal((await getBytes(`/api/deliverables/dv/${trav.id}/file`)).status, 404, "`..` never resolves");
+});
+
+test("deliverable view: md is rendered, html passes through, media gets its element", async (t) => {
+  const { call, getText } = await server(t);
+  await call("POST", "/api/projects", { slug: "vw" });
+  const dir = await mkdtemp(path.join(tmpdir(), "kb-view-"));
+  const add = async (title, ref) => (await call("POST", "/api/deliverables", { project: "vw", title, ref })).data.deliverable;
+
+  const mdFile = path.join(dir, "readme.md");
+  await writeFile(mdFile, "# head\n**done** and `npm test`\n- one\n[ok](https://example.com)\n[bad](javascript:alert(1))\n<script>alert(2)</script>");
+  const mdId = (await add("readme", mdFile)).id;
+  const mdView = await getText(`/api/deliverables/vw/${mdId}/view`);
+  assert.equal(mdView.status, 200);
+  assert.equal(mdView.headers.get("content-type"), "text/html; charset=utf-8");
+  assert.ok(mdView.text.includes('<meta charset="utf-8">'));
+  assert.ok(mdView.text.includes("<strong>done</strong>"), mdView.text);
+  assert.ok(mdView.text.includes("<code>npm test</code>"));
+  assert.ok(mdView.text.includes("<ul><li>one</li></ul>"), mdView.text);
+  assert.ok(mdView.text.includes('href="https://example.com"'));
+  assert.equal(mdView.text.includes('href="javascript'), false, "javascript: links stay text");
+  assert.equal(mdView.text.includes("<script>"), false, "the source html is escaped");
+
+  const htmlFile = path.join(dir, "page.html");
+  await writeFile(htmlFile, "<h1>hi</h1>");
+  const htmlId = (await add("page", htmlFile)).id;
+  const htmlView = await getText(`/api/deliverables/vw/${htmlId}/view`);
+  assert.equal(htmlView.headers.get("content-type"), "text/html; charset=utf-8");
+  assert.ok(htmlView.text.includes("<h1>hi</h1>"), "html is served as-is");
+
+  const pngFile = path.join(dir, "pic.png");
+  await writeFile(pngFile, PNG);
+  const pngId = (await add("pic", pngFile)).id;
+  const pngView = await getText(`/api/deliverables/vw/${pngId}/view`);
+  assert.ok(pngView.text.includes(`<img class="media" src="/api/deliverables/vw/${pngId}/file"`), pngView.text);
+
+  const mp4File = path.join(dir, "clip.mp4");
+  await writeFile(mp4File, Buffer.from([0, 1, 2]));
+  const mp4Id = (await add("clip", mp4File)).id;
+  const mp4View = await getText(`/api/deliverables/vw/${mp4Id}/view`);
+  assert.ok(mp4View.text.includes(`<video class="media" controls autoplay src="/api/deliverables/vw/${mp4Id}/file"`), mp4View.text);
+
+  const pdfFile = path.join(dir, "doc.pdf");
+  await writeFile(pdfFile, "%PDF-1.4");
+  const pdfId = (await add("doc", pdfFile)).id;
+  const pdfView = await getText(`/api/deliverables/vw/${pdfId}/view`);
+  assert.ok(pdfView.text.includes(`<iframe src="/api/deliverables/vw/${pdfId}/file"`), pdfView.text);
+
+  const binFile = path.join(dir, "blob.bin");
+  await writeFile(binFile, "raw");
+  const binId = (await add("blob", binFile)).id;
+  const binView = await getText(`/api/deliverables/vw/${binId}/view`);
+  assert.ok(binView.text.includes("blob.bin"), "the file name is shown");
+  assert.ok(binView.text.includes(`href="/api/deliverables/vw/${binId}/file"`), binView.text);
+
+  assert.equal((await getText(`/api/deliverables/vw/${binId}/view`)).text.includes("<script"), false, "no dashboard js");
+  assert.equal((await getText("/api/deliverables/vw/999/view")).status, 404);
+  assert.equal((await getText(`/api/deliverables/vw/${(await add("gone", path.join(dir, "x.md"))).id}/view`)).status, 404);
 });

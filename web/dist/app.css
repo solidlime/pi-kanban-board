@@ -310,6 +310,14 @@ button:disabled {
   color: var(--accent);
   border-color: #31456b;
 }
+a.chip {
+  color: var(--muted);
+  text-decoration: none;
+}
+a.chip:hover {
+  color: var(--accent);
+  border-color: #31456b;
+}
 .chip.dep {
   color: #fcd34d;
   border-color: #7a5b20;

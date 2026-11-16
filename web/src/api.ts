@@ -179,6 +179,14 @@ export const uploadAttachment = (project: string, target: AttachmentTarget, name
 export const deleteAttachment = (project: string, id: number) =>
   req<{ deleted: { projectId: string; id: number } }>('DELETE', `/api/attachments/${p(project)}/${p(String(id))}`);
 
+/** The raw bytes of a deliverable's `ref` (Range-capable: a video seeks with it). */
+export const deliverableFileSrc = (project: string, id: number) =>
+  `/api/deliverables/${p(project)}/${p(String(id))}/file`;
+
+/** The readable page for the same bytes: md rendered, images/video/pdf wrapped. */
+export const deliverableViewSrc = (project: string, id: number) =>
+  `/api/deliverables/${p(project)}/${p(String(id))}/view`;
+
 export const searchBoard = (project: string | null, q: string, limit = 20) =>
   req<{ hits: SearchHit[] }>(
     'GET',

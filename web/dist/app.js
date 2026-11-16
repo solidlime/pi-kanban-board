@@ -92,6 +92,8 @@ var getAttachments = (project, target) => req("GET", attachQuery(project, target
 var attachmentSrc = (project, id) => `/api/attachments/${p(project)}/${p(String(id))}`;
 var uploadAttachment = (project, target, name, file) => postBlob(`${attachQuery(project, target)}&name=${p(name)}`, file);
 var deleteAttachment = (project, id) => req("DELETE", `/api/attachments/${p(project)}/${p(String(id))}`);
+var deliverableFileSrc = (project, id) => `/api/deliverables/${p(project)}/${p(String(id))}/file`;
+var deliverableViewSrc = (project, id) => `/api/deliverables/${p(project)}/${p(String(id))}/view`;
 var searchBoard = (project, q, limit = 20) => req(
   "GET",
   project ? `/api/search?project=${p(project)}&q=${p(q)}&limit=${p(String(limit))}` : `/api/search?q=${p(q)}&limit=${p(String(limit))}`
@@ -1039,7 +1041,7 @@ function renderPanel(view2, s) {
     main.append(t);
     const sub = el2("div", "p-sub");
     sub.append(el2("span", "chip kind", d.kind));
-    if (d.ref) sub.append(el2("span", "chip", d.ref));
+    if (d.ref) sub.append(refLink(d));
     if (d.cardId !== null && d.cardId !== void 0) {
       const link = el2("button", "link", `#${d.cardId}`);
       link.type = "button";
@@ -1051,6 +1053,8 @@ function renderPanel(view2, s) {
       sub.append(link);
     }
     main.append(sub);
+    const shot = refImageThumb(d);
+    if (shot) main.append(shot);
     const thumbs = thumbStrip(s.attachments.filter((a) => a.deliverableId === d.id), d.projectId);
     if (thumbs) main.append(thumbs);
     const rm = el2("button", "ic", "\xD7");
@@ -1129,6 +1133,30 @@ function renderFocus(view2, s) {
     view2.focusRows.get(key)?.remove();
     view2.focusRows.delete(key);
   }
+}
+var REF_IMAGE = /\.(png|jpe?g|gif|webp)$/i;
+var refName = (ref) => ref.split(/[\\/]/).pop() || ref;
+function refLink(d) {
+  const link = el2("a", "chip", refName(d.ref));
+  link.href = deliverableViewSrc(d.projectId, d.id);
+  link.target = "_blank";
+  link.rel = "noopener";
+  link.title = d.ref;
+  return link;
+}
+function refImageThumb(d) {
+  if (!REF_IMAGE.test(d.ref)) return null;
+  const a = el2("a", "thumbs");
+  a.href = deliverableViewSrc(d.projectId, d.id);
+  a.target = "_blank";
+  a.rel = "noopener";
+  a.title = d.ref;
+  const img = el2("img", "thumb");
+  img.src = deliverableFileSrc(d.projectId, d.id);
+  img.alt = refName(d.ref);
+  img.loading = "lazy";
+  a.append(img);
+  return a;
 }
 function thumbStrip(list, projectId) {
   if (!list.length) return null;
@@ -2045,7 +2073,14 @@ function mountDetail(root2, h) {
       const t = el3("span", "d-dv-title", d.title);
       t.title = d.title;
       row.append(el3("span", "chip kind", d.kind), t);
-      if (d.ref) row.append(el3("span", "chip", d.ref));
+      if (d.ref) {
+        const link = el3("a", "chip", d.ref.split(/[\\/]/).pop() || d.ref);
+        link.href = deliverableViewSrc(d.projectId, d.id);
+        link.target = "_blank";
+        link.rel = "noopener";
+        link.title = d.ref;
+        row.append(link);
+      }
       const rm = el3("button", "ic", "\xD7");
       rm.type = "button";
       rm.title = "\u6210\u679C\u7269\u3092\u524A\u9664";

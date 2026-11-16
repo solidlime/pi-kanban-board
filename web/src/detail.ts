@@ -8,7 +8,7 @@ import type { DependencyType, PatchCardReq, SessionRef } from '../../src/shared/
 import {
   acceptanceProgress, cardKey, edgesOf, isClosed, keyOf, lastActorOf, parseKey, type CardKey, type Store,
 } from './store.js';
-import { attachmentSrc } from './api.js';
+import { attachmentSrc, deliverableViewSrc } from './api.js';
 
 /** The server sniffs bytes anyway; this is only to fail fast with a friendlier sentence. */
 const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
@@ -389,7 +389,15 @@ export function mountDetail(root: HTMLElement, h: DetailHandlers): DetailView {
       const t = el('span', 'd-dv-title', d.title);
       t.title = d.title;
       row.append(el('span', 'chip kind', d.kind), t);
-      if (d.ref) row.append(el('span', 'chip', d.ref));
+      if (d.ref) {
+        // Same regression as the panel: the ref has to open, not just print.
+        const link = el('a', 'chip', d.ref.split(/[\\/]/).pop() || d.ref);
+        link.href = deliverableViewSrc(d.projectId, d.id);
+        link.target = '_blank';
+        link.rel = 'noopener';
+        link.title = d.ref;
+        row.append(link);
+      }
       const rm = el('button', 'ic', '×');
       rm.type = 'button';
       rm.title = '成果物を削除';

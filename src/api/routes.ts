@@ -6,9 +6,9 @@
 //   - an unknown column is 422 VALIDATION, an unknown project/card 404 NOT_FOUND
 //   - WIP limits are domain rules: they are enforced here with core.wipError, in addition
 //     to the repository's column check (repos does not know about WIP)
-import { createReadStream } from "node:fs";
+import { createReadStream, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, extname, isAbsolute, join } from "node:path";
 import type http from "node:http";
 import { DomainError, fail, ok, type ErrorCode } from "../shared/errors.js";
 import type { Db } from "../persistence/db.js";
@@ -18,7 +18,7 @@ import type { HomeState } from "../persistence/init.js";
 import {
   attachmentBlobName, createAttachment, createCard, createCardFromTemplate, createDeliverable, createProject,
   createTemplate, createView, deleteAttachment, deleteCard, deleteDeliverable, deleteTemplate, deleteView,
-  getAttachment, getColumn, getLoop, getProject, getProjectBySlug, listAttachments, listCards, listColumns,
+  getAttachment, getColumn, getDeliverable, getLoop, getProject, getProjectBySlug, listAttachments, listCards, listColumns,
   listDeliverables, listDependencies, listProjects, listTemplates, listTimeline, listViews, moveCard,
   readBoard, removeDependency, saveLoop, updateCard, updateColumn, updateView, addDependency, digestInput,
   type UpdateCardPatch,
@@ -29,6 +29,7 @@ import { MAX_ATTACHMENT_BYTES, safeAttachmentName } from "../core/attachment.js"
 import { blobPath, storeBlob } from "../media.js";
 import { graphLayout } from "../core/graph.js";
 import { buildDigest, parseSince } from "../core/digest.js";
+import { esc, md } from "../core/markdown.js";
 import { deliverNotifications, parseSinkSetting, SINK_ENV } from "../core/notify-sink.js";
 import { acquireLock, assertResource, assertTtlSeconds, listLocks, releaseLock } from "../persistence/locks.js";
 import { initialLoopState, startLoop, stopLoop } from "../core/loop.js";
@@ -455,6 +456,144 @@ async function deleteDeliverableRoute(ctx: Ctx, m: RegExpExecArray): Promise<voi
   sendJson(ctx, 200, ok({ deleted: { projectId: project.projectId, id } }));
 }
 
+// -------------------------------------------------------------- deliverable files
+
+/** Extensions the viewer knows; anything else is offered as a download. */
+const EXT_MIME: Record<string, string> = {
+  ".md": "text/markdown; charset=utf-8",
+  ".markdown": "text/markdown; charset=utf-8",
+  ".html": "text/html; charset=utf-8",
+  ".htm": "text/html; charset=utf-8",
+  ".txt": "text/plain; charset=utf-8",
+  ".pdf": "application/pdf",
+  ".mp4": "video/mp4",
+  ".webm": "video/webm",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+};
+
+/**
+ * A ref is an absolute path; a relative one is read from the home dir. `..` is refused outright
+ * and the surviving path is realpath'd, so neither traversal nor a symlink can point elsewhere.
+ */
+function resolveRef(home: string, ref: string): string {
+  if (ref === "" || ref.split(/[\\/]/).includes("..")) {
+    throw new DomainError("NOT_FOUND", `ref ${ref} is not servable`);
+  }
+  const p = isAbsolute(ref) ? ref : join(home, ref);
+  try {
+    const real = realpathSync(p);
+    if (!statSync(real).isFile()) throw new Error("not a file");
+    return real;
+  } catch {
+    throw new DomainError("NOT_FOUND", `ref ${ref} is missing on disk`);
+  }
+}
+
+function deliverableRef(ctx: Ctx, m: RegExpExecArray): { file: string; name: string; src: string; mime: string } {
+  const db = requireDb(ctx);
+  const project = projectOr404(db, decodeSegment(m[1]));
+  const id = assertId(Number(m[2]));
+  const d = getDeliverable(db, project.projectId, id);
+  if (!d) throw new DomainError("NOT_FOUND", `deliverable ${project.projectId}#${id} not found`);
+  const file = resolveRef(ctx.home, d.ref.trim());
+  return {
+    file, name: basename(file), mime: EXT_MIME[extname(file).toLowerCase()] ?? "application/octet-stream",
+    src: `/api/deliverables/${encodeURIComponent(project.slug)}/${id}/file`,
+  };
+}
+
+/** `bytes=a-b` only — a player never asks for more. Null means "send the whole thing". */
+function parseRange(header: string | undefined, size: number): { start: number; end: number } | null {
+  if (header === undefined) return null;
+  const m = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
+  const [rawStart, rawEnd] = m === null ? [undefined, undefined] : [m[1], m[2]];
+  let start: number;
+  let end: number;
+  if (rawStart === undefined) return null; // another unit, or a multi-range: not worth parsing
+  if (rawStart === "") {
+    start = size - Number(rawEnd);
+    end = size - 1;
+  } else {
+    start = Number(rawStart);
+    end = rawEnd === "" ? size - 1 : Math.min(Number(rawEnd), size - 1);
+  }
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || start >= size || start > end) {
+    throw new HttpError(416, "VALIDATION", `range ${header} is not satisfiable for ${size} bytes`);
+  }
+  return { start, end };
+}
+
+/** Raw bytes: Range/206 keeps a video seekable. */
+function getDeliverableFile(ctx: Ctx, m: RegExpExecArray): void {
+  const { file, mime } = deliverableRef(ctx, m);
+  const { size } = statSync(file);
+  let range: { start: number; end: number } | null;
+  try {
+    range = parseRange(ctx.req.headers.range, size);
+  } catch {
+    ctx.res.writeHead(416, { "content-range": `bytes */${size}`, "accept-ranges": "bytes" });
+    ctx.res.end();
+    return;
+  }
+  const start = range?.start ?? 0;
+  const end = range?.end ?? size - 1;
+  ctx.res.writeHead(range === null ? 200 : 206, {
+    "content-type": mime,
+    "content-length": String(range === null ? size : end - start + 1),
+    "accept-ranges": "bytes",
+    "x-content-type-options": "nosniff",
+    "cache-control": "private, no-cache",
+    ...(range === null ? {} : { "content-range": `bytes ${start}-${end}/${size}` }),
+  });
+  if (size === 0) return void ctx.res.end();
+  createReadStream(file, { start, end }).pipe(ctx.res);
+}
+
+const VIEW_CSS = "html,body{margin:0;height:100%;background:#16161a;color:#e8e8ea;" +
+  "font:15px/1.7 system-ui,-apple-system,sans-serif}.md{padding:24px 28px;max-width:56rem;margin:0 auto}" +
+  ".md code{background:#26262e;padding:1px 4px;border-radius:3px}img.media{display:block;margin:auto;max-width:100%;" +
+  "max-height:100vh}video.media{display:block;width:100%;height:100vh}.dl{padding:24px 28px}a{color:#8ab4f8}";
+
+/**
+ * The readable form of the same bytes. HTML is served as-is (the sandbox CSP keeps it off our
+ * origin); everything else gets the smallest wrapper that shows or plays it.
+ */
+function getDeliverableView(ctx: Ctx, m: RegExpExecArray): void {
+  const { file, name, src, mime } = deliverableRef(ctx, m);
+  const ext = extname(file).toLowerCase();
+  const head = '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">';
+  let body: string;
+  let csp = "";
+  if (ext === ".html" || ext === ".htm") {
+    body = readFileSync(file, "utf8");
+    csp = "sandbox allow-scripts allow-forms allow-popups";
+  } else if (ext === ".md" || ext === ".markdown") {
+    body = `${head}<title>${esc(name)}</title><style>${VIEW_CSS}</style><article class="md">${md(readFileSync(file, "utf8"))}</article>`;
+  } else if (mime.startsWith("image/")) {
+    body = `${head}<title>${esc(name)}</title><style>${VIEW_CSS}</style><img class="media" src="${src}" alt="${esc(name)}">`;
+  } else if (mime.startsWith("video/")) {
+    body = `${head}<title>${esc(name)}</title><style>${VIEW_CSS}</style><video class="media" controls autoplay src="${src}"></video>`;
+  } else if (mime === "application/pdf") {
+    body = `${head}<title>${esc(name)}</title><iframe src="${src}" style="width:100%;height:100vh;border:0"></iframe>`;
+  } else if (mime.startsWith("text/")) {
+    body = `${head}<title>${esc(name)}</title><style>${VIEW_CSS}</style><article class="md">${md(readFileSync(file, "utf8"))}</article>`;
+  } else {
+    body = `${head}<title>${esc(name)}</title><style>${VIEW_CSS}</style>` +
+      `<div class="dl"><p>${esc(name)}</p><p><a href="${src}">ダウンロード</a></p></div>`;
+  }
+  ctx.res.writeHead(200, {
+    "content-type": "text/html; charset=utf-8",
+    "x-content-type-options": "nosniff",
+    "cache-control": "private, no-cache",
+    ...(csp === "" ? {} : { "content-security-policy": csp }),
+  });
+  ctx.res.end(body);
+}
+
 // -------------------------------------------------------------- columns (wip editing)
 
 async function patchColumn(ctx: Ctx, m: RegExpExecArray): Promise<void> {
@@ -846,6 +985,8 @@ const routes: Route[] = [
   { m: "GET", re: /^\/api\/deliverables$/, h: getDeliverables },
   { m: "POST", re: /^\/api\/deliverables$/, h: postDeliverable },
   { m: "DELETE", re: /^\/api\/deliverables\/([^/]+)\/(\d+)$/, h: deleteDeliverableRoute },
+  { m: "GET", re: /^\/api\/deliverables\/([^/]+)\/(\d+)\/file$/, h: getDeliverableFile },
+  { m: "GET", re: /^\/api\/deliverables\/([^/]+)\/(\d+)\/view$/, h: getDeliverableView },
   { m: "PATCH", re: /^\/api\/columns\/([^/]+)\/([^/]+)$/, h: patchColumn },
   { m: "GET", re: /^\/api\/views$/, h: getViews },
   { m: "POST", re: /^\/api\/views$/, h: postView },

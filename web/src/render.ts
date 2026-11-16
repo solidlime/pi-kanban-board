@@ -2,9 +2,9 @@
 // The v1 regression this prevents: a full innerHTML wipe on every poll, which threw away focus,
 // scroll position, and let stale nodes survive with the previous board's data.
 import type {
-  Attachment, Card, ColumnDef, GraphLayout, GraphNode, NotificationLevel, SearchHit,
+  Attachment, Card, ColumnDef, Deliverable, GraphLayout, GraphNode, NotificationLevel, SearchHit,
 } from '../../src/shared/dto.js';
-import { attachmentSrc, type LoopInfo } from './api.js';
+import { attachmentSrc, deliverableFileSrc, deliverableViewSrc, type LoopInfo } from './api.js';
 import {
   acceptanceProgress, blocksCards, cardKey, cardMatches, cardsInColumn, isBlocked, isClosed, isDoneColumn,
   lastActorOf, openBlockers, readyCards, type CardKey, type Store,
@@ -675,7 +675,7 @@ function renderPanel(view: View, s: Store): void {
     main.append(t);
     const sub = el('div', 'p-sub');
     sub.append(el('span', 'chip kind', d.kind));
-    if (d.ref) sub.append(el('span', 'chip', d.ref));
+    if (d.ref) sub.append(refLink(d));
     if (d.cardId !== null && d.cardId !== undefined) {
       const link = el('button', 'link', `#${d.cardId}`);
       link.type = 'button';
@@ -687,6 +687,8 @@ function renderPanel(view: View, s: Store): void {
       sub.append(link);
     }
     main.append(sub);
+    const shot = refImageThumb(d);
+    if (shot) main.append(shot);
     const thumbs = thumbStrip(s.attachments.filter(a => a.deliverableId === d.id), d.projectId);
     if (thumbs) main.append(thumbs);
     const rm = el('button', 'ic', '×');
@@ -767,6 +769,37 @@ function renderFocus(view: View, s: Store): void {
     view.focusRows.get(key)?.remove();
     view.focusRows.delete(key);
   }
+}
+
+const REF_IMAGE = /\.(png|jpe?g|gif|webp)$/i;
+
+/** `ref` is a full path: the chip shows the file name and keeps the path in the tooltip. */
+const refName = (ref: string): string => ref.split(/[\\/]/).pop() || ref;
+
+/** The chip opens the readable view of the ref in a new tab. */
+function refLink(d: Deliverable): HTMLElement {
+  const link = el('a', 'chip', refName(d.ref));
+  link.href = deliverableViewSrc(d.projectId, d.id);
+  link.target = '_blank';
+  link.rel = 'noopener';
+  link.title = d.ref;
+  return link;
+}
+
+/** An image ref gets a thumbnail too; its `src` is the raw bytes, the click opens the view. */
+function refImageThumb(d: Deliverable): HTMLElement | null {
+  if (!REF_IMAGE.test(d.ref)) return null;
+  const a = el('a', 'thumbs');
+  a.href = deliverableViewSrc(d.projectId, d.id);
+  a.target = '_blank';
+  a.rel = 'noopener';
+  a.title = d.ref;
+  const img = el('img', 'thumb');
+  img.src = deliverableFileSrc(d.projectId, d.id);
+  img.alt = refName(d.ref);
+  img.loading = 'lazy';
+  a.append(img);
+  return a;
 }
 
 export function thumbStrip(list: Attachment[], projectId: string): HTMLElement | null {
