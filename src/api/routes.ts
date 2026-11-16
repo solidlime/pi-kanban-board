@@ -7,7 +7,6 @@
 //   - WIP limits are domain rules: they are enforced here with core.wipError, in addition
 //     to the repository's column check (repos does not know about WIP)
 import { createReadStream, readFileSync, realpathSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { basename, extname, isAbsolute, join } from "node:path";
 import type http from "node:http";
 import { DomainError, fail, ok, type ErrorCode } from "../shared/errors.js";
@@ -369,9 +368,12 @@ async function postCardMove(ctx: Ctx, m: RegExpExecArray): Promise<void> {
   // adapter hit the same rule as this route.
   const card = moveCard(db, project.projectId, id, columnId, { expectedVersion, actor: ACTOR });
   // A card dropped into DOING is a request to run it, so the HTTP move wakes like the
-  // supervisor's tick does. A wake that fails must not turn a done move into an error.
+  // supervisor's tick does. The wake is not awaited: it reaches pi-web, which may take a while
+  // to start a session, and the drop must not wait on it. A failed wake is logged, not thrown.
   if (ctx.wake && getColumn(db, project.projectId, columnId)?.kind === "doing") {
-    try { await ctx.wake(db, project, card); } catch { /* the move already happened */ }
+    void ctx.wake(db, project, card).catch((err: unknown) => {
+      console.error(`[kanban] wake ${project.slug}#${card.id} failed:`, err instanceof Error ? err.message : err);
+    });
   }
   sendJson(ctx, 200, ok({ card }));
 }

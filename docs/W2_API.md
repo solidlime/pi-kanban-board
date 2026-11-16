@@ -132,10 +132,19 @@ The **supervisor** (`src/supervisor.ts`) is the cross-board heartbeat: every
 alone. `node src/api/serve.ts` turns it on with `KANBAN_LOOP_MS` (`0` disables); `startServer` only
 starts one when asked (`{ loop: { intervalMs } }`), so tests stay quiet.
 
-It drives **state, not agents**: no model is woken. What it buys you is a per-board
-"last tick / next card / why it stopped" that moves on its own, which is what the UI's loop band
-and the timeline (`loop.tick` / `loop.resumed` / `loop.halted`) read. Wiring an actual agent wake
-on top of a tick is a separate decision — the record is the interface.
+A tick that finds a ready card moves it to DOING and wakes its session: pi-web first
+(`POST /api/agent/new` for a card with no session yet — pi-web mints the id and answers with it —
+and `POST /api/agent/<id>` for a card that has one), then a `pi -p` of our own when pi-web is not
+reachable. Two writers must never append to one JSONL, so both paths are gated: a lock file
+(`src/agent/session-lock.ts`) plus pi-web's `runningSessionIds`. A pi-web timeout is treated as
+"it may have started" and does not fall back to `pi`; only a refused connection does.
+
+The tick also keeps the per-board "last tick / next card / why it stopped" that the UI's loop band
+and the timeline (`loop.tick` / `loop.resumed` / `loop.halted`) read.
+
+`POST /api/cards/:id/move` into a `doing` column wakes the card the same way. That wake is
+fire-and-forget: a slow session start must not delay the drop, and a failed wake is logged rather
+than turning the move into an error.
 
 `tests/integration/loop-supervisor.test.mjs` pins the part that matters: a drained board halts
 without stopping its neighbour, and `stop()` really stops the timer.

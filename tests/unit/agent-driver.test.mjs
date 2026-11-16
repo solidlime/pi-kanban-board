@@ -42,6 +42,18 @@ function fakeSpawn() {
   return { calls, child, spawn: (bin, args, opts) => { calls.push({ bin, args, opts }); return child; } };
 }
 
+/** A pi-web that answers the running list and the wake POST; records every request body. */
+function fakePiWeb(runningIds = [], mintedId = null) {
+  const calls = [];
+  const fetch = async (url, init) => {
+    const u = String(url);
+    calls.push({ url: u, body: init?.body ? JSON.parse(init.body) : null });
+    if (u.endsWith("/api/agent/running")) return { ok: true, status: 200, json: async () => ({ runningSessionIds: runningIds }) };
+    return { ok: true, status: 200, json: async () => ({ success: true, sessionId: mintedId }) };
+  };
+  return { calls, fetch };
+}
+
 test("buildCardPrompt names the board, the card, its title and the done step", (t) => {
   const db = memDb(t);
   const project = createProject(db, { slug: "prompt-board" });
@@ -110,4 +122,59 @@ test("a second wake on the same board is refused while the child is alive", asyn
   assert.notEqual(await wakeCardSession(db, project, card, { spawn, fetch: noPiWeb }), null);
   assert.equal(await wakeCardSession(db, project, card, { spawn, fetch: noPiWeb }), null);
   assert.equal(calls.length, 1, "no second process");
+});
+
+test("an existing card session is handed to pi-web and no process is spawned", async (t) => {
+  const db = memDb(t);
+  const { project, card } = board(db, "piweb-existing");
+  const sid = "c1d2e3f4-1111-2222-3333-444455556666";
+  repos.updateCard(db, project.projectId, card.id, { sessionId: sid }, { actor: "test" });
+  const stored = getCard(db, project.projectId, card.id);
+  const { calls: spawned, spawn } = fakeSpawn();
+  const { calls, fetch } = fakePiWeb([], null);
+
+  const out = await wakeCardSession(db, project, stored, { spawn, fetch });
+
+  assert.equal(out.via, "pi-web");
+  assert.equal(out.sessionId, sid, "pi-web resumed the card's own session");
+  assert.equal(spawned.length, 0, "pi-web took it, so pi is not spawned");
+  // pi-web forwards the body to the session as an RPC command: `prompt` is what starts a turn.
+  const post = calls.find(c => c.url.endsWith(`/api/agent/${sid}`));
+  assert.equal(post.body.type, "prompt");
+  assert.equal(post.body.cwd, undefined, "an existing session keeps its own cwd");
+  assert.ok(post.body.message.includes("カードを実装してください"));
+});
+
+test("a new card takes the session id pi-web minted and stores it", async (t) => {
+  const db = memDb(t);
+  const { project, card } = board(db, "piweb-new", { cwd: "/tmp/kb-piweb" });
+  const { calls: spawned, spawn } = fakeSpawn();
+  const minted = "9f8e7d6c-1111-2222-3333-444455556666";
+  const { calls, fetch } = fakePiWeb([], minted);
+
+  const out = await wakeCardSession(db, project, card, { spawn, fetch });
+
+  assert.equal(out.via, "pi-web");
+  assert.equal(out.sessionId, minted);
+  assert.equal(spawned.length, 0);
+  assert.equal(getCard(db, project.projectId, card.id).sessionId, minted, "the card remembers pi-web's id");
+  const post = calls.find(c => c.url.endsWith("/api/agent/new"));
+  assert.equal(post.body.type, "prompt");
+  assert.equal(post.body.cwd, "/tmp/kb-piweb");
+  assert.equal(post.body.sessionId, undefined, "pi-web mints the id; we do not pass one");
+});
+
+test("two concurrent wakes start one session, not two", async (t) => {
+  const db = memDb(t);
+  const { project, card } = board(db, "race-board");
+  const { spawn } = fakeSpawn();
+  const { calls, fetch } = fakePiWeb([], "piweb-race");
+
+  const both = await Promise.all([
+    wakeCardSession(db, project, card, { spawn, fetch }),
+    wakeCardSession(db, project, card, { spawn, fetch }),
+  ]);
+
+  assert.equal(both.filter(x => x !== null).length, 1, "one caller wins, the other is refused");
+  assert.equal(calls.filter(c => c.url.endsWith("/api/agent/new")).length, 1, "one session requested");
 });
