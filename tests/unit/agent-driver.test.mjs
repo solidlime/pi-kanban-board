@@ -3,7 +3,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import "./_load.mjs";
+
+// The session lock writes under $HOME/.pi/kanban and asks pi-web what is running, so both are
+// sandboxed here: a temp home, and a fetch that always fails ("no pi-web, spawn pi yourself").
+process.env.HOME = mkdtempSync(path.join(tmpdir(), "kb-driver-"));
+const noPiWeb = async () => { throw new Error("ECONNREFUSED"); };
 
 const { openDb } = await import("../../src/persistence/db.ts");
 const { migrate } = await import("../../src/persistence/migrations.ts");
@@ -48,22 +56,23 @@ test("buildCardPrompt names the board, the card, its title and the done step", (
   assert.ok(prompt.split("\n").length <= 20, "prompt stays short");
 });
 
-test("wakeCardSession mints a UUID session id and stores it on the card", (t) => {
+test("wakeCardSession mints a UUID session id and stores it on the card", async (t) => {
   const db = memDb(t);
   const { project, card } = board(db, "uuid-board");
   const { spawn } = fakeSpawn();
-  const out = wakeCardSession(db, project, card, { spawn });
+  const out = await wakeCardSession(db, project, card, { spawn, fetch: noPiWeb });
   assert.match(out.sessionId, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
   assert.equal(getCard(db, project.projectId, card.id).sessionId, out.sessionId);
 });
 
-test("spawn gets -p, the session id, a name and the board cwd", (t) => {
+test("spawn gets -p, the session id, a name and the board cwd", async (t) => {
   const db = memDb(t);
   const { project, card } = board(db, "args-board", { cwd: "/tmp/kb-args" });
   const { calls, spawn } = fakeSpawn();
-  const out = wakeCardSession(db, project, card, { spawn });
+  const out = await wakeCardSession(db, project, card, { spawn, fetch: noPiWeb });
 
   assert.equal(calls.length, 1);
+  assert.equal(out.via, "pi");
   const { bin, args, opts } = calls[0];
   assert.equal(bin, "pi");
   assert.equal(args[0], "-p");
@@ -75,7 +84,7 @@ test("spawn gets -p, the session id, a name and the board cwd", (t) => {
   assert.equal(sessionCwd({ ...project, settings: {} }), process.cwd());
 });
 
-test("an existing card session is resumed with --session, not re-minted", (t) => {
+test("an existing card session is resumed with --session, not re-minted", async (t) => {
   const db = memDb(t);
   const { project } = board(db, "resume-board");
   const card = createCard(db, { projectId: project.projectId, columnId: "todo", title: "続きをやる" });
@@ -84,7 +93,7 @@ test("an existing card session is resumed with --session, not re-minted", (t) =>
   updateCard(db, project.projectId, card.id, { sessionId: sid }, { actor: "test" });
   const stored = getCard(db, project.projectId, card.id);
   const { calls, spawn } = fakeSpawn();
-  const out = wakeCardSession(db, project, stored, { spawn });
+  const out = await wakeCardSession(db, project, stored, { spawn, fetch: noPiWeb });
 
   assert.equal(out.sessionId, sid, "the card's own session id is reused");
   const { args } = calls[0];
@@ -94,11 +103,11 @@ test("an existing card session is resumed with --session, not re-minted", (t) =>
   assert.equal(getCard(db, project.projectId, card.id).sessionId, sid);
 });
 
-test("a second wake on the same board is refused while the child is alive", (t) => {
+test("a second wake on the same board is refused while the child is alive", async (t) => {
   const db = memDb(t);
   const { project, card } = board(db, "busy-board");
   const { calls, spawn } = fakeSpawn();
-  assert.notEqual(wakeCardSession(db, project, card, { spawn }), null);
-  assert.equal(wakeCardSession(db, project, card, { spawn }), null);
+  assert.notEqual(await wakeCardSession(db, project, card, { spawn, fetch: noPiWeb }), null);
+  assert.equal(await wakeCardSession(db, project, card, { spawn, fetch: noPiWeb }), null);
   assert.equal(calls.length, 1, "no second process");
 });

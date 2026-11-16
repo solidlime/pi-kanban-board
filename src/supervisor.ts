@@ -25,7 +25,7 @@ export interface LoopTickReport {
 export type Wake = typeof wakeCardSession;
 
 /** One pass over every board. Moves loop_state, the timeline and (via wake) one session. */
-export function tickAllLoops(db: Db, now: string = new Date().toISOString(), wake: Wake = wakeCardSession): LoopTickReport[] {
+export async function tickAllLoops(db: Db, now: string = new Date().toISOString(), wake: Wake = wakeCardSession): Promise<LoopTickReport[]> {
   const out: LoopTickReport[] = [];
   for (const project of listProjects(db)) {
     // One board throwing (SQLITE_BUSY, a row that will not parse) must not eat the other
@@ -35,7 +35,7 @@ export function tickAllLoops(db: Db, now: string = new Date().toISOString(), wak
       if (!result) continue; // not running, or the project vanished between the two reads
       if (result.moved) {
         // A board that cannot spawn (no pi on PATH, no cwd) still reports its tick.
-        try { wake(db, project, result.moved); } catch { /* retried next pass */ }
+        try { await wake(db, project, result.moved); } catch { /* retried next pass */ }
       }
       out.push({
         projectId: project.projectId, slug: project.slug, status: result.loop.status,
@@ -50,7 +50,7 @@ export function tickAllLoops(db: Db, now: string = new Date().toISOString(), wak
 
 export interface Supervisor {
   /** Tick every running loop once, right now. */
-  tickOnce: (now?: string) => LoopTickReport[];
+  tickOnce: (now?: string) => Promise<LoopTickReport[]>;
   stop: () => void;
   intervalMs: number;
 }
@@ -60,7 +60,7 @@ export interface SupervisorOptions {
   /** Test seam: replaced by startServer callers only. */
   setInterval?: (fn: () => void, ms: number) => unknown;
   clearInterval?: (h: unknown) => void;
-  tickOnce?: (now?: string) => LoopTickReport[];
+  tickOnce?: (now?: string) => Promise<LoopTickReport[]>;
   /** Test seam: the heartbeat must not launch a real pi process in tests. */
   wake?: Wake;
 }
@@ -74,10 +74,10 @@ export function startSupervisor(db: Db, opts: SupervisorOptions = {}): Superviso
   const tickOnce = opts.tickOnce ?? ((now?: string) => tickAllLoops(db, now, opts.wake));
   const set = opts.setInterval ?? ((fn: () => void, ms: number) => setInterval(fn, ms));
   const clear = opts.clearInterval ?? ((h: unknown) => clearInterval(h as ReturnType<typeof setInterval>));
-  const safeTick = (now?: string): LoopTickReport[] => {
-    try { return tickOnce(now); } catch { return []; }
+  const safeTick = async (now?: string): Promise<LoopTickReport[]> => {
+    try { return await tickOnce(now); } catch { return []; }
   };
-  const handle = set(() => { safeTick(); }, intervalMs);
+  const handle = set(() => { void safeTick(); }, intervalMs);
   // A supervisor must never hold the process open by itself (tests close the DB first).
   (handle as { unref?: () => void }).unref?.();
   return { tickOnce: safeTick, stop: () => clear(handle), intervalMs };

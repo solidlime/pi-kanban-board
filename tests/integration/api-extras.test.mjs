@@ -442,6 +442,32 @@ test("card sessionId: writable on PATCH, \"\" clears it, and the picker lists no
 
 // A deliverable's `ref` is a path on disk. `/file` serves the raw bytes (video needs Range to
 // seek); `/view` wraps them in the smallest page that makes each kind readable.
+test("a manual move into DOING wakes the card's session; any other move does not", async (t) => {
+  const woke = [];
+  const wake = async (db, project, card) => { woke.push(`${project.slug}#${card.id}`); return null; };
+  const { call } = await server(t, { wake });
+  await call("POST", "/api/projects", { slug: "wk" });
+  const card = (await call("POST", "/api/cards", { project: "wk", title: "run me" })).data.card;
+
+  const doing = (await call("POST", `/api/cards/wk/${card.id}/move`, { columnId: "doing", version: card.version })).data.card;
+  assert.equal(doing.columnId, "doing");
+  assert.deepEqual(woke, [`wk#${card.id}`], "moving into DOING is a request to run the card");
+
+  const done = (await call("POST", `/api/cards/wk/${card.id}/move`, { columnId: "done", version: doing.version })).data.card;
+  assert.equal(done.columnId, "done");
+  assert.equal(woke.length, 1, "moving on to DONE does not wake");
+});
+
+test("a wake that throws does not break the move that asked for it", async (t) => {
+  const wake = async () => { throw new Error("no pi-web and no pi"); };
+  const { call } = await server(t, { wake });
+  await call("POST", "/api/projects", { slug: "boom" });
+  const card = (await call("POST", "/api/cards", { project: "boom", title: "still moves" })).data.card;
+  const moved = await call("POST", `/api/cards/boom/${card.id}/move`, { columnId: "doing", version: card.version });
+  assert.equal(moved.status, 200);
+  assert.equal(moved.data.card.columnId, "doing", "the move landed even though the wake failed");
+});
+
 test("deliverable file: raw bytes, Range seek, and 404 for a missing, directory or `..` ref", async (t) => {
   const { call, getBytes } = await server(t);
   await call("POST", "/api/projects", { slug: "dv" });

@@ -10,6 +10,7 @@ import type { HomeState } from "../persistence/init.js";
 import type { Db } from "../persistence/db.js";
 import { acceptToken, authCookie, clearCookie, presentedTokens } from "./auth.js";
 import { API_VERSION, handleApi, sendJson, type Ctx } from "./routes.js";
+import type { Wake } from "../supervisor.js";
 
 export interface ServerDeps {
   /** null when the home is not initialized: meta/selftest still answer, writes refuse. */
@@ -25,6 +26,8 @@ export interface ServerDeps {
   version?: string;
   /** Supervisor cadence, echoed by /api/loop as nextTickAt. 0 = no loop runs. */
   loopMs: number;
+  /** Wake a DOING card's session after a manual move. Absent = the board never wakes. */
+  wake?: Wake;
 }
 
 const MIME: Record<string, string> = {
@@ -106,7 +109,7 @@ export function createServer(deps: ServerDeps) {
       return {
         req: r, res: s, url: url!, db: deps.db, home: deps.home, state: deps.state,
         token: deps.token, auth: deps.auth, version: deps.version ?? API_VERSION, buildHash: deps.buildHash,
-        loopMs: deps.loopMs,
+        loopMs: deps.loopMs, wake: deps.wake,
       };
     }
     const ctx = rawCtx(req, res);

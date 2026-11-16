@@ -22,12 +22,18 @@ registerHooks({
 });
 
 const { startServer } = await import("./start.js");
+// The production wake: pi-web first, else a `pi -p` of our own. Tests inject a no-op instead.
+const { wakeCardSession } = await import("../agent/driver.js");
 
 const home = process.env.KANBAN_HOME;
 // Cross-board loop heartbeat. Empty or 0 disables it; any other number is the interval in ms.
 const rawLoop = (process.env.KANBAN_LOOP_MS ?? "").trim();
 const loopMs = rawLoop === "" ? 15000 : Number(rawLoop);
-const run = await startServer({ ...(home ? { home } : {}), loop: Number.isFinite(loopMs) && loopMs > 0 ? { intervalMs: loopMs } : false });
+const run = await startServer({
+  ...(home ? { home } : {}),
+  loop: Number.isFinite(loopMs) && loopMs > 0 ? { intervalMs: loopMs } : false,
+  wake: wakeCardSession,
+});
 
 console.log(`kanban v2 listening on ${run.url}`);
 console.log(`  home   ${run.home} (${run.state.status}${run.state.initialized ? "" : " — not initialized, writes will refuse"})`);

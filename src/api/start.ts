@@ -91,7 +91,7 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   // No DB, no loop: an uninitialized home has nowhere to record a tick.
   const loopOpt = opts.loop;
   const loopMs = typeof loopOpt === "number" ? loopOpt : loopOpt === false || loopOpt === undefined ? 0 : loopOpt.intervalMs ?? 0;
-  const deps: ServerDeps = { db, home, state, token, auth, webRoot, buildHash, version: opts.version, loopMs };
+  const deps: ServerDeps = { db, home, state, token, auth, webRoot, buildHash, version: opts.version, loopMs, wake: opts.wake };
 
   const server = createServer(deps);
   const host = opts.host ?? HOST_DEFAULT;

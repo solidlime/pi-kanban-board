@@ -38,7 +38,7 @@ test("one pass ticks every running board and leaves idle ones alone", async (t) 
   await call("POST", "/api/loop/start", { project: "alpha" });
   await call("POST", "/api/loop/start", { project: "beta" });
 
-  const reports = tickAllLoops(run.db, undefined, () => null);
+  const reports = await tickAllLoops(run.db, undefined, () => null);
   assert.deepEqual(reports.map(r => r.slug).sort(), ["alpha", "beta"], "gamma was never started, so it is not ticked");
   for (const r of reports) {
     assert.equal(r.status, "running");
@@ -66,14 +66,14 @@ test("a board that drains halts, and the other board keeps ticking", async (t) =
   await call("POST", "/api/loop/start", { project: "busy" });
   await call("POST", "/api/loop/start", { project: "drained" });
 
-  const first = tickAllLoops(run.db, undefined, () => null);
+  const first = await tickAllLoops(run.db, undefined, () => null);
   const drained = first.find(r => r.slug === "drained");
   const busy = first.find(r => r.slug === "busy");
   assert.equal(drained.status, "halted");
   assert.match(drained.haltReason, /ready/);
   assert.equal(busy.status, "running");
 
-  const second = tickAllLoops(run.db, undefined, () => null);
+  const second = await tickAllLoops(run.db, undefined, () => null);
   assert.equal(second.some(r => r.slug === "drained"), false, "a halted loop is not ticked again");
   assert.equal(second.find(r => r.slug === "busy").ticks, 2, "the halted board did not stop this one");
 });

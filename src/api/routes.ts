@@ -34,9 +34,10 @@ import { deliverNotifications, parseSinkSetting, SINK_ENV } from "../core/notify
 import { acquireLock, assertResource, assertTtlSeconds, listLocks, releaseLock } from "../persistence/locks.js";
 import { initialLoopState, startLoop, stopLoop } from "../core/loop.js";
 import { tickProject } from "../loop-runner.js";
+import type { Wake } from "../supervisor.js";
 import { notifications } from "../core/notify.js";
-import { sessionCwd } from "../agent/driver.js";
-import { readSessions, sessionDirName } from "../core/sessions.js";
+import { sessionDirOf } from "../agent/driver.js";
+import { readSessions } from "../core/sessions.js";
 import { clampSearchLimit, compareScored, searchBoardScored, type ScoredHit } from "../core/search.js";
 import {
   assertBody, assertBlockedReason, assertColumnId, assertDue, assertEstimate, assertId, assertLabels,
@@ -68,6 +69,8 @@ export interface Ctx {
   buildHash: string;
   /** Supervisor cadence, so /api/loop can say when the next tick is due. 0 = no loop. */
   loopMs: number;
+  /** Wake a DOING card's session after a manual move. Absent = the board never wakes. */
+  wake?: Wake;
 }
 
 /** A transport-level failure (status is not derivable from the domain ErrorCode alone). */
@@ -365,6 +368,11 @@ async function postCardMove(ctx: Ctx, m: RegExpExecArray): Promise<void> {
   // WIP and the same-column no-op live in repos.moveCard, so templates and the agent
   // adapter hit the same rule as this route.
   const card = moveCard(db, project.projectId, id, columnId, { expectedVersion, actor: ACTOR });
+  // A card dropped into DOING is a request to run it, so the HTTP move wakes like the
+  // supervisor's tick does. A wake that fails must not turn a done move into an error.
+  if (ctx.wake && getColumn(db, project.projectId, columnId)?.kind === "doing") {
+    try { await ctx.wake(db, project, card); } catch { /* the move already happened */ }
+  }
   sendJson(ctx, 200, ok({ card }));
 }
 
@@ -877,7 +885,7 @@ function getGraph(ctx: Ctx): void {
 async function getSessions(ctx: Ctx): Promise<void> {
   const db = requireDb(ctx);
   const project = projectOr404(db, str(ctx.url.searchParams.get("project"), "project"));
-  const dir = join(homedir(), ".pi", "agent", "sessions", sessionDirName(sessionCwd(project)));
+  const dir = sessionDirOf(project);
   sendJson(ctx, 200, ok({ sessions: await readSessions(dir) }));
 }
 
@@ -957,8 +965,8 @@ async function postLoop(ctx: Ctx, action: string): Promise<void> {
   const result = tickProject(db, project.projectId, now, ACTOR);
   // tickProject returns null for a loop that is not running: same CONFLICT tickLoop raises.
   if (!result) throw new DomainError("CONFLICT", `loop is ${current.status}: start it before ticking`, { status: current.status });
-  // Manual tick moves the card only: waking a session is the supervisor's job, so an HTTP
-  // call can never start a process (and a test can never spawn one by accident).
+  // An HTTP tick moves the card only: the supervisor's pass is what wakes a session there.
+  // A manual move into DOING does wake (postCardMove) — that is the user asking for it.
   const next = result.nextCardId === null ? null : listCards(db, project.projectId).find(c => c.id === result.nextCardId) ?? null;
   sendJson(ctx, 200, ok({ loop: result.loop, nextCard: next, moved: result.moved }));
 }
