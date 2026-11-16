@@ -31,6 +31,7 @@ import { deliverNotifications, parseSinkSetting, SINK_ENV } from "../core/notify
 import { acquireLock, assertResource, assertTtlSeconds, listLocks, releaseLock } from "../persistence/locks.js";
 import { initialLoopState, startLoop, stopLoop } from "../core/loop.js";
 import { tickProject } from "../loop-runner.js";
+import { wakeCardSession } from "../agent/driver.js";
 import { notifications } from "../core/notify.js";
 import { clampSearchLimit, compareScored, searchBoardScored, type ScoredHit } from "../core/search.js";
 import {
@@ -262,8 +263,19 @@ async function postProject(ctx: Ctx): Promise<void> {
   const slug = body.slug === undefined
     ? assertSlug(slugify(name ?? ""), "slug")
     : assertSlug(body.slug, "slug");
-  const project = createProject(db, { slug, ...(name === undefined ? {} : { name }) }, ACTOR);
+  const project = createProject(db, {
+    slug, ...(name === undefined ? {} : { name }),
+    ...(body.settings === undefined ? {} : { settings: assertSettings(body.settings) }),
+  }, ACTOR);
   sendJson(ctx, 201, ok({ project, columns: listColumns(db, slug) }));
+}
+
+/** Board settings are a plain JSON object (`cwd` is the one this code reads). */
+function assertSettings(v: unknown): Record<string, unknown> {
+  if (typeof v !== "object" || v === null || Array.isArray(v)) {
+    throw new HttpError(422, "VALIDATION", "settings must be an object");
+  }
+  return v as Record<string, unknown>;
 }
 
 function getBoard(ctx: Ctx): void {
@@ -784,6 +796,10 @@ async function postLoop(ctx: Ctx, action: string): Promise<void> {
   const result = tickProject(db, project.projectId, now, ACTOR);
   // tickProject returns null for a loop that is not running: same CONFLICT tickLoop raises.
   if (!result) throw new DomainError("CONFLICT", `loop is ${current.status}: start it before ticking`, { status: current.status });
+  // The card is in DOING; a spawn that fails must not turn a successful tick into a 500.
+  if (result.moved) {
+    try { wakeCardSession(db, project, result.moved); } catch { /* the tick stands */ }
+  }
   const next = result.nextCardId === null ? null : listCards(db, project.projectId).find(c => c.id === result.nextCardId) ?? null;
   sendJson(ctx, 200, ok({ loop: result.loop, nextCard: next, moved: result.moved }));
 }

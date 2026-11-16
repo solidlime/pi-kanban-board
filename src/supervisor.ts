@@ -8,6 +8,7 @@ import type { Db } from "./persistence/db.js";
 import type { EntityId } from "./shared/ids.js";
 import { listProjects } from "./persistence/repos.js";
 import { tickProject } from "./loop-runner.js";
+import { wakeCardSession } from "./agent/driver.js";
 
 export const SUPERVISOR_INTERVAL_MS = 15_000;
 
@@ -29,6 +30,10 @@ export function tickAllLoops(db: Db, now: string = new Date().toISOString()): Lo
     try {
       const result = tickProject(db, project.projectId, now, "supervisor");
       if (!result) continue; // not running, or the project vanished between the two reads
+      if (result.moved) {
+        // A board that cannot spawn (no pi on PATH, no cwd) still reports its tick.
+        try { wakeCardSession(db, project, result.moved); } catch { /* retried next pass */ }
+      }
       out.push({
         projectId: project.projectId, slug: project.slug, status: result.loop.status,
         nextCardId: result.nextCardId, ticks: result.loop.ticks, haltReason: result.loop.haltReason,
