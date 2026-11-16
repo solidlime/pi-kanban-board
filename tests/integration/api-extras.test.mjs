@@ -323,7 +323,7 @@ test("overview: one row per board with ready/blocked/wip/overdue counts", async 
   assert.equal(o2.counts.ready, 0);
 });
 
-test("loop: idle -> running -> tick names the next ready card -> halts when nothing is ready", async (t) => {
+test("loop: tick moves the next TODO into DOING (WIP=1) and halts when the TODOs run out", async (t) => {
   const { call } = await server(t);
   await call("POST", "/api/projects", { slug: "lp" });
   const idle = (await call("GET", "/api/loop?project=lp")).data.loop;
@@ -338,22 +338,39 @@ test("loop: idle -> running -> tick names the next ready card -> halts when noth
 
   const first = (await call("POST", "/api/cards", { project: "lp", title: "blocker" })).data.card;
   const second = (await call("POST", "/api/cards", { project: "lp", title: "waiter" })).data.card;
-  await call("POST", "/api/dependencies", { project: "lp", fromCard: first.id, toCard: second.id });
 
+  // autoPick: the tick itself moves the named TODO into doing.
   const tick = (await call("POST", "/api/loop/tick", { project: "lp" })).data;
   assert.equal(tick.loop.status, "running");
   assert.equal(tick.loop.ticks, 1);
-  assert.equal(tick.loop.nextCardId, first.id, "the blocker is the only ready card");
+  assert.equal(tick.loop.nextCardId, first.id);
   assert.equal(tick.nextCard.title, "blocker");
+  assert.equal(tick.moved.id, first.id);
+  assert.equal(tick.moved.columnId, "doing");
+  assert.equal(tick.moved.version, first.version + 1, "the move is a real card write");
 
-  // nothing ready anymore -> the loop halts itself and says why
-  assert.equal((await call("POST", `/api/cards/lp/${first.id}/move`, { columnId: "done", version: first.version })).status, 200);
-  assert.equal((await call("POST", `/api/cards/lp/${second.id}/move`, { columnId: "done", version: second.version })).status, 200);
+  // WIP=1: doing is occupied, so the second tick names #2 as the candidate but moves nothing.
+  const held = (await call("POST", "/api/loop/tick", { project: "lp" })).data;
+  assert.equal(held.loop.status, "running");
+  assert.equal(held.loop.nextCardId, second.id);
+  assert.equal(held.moved, null);
+  const inTodo = (await call("GET", "/api/board?project=lp")).data.cards.find((c) => c.id === second.id);
+  assert.equal(inTodo.columnId, "todo", "#2 waits its turn");
+
+  // Free the slot: the next tick moves #2.
+  assert.equal((await call("POST", `/api/cards/lp/${first.id}/move`, { columnId: "done", version: tick.moved.version })).status, 200);
+  const picked = (await call("POST", "/api/loop/tick", { project: "lp" })).data;
+  assert.equal(picked.moved.id, second.id);
+  assert.equal(picked.moved.columnId, "doing");
+
+  // Nothing left in TODO -> the loop halts itself and says why.
+  assert.equal((await call("POST", `/api/cards/lp/${second.id}/move`, { columnId: "done", version: picked.moved.version })).status, 200);
   const empty = (await call("POST", "/api/loop/tick", { project: "lp" })).data;
   assert.equal(empty.loop.status, "halted");
   assert.equal(empty.loop.nextCardId, null);
   assert.match(empty.loop.haltReason, /ready/);
   assert.equal(empty.nextCard, null);
+  assert.equal(empty.moved, null);
 
   // a halted loop is visible in the notification feed
   const items = (await call("GET", "/api/notifications?project=lp")).data.notifications;

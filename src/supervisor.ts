@@ -1,13 +1,13 @@
 // Cross-board doing-loop supervisor.
 //
 // Each board's loop is its own row, so a board that drains (halts) must not stop the others:
-// this walks every project and ticks only the ones that are running. It drives STATE, not
-// agents — nothing here wakes a model. A reader (the UI, or a supervisor agent) sees the
-// per-board heartbeat and the next card each board named.
+// this walks every project and ticks only the ones that are running. Each tick moves the
+// board's next TODO into DOING (WIP=1) — it does not wake a model. A reader (the UI, or a
+// supervisor agent) sees the per-board heartbeat and the next card each board named.
 import type { Db } from "./persistence/db.js";
 import type { EntityId } from "./shared/ids.js";
-import { getLoop, listProjects, readBoard, saveLoop } from "./persistence/repos.js";
-import { tickLoop } from "./core/loop.js";
+import { listProjects } from "./persistence/repos.js";
+import { tickProject } from "./loop-runner.js";
 
 export const SUPERVISOR_INTERVAL_MS = 15_000;
 
@@ -27,15 +27,11 @@ export function tickAllLoops(db: Db, now: string = new Date().toISOString()): Lo
     // One board throwing (SQLITE_BUSY, a row that will not parse) must not eat the other
     // boards' tick in this pass. Its row stays `running`, so the next pass just retries it.
     try {
-      const loop = getLoop(db, project.projectId);
-      if (loop.status !== "running") continue;
-      const snapshot = readBoard(db, project.projectId);
-      if (!snapshot) continue; // project vanished between the two reads
-      const result = tickLoop(loop, { columns: snapshot.columns, cards: snapshot.cards, deps: snapshot.dependencies ?? [], now });
-      const saved = saveLoop(db, result.state, "supervisor", "loop.tick");
+      const result = tickProject(db, project.projectId, now, "supervisor");
+      if (!result) continue; // not running, or the project vanished between the two reads
       out.push({
-        projectId: project.projectId, slug: project.slug, status: saved.status,
-        nextCardId: result.nextCardId, ticks: saved.ticks, haltReason: saved.haltReason,
+        projectId: project.projectId, slug: project.slug, status: result.loop.status,
+        nextCardId: result.nextCardId, ticks: result.loop.ticks, haltReason: result.loop.haltReason,
       });
     } catch {
       // Retried next pass. The loop row is left as it was, which is the truth: we do not know.

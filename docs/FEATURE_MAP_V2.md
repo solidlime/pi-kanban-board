@@ -17,7 +17,7 @@
 ## Process quality
 - [~] WIP制限・優先度: per-column WIP enforcement (domain done) surfaced in API/UI, priority field end-to-end and sorting/controls. (W3E: priority/over-WIP visible + WIP errors surfaced)
 - [~] 完了条件・担当・引き継ぎ: acceptance criteria, owner/assignee, handoff/session metadata, readiness checks in UI/API. (W3E: owner/due/blockedReason/acceptance visible + editable, acceptance from body checkboxes)
-- [x] 自走ループ可観測性: `loop_state`(板ごとに1行) + `GET /api/loop` + `POST /api/loop/{start,stop,tick}` + `loop.*` timeline + **横断スーパーバイザ**(`src/supervisor.ts`、15秒ごとに running の板だけ tick。板が halt しても他は止まらない)。エージェントを起こす実行器は持たない(状態を記録するのが役割)。UI はループ帯 + 全体/依存マップ。
+- [x] 自走ループ可観測性: `loop_state`(板ごとに1行) + `GET /api/loop` + `POST /api/loop/{start,stop,tick}` + `loop.*` timeline + **横断スーパーバイザ**(`src/supervisor.ts`、15秒ごとに running の板だけ tick。板が halt しても他は止まらない)。tick は次の TODO を DOING へ移す(WIP=1)。モデルは起こさない(状態を記録するのが役割)。UI はループ帯 + 全体/依存マップ。
 
 ## Scale / reuse
 - [~] 保存ビュー/検索: `saved_view` CRUD API + `GET /api/search`(#id・全板横断) 実装済み。UI/UX は designer 待ち。

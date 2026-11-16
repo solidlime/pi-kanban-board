@@ -1,6 +1,6 @@
-// Doing-loop state machine. v2 deliberately ships no executor: the loop records that it is
-// running, hands out "next ready card" on each tick, and halts when nothing is ready.
-// That is the observable half an agent (or a human) drives from outside.
+// Doing-loop state machine. Each tick names the next TODO card, which the caller moves into
+// DOING (WIP=1: only when DOING is empty) — that is v1's autoPick, without waking a model.
+// The loop halts itself, with a reason, when no TODO is ready.
 import type { Card, ColumnDef, LoopState } from "../shared/dto.js";
 import type { EntityId } from "../shared/ids.js";
 import { DomainError } from "../shared/errors.js";
@@ -34,11 +34,11 @@ export interface TickInput {
 
 export interface TickResult { state: LoopState; nextCardId: EntityId | null }
 
-/** Open, not in a done column, no open blocker (manual `blockedReason` does not count: it is a note). */
+/** A TODO-column card with no open blocker (manual `blockedReason` does not count: it is a note). */
 function readyCards(input: TickInput): Card[] {
-  const doneCols = new Set(input.columns.filter(c => c.kind === "done").map(c => c.id));
+  const todoCols = new Set(input.columns.filter(c => c.kind === "todo").map(c => c.id));
   const isDone = closedLookup(input.cards);
-  return sortCards(input.cards.filter(c => !isDone(c.id) && !doneCols.has(c.columnId)
+  return sortCards(input.cards.filter(c => todoCols.has(c.columnId)
     && openBlockersOf(input.deps, c.id, isDone).length === 0));
 }
 

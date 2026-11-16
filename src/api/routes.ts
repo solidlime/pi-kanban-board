@@ -29,7 +29,8 @@ import { graphLayout } from "../core/graph.js";
 import { buildDigest, parseSince } from "../core/digest.js";
 import { deliverNotifications, parseSinkSetting, SINK_ENV } from "../core/notify-sink.js";
 import { acquireLock, assertResource, assertTtlSeconds, listLocks, releaseLock } from "../persistence/locks.js";
-import { initialLoopState, startLoop, stopLoop, tickLoop } from "../core/loop.js";
+import { initialLoopState, startLoop, stopLoop } from "../core/loop.js";
+import { tickProject } from "../loop-runner.js";
 import { notifications } from "../core/notify.js";
 import { clampSearchLimit, compareScored, searchBoardScored, type ScoredHit } from "../core/search.js";
 import {
@@ -758,9 +759,9 @@ function getLoopRoute(ctx: Ctx): void {
 }
 
 /**
- * No executor: start marks the loop running, tick names the next ready card and records it.
- * When nothing is ready the loop halts itself with a reason, which is the whole point of
- * keeping this state observable.
+ * Start marks the loop running; a tick names the next TODO card and moves it into DOING
+ * (WIP=1, `moved` in the response) without waking a model. When nothing is ready the loop
+ * halts itself with a reason, which is the whole point of keeping this state observable.
  */
 async function postLoop(ctx: Ctx, action: string): Promise<void> {
   const db = requireDb(ctx);
@@ -780,13 +781,11 @@ async function postLoop(ctx: Ctx, action: string): Promise<void> {
     return;
   }
 
-  const snapshot = readBoard(db, project.projectId)!;
-  const result = tickLoop(current, {
-    columns: snapshot.columns, cards: snapshot.cards, deps: snapshot.dependencies ?? [], now,
-  });
-  const loop = saveLoop(db, result.state, ACTOR);
+  const result = tickProject(db, project.projectId, now, ACTOR);
+  // tickProject returns null for a loop that is not running: same CONFLICT tickLoop raises.
+  if (!result) throw new DomainError("CONFLICT", `loop is ${current.status}: start it before ticking`, { status: current.status });
   const next = result.nextCardId === null ? null : listCards(db, project.projectId).find(c => c.id === result.nextCardId) ?? null;
-  sendJson(ctx, 200, ok({ loop, nextCard: next }));
+  sendJson(ctx, 200, ok({ loop: result.loop, nextCard: next, moved: result.moved }));
 }
 
 // ------------------------------------------------------------------ route table

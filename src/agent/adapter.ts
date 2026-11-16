@@ -411,8 +411,8 @@ export async function executeKanban(args: KanbanArgs, env: Env): Promise<Result>
   }
   const { db, rt } = await dbOf();
 
-  // resume starts the doing-loop. The loop holds no executor: it records that it is running
-  // so the next turn (or a human) can see it, and `check` reports where it stands.
+  // resume starts the doing-loop. Nothing here wakes a model: each tick moves the board's next
+  // TODO into DOING (WIP=1), so `check` reports where it stands.
   if (action === "resume") {
     const target = args.project ?? (scope === "global" ? null : undefined);
     const projectId = target === null ? null : (target ?? boardSlug(args, env));
@@ -424,7 +424,7 @@ export async function executeKanban(args: KanbanArgs, env: Env): Promise<Result>
     return {
       ok: true,
       text: `loop running for ${projectId} (ticks ${loop.ticks})\n` +
-        "the loop has no executor in v2: it records state and names the next ready card on POST /api/loop/tick",
+        "each tick moves the next TODO into DOING (WIP=1) on POST /api/loop/tick; it does not wake a model",
       details: { scope: projectId === null ? "global" : "project", cards: listCards(db, projectId) },
     };
   }

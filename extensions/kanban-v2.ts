@@ -154,7 +154,7 @@ const HELP =
 	"/kanban check  DB/スキーマ/板の自己診断\n" +
 	"/kanban digest [--since 7d]  期間の完了・成果物・コミットを Markdown 1 枚に（既定 7d、ISO も可）\n" +
 	"/kanban url  ダッシュボードの URL（トークン付き）\n" +
-	"/kanban resume  そのプロジェクトの自走ループを running にする（実行器は無い・状態だけ）\n" +
+	"/kanban resume  そのプロジェクトの自走ループを running にする（TODO を DOING へ送る・モデルは起こさない）\n" +
 	"v1 の loop / pick / take / interval / stuck / maxloops / priority は v2 未実装（カードは作りません）\n" +
 	"kanban ツール: list/add/move/remove/edit/check/url/img/ref（img は画像を media に取り込み添付、ref はカードの参照パス）\n" +
 	"deliverable ツール: add/list/edit/remove/ref（見せたい出力はカードではなくこちら）\n" +
@@ -175,7 +175,7 @@ export default function kanbanV2Extension(pi: ExtensionAPI): void {
 		label: "Kanban board (v2)",
 		description:
 			"Shared kanban board for this project: columns todo / doing / done, persisted in ~/.pi/kanban (v2 SQLite), shown in the GUI. Holds what you owe — one card per promise; done only when it actually works.\n" +
-			"Actions: list reads; add creates (text, col, priority, labels, session, commit, blocked, nextFireAt); move sets col; edit rewrites text/priority/labels/session/commit/blocked/nextFireAt; remove deletes; check self-tests db/schema/home; edit also rewrites ref; resume starts the doing-loop (state only); url returns the token link; img copies a local image into the media store and attaches it; ref records a local path on the card.\n" +
+			"Actions: list reads; add creates (text, col, priority, labels, session, commit, blocked, nextFireAt); move sets col; edit rewrites text/priority/labels/session/commit/blocked/nextFireAt; remove deletes; check self-tests db/schema/home; edit also rewrites ref; resume starts the doing-loop (each tick moves the next TODO into DOING, WIP=1; it does not wake a model); url returns the token link; img copies a local image into the media store and attaches it; ref records a local path on the card.\n" +
 			"A deliverable is not a card: it is a row in the belt under the board (deliverable tool). No column is called deliverable.\n" +
 			"scope picks the board: project (default — the git root of the cwd, shared by every session in it) or global (read-only aggregate). Ids are per board, so a global id is always named as <project>/#<id>. project=<slug> selects a board explicitly instead of the cwd's.\n" +
 			"Cards are (project, id) in v2: an id alone is only meaningful inside one board.",
