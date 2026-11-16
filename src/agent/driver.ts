@@ -79,7 +79,7 @@ const PIWEB_WAKE_TIMEOUT_MS = 30000;
  * answers with it), an existing one to `/api/agent/<id>`, which resumes the JSONL when the
  * session is not live. null = pi-web did not take it; the caller spawns pi itself.
  */
-async function wakeInPiWeb(project: Project, sessionId: string | null, prompt: string, opts: WakeOptions): Promise<{ sessionId: string | null } | null> {
+async function wakeInPiWeb(project: Project, sessionId: string | null, prompt: string, opts: WakeOptions): Promise<{ sessionId: string | null } | "unclear" | null> {
   const doFetch = opts.fetch ?? globalThis.fetch;
   const base = piWebUrl(opts.piwebUrl);
   try {
@@ -102,7 +102,7 @@ async function wakeInPiWeb(project: Project, sessionId: string | null, prompt: s
     // A timeout is not "pi-web is down": it may still be starting the session, and spawning a
     // second writer on top of that corrupts the JSONL. Only a refused connection means down.
     const name = (err as { name?: string } | null)?.name;
-    if (name === "TimeoutError" || name === "AbortError") return { sessionId };
+    if (name === "TimeoutError" || name === "AbortError") return "unclear";
     return null; // connection refused / DNS: pi-web is not there, spawn pi ourselves
   }
 }
@@ -138,6 +138,11 @@ async function startSession(db: Db, project: Project, card: Card, opts: WakeOpti
   // The lock is released for the pi-web path: pi-web reports the session as running itself, so
   // a lock we took for it would only outlive the run (pi-web never tells us it exited).
   const viaPiWeb = await wakeInPiWeb(project, existing, prompt, opts);
+  if (viaPiWeb === "unclear") {
+    // Someone may be on it now; the next tick's running list and mtime decide, not us.
+    lock?.release();
+    return null;
+  }
   if (viaPiWeb !== null) {
     lock?.release();
     // Remember the id pi-web minted, or the next wake would start a second session.

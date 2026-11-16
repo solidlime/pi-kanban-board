@@ -178,3 +178,27 @@ test("two concurrent wakes start one session, not two", async (t) => {
   assert.equal(both.filter(x => x !== null).length, 1, "one caller wins, the other is refused");
   assert.equal(calls.filter(c => c.url.endsWith("/api/agent/new")).length, 1, "one session requested");
 });
+
+test("a pi-web timeout is not a refusal: pi is not spawned on top of it", async (t) => {
+  const db = memDb(t);
+  const { project, card } = board(db, "piweb-slow");
+  const { calls: spawned, spawn } = fakeSpawn();
+  // undici rejects a timed-out fetch with a DOMException named TimeoutError.
+  const slow = async () => { throw Object.assign(new Error("timed out"), { name: "TimeoutError" }); };
+
+  const out = await wakeCardSession(db, project, card, { spawn, fetch: slow });
+
+  assert.equal(out, null, "we do not know whether pi-web started it, so we claim nothing");
+  assert.equal(spawned.length, 0, "a second writer would corrupt the JSONL");
+});
+
+test("a refused pi-web connection falls back to spawning pi", async (t) => {
+  const db = memDb(t);
+  const { project, card } = board(db, "piweb-down");
+  const { calls: spawned, spawn } = fakeSpawn();
+
+  const out = await wakeCardSession(db, project, card, { spawn, fetch: noPiWeb });
+
+  assert.equal(out.via, "pi");
+  assert.equal(spawned.length, 1, "nobody else is writing: pi takes it");
+});
