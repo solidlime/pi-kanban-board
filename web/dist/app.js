@@ -141,6 +141,7 @@ function createStore() {
     overviewRows: [],
     graph: false,
     graphLayout: null,
+    doneOpen: false,
     gantt: false,
     ganttScale: "week",
     q: "",
@@ -239,6 +240,7 @@ function cardsInColumn(s, columnId) {
   }
   return out.sort((a, b) => b.priority - a.priority || a.id - b.id);
 }
+var DONE_PREVIEW = 2;
 function isClosed(card) {
   return card.closedAt !== null && card.closedAt !== void 0;
 }
@@ -867,6 +869,10 @@ function makeColumn(id, h) {
     });
   });
   const list = el2("div", "cards");
+  const more = el2("button", "col-more");
+  more.type = "button";
+  more.hidden = true;
+  more.addEventListener("click", () => h.onToggleDone());
   const add = el2("form", "addrow");
   const input = el2("input");
   input.placeholder = "\u30BF\u30B9\u30AF\u3092\u8FFD\u52A0";
@@ -897,8 +903,8 @@ function makeColumn(id, h) {
     const key = ev.dataTransfer?.getData("text/plain");
     if (key) h.onMove(key, id);
   });
-  section.append(head, editEl, list, add);
-  return { el: section, name, count, list, editEl, editName, editWip, editNote };
+  section.append(head, editEl, list, more, add);
+  return { el: section, name, count, list, more, editEl, editName, editWip, editNote };
 }
 function fillMoves(moves, card, s, key, h) {
   moves.textContent = "";
@@ -1770,15 +1776,15 @@ function renderView(view2, s) {
     view2.cols.delete(id);
   }
   keyedDiff(view2.board, colEls);
-  const live = /* @__PURE__ */ new Set();
   for (const id of s.columnOrder) {
     const cv = view2.cols.get(id);
     if (!cv) continue;
     const els = [];
-    for (const card of cardsInColumn(s, id)) {
-      if (s.qFocus && s.q.trim() && !cardMatches(card, s.q)) continue;
+    const visible = cardsInColumn(s, id).filter((card) => !(s.qFocus && s.q.trim() && !cardMatches(card, s.q)));
+    const foldable = isDoneColumn(s, id);
+    const shown = foldable && !s.doneOpen ? visible.slice(0, DONE_PREVIEW) : visible;
+    for (const card of shown) {
       const key = cardKey(card.projectId, card.id);
-      live.add(key);
       let node = view2.cards.get(key);
       if (!node) {
         node = makeCardNode(key, view2.h);
@@ -1788,9 +1794,10 @@ function renderView(view2, s) {
       els.push(node);
     }
     keyedDiff(cv.list, els);
+    cv.more.hidden = !foldable || visible.length <= DONE_PREVIEW;
+    cv.more.textContent = s.doneOpen ? "\u7573\u3080" : `\u6B8B\u308A ${visible.length - DONE_PREVIEW} \u4EF6\u3092\u8868\u793A`;
+    cv.more.setAttribute("aria-pressed", String(s.doneOpen));
   }
-  const staleCards = [];
-  for (const key of view2.cards.keys()) if (!live.has(key)) staleCards.push(key);
   const isEmpty = !s.projectId || s.columnOrder.length === 0;
   view2.empty.hidden = !isEmpty;
   if (isEmpty) {
@@ -2316,8 +2323,13 @@ function mountDetail(root2, h) {
 
 // web/src/app.ts
 var PROJECT_KEY = "kb.v2.project";
+var UI_KEY = "kb.v2.ui";
 var POLL_MS = 5e3;
 var store = createStore();
+var savedUi = readSavedUi();
+store.panels.deliverables = savedUi.deliverables;
+store.panels.timeline = savedUi.timeline;
+store.doneOpen = savedUi.doneOpen;
 var root = document.getElementById("app");
 if (!root) throw new Error("#app not found");
 root.textContent = "";
@@ -2339,6 +2351,27 @@ function saveProject(slug) {
   try {
     if (slug) localStorage.setItem(PROJECT_KEY, slug);
     else localStorage.removeItem(PROJECT_KEY);
+  } catch {
+  }
+}
+function readSavedUi() {
+  const none = { deliverables: false, timeline: false, doneOpen: false };
+  try {
+    const raw = JSON.parse(localStorage.getItem(UI_KEY) ?? "{}");
+    if (!raw || typeof raw !== "object") return none;
+    const o = raw;
+    return { deliverables: o.deliverables === true, timeline: o.timeline === true, doneOpen: o.doneOpen === true };
+  } catch {
+    return none;
+  }
+}
+function saveUi(s) {
+  try {
+    localStorage.setItem(UI_KEY, JSON.stringify({
+      deliverables: s.panels.deliverables,
+      timeline: s.panels.timeline,
+      doneOpen: s.doneOpen
+    }));
   } catch {
   }
 }
@@ -2773,6 +2806,7 @@ function openPane(pane) {
     store.panels.deliverables = false;
     store.panels.timeline = false;
   }
+  saveUi(store);
   render();
   if (store.pane === "templates") void loadTemplates();
   else if (store.pane === "views") void loadViews();
@@ -2861,6 +2895,7 @@ async function doSaveTemplate(key) {
   store.panels.deliverables = false;
   store.panels.timeline = false;
   store.pane = "templates";
+  saveUi(store);
   await loadTemplates();
   showToast(view, "\u30C6\u30F3\u30D7\u30EC\u30FC\u30C8\u306B\u4FDD\u5B58\u3057\u305F");
   return true;
@@ -3012,6 +3047,12 @@ var view = mount(root, {
       store.panels.timeline = false;
     }
     if (store.panels.deliverables || store.panels.timeline) store.pane = "none";
+    saveUi(store);
+    render();
+  },
+  onToggleDone: () => {
+    store.doneOpen = !store.doneOpen;
+    saveUi(store);
     render();
   },
   onAddDeliverable: (title) => doAddDeliverable(title, null),

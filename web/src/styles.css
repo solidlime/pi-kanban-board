@@ -78,6 +78,9 @@ button:disabled{opacity:.5;cursor:default}
 
 /* add row */
 .addrow{display:flex;gap:6px;padding:8px;border-top:1px solid var(--line)}
+/* Only the done column shows it; hidden everywhere else by renderView. */
+.col-more{font:inherit;font-size:12px;color:var(--muted);background:transparent;border:0;padding:6px 10px;cursor:pointer;text-align:left}
+.col-more:hover{background:var(--sunken);color:var(--fg)}
 .addrow input{flex:1;min-width:0}
 
 /* card meta: owner / due / acceptance / blocked (one line, hidden when empty) */

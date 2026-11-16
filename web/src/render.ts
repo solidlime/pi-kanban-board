@@ -7,7 +7,7 @@ import type {
 import { attachmentSrc, attachmentViewSrc, deliverableFileSrc, deliverableViewSrc, type LoopInfo } from './api.js';
 import {
   acceptanceProgress, blocksCards, cardKey, cardMatches, cardsInColumn, isBlocked, isClosed, isDoneColumn,
-  lastActorOf, openBlockers, readyCards, type CardKey, type Store,
+  lastActorOf, openBlockers, readyCards, DONE_PREVIEW, type CardKey, type Store,
 } from './store.js';
 import { renderGantt, type GanttScale } from './gantt.js';
 
@@ -23,6 +23,8 @@ export interface Handlers {
   onOpen(key: CardKey): void;
   onToggleFocus(): void;
   onTogglePanel(which?: PanelKey): void;
+  /** Fold/unfold the done column (its newest DONE_PREVIEW stay visible). */
+  onToggleDone(): void;
   onAddDeliverable(title: string): Promise<boolean>;
   onDeleteDeliverable(projectId: string, id: number): void;
   /** Search box text (the caller debounces) and closing the results overlay. */
@@ -56,6 +58,8 @@ interface ColView {
   name: HTMLElement;
   count: HTMLElement;
   list: HTMLElement;
+  /** "show the rest" / "fold" button on the done column; hidden on every other column. */
+  more: HTMLElement;
   editEl: HTMLElement;
   editName: HTMLInputElement;
   editWip: HTMLInputElement;
@@ -482,6 +486,10 @@ function makeColumn(id: string, h: Handlers): ColView {
   });
 
   const list = el('div', 'cards');
+  const more = el('button', 'col-more');
+  more.type = 'button';
+  more.hidden = true;
+  more.addEventListener('click', () => h.onToggleDone());
   const add = el('form', 'addrow');
   const input = el('input');
   input.placeholder = 'タスクを追加';
@@ -515,8 +523,8 @@ function makeColumn(id: string, h: Handlers): ColView {
     if (key) h.onMove(key, id);
   });
 
-  section.append(head, editEl, list, add);
-  return { el: section, name, count, list, editEl, editName, editWip, editNote };
+  section.append(head, editEl, list, more, add);
+  return { el: section, name, count, list, more, editEl, editName, editWip, editNote };
 }
 
 /** The buttons that move a card out of its column (shared by board cards and focus rows). */
@@ -1435,27 +1443,31 @@ export function renderView(view: View, s: Store): void {
   }
   keyedDiff(view.board, colEls);
 
-  // Cards: per column, keyed by composite id.
-  const live = new Set<CardKey>();
+  // Cards: per column, keyed by composite id. view.cards is a node cache: an entry outlives its
+  // column (folded or searched away) and comes back on the next render, listeners intact.
   for (const id of s.columnOrder) {
     const cv = view.cols.get(id);
     if (!cv) continue;
     const els: HTMLElement[] = [];
-    for (const card of cardsInColumn(s, id)) {
-      // A saved view with focus narrows the board; the column counts still show the whole truth.
-      if (s.qFocus && s.q.trim() && !cardMatches(card, s.q)) continue;
+    // A saved view with focus narrows the board; the column counts still show the whole truth.
+    const visible = cardsInColumn(s, id)
+      .filter(card => !(s.qFocus && s.q.trim() && !cardMatches(card, s.q)));
+    // The done column folds to its newest few: a long done list is what makes the board scroll.
+    // "done" is a column kind, not an id; a project may name its own.
+    const foldable = isDoneColumn(s, id);
+    const shown = foldable && !s.doneOpen ? visible.slice(0, DONE_PREVIEW) : visible;
+    for (const card of shown) {
       const key = cardKey(card.projectId, card.id);
-      live.add(key);
       let node = view.cards.get(key);
       if (!node) { node = makeCardNode(key, view.h); view.cards.set(key, node); }
       updateCard(node, card, s, view.h);
       els.push(node);
     }
     keyedDiff(cv.list, els);
+    cv.more.hidden = !foldable || visible.length <= DONE_PREVIEW;
+    cv.more.textContent = s.doneOpen ? '畳む' : `残り ${visible.length - DONE_PREVIEW} 件を表示`;
+    cv.more.setAttribute('aria-pressed', String(s.doneOpen));
   }
-  const staleCards: CardKey[] = [];
-  for (const key of view.cards.keys()) if (!live.has(key)) staleCards.push(key);
-
   const isEmpty = !s.projectId || s.columnOrder.length === 0;
   view.empty.hidden = !isEmpty;
   if (isEmpty) {

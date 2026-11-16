@@ -18,9 +18,14 @@ import type { DependencyType, PatchCardReq } from '../../src/shared/api.js';
 import type { Card, LoopState } from '../../src/shared/dto.js';
 
 const PROJECT_KEY = 'kb.v2.project';
+const UI_KEY = 'kb.v2.ui';
 const POLL_MS = 5000;
 
 const store: Store = createStore();
+const savedUi = readSavedUi();
+store.panels.deliverables = savedUi.deliverables;
+store.panels.timeline = savedUi.timeline;
+store.doneOpen = savedUi.doneOpen;
 const root = document.getElementById('app');
 if (!root) throw new Error('#app not found');
 root.textContent = '';
@@ -41,6 +46,24 @@ function saveProject(slug: string | null): void {
     if (slug) localStorage.setItem(PROJECT_KEY, slug);
     else localStorage.removeItem(PROJECT_KEY);
   } catch { /* private mode: selection just won't persist */ }
+}
+
+/** Panel toggles and the done fold survive a reload; a missing or broken value means the default (closed). */
+function readSavedUi(): { deliverables: boolean; timeline: boolean; doneOpen: boolean } {
+  const none = { deliverables: false, timeline: false, doneOpen: false };
+  try {
+    const raw: unknown = JSON.parse(localStorage.getItem(UI_KEY) ?? '{}');
+    if (!raw || typeof raw !== 'object') return none;
+    const o = raw as Record<string, unknown>;
+    return { deliverables: o.deliverables === true, timeline: o.timeline === true, doneOpen: o.doneOpen === true };
+  } catch { return none; }
+}
+function saveUi(s: Store): void {
+  try {
+    localStorage.setItem(UI_KEY, JSON.stringify({
+      deliverables: s.panels.deliverables, timeline: s.panels.timeline, doneOpen: s.doneOpen,
+    }));
+  } catch { /* private mode: the toggles just won't persist */ }
 }
 
 // ---------------------------------------------------------------- loading
@@ -477,6 +500,7 @@ async function loadViews(): Promise<void> {
 function openPane(pane: Store['pane']): void {
   store.pane = store.pane === pane ? 'none' : pane;
   if (store.pane !== 'none') { store.panels.deliverables = false; store.panels.timeline = false; }
+  saveUi(store);
   render();
   if (store.pane === 'templates') void loadTemplates();
   else if (store.pane === 'views') void loadViews();
@@ -555,6 +579,7 @@ async function doSaveTemplate(key: CardKey): Promise<boolean> {
   store.panels.deliverables = false;
   store.panels.timeline = false;
   store.pane = 'templates';
+  saveUi(store);
   await loadTemplates();
   showToast(view, 'テンプレートに保存した');
   return true;
@@ -685,6 +710,12 @@ const view: View = mount(root, {
     if (which) store.panels[which] = !store.panels[which];
     else { store.panels.deliverables = false; store.panels.timeline = false; }
     if (store.panels.deliverables || store.panels.timeline) store.pane = 'none'; // one right-hand surface at a time
+    saveUi(store);
+    render();
+  },
+  onToggleDone: () => {
+    store.doneOpen = !store.doneOpen;
+    saveUi(store);
     render();
   },
   onAddDeliverable: title => doAddDeliverable(title, null),

@@ -41,6 +41,8 @@ export interface Store {
   panels: { deliverables: boolean; timeline: boolean };
   /** Right-hand overlay pane; never two at once (opening one closes `panel`). */
   pane: Pane;
+  /** Done column expanded past its newest few cards. Persisted: a long done list is the reason. */
+  doneOpen: boolean;
   /** Overview (総合管理) replaces the board while true. */
   overview: boolean;
   overviewRows: OverviewRow[];
@@ -89,6 +91,7 @@ export function createStore(): Store {
     columns: {}, columnOrder: [], cards: {},
     dependencies: [], deliverables: [], timeline: [], focus: false, panels: { deliverables: false, timeline: false },
     pane: 'none', overview: false, overviewRows: [], graph: false, graphLayout: null,
+    doneOpen: false,
     gantt: false, ganttScale: 'week',
     q: '', hits: null, searchAll: false, qFocus: false, notifications: [], attachments: [], locks: [], loop: null,
     templates: [], views: [],
@@ -202,6 +205,9 @@ export function cardsInColumn(s: Store, columnId: string): Card[] {
   }
   return out.sort((a, b) => b.priority - a.priority || a.id - b.id);
 }
+
+/** How many done cards show while the column is folded. */
+export const DONE_PREVIEW = 2;
 
 // ---------------------------------------------------------------- readiness
 // Mirrors core/board.ts isReady/isBlocked over the loaded snapshot, so focus mode and the
