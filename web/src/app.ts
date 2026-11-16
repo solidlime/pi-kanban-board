@@ -12,7 +12,7 @@ import {
   createStore, applySnapshot, upsertCard, removeCard, resetBoard, setProjects, setMeta,
   applyLocalMove, parseKey, cardKey, type CardKey, type Store, type SearchHit,
 } from './store.js';
-import { mount, renderView, showToast, type View } from './render.js';
+import { loopBarText, mount, renderView, showToast, type View } from './render.js';
 import { mountDetail, type DetailView } from './detail.js';
 import type { DependencyType, PatchCardReq } from '../../src/shared/api.js';
 import type { Card, LoopState } from '../../src/shared/dto.js';
@@ -570,7 +570,8 @@ async function doLoop(action: 'start' | 'stop' | 'tick'): Promise<void> {
     return;
   }
   if (store.projectId !== project) return;
-  store.loop = loop;
+  // start/stop/tick answer without nextTickAt: the next poll names the deadline again.
+  store.loop = { ...loop, nextTickAt: null };
   store.error = null;
   if (next) upsertCard(store, next);
   if (action === 'tick') showToast(view, next ? `次は #${next.id} ${next.title}` : (loop.haltReason ?? 'ready なカードが無し'));
@@ -697,6 +698,11 @@ async function boot(): Promise<void> {
 void boot();
 
 setInterval(() => { if (!document.hidden) void loadBoard(); }, POLL_MS);
+// The loop countdown ticks faster than the poll, and only its own text changes: no re-fetch.
+setInterval(() => {
+  if (document.hidden || !store.loop) return;
+  view.loopText.textContent = loopBarText(store.loop);
+}, 1000);
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) return;
   void loadBoard();

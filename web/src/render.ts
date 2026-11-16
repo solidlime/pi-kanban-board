@@ -4,7 +4,7 @@
 import type {
   Attachment, Card, ColumnDef, GraphLayout, GraphNode, NotificationLevel, SearchHit,
 } from '../../src/shared/dto.js';
-import { attachmentSrc } from './api.js';
+import { attachmentSrc, type LoopInfo } from './api.js';
 import {
   acceptanceProgress, blocksCards, cardKey, cardMatches, cardsInColumn, isBlocked, isClosed, isDoneColumn,
   lastActorOf, openBlockers, readyCards, type CardKey, type Store,
@@ -837,15 +837,25 @@ function renderNotifBadges(view: View, s: Store): void {
   view.notifBtn.setAttribute('aria-label', `通知 危険 ${counts[0]} 警告 ${counts[1]} 情報 ${counts[2]}`);
 }
 
+/** `tick 3 · 次 12s` — the countdown is redrawn every second, so the text lives in one function. */
+export function loopBarText(loop: LoopInfo, now: number = Date.now()): string {
+  const bits = [`tick ${loop.ticks}`];
+  if (loop.nextTickAt) {
+    const left = Math.ceil((Date.parse(loop.nextTickAt) - now) / 1000);
+    bits.push(left > 0 ? `次 ${left}s` : 'まもなく');
+  }
+  if (loop.haltReason) bits.push(`理由: ${loop.haltReason}`);
+  return bits.join(' · ');
+}
+
 function renderLoop(view: View, s: Store): void {
   const loop = s.loop;
   view.loopBar.hidden = !s.projectId || !loop;
   if (!s.projectId || !loop) return;
   view.loopStatus.textContent = loop.status === 'running' ? '稼働中' : loop.status === 'halted' ? '停止' : '待機';
   view.loopStatus.className = `loop-st ${loop.status}`;
-  const bits = [`tick ${loop.ticks}`];
-  if (loop.haltReason) bits.push(`理由: ${loop.haltReason}`);
-  view.loopText.textContent = bits.join(' · ');
+  view.loopText.dataset.nextTickAt = loop.nextTickAt ?? '';
+  view.loopText.textContent = loopBarText(loop);
   view.loopText.title = loop.haltReason ?? '';
   view.loopNext.hidden = loop.nextCardId === null;
   if (loop.nextCardId !== null) {

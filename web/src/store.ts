@@ -6,7 +6,7 @@ import type {
 } from '../../src/shared/dto.js';
 import type { ProjectRef } from '../../src/shared/api.js';
 import type { TimelineEvent } from '../../src/shared/events.js';
-import type { BoardLock } from './api.js';
+import type { BoardLock, LoopInfo } from './api.js';
 
 export type {
   BoardSnapshot, Card, ColumnDef, Deliverable, Dependency, Project, ProjectRef, TimelineEvent,
@@ -61,7 +61,7 @@ export interface Store {
   attachments: Attachment[];
   /** A6: display only — who holds this board right now. Empty when the endpoint says nothing. */
   locks: BoardLock[];
-  loop: LoopState | null;
+  loop: LoopInfo | null;
   templates: CardTemplate[];
   views: SavedView[];
   generation: string | null;

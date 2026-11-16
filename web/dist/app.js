@@ -1188,15 +1188,23 @@ function renderNotifBadges(view2, s) {
   });
   view2.notifBtn.setAttribute("aria-label", `\u901A\u77E5 \u5371\u967A ${counts[0]} \u8B66\u544A ${counts[1]} \u60C5\u5831 ${counts[2]}`);
 }
+function loopBarText(loop, now = Date.now()) {
+  const bits = [`tick ${loop.ticks}`];
+  if (loop.nextTickAt) {
+    const left = Math.ceil((Date.parse(loop.nextTickAt) - now) / 1e3);
+    bits.push(left > 0 ? `\u6B21 ${left}s` : "\u307E\u3082\u306A\u304F");
+  }
+  if (loop.haltReason) bits.push(`\u7406\u7531: ${loop.haltReason}`);
+  return bits.join(" \xB7 ");
+}
 function renderLoop(view2, s) {
   const loop = s.loop;
   view2.loopBar.hidden = !s.projectId || !loop;
   if (!s.projectId || !loop) return;
   view2.loopStatus.textContent = loop.status === "running" ? "\u7A3C\u50CD\u4E2D" : loop.status === "halted" ? "\u505C\u6B62" : "\u5F85\u6A5F";
   view2.loopStatus.className = `loop-st ${loop.status}`;
-  const bits = [`tick ${loop.ticks}`];
-  if (loop.haltReason) bits.push(`\u7406\u7531: ${loop.haltReason}`);
-  view2.loopText.textContent = bits.join(" \xB7 ");
+  view2.loopText.dataset.nextTickAt = loop.nextTickAt ?? "";
+  view2.loopText.textContent = loopBarText(loop);
   view2.loopText.title = loop.haltReason ?? "";
   view2.loopNext.hidden = loop.nextCardId === null;
   if (loop.nextCardId !== null) {
@@ -2679,7 +2687,7 @@ async function doLoop(action) {
     return;
   }
   if (store.projectId !== project) return;
-  store.loop = loop;
+  store.loop = { ...loop, nextTickAt: null };
   store.error = null;
   if (next) upsertCard(store, next);
   if (action === "tick") showToast(view, next ? `\u6B21\u306F #${next.id} ${next.title}` : loop.haltReason ?? "ready \u306A\u30AB\u30FC\u30C9\u304C\u7121\u3057");
@@ -2851,6 +2859,10 @@ void boot();
 setInterval(() => {
   if (!document.hidden) void loadBoard();
 }, POLL_MS);
+setInterval(() => {
+  if (document.hidden || !store.loop) return;
+  view.loopText.textContent = loopBarText(store.loop);
+}, 1e3);
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) return;
   void loadBoard();

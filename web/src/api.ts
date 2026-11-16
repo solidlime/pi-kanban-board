@@ -201,7 +201,10 @@ export const getGraph = (project: string) => req<GraphLayout>('GET', `/api/graph
 
 export const getOverview = () => req<{ projects: OverviewRow[] }>('GET', '/api/overview');
 
-export const getLoop = (project: string) => req<{ loop: LoopState }>('GET', `/api/loop?project=${p(project)}`);
+/** `/api/loop` also says when the supervisor ticks next; null when nothing is scheduled. */
+export type LoopInfo = LoopState & { nextTickAt: string | null };
+
+export const getLoop = (project: string) => req<{ loop: LoopInfo }>('GET', `/api/loop?project=${p(project)}`);
 
 export const startLoop = (project: string) => req<{ loop: LoopState }>('POST', '/api/loop/start', { project });
 

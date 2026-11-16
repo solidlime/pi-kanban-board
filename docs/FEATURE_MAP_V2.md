@@ -18,6 +18,8 @@
 - [~] WIP制限・優先度: per-column WIP enforcement (domain done) surfaced in API/UI, priority field end-to-end and sorting/controls. (W3E: priority/over-WIP visible + WIP errors surfaced)
 - [~] 完了条件・担当・引き継ぎ: acceptance criteria, owner/assignee, handoff/session metadata, readiness checks in UI/API. (W3E: owner/due/blockedReason/acceptance visible + editable, acceptance from body checkboxes)
 - [x] 自走ループ可観測性: `loop_state`(板ごとに1行) + `GET /api/loop` + `POST /api/loop/{start,stop,tick}` + `loop.*` timeline + **横断スーパーバイザ**(`src/supervisor.ts`、15秒ごとに running の板だけ tick。板が halt しても他は止まらない)。tick は次の TODO を DOING へ移す(WIP=1)。モデルは起こさない(状態を記録するのが役割)。UI はループ帯 + 全体/依存マップ。
+  - pi-web 内の adapter が既定15秒で supervisor を立てる(`KANBAN_LOOP_MS` で上書き、`0` で無効)。
+  - `GET /api/loop` は `nextTickAt`(最終 tick + 間隔) を返し、UI はループ帯に残り秒を 1 秒ごとに出す。
 
 ## Scale / reuse
 - [~] 保存ビュー/検索: `saved_view` CRUD API + `GET /api/search`(#id・全板横断) 実装済み。UI/UX は designer 待ち。
