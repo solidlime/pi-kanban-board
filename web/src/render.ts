@@ -18,6 +18,11 @@ export interface Handlers {
   onAddCard(columnId: string, title: string): Promise<boolean>;
   onMove(key: CardKey, columnId: string): void;
   onDelete(key: CardKey): void;
+  /** Marquee or menu picked these; an empty array clears. */
+  onSelect(keys: CardKey[]): void;
+  /** Delete every selected card behind one confirmation. */
+  onDeleteMany(keys: CardKey[]): void;
+  onSetPriority(key: CardKey, priority: number): void;
   onEdit(key: CardKey): void;
   /** Open the full detail dialog (fields, dependencies, deliverables, history). */
   onOpen(key: CardKey): void;
@@ -80,6 +85,8 @@ export interface View {
   errBar: HTMLElement;
   empty: HTMLElement;
   board: HTMLElement;
+  /** "N 件選択" bar; parked right above the board, reused across renders. */
+  selbar: HTMLElement;
   focus: HTMLElement;
   focusCount: HTMLElement;
   focusList: HTMLElement;
@@ -169,6 +176,156 @@ export function showToast(view: View, message: string, undo?: () => void, urgent
   // A delete commits at 6s (UNDO_MS in app.ts); hiding the button a shade earlier keeps a
   // button that is visible from being a button that no longer does anything.
   toastTimer = setTimeout(() => { view.toast.hidden = true; }, undo ? 5500 : 5000);
+}
+
+interface MenuItem { label: string; run: () => void; disabled?: boolean; danger?: boolean }
+
+// One menu node on <body>, filled on open. Its close listeners live only while it is open:
+// a document-level capture listener added per right-click would pile up one per click.
+let menuEl: HTMLElement | null = null;
+let menuUnlisten: (() => void) | null = null;
+
+function cardMenu(): HTMLElement {
+  if (!menuEl) {
+    menuEl = el('div', 'ctxmenu');
+    menuEl.hidden = true;
+    document.body.append(menuEl);
+  }
+  return menuEl;
+}
+
+function closeCardMenu(): void {
+  if (!menuEl || menuEl.hidden) return;
+  menuEl.hidden = true;
+  menuUnlisten?.();
+  menuUnlisten = null;
+}
+
+/** Right-click menu for one card. Item order follows v1's ctxCardItems. */
+function openCardMenu(view: View, s: Store, key: CardKey, x: number, y: number): void {
+  closeCardMenu(); // a second right-click while open replaces the items and the listeners
+  const card = s.cards[key];
+  if (!card) return;
+  const h = view.h;
+  const n = card.priority;
+  const picked = s.selection.has(key);
+  const entries: (MenuItem | { sep: true })[] = [
+    { label: '編集…', run: () => h.onEdit(key) },
+    { label: '詳細を開く', run: () => h.onOpen(key) },
+    ...s.columnOrder
+      .filter(id => id !== card.columnId && s.columns[id])
+      .map(id => ({ label: `「${s.columns[id].name}」へ移動`, run: () => h.onMove(key, id) })),
+    { label: `優先度 +1（今 ${n}）`, run: () => h.onSetPriority(key, n + 1), disabled: n >= 99 },
+    { label: `優先度 −1（今 ${n}）`, run: () => h.onSetPriority(key, n - 1), disabled: n <= -99 },
+    { sep: true },
+    picked
+      ? { label: '選択から外す', run: () => h.onSelect([...s.selection].filter(k => k !== key)) }
+      : { label: '選択に追加', run: () => h.onSelect([...s.selection, key]) },
+    { label: '削除', run: () => h.onDelete(key), danger: true },
+  ];
+
+  const m = cardMenu();
+  m.textContent = '';
+  let first: HTMLButtonElement | null = null;
+  for (const e of entries) {
+    if ('sep' in e) { m.append(el('div', 'sep')); continue; }
+    const b = el('button', e.danger ? 'danger' : undefined, e.label);
+    b.type = 'button';
+    b.disabled = Boolean(e.disabled);
+    if (!e.disabled) {
+      b.addEventListener('click', () => { closeCardMenu(); e.run(); });
+      first = first ?? b;
+    }
+    m.append(b);
+  }
+
+  // Measure only once it is visible: a hidden node has no size to fit on screen with.
+  m.hidden = false;
+  const r = m.getBoundingClientRect(), pad = 4;
+  m.style.left = `${Math.max(pad, x + r.width > window.innerWidth - pad ? x - r.width : x)}px`;
+  m.style.top = `${Math.max(pad, y + r.height > window.innerHeight - pad ? y - r.height : y)}px`;
+  first?.focus();
+
+  const onDoc = (ev: Event): void => {
+    if (ev instanceof KeyboardEvent) { if (ev.key === 'Escape') closeCardMenu(); return; }
+    // A click inside the menu is the menu's own business (the button closes it).
+    if (m.contains(ev.target as Node)) return;
+    closeCardMenu();
+  };
+  document.addEventListener('pointerdown', onDoc, true);
+  document.addEventListener('keydown', onDoc, true);
+  document.addEventListener('scroll', onDoc, true);
+  menuUnlisten = () => {
+    document.removeEventListener('pointerdown', onDoc, true);
+    document.removeEventListener('keydown', onDoc, true);
+    document.removeEventListener('scroll', onDoc, true);
+  };
+}
+
+/**
+ * Marquee selection on the board's empty space. Presses that land on a card are left to DnD,
+ * and presses on a control keep their click; nothing is drawn until the pointer moves 4px.
+ */
+function wireMarquee(board: HTMLElement, h: Handlers): void {
+  let drag: { id: number; x: number; y: number; rect: HTMLElement | null; hits: CardKey[] } | null = null;
+
+  const detach = (): void => {
+    window.removeEventListener('pointermove', move);
+    window.removeEventListener('pointerup', end);
+    window.removeEventListener('pointercancel', cancel);
+    window.removeEventListener('blur', cancel);
+  };
+  const stop = (): void => {
+    if (drag?.rect) drag.rect.remove();
+    for (const n of board.querySelectorAll('.mq-on')) n.classList.remove('mq-on');
+    document.body.classList.remove('mq-on');
+    drag = null;
+    detach();
+  };
+  const move = (ev: PointerEvent): void => {
+    if (!drag || drag.id !== ev.pointerId) return;
+    if (!drag.rect) {
+      // Under 4px this is still a click: an empty-space click must not clear the selection.
+      if (Math.abs(ev.clientX - drag.x) < 4 && Math.abs(ev.clientY - drag.y) < 4) return;
+      drag.rect = el('div', 'mq');
+      document.body.append(drag.rect);
+      document.body.classList.add('mq-on');
+    }
+    const x1 = Math.min(drag.x, ev.clientX), y1 = Math.min(drag.y, ev.clientY);
+    const x2 = Math.max(drag.x, ev.clientX), y2 = Math.max(drag.y, ev.clientY);
+    const css = drag.rect.style;
+    css.left = `${x1}px`;
+    css.top = `${y1}px`;
+    css.width = `${x2 - x1}px`;
+    css.height = `${y2 - y1}px`;
+    drag.hits = [];
+    // Rect intersection, not elementFromPoint: a card the box only clips must still be taken.
+    for (const node of board.querySelectorAll<HTMLElement>('.card[data-key]')) {
+      const b = node.getBoundingClientRect();
+      const on = b.left < x2 && b.right > x1 && b.top < y2 && b.bottom > y1;
+      node.classList.toggle('mq-on', on);
+      if (on) drag.hits.push(node.dataset.key as CardKey);
+    }
+  };
+  const end = (ev: PointerEvent): void => {
+    if (!drag || drag.id !== ev.pointerId) return;
+    const picked = drag.rect ? drag.hits : null;
+    stop(); // clear box and highlight before onSelect: it re-renders the board
+    if (picked) h.onSelect(picked);
+  };
+  const cancel = (): void => { if (drag) stop(); }; // interrupted: leave the selection alone
+
+  board.addEventListener('pointerdown', (ev) => {
+    if (ev.button !== 0 || ev.pointerType === 'touch') return;
+    const t = ev.target as HTMLElement;
+    if (t.closest('.card, button, input, textarea, select, a, .col-h, .addrow')) return;
+    drag = { id: ev.pointerId, x: ev.clientX, y: ev.clientY, rect: null, hits: [] };
+    // On window, not the board: the pointer leaving the board must not drop the pointerup.
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', end);
+    window.addEventListener('pointercancel', cancel);
+    window.addEventListener('blur', cancel);
+  });
 }
 
 export function mount(root: HTMLElement, h: Handlers): View {
@@ -330,6 +487,10 @@ export function mount(root: HTMLElement, h: Handlers): View {
   empty.hidden = true;
   empty.setAttribute('role', 'status');
   const board = el('div', 'board');
+  wireMarquee(board, h);
+  const selbar = el('div', 'selbar');
+  selbar.hidden = true;
+  selbar.setAttribute('role', 'status');
 
   const focus = el('section', 'focus');
   focus.hidden = true;
@@ -408,7 +569,7 @@ export function mount(root: HTMLElement, h: Handlers): View {
   root.append(top, errBar, loopBar, locksBar, empty, board, overview, graph, gantt, focus, panelWrap,
     tplPane.aside, viewPane.aside, notifPane.aside, toast);
   return {
-    root, top, h, select, newName, status, errBar, empty, board,
+    root, top, h, select, newName, status, errBar, empty, board, selbar,
     focus, focusCount, focusList, focusEmpty, focusBtn, panelBtns, toast, toastMsg, toastUndo,
     panelWrap,
     panelDeliv: delivPanel.aside, panelDelivHead: delivPanel.head, panelDelivBody: delivPanel.body, panelDelivSig: '',
@@ -1370,6 +1531,48 @@ function renderLocks(view: View, s: Store): void {
     .join(' · ');
 }
 
+/**
+ * The "N 件選択" bar above the board. It counts only cards the board still has (a poll can drop
+ * one) but never prunes the Set: render must not write store state the poll is diffing against.
+ */
+function renderSelectionBar(view: View, s: Store): void {
+  const bar = view.selbar;
+  // One insert, ever: the bar belongs to the board's parent, right before the board.
+  if (!bar.isConnected) view.board.parentNode?.insertBefore(bar, view.board);
+  const keys = [...s.selection].filter(k => s.cards[k]);
+  // The fixed side panels share the bar's corner and paint over it (same z-index, later in the
+  // DOM). A bar under a panel cannot be pressed, so it steps aside; the selection survives.
+  const off = keys.length === 0 || !s.projectId || view.board.hidden
+    || s.focus || s.overview || s.graph || s.gantt
+    || !view.panelDeliv.hidden || !view.panelHist.hidden || s.pane !== 'none';
+  bar.hidden = off;
+  bar.textContent = '';
+  if (off) return;
+
+  const h = view.h;
+  bar.append(el('span', 'n', `${keys.length} 件選択`));
+  for (const id of s.columnOrder) {
+    const col = s.columns[id];
+    const move = keys.filter(k => s.cards[k].columnId !== id);
+    const b = el('button', undefined, `→ ${col.name}`);
+    b.type = 'button';
+    // Nobody has anywhere to go: every card in the selection is already here.
+    b.disabled = move.length === 0;
+    b.addEventListener('click', () => {
+      for (const k of move) h.onMove(k, id);
+      h.onSelect([]);
+    });
+    bar.append(b);
+  }
+  const del = el('button', 'danger', '削除');
+  del.type = 'button';
+  del.addEventListener('click', () => h.onDeleteMany(keys));
+  const clear = el('button', undefined, '解除');
+  clear.type = 'button';
+  clear.addEventListener('click', () => h.onSelect([]));
+  bar.append(del, clear);
+}
+
 export function renderView(view: View, s: Store): void {
   const projectSig = `${s.projects.map(p => `${p.slug}:${p.name}`).join('|')}#${s.projectId ?? ''}`;
   if (view.projectSig !== projectSig) {
@@ -1461,6 +1664,12 @@ export function renderView(view: View, s: Store): void {
       let node = view.cards.get(key);
       if (!node) { node = makeCardNode(key, view.h); view.cards.set(key, node); }
       updateCard(node, card, s, view.h);
+      node.classList.toggle('msel', s.selection.has(key));
+      // Assigned, not added: the node cache reuses the element across renders.
+      node.oncontextmenu = (ev) => {
+        ev.preventDefault();
+        openCardMenu(view, s, key, ev.clientX, ev.clientY);
+      };
       els.push(node);
     }
     keyedDiff(cv.list, els);
@@ -1504,6 +1713,7 @@ export function renderView(view: View, s: Store): void {
   renderFocus(view, s);
   if (s.focus || s.graph || s.overview || s.gantt) view.board.hidden = true;
   if (s.graph || s.overview || s.gantt) view.focus.hidden = true;
+  renderSelectionBar(view, s);
   const toggle = (b: HTMLButtonElement, on: boolean): void => {
     b.classList.toggle('on', on);
     b.setAttribute('aria-pressed', String(on));

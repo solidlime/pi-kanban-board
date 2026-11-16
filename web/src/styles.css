@@ -63,6 +63,23 @@ button:disabled{opacity:.5;cursor:default}
 .card.pending{opacity:.6}
 .card[draggable=true]{cursor:grab}
 .card.dragging{opacity:.45;cursor:grabbing}
+/* multi-select: marquee picks and the right-click/selection-bar entry to them */
+.card.msel{outline:2px solid var(--accent);outline-offset:-2px}
+.card.mq-on{border-color:var(--accent)}
+body.mq-on{user-select:none;cursor:crosshair}
+.mq{position:fixed;z-index:7;pointer-events:none;border:1px solid var(--accent);background:var(--accent-line);opacity:.45}
+.selbar{position:fixed;right:16px;bottom:16px;z-index:4;display:flex;flex-wrap:wrap;gap:6px;align-items:center;max-width:min(560px,92vw);margin:0;padding:6px 10px;border:1px solid var(--accent-line);border-radius:8px;background:var(--panel);box-shadow:0 6px 20px rgba(0,0,0,.4)}
+.selbar .n{font-weight:600;margin-right:4px}
+.selbar button{padding:3px 10px;border-radius:6px;border:1px solid var(--line);background:var(--btn);color:var(--fg);font:inherit;cursor:pointer}
+.selbar button:hover:not(:disabled){background:var(--btn-hover)}
+.selbar button:disabled{opacity:.45;cursor:default}
+.selbar button.danger{color:var(--danger);border-color:var(--danger-line)}
+.ctxmenu{position:fixed;z-index:7;display:flex;flex-direction:column;min-width:170px;padding:4px;border:1px solid var(--line);border-radius:8px;background:var(--panel);box-shadow:0 12px 30px rgba(0,0,0,.5)}
+.ctxmenu button{padding:6px 10px;border:0;border-radius:6px;background:none;color:var(--fg);font:inherit;text-align:left;cursor:pointer}
+.ctxmenu button:hover:not(:disabled){background:var(--btn-hover)}
+.ctxmenu button:disabled{opacity:.45;cursor:default}
+.ctxmenu button.danger{color:var(--danger)}
+.ctxmenu .sep{height:1px;margin:4px 6px;background:var(--line)}
 .card.blocked{border-color:var(--warn-line);background:var(--blocked-bg)}
 .card-h{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--muted);margin-bottom:4px}
 .prio{font-variant-numeric:tabular-nums}

@@ -76,6 +76,22 @@ const UNDO_MS = 6000;
 // shortcut: 同時に戻せる削除は1枚だけ（トーストが1スロット）, 複数枚を戻すなら pendingDeletes を列挙する UI にする
 const pendingDeletes = new Map<CardKey, { card: Card; timer: ReturnType<typeof setTimeout> }>();
 
+/** The one place a delete is scheduled: `delay` 0 means nobody can undo it, so nobody waits. */
+function scheduleDelete(key: CardKey, card: Card, delay: number): void {
+  const prev = pendingDeletes.get(key);
+  if (prev) clearTimeout(prev.timer); // a second delete on one card replaces its window
+  vanishCard(store, key);
+  pendingDeletes.set(key, { card, timer: setTimeout(() => void commitDelete(key), delay) });
+}
+
+// A burst of deletes commits one after another; each used to reload the board, the panel and the
+// timeline, and the sequence guard threw all but the last answer away.
+let boardReload: ReturnType<typeof setTimeout> | undefined;
+function loadBoardSoon(): void {
+  if (boardReload) clearTimeout(boardReload);
+  boardReload = setTimeout(() => { boardReload = undefined; void loadBoard(); }, 50);
+}
+
 function undoDelete(key: CardKey): void {
   const entry = pendingDeletes.get(key);
   if (!entry) return;
@@ -115,7 +131,7 @@ async function commitDelete(key: CardKey): Promise<void> {
     // Stay hidden until the server answered: a poll in between would put the card back on the board.
     revealCard(store, key);
   }
-  await loadBoard(); // dependencies/timeline changed too, not just the card
+  loadBoardSoon(); // dependencies/timeline changed too, not just the card
 }
 
 async function loadMeta(): Promise<void> {
@@ -283,12 +299,24 @@ async function doDelete(key: CardKey): Promise<void> {
   if (!cur) { showToast(view, '別プロジェクトのカードです。再読み込みします。'); await loadBoard(); return; }
   const { card, id } = cur;
   if (!window.confirm(`カード #${id}「${card.title}」を削除する？`)) return;
-  const prev = pendingDeletes.get(key);
-  if (prev) clearTimeout(prev.timer); // a second delete on one card replaces its window
-  vanishCard(store, key);
+  scheduleDelete(key, card, UNDO_MS);
   render();
-  pendingDeletes.set(key, { card, timer: setTimeout(() => void commitDelete(key), UNDO_MS) });
   showToast(view, `カード #${id}「${card.title}」を削除`, () => undoDelete(key));
+}
+
+// shortcut: 一括削除の取り消しは無し（トーストは1スロットで N 枚を戻せない）, 戻すなら pendingDeletes を列挙する UI を作る
+async function doDeleteMany(keys: CardKey[]): Promise<void> {
+  const live: { key: CardKey; card: Card }[] = [];
+  for (const key of keys) {
+    const cur = cardOf(key);
+    if (cur) live.push({ key, card: cur.card });
+  }
+  if (live.length === 0) { showToast(view, '別プロジェクトのカードです。再読み込みします。'); await loadBoard(); return; }
+  if (!window.confirm(`カード ${live.length} 件を削除する？`)) return;
+  for (const { key, card } of live) scheduleDelete(key, card, 0);
+  store.selection = new Set();
+  render();
+  showToast(view, `${live.length} 件のカードを削除`);
 }
 
 async function doSave(key: CardKey, patch: Omit<PatchCardReq, 'version'>): Promise<boolean> {
@@ -704,6 +732,9 @@ const view: View = mount(root, {
   onMove: (key, columnId) => { void doMove(key, columnId); },
   onEdit: (key) => { void doEdit(key); },
   onDelete: (key) => { void doDelete(key); },
+  onSelect: keys => { store.selection = new Set(keys); render(); },
+  onDeleteMany: keys => { void doDeleteMany(keys); },
+  onSetPriority: (key, priority) => { void doSave(key, { priority }); },
   onOpen: key => detail.open(key),
   onToggleFocus: () => { store.focus = !store.focus; render(); },
   onTogglePanel: (which) => {

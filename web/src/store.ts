@@ -76,6 +76,8 @@ export interface Store {
   error: string | null;
   /** Cards with a request in flight (render only; never persisted). */
   pending: Set<CardKey>;
+  /** Cards picked by marquee or right-click; empty = none. */
+  selection: Set<CardKey>;
   /**
    * Cards whose delete is waiting out the undo window. Deliberately not board-scoped and not
    * reset by resetBoard: a poll or a project switch inside the window must not resurrect one.
@@ -96,7 +98,7 @@ export function createStore(): Store {
     q: '', hits: null, searchAll: false, qFocus: false, notifications: [], attachments: [], locks: [], loop: null,
     templates: [], views: [],
     generation: null, buildHash: null, version: null,
-    loaded: false, loading: false, error: null, pending: new Set(), vanishing: new Set(),
+    loaded: false, loading: false, error: null, pending: new Set(), selection: new Set(), vanishing: new Set(),
   };
 }
 
@@ -137,6 +139,8 @@ export function resetBoard(s: Store, projectId: string | null): void {
   s.loaded = false;
   s.error = null;
   s.pending = new Set();
+  // A selection of the previous board's keys would delete cards nobody can see.
+  s.selection = new Set();
 }
 
 /**
@@ -179,6 +183,8 @@ export function upsertCard(s: Store, card: Card): boolean {
 export function vanishCard(s: Store, key: CardKey): void {
   s.vanishing.add(key);
   delete s.cards[key];
+  // Nothing hidden stays selected: an undo brings the card back unpicked, not silently picked.
+  s.selection.delete(key);
   // Drop its edges too, or `openBlockers` reads the missing `from` as "nothing blocks this"
   // and offers a card that is still blocked (the card is hidden, not gone).
   s.dependencies = s.dependencies.filter(d => cardKey(d.projectId, d.fromCard) !== key && cardKey(d.projectId, d.toCard) !== key);

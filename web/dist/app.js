@@ -161,6 +161,7 @@ function createStore() {
     loading: false,
     error: null,
     pending: /* @__PURE__ */ new Set(),
+    selection: /* @__PURE__ */ new Set(),
     vanishing: /* @__PURE__ */ new Set()
   };
 }
@@ -196,6 +197,7 @@ function resetBoard(s, projectId) {
   s.loaded = false;
   s.error = null;
   s.pending = /* @__PURE__ */ new Set();
+  s.selection = /* @__PURE__ */ new Set();
 }
 function applySnapshot(s, projectId, snap) {
   if (!snap || !snap.project) return false;
@@ -224,6 +226,7 @@ function upsertCard(s, card) {
 function vanishCard(s, key) {
   s.vanishing.add(key);
   delete s.cards[key];
+  s.selection.delete(key);
   s.dependencies = s.dependencies.filter((d) => cardKey(d.projectId, d.fromCard) !== key && cardKey(d.projectId, d.toCard) !== key);
 }
 function revealCard(s, key) {
@@ -505,6 +508,139 @@ function showToast(view2, message, undo, urgent = false) {
     view2.toast.hidden = true;
   }, undo ? 5500 : 5e3);
 }
+var menuEl = null;
+var menuUnlisten = null;
+function cardMenu() {
+  if (!menuEl) {
+    menuEl = el2("div", "ctxmenu");
+    menuEl.hidden = true;
+    document.body.append(menuEl);
+  }
+  return menuEl;
+}
+function closeCardMenu() {
+  if (!menuEl || menuEl.hidden) return;
+  menuEl.hidden = true;
+  menuUnlisten?.();
+  menuUnlisten = null;
+}
+function openCardMenu(view2, s, key, x, y) {
+  closeCardMenu();
+  const card = s.cards[key];
+  if (!card) return;
+  const h = view2.h;
+  const n = card.priority;
+  const picked = s.selection.has(key);
+  const entries = [
+    { label: "\u7DE8\u96C6\u2026", run: () => h.onEdit(key) },
+    { label: "\u8A73\u7D30\u3092\u958B\u304F", run: () => h.onOpen(key) },
+    ...s.columnOrder.filter((id) => id !== card.columnId && s.columns[id]).map((id) => ({ label: `\u300C${s.columns[id].name}\u300D\u3078\u79FB\u52D5`, run: () => h.onMove(key, id) })),
+    { label: `\u512A\u5148\u5EA6 +1\uFF08\u4ECA ${n}\uFF09`, run: () => h.onSetPriority(key, n + 1), disabled: n >= 99 },
+    { label: `\u512A\u5148\u5EA6 \u22121\uFF08\u4ECA ${n}\uFF09`, run: () => h.onSetPriority(key, n - 1), disabled: n <= -99 },
+    { sep: true },
+    picked ? { label: "\u9078\u629E\u304B\u3089\u5916\u3059", run: () => h.onSelect([...s.selection].filter((k) => k !== key)) } : { label: "\u9078\u629E\u306B\u8FFD\u52A0", run: () => h.onSelect([...s.selection, key]) },
+    { label: "\u524A\u9664", run: () => h.onDelete(key), danger: true }
+  ];
+  const m = cardMenu();
+  m.textContent = "";
+  let first = null;
+  for (const e of entries) {
+    if ("sep" in e) {
+      m.append(el2("div", "sep"));
+      continue;
+    }
+    const b = el2("button", e.danger ? "danger" : void 0, e.label);
+    b.type = "button";
+    b.disabled = Boolean(e.disabled);
+    if (!e.disabled) {
+      b.addEventListener("click", () => {
+        closeCardMenu();
+        e.run();
+      });
+      first = first ?? b;
+    }
+    m.append(b);
+  }
+  m.hidden = false;
+  const r = m.getBoundingClientRect(), pad = 4;
+  m.style.left = `${Math.max(pad, x + r.width > window.innerWidth - pad ? x - r.width : x)}px`;
+  m.style.top = `${Math.max(pad, y + r.height > window.innerHeight - pad ? y - r.height : y)}px`;
+  first?.focus();
+  const onDoc = (ev) => {
+    if (ev instanceof KeyboardEvent) {
+      if (ev.key === "Escape") closeCardMenu();
+      return;
+    }
+    if (m.contains(ev.target)) return;
+    closeCardMenu();
+  };
+  document.addEventListener("pointerdown", onDoc, true);
+  document.addEventListener("keydown", onDoc, true);
+  document.addEventListener("scroll", onDoc, true);
+  menuUnlisten = () => {
+    document.removeEventListener("pointerdown", onDoc, true);
+    document.removeEventListener("keydown", onDoc, true);
+    document.removeEventListener("scroll", onDoc, true);
+  };
+}
+function wireMarquee(board, h) {
+  let drag = null;
+  const detach = () => {
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", end);
+    window.removeEventListener("pointercancel", cancel);
+    window.removeEventListener("blur", cancel);
+  };
+  const stop = () => {
+    if (drag?.rect) drag.rect.remove();
+    for (const n of board.querySelectorAll(".mq-on")) n.classList.remove("mq-on");
+    document.body.classList.remove("mq-on");
+    drag = null;
+    detach();
+  };
+  const move = (ev) => {
+    if (!drag || drag.id !== ev.pointerId) return;
+    if (!drag.rect) {
+      if (Math.abs(ev.clientX - drag.x) < 4 && Math.abs(ev.clientY - drag.y) < 4) return;
+      drag.rect = el2("div", "mq");
+      document.body.append(drag.rect);
+      document.body.classList.add("mq-on");
+    }
+    const x1 = Math.min(drag.x, ev.clientX), y1 = Math.min(drag.y, ev.clientY);
+    const x2 = Math.max(drag.x, ev.clientX), y2 = Math.max(drag.y, ev.clientY);
+    const css = drag.rect.style;
+    css.left = `${x1}px`;
+    css.top = `${y1}px`;
+    css.width = `${x2 - x1}px`;
+    css.height = `${y2 - y1}px`;
+    drag.hits = [];
+    for (const node of board.querySelectorAll(".card[data-key]")) {
+      const b = node.getBoundingClientRect();
+      const on = b.left < x2 && b.right > x1 && b.top < y2 && b.bottom > y1;
+      node.classList.toggle("mq-on", on);
+      if (on) drag.hits.push(node.dataset.key);
+    }
+  };
+  const end = (ev) => {
+    if (!drag || drag.id !== ev.pointerId) return;
+    const picked = drag.rect ? drag.hits : null;
+    stop();
+    if (picked) h.onSelect(picked);
+  };
+  const cancel = () => {
+    if (drag) stop();
+  };
+  board.addEventListener("pointerdown", (ev) => {
+    if (ev.button !== 0 || ev.pointerType === "touch") return;
+    const t = ev.target;
+    if (t.closest(".card, button, input, textarea, select, a, .col-h, .addrow")) return;
+    drag = { id: ev.pointerId, x: ev.clientX, y: ev.clientY, rect: null, hits: [] };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", end);
+    window.addEventListener("pointercancel", cancel);
+    window.addEventListener("blur", cancel);
+  });
+}
 function mount(root2, h) {
   const top = el2("div", "top");
   const brand = el2("div", "brand", "Kanban v2");
@@ -658,6 +794,10 @@ function mount(root2, h) {
   empty.hidden = true;
   empty.setAttribute("role", "status");
   const board = el2("div", "board");
+  wireMarquee(board, h);
+  const selbar = el2("div", "selbar");
+  selbar.hidden = true;
+  selbar.setAttribute("role", "status");
   const focus = el2("section", "focus");
   focus.hidden = true;
   const focusHead = el2("div", "focus-h");
@@ -749,6 +889,7 @@ function mount(root2, h) {
     errBar,
     empty,
     board,
+    selbar,
     focus,
     focusCount,
     focusList,
@@ -1710,6 +1851,36 @@ function renderLocks(view2, s) {
   view2.locksSig = sig;
   view2.locksText.textContent = locks.map((l) => `\u677F${s.projectName ? `\u300C${s.projectName}\u300D` : ""}\u3092 ${l.owner} \u304C\u4FDD\u6301${l.expiresAt ? `\uFF08\u301C${l.expiresAt.slice(5, 16).replace("T", " ")}\uFF09` : ""}`).join(" \xB7 ");
 }
+function renderSelectionBar(view2, s) {
+  const bar = view2.selbar;
+  if (!bar.isConnected) view2.board.parentNode?.insertBefore(bar, view2.board);
+  const keys = [...s.selection].filter((k) => s.cards[k]);
+  const off = keys.length === 0 || !s.projectId || view2.board.hidden || s.focus || s.overview || s.graph || s.gantt || !view2.panelDeliv.hidden || !view2.panelHist.hidden || s.pane !== "none";
+  bar.hidden = off;
+  bar.textContent = "";
+  if (off) return;
+  const h = view2.h;
+  bar.append(el2("span", "n", `${keys.length} \u4EF6\u9078\u629E`));
+  for (const id of s.columnOrder) {
+    const col = s.columns[id];
+    const move = keys.filter((k) => s.cards[k].columnId !== id);
+    const b = el2("button", void 0, `\u2192 ${col.name}`);
+    b.type = "button";
+    b.disabled = move.length === 0;
+    b.addEventListener("click", () => {
+      for (const k of move) h.onMove(k, id);
+      h.onSelect([]);
+    });
+    bar.append(b);
+  }
+  const del = el2("button", "danger", "\u524A\u9664");
+  del.type = "button";
+  del.addEventListener("click", () => h.onDeleteMany(keys));
+  const clear = el2("button", void 0, "\u89E3\u9664");
+  clear.type = "button";
+  clear.addEventListener("click", () => h.onSelect([]));
+  bar.append(del, clear);
+}
 function renderView(view2, s) {
   const projectSig = `${s.projects.map((p2) => `${p2.slug}:${p2.name}`).join("|")}#${s.projectId ?? ""}`;
   if (view2.projectSig !== projectSig) {
@@ -1791,6 +1962,11 @@ function renderView(view2, s) {
         view2.cards.set(key, node);
       }
       updateCard(node, card, s, view2.h);
+      node.classList.toggle("msel", s.selection.has(key));
+      node.oncontextmenu = (ev) => {
+        ev.preventDefault();
+        openCardMenu(view2, s, key, ev.clientX, ev.clientY);
+      };
       els.push(node);
     }
     keyedDiff(cv.list, els);
@@ -1834,6 +2010,7 @@ function renderView(view2, s) {
   renderFocus(view2, s);
   if (s.focus || s.graph || s.overview || s.gantt) view2.board.hidden = true;
   if (s.graph || s.overview || s.gantt) view2.focus.hidden = true;
+  renderSelectionBar(view2, s);
   const toggle = (b, on) => {
     b.classList.toggle("on", on);
     b.setAttribute("aria-pressed", String(on));
@@ -2378,6 +2555,20 @@ function saveUi(s) {
 var boardSeq = 0;
 var UNDO_MS = 6e3;
 var pendingDeletes = /* @__PURE__ */ new Map();
+function scheduleDelete(key, card, delay) {
+  const prev = pendingDeletes.get(key);
+  if (prev) clearTimeout(prev.timer);
+  vanishCard(store, key);
+  pendingDeletes.set(key, { card, timer: setTimeout(() => void commitDelete(key), delay) });
+}
+var boardReload;
+function loadBoardSoon() {
+  if (boardReload) clearTimeout(boardReload);
+  boardReload = setTimeout(() => {
+    boardReload = void 0;
+    void loadBoard();
+  }, 50);
+}
 function undoDelete(key) {
   const entry = pendingDeletes.get(key);
   if (!entry) return;
@@ -2409,7 +2600,7 @@ async function commitDelete(key) {
   } finally {
     revealCard(store, key);
   }
-  await loadBoard();
+  loadBoardSoon();
 }
 async function loadMeta() {
   try {
@@ -2581,12 +2772,26 @@ async function doDelete(key) {
   }
   const { card, id } = cur;
   if (!window.confirm(`\u30AB\u30FC\u30C9 #${id}\u300C${card.title}\u300D\u3092\u524A\u9664\u3059\u308B\uFF1F`)) return;
-  const prev = pendingDeletes.get(key);
-  if (prev) clearTimeout(prev.timer);
-  vanishCard(store, key);
+  scheduleDelete(key, card, UNDO_MS);
   render();
-  pendingDeletes.set(key, { card, timer: setTimeout(() => void commitDelete(key), UNDO_MS) });
   showToast(view, `\u30AB\u30FC\u30C9 #${id}\u300C${card.title}\u300D\u3092\u524A\u9664`, () => undoDelete(key));
+}
+async function doDeleteMany(keys) {
+  const live = [];
+  for (const key of keys) {
+    const cur = cardOf(key);
+    if (cur) live.push({ key, card: cur.card });
+  }
+  if (live.length === 0) {
+    showToast(view, "\u5225\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8\u306E\u30AB\u30FC\u30C9\u3067\u3059\u3002\u518D\u8AAD\u307F\u8FBC\u307F\u3057\u307E\u3059\u3002");
+    await loadBoard();
+    return;
+  }
+  if (!window.confirm(`\u30AB\u30FC\u30C9 ${live.length} \u4EF6\u3092\u524A\u9664\u3059\u308B\uFF1F`)) return;
+  for (const { key, card } of live) scheduleDelete(key, card, 0);
+  store.selection = /* @__PURE__ */ new Set();
+  render();
+  showToast(view, `${live.length} \u4EF6\u306E\u30AB\u30FC\u30C9\u3092\u524A\u9664`);
 }
 async function doSave(key, patch) {
   const cur = cardOf(key);
@@ -3034,6 +3239,16 @@ var view = mount(root, {
   },
   onDelete: (key) => {
     void doDelete(key);
+  },
+  onSelect: (keys) => {
+    store.selection = new Set(keys);
+    render();
+  },
+  onDeleteMany: (keys) => {
+    void doDeleteMany(keys);
+  },
+  onSetPriority: (key, priority) => {
+    void doSave(key, { priority });
   },
   onOpen: (key) => detail.open(key),
   onToggleFocus: () => {
