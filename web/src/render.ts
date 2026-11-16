@@ -67,6 +67,8 @@ export type PanelKey = 'deliverables' | 'timeline';
 
 export interface View {
   root: HTMLElement;
+  /** The sticky header; its height offsets the fixed side panels. */
+  top: HTMLElement;
   h: Handlers;
   select: HTMLSelectElement;
   newName: HTMLInputElement;
@@ -78,8 +80,16 @@ export interface View {
   focusCount: HTMLElement;
   focusList: HTMLElement;
   focusEmpty: HTMLElement;
-  panel: HTMLElement;
-  panelBody: HTMLElement;
+  /** The two panel views are independent toggles, so both can be open at once. */
+  panelWrap: HTMLElement;
+  panelDeliv: HTMLElement;
+  panelDelivHead: HTMLElement;
+  panelDelivBody: HTMLElement;
+  panelDelivSig: string;
+  panelHist: HTMLElement;
+  panelHistHead: HTMLElement;
+  panelHistBody: HTMLElement;
+  panelHistSig: string;
   focusBtn: HTMLButtonElement;
   panelBtns: Record<PanelKey, HTMLButtonElement>;
   toast: HTMLElement;
@@ -88,8 +98,6 @@ export interface View {
   focusRows: Map<CardKey, HTMLElement>;
   projectSig: string;
   focusSig: string;
-  panelSig: string;
-  /** The two panel views are independent toggles, so both can be open at once. */
   // ---- v2 surfaces
   q: HTMLInputElement;
   qres: HTMLElement;
@@ -288,17 +296,25 @@ export function mount(root: HTMLElement, h: Handlers): View {
   focusEmpty.hidden = true;
   focus.append(focusHead, focusList, focusEmpty);
 
-  const panel = el('aside', 'panel');
-  panel.hidden = true;
-  const panelHead = el('div', 'panel-h');
-  const panelTitle = el('h2', undefined, 'パネル');
-  const panelClose = el('button', 'ic', '×');
-  panelClose.type = 'button';
-  panelClose.title = '閉じる';
-  panelClose.addEventListener('click', () => h.onTogglePanel());
-  panelHead.append(panelTitle, panelClose);
-  const panelBody = el('div', 'panel-body');
-  panel.append(panelHead, panelBody);
+  // One <aside> per surface: they sit side by side, each with its own close button.
+  const panelWrap = el('div', 'panels');
+  const mkSidePanel = (id: PanelKey, title: string) => {
+    const aside = el('aside', 'panel');
+    aside.hidden = true;
+    const head = el('div', 'panel-h');
+    const h2 = el('h2', undefined, title);
+    const close = el('button', 'ic', '×');
+    close.type = 'button';
+    close.title = '閉じる';
+    close.addEventListener('click', () => h.onTogglePanel(id));
+    head.append(h2, close);
+    const body = el('div', 'panel-body');
+    aside.append(head, body);
+    panelWrap.append(aside);
+    return { aside, head: h2, body };
+  };
+  const delivPanel = mkSidePanel('deliverables', '成果物');
+  const histPanel = mkSidePanel('timeline', '履歴');
 
   // Outside click / Escape close the search overlay (the box keeps its text).
   document.addEventListener('pointerdown', (ev) => {
@@ -339,17 +355,20 @@ export function mount(root: HTMLElement, h: Handlers): View {
   const viewPane = mkPane('ビュー', () => h.onTogglePane('views'));
   const notifPane = mkPane('通知', () => h.onTogglePane('notifications'));
 
-  root.append(top, errBar, loopBar, locksBar, empty, board, overview, graph, gantt, focus, panel,
+  root.append(top, errBar, loopBar, locksBar, empty, board, overview, graph, gantt, focus, panelWrap,
     tplPane.aside, viewPane.aside, notifPane.aside, toast);
   return {
-    root, h, select, newName, status, errBar, empty, board,
-    focus, focusCount, focusList, focusEmpty, panel, panelBody, focusBtn, panelBtns, toast,
+    root, top, h, select, newName, status, errBar, empty, board,
+    focus, focusCount, focusList, focusEmpty, focusBtn, panelBtns, toast,
+    panelWrap,
+    panelDeliv: delivPanel.aside, panelDelivHead: delivPanel.head, panelDelivBody: delivPanel.body, panelDelivSig: '',
+    panelHist: histPanel.aside, panelHistHead: histPanel.head, panelHistBody: histPanel.body, panelHistSig: '',
     q, qres, searchAllBtn, notifBtn, notifCounts, overviewBtn, graphBtn, ganttBtn, viewsBtn, templatesBtn,
     loopBar, loopStatus, loopText, loopNext, loopStart, loopStop, loopTick,
     overview, overviewSig: '', graph, graphSig: '', gantt, locks: locksBar, locksText, locksSig: '',
     paneTemplates: tplPane.aside, paneViews: viewPane.aside, paneNotif: notifPane.aside,
     paneSig: { templates: '', views: '', notif: '' },
-    cols: new Map(), cards: new Map(), focusRows: new Map(), projectSig: '', focusSig: '', panelSig: '',
+    cols: new Map(), cards: new Map(), focusRows: new Map(), projectSig: '', focusSig: '',
   };
 }
 
@@ -613,11 +632,16 @@ function focusRow(key: CardKey, h: Handlers): HTMLElement {
   return row;
 }
 
-function panelSig(s: Store, p: Store['panels']): string {
+function delivPanelSig(s: Store): string {
   return [
-    p.deliverables ? 'd' : '', p.timeline ? 't' : '',
     s.projectId,
     ...s.deliverables.map(d => `${d.id}:${d.title}:${d.kind}:${d.cardId ?? ''}`),
+  ].join('\u0001');
+}
+
+function histPanelSig(s: Store): string {
+  return [
+    s.projectId,
     ...s.timeline.slice(-40).map(e => `${e.seq}:${e.kind}:${e.entityId}`),
   ].join('\u0001');
 }
@@ -633,26 +657,14 @@ function eventLabel(kind: string): string {
   return map[kind] ?? kind;
 }
 
-function renderPanel(view: View, s: Store): void {
-  const sig = panelSig(s, s.panels);
-  if (view.panelSig === sig) return;
-  view.panelSig = sig;
-  view.panelBody.textContent = '';
+function renderDelivPanel(view: View, s: Store): void {
+  const sig = delivPanelSig(s);
+  if (view.panelDelivSig === sig) return;
+  view.panelDelivSig = sig;
+  view.panelDelivHead.textContent = `成果物 (${s.deliverables.length})`;
+  view.panelDelivBody.textContent = '';
 
-  // ---- two independent toggles: opening one must not close the other
-  const tabs = el('div', 'panel-tabs');
-  const makeTab = (id: 'deliverables' | 'timeline', label: string) => {
-    const btn = el('button', `panel-tab${s.panels[id] ? ' on' : ''}`, label);
-    btn.type = 'button';
-    btn.setAttribute('aria-pressed', String(s.panels[id]));
-    btn.addEventListener('click', () => view.h.onTogglePanel(id));
-    return btn;
-  };
-  tabs.append(makeTab('deliverables', `成果物 (${s.deliverables.length})`), makeTab('timeline', '履歴'));
-
-  // ---- deliverables
   const delSec = el('section', 'p-sec');
-  delSec.append(el('h3', 'p-h', `成果物 (${s.deliverables.length})`));
   const addForm = el('form', 'p-add');
   const addInput = el('input');
   addInput.placeholder = '成果物を追加';
@@ -702,10 +714,16 @@ function renderPanel(view: View, s: Store): void {
     list.append(row);
   }
   delSec.append(list);
+  view.panelDelivBody.append(delSec);
+}
 
-  // ---- timeline
+function renderHistPanel(view: View, s: Store): void {
+  const sig = histPanelSig(s);
+  if (view.panelHistSig === sig) return;
+  view.panelHistSig = sig;
+  view.panelHistBody.textContent = '';
+
   const tlSec = el('section', 'p-sec');
-  tlSec.append(el('h3', 'p-h', '最近の出来事'));
   const tl = el('div', 'p-list tl');
   if (!s.timeline.length) tl.append(el('div', 'p-empty', '出来事はまだない'));
   for (const e of s.timeline.slice(-40).reverse()) {
@@ -728,10 +746,7 @@ function renderPanel(view: View, s: Store): void {
     tl.append(row);
   }
   tlSec.append(tl);
-
-  delSec.hidden = !s.panels.deliverables;
-  tlSec.hidden = !s.panels.timeline;
-  view.panelBody.append(tabs, delSec, tlSec);
+  view.panelHistBody.append(tlSec);
 }
 
 function renderFocus(view: View, s: Store): void {
@@ -1278,9 +1293,16 @@ export function renderView(view: View, s: Store): void {
     btn.classList.toggle('on', s.panels[id]);
     btn.setAttribute('aria-pressed', String(s.panels[id]));
   }
-  view.panel.hidden = !(s.panels.deliverables || s.panels.timeline) || !s.projectId;
-  if (!view.panel.hidden) renderPanel(view, s);
-  else view.panelSig = '';
+  view.panelDeliv.hidden = !s.panels.deliverables || !s.projectId;
+  view.panelHist.hidden = !s.panels.timeline || !s.projectId;
+  view.panelWrap.classList.toggle('both', !view.panelDeliv.hidden && !view.panelHist.hidden);
+  if (view.panelDeliv.hidden) view.panelDelivSig = '';
+  else renderDelivPanel(view, s);
+  if (view.panelHist.hidden) view.panelHistSig = '';
+  else renderHistPanel(view, s);
+
+  // The panels are fixed; park them below the header instead of under it.
+  view.root.style.setProperty('--top-h', `${view.top.offsetHeight}px`);
 
   view.status.textContent = [
     `build ${s.buildHash ?? '–'}`,

@@ -613,17 +613,24 @@ function mount(root2, h) {
   const focusEmpty = el2("div", "focus-empty", "\u7740\u624B\u3067\u304D\u308B\u30AB\u30FC\u30C9\u306F\u306A\u3044\uFF08\u5168\u90E8\u30D6\u30ED\u30C3\u30AF\u4E2D\u304B\u5B8C\u4E86\uFF09");
   focusEmpty.hidden = true;
   focus.append(focusHead, focusList, focusEmpty);
-  const panel = el2("aside", "panel");
-  panel.hidden = true;
-  const panelHead = el2("div", "panel-h");
-  const panelTitle = el2("h2", void 0, "\u30D1\u30CD\u30EB");
-  const panelClose = el2("button", "ic", "\xD7");
-  panelClose.type = "button";
-  panelClose.title = "\u9589\u3058\u308B";
-  panelClose.addEventListener("click", () => h.onTogglePanel());
-  panelHead.append(panelTitle, panelClose);
-  const panelBody = el2("div", "panel-body");
-  panel.append(panelHead, panelBody);
+  const panelWrap = el2("div", "panels");
+  const mkSidePanel = (id, title) => {
+    const aside = el2("aside", "panel");
+    aside.hidden = true;
+    const head = el2("div", "panel-h");
+    const h2 = el2("h2", void 0, title);
+    const close = el2("button", "ic", "\xD7");
+    close.type = "button";
+    close.title = "\u9589\u3058\u308B";
+    close.addEventListener("click", () => h.onTogglePanel(id));
+    head.append(h2, close);
+    const body = el2("div", "panel-body");
+    aside.append(head, body);
+    panelWrap.append(aside);
+    return { aside, head: h2, body };
+  };
+  const delivPanel = mkSidePanel("deliverables", "\u6210\u679C\u7269");
+  const histPanel = mkSidePanel("timeline", "\u5C65\u6B74");
   document.addEventListener("pointerdown", (ev) => {
     const target = ev.target;
     if (qres.hidden || !target || searchWrap.contains(target)) return;
@@ -667,7 +674,7 @@ function mount(root2, h) {
     graph,
     gantt,
     focus,
-    panel,
+    panelWrap,
     tplPane.aside,
     viewPane.aside,
     notifPane.aside,
@@ -675,6 +682,7 @@ function mount(root2, h) {
   );
   return {
     root: root2,
+    top,
     h,
     select,
     newName,
@@ -686,11 +694,18 @@ function mount(root2, h) {
     focusCount,
     focusList,
     focusEmpty,
-    panel,
-    panelBody,
     focusBtn,
     panelBtns,
     toast,
+    panelWrap,
+    panelDeliv: delivPanel.aside,
+    panelDelivHead: delivPanel.head,
+    panelDelivBody: delivPanel.body,
+    panelDelivSig: "",
+    panelHist: histPanel.aside,
+    panelHistHead: histPanel.head,
+    panelHistBody: histPanel.body,
+    panelHistSig: "",
     q,
     qres,
     searchAllBtn,
@@ -724,8 +739,7 @@ function mount(root2, h) {
     cards: /* @__PURE__ */ new Map(),
     focusRows: /* @__PURE__ */ new Map(),
     projectSig: "",
-    focusSig: "",
-    panelSig: ""
+    focusSig: ""
   };
 }
 function makeColumn(id, h) {
@@ -974,12 +988,15 @@ function focusRow(key, h) {
   row.append(head, title, meta, moves);
   return row;
 }
-function panelSig(s, p2) {
+function delivPanelSig(s) {
   return [
-    p2.deliverables ? "d" : "",
-    p2.timeline ? "t" : "",
     s.projectId,
-    ...s.deliverables.map((d) => `${d.id}:${d.title}:${d.kind}:${d.cardId ?? ""}`),
+    ...s.deliverables.map((d) => `${d.id}:${d.title}:${d.kind}:${d.cardId ?? ""}`)
+  ].join("");
+}
+function histPanelSig(s) {
+  return [
+    s.projectId,
     ...s.timeline.slice(-40).map((e) => `${e.seq}:${e.kind}:${e.entityId}`)
   ].join("");
 }
@@ -999,22 +1016,13 @@ function eventLabel(kind) {
   };
   return map[kind] ?? kind;
 }
-function renderPanel(view2, s) {
-  const sig = panelSig(s, s.panels);
-  if (view2.panelSig === sig) return;
-  view2.panelSig = sig;
-  view2.panelBody.textContent = "";
-  const tabs = el2("div", "panel-tabs");
-  const makeTab = (id, label) => {
-    const btn = el2("button", `panel-tab${s.panels[id] ? " on" : ""}`, label);
-    btn.type = "button";
-    btn.setAttribute("aria-pressed", String(s.panels[id]));
-    btn.addEventListener("click", () => view2.h.onTogglePanel(id));
-    return btn;
-  };
-  tabs.append(makeTab("deliverables", `\u6210\u679C\u7269 (${s.deliverables.length})`), makeTab("timeline", "\u5C65\u6B74"));
+function renderDelivPanel(view2, s) {
+  const sig = delivPanelSig(s);
+  if (view2.panelDelivSig === sig) return;
+  view2.panelDelivSig = sig;
+  view2.panelDelivHead.textContent = `\u6210\u679C\u7269 (${s.deliverables.length})`;
+  view2.panelDelivBody.textContent = "";
   const delSec = el2("section", "p-sec");
-  delSec.append(el2("h3", "p-h", `\u6210\u679C\u7269 (${s.deliverables.length})`));
   const addForm = el2("form", "p-add");
   const addInput = el2("input");
   addInput.placeholder = "\u6210\u679C\u7269\u3092\u8FFD\u52A0";
@@ -1065,8 +1073,14 @@ function renderPanel(view2, s) {
     list.append(row);
   }
   delSec.append(list);
+  view2.panelDelivBody.append(delSec);
+}
+function renderHistPanel(view2, s) {
+  const sig = histPanelSig(s);
+  if (view2.panelHistSig === sig) return;
+  view2.panelHistSig = sig;
+  view2.panelHistBody.textContent = "";
   const tlSec = el2("section", "p-sec");
-  tlSec.append(el2("h3", "p-h", "\u6700\u8FD1\u306E\u51FA\u6765\u4E8B"));
   const tl = el2("div", "p-list tl");
   if (!s.timeline.length) tl.append(el2("div", "p-empty", "\u51FA\u6765\u4E8B\u306F\u307E\u3060\u306A\u3044"));
   for (const e of s.timeline.slice(-40).reverse()) {
@@ -1088,9 +1102,7 @@ function renderPanel(view2, s) {
     tl.append(row);
   }
   tlSec.append(tl);
-  delSec.hidden = !s.panels.deliverables;
-  tlSec.hidden = !s.panels.timeline;
-  view2.panelBody.append(tabs, delSec, tlSec);
+  view2.panelHistBody.append(tlSec);
 }
 function renderFocus(view2, s) {
   view2.focus.hidden = !s.focus || !s.projectId;
@@ -1616,9 +1628,14 @@ function renderView(view2, s) {
     btn.classList.toggle("on", s.panels[id]);
     btn.setAttribute("aria-pressed", String(s.panels[id]));
   }
-  view2.panel.hidden = !(s.panels.deliverables || s.panels.timeline) || !s.projectId;
-  if (!view2.panel.hidden) renderPanel(view2, s);
-  else view2.panelSig = "";
+  view2.panelDeliv.hidden = !s.panels.deliverables || !s.projectId;
+  view2.panelHist.hidden = !s.panels.timeline || !s.projectId;
+  view2.panelWrap.classList.toggle("both", !view2.panelDeliv.hidden && !view2.panelHist.hidden);
+  if (view2.panelDeliv.hidden) view2.panelDelivSig = "";
+  else renderDelivPanel(view2, s);
+  if (view2.panelHist.hidden) view2.panelHistSig = "";
+  else renderHistPanel(view2, s);
+  view2.root.style.setProperty("--top-h", `${view2.top.offsetHeight}px`);
   view2.status.textContent = [
     `build ${s.buildHash ?? "\u2013"}`,
     s.version ? `v${s.version}` : null,

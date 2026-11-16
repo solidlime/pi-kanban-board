@@ -4,7 +4,7 @@
 body{margin:0;font:14px/1.45 system-ui,"Segoe UI",sans-serif;background:var(--bg);color:var(--fg)}
 
 /* top bar */
-.top{display:flex;gap:12px;align-items:center;flex-wrap:wrap;padding:10px 16px;border-bottom:1px solid var(--line);position:sticky;top:0;z-index:2;background:rgba(11,16,32,.94);backdrop-filter:blur(6px)}
+.top{display:flex;gap:12px;align-items:center;flex-wrap:wrap;padding:10px 16px;border-bottom:1px solid var(--line);position:sticky;top:0;z-index:6;background:rgba(11,16,32,.94);backdrop-filter:blur(6px)}
 .brand{font-weight:700;letter-spacing:.02em}
 .grow{flex:1}
 .status{color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums}
@@ -85,15 +85,15 @@ a.chip:hover{color:var(--accent);border-color:#31456b}
 .fr-h{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--muted)}
 .fr-h .grow{flex:1}
 
-/* side panel: deliverables + timeline */
+/* side panels: one <aside> per surface, side by side when both are open */
+.panels{position:fixed;top:var(--top-h,45px);right:0;bottom:0;z-index:4;display:flex;gap:8px;pointer-events:none}
 .panel{position:fixed;top:0;right:0;bottom:0;width:min(420px,92vw);z-index:4;background:#0e1427;border-left:1px solid var(--line);display:flex;flex-direction:column;box-shadow:-12px 0 28px rgba(0,0,0,.45)}
+.panels>.panel{position:static;width:min(420px,92vw);min-width:0;pointer-events:auto}
+.panels.both>.panel{width:min(320px,45vw)}
 .panel-h{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--line)}
 .panel-h h2{margin:0;font-size:13px;letter-spacing:.04em;color:var(--muted)}
 .panel-h .ic{margin-left:auto}
 .panel-body{overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:18px}
-.panel-tabs{display:flex;gap:6px;border-bottom:1px solid var(--line);padding-bottom:8px}
-.panel-tab{padding:4px 10px;font-size:12px;color:var(--muted);background:transparent;border-color:transparent}
-.panel-tab.on{background:#243052;border-color:var(--accent);color:var(--fg)}
 .p-sec h3{margin:0 0 8px;font-size:12px;color:var(--muted);letter-spacing:.04em}
 .p-add,.p-add input{display:flex;gap:6px}
 .p-add{margin-bottom:8px}
@@ -288,7 +288,7 @@ div.gantt-row:hover,div.gantt-row:focus-visible{background:#141a2e;border-color:
   .gantt-row{grid-template-columns:minmax(90px,1fr) minmax(0,2fr)}
   .g-tick{font-size:10px}
   .detail{width:96vw}
-  .panel{width:min(420px,100vw)}
+  .panel,.panels>.panel{width:min(420px,100vw)}
 }
 
 @media (max-width:600px){

@@ -33,7 +33,7 @@ body {
   border-bottom: 1px solid var(--line);
   position: sticky;
   top: 0;
-  z-index: 2;
+  z-index: 6;
   background: rgba(11, 16, 32, .94);
   backdrop-filter: blur(6px);
 }
@@ -397,6 +397,16 @@ a.chip:hover {
 .fr-h .grow {
   flex: 1;
 }
+.panels {
+  position: fixed;
+  top: var(--top-h,45px);
+  right: 0;
+  bottom: 0;
+  z-index: 4;
+  display: flex;
+  gap: 8px;
+  pointer-events: none;
+}
 .panel {
   position: fixed;
   top: 0;
@@ -409,6 +419,15 @@ a.chip:hover {
   display: flex;
   flex-direction: column;
   box-shadow: -12px 0 28px rgba(0, 0, 0, .45);
+}
+.panels > .panel {
+  position: static;
+  width: min(420px, 92vw);
+  min-width: 0;
+  pointer-events: auto;
+}
+.panels.both > .panel {
+  width: min(320px, 45vw);
 }
 .panel-h {
   display: flex;
@@ -432,24 +451,6 @@ a.chip:hover {
   display: flex;
   flex-direction: column;
   gap: 18px;
-}
-.panel-tabs {
-  display: flex;
-  gap: 6px;
-  border-bottom: 1px solid var(--line);
-  padding-bottom: 8px;
-}
-.panel-tab {
-  padding: 4px 10px;
-  font-size: 12px;
-  color: var(--muted);
-  background: transparent;
-  border-color: transparent;
-}
-.panel-tab.on {
-  background: #243052;
-  border-color: var(--accent);
-  color: var(--fg);
 }
 .p-sec h3 {
   margin: 0 0 8px;
@@ -1334,7 +1335,8 @@ div.gantt-row:focus-visible {
   .detail {
     width: 96vw;
   }
-  .panel {
+  .panel,
+  .panels > .panel {
     width: min(420px, 100vw);
   }
 }

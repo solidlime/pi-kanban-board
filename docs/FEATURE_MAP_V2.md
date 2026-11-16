@@ -29,8 +29,9 @@
 - [~] 添付/画像: 画像のみ(PNG/JPEG/GIF/WebP をマジックバイト判定、≤8MiB)+ content-addressed ブロブ + `nosniff` 配信。同一オリジンからの HTML 配信は XSS になるため非画像は 422。
 
 ## Remaining (UI + polish)
-- [ ] Web UI: 上記 API の画面(検索/ビュー/通知/テンプレート/添付/ループ/概要/グラフ/列 WIP 編集)。designer に委譲中。
-- [ ] 実ブラウザ確認(全 120 テストは green だがクリックは未確認)。
+- [x] Web UI: 検索/ビュー/通知/テンプレート/添付/ループ/概要/グラフ/列 WIP はすべて `web/src/app.ts` に配線済み（searchBoard:326, getViews:416, getTemplates:401, getNotifications:101, getOverview:374, getGraph:387）。右パネルは成果物と履歴の 2 枚。
+- [x] 実ブラウザ確認: CDP（headless chromium → `Runtime.evaluate` → `Page.captureScreenshot`）でヘッダ・右パネル・詳細・成果物の `/view` を実測。`/view` は 200 text/html + `Content-Security-Policy: sandbox allow-scripts allow-forms allow-popups` で JS が走る。
+- [ ] v1 にあったのに v2 に無い UI（未着手）: カードの DnD、右クリックメニュー、矩形選択、キーボード + コマンドパレット、テーマ/密度の永続、トースト Undo、完了列の折畳み + localStorage、滞留ハイライト、quickadd のテキスト解釈、画像ライトボックス、成果物の絞込/ソート、`/api/interval`・`/api/stuck`・`/api/maxloops` の設定口。
 
 ## Delivery
 - [ ] v2 runtime cutover path (extensions/kanban-v2 or switched entry) + docs.
