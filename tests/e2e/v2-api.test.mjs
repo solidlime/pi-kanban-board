@@ -124,3 +124,21 @@ test("timeline endpoint present", async (t) => {
   assert.equal(tl.status, 200);
   assert.ok(tl.json.data.events || tl.json.data.timeline || Array.isArray(tl.json.data));
 });
+
+test("quick-add tokens name the card's fields on POST /api/cards", async (t) => {
+  const { req } = await setupServer(t);
+  await req("POST", "/api/projects", { slug: "p1" });
+  const c = await req("POST", "/api/cards", { project: "p1", title: "#p2 !3 due:2026-01-02 題名" });
+  assert.equal(c.status, 201);
+  const card = c.json.data.card;
+  assert.equal(card.title, "題名");
+  assert.equal(card.projectId, "p2"); // `#slug` retargets, creating the board on demand
+  assert.equal(card.estimate, 3);
+  assert.equal(card.due, "2026-01-02");
+  // The parser's message, not a bare 400.
+  const bad = await req("POST", "/api/cards", { project: "p1", title: "due:2026-02-30 x" });
+  assert.equal(bad.status, 400);
+  assert.match(bad.json.error.message, /due/);
+  // Tokens only leaves no title.
+  assert.equal((await req("POST", "/api/cards", { project: "p1", title: "#p1" })).status, 400);
+});

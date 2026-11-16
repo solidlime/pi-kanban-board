@@ -38,6 +38,7 @@ import { notifications } from "../core/notify.js";
 import { sessionDirOf } from "../agent/driver.js";
 import { readSessions } from "../core/sessions.js";
 import { clampSearchLimit, compareScored, searchBoardScored, type ScoredHit } from "../core/search.js";
+import { parseQuickAdd } from "../core/quickadd.js";
 import {
   assertBody, assertBlockedReason, assertColumnId, assertDue, assertEstimate, assertId, assertLabels,
   assertName, assertOwner, assertPriority, assertSlug, assertTitle, assertVersion,
@@ -308,7 +309,17 @@ async function postCard(ctx: Ctx): Promise<void> {
   const db = requireDb(ctx);
   const body = await readJson(ctx);
   rejectReadOnly(body, CARD_READ_ONLY_FIELDS);
-  const project = projectOr404(db, str(body.project, "project"));
+  // v1 quick-add: leading `#proj` `!N` `due:DATE` tokens name the card's fields, the rest is
+  // the title. The same parser runs on the /kanban command path (src/core/quickadd.ts).
+  const qa = typeof body.title === "string" ? parseQuickAdd(body.title) : null;
+  if (qa !== null && !qa.ok) throw new HttpError(400, "BAD_REQUEST", qa.error);
+  const quick = qa !== null && qa.ok ? qa.value : null;
+  // `#slug` retargets the card, creating the board when it is new — v1's quick add did the same.
+  // Only creation parses tokens; PATCH title does not, which is v1's asymmetry and stayed.
+  const project = quick?.project == null
+    ? projectOr404(db, str(body.project, "project"))
+    : (getProjectBySlug(db, quick.project)
+      ?? createProject(db, { slug: quick.project, name: quick.project }, ACTOR));
   const { state } = boardState(db, project.projectId);
 
   const columnId = body.columnId === undefined
@@ -317,12 +328,12 @@ async function postCard(ctx: Ctx): Promise<void> {
   const card = createCard(db, {
     projectId: project.projectId,
     columnId,
-    title: assertTitle(body.title),
+    title: assertTitle(quick === null ? body.title : quick.title),
     body: assertBody(body.body),
     priority: body.priority === undefined ? 0 : assertPriority(body.priority),
     owner: assertOwner(body.owner),
-    due: assertDue(body.due),
-    estimate: assertEstimate(body.estimate),
+    due: assertDue(quick?.due ?? body.due),
+    estimate: assertEstimate(quick?.estimate ?? body.estimate),
     labels: assertLabels(body.labels),
     blockedReason: assertBlockedReason(body.blockedReason),
   }, ACTOR);

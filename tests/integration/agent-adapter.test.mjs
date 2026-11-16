@@ -53,6 +53,22 @@ test("slug: a directory name normalizes, an empty one falls back", () => {
   assert.equal(A.projectSlugOf(cwd), "demo-repo");
 });
 
+test("kanban add: #slug retargets the board and seeds nextId from it", async () => {
+  const add = await A.executeKanban({ action: "add", text: "#side !3 due:2026-03-04 横断" }, env);
+  assert.equal(add.ok, true, add.text);
+  assert.match(add.text, /project side/);
+  const card = add.details.cards.find((c) => c.title === "横断");
+  assert.equal(card.projectId, "side");
+  assert.equal(card.estimate, 3);
+  assert.equal(card.due, "2026-03-04");
+  assert.equal(add.details.nextId, 2); // the target board's next id, not the caller's
+  // A second add that names an existing board does not create it twice.
+  assert.equal((await A.executeKanban({ action: "add", text: "#side 二枚目" }, env)).ok, true);
+  const listed = await A.executeKanban({ action: "list", project: "side" }, env);
+  assert.match(listed.text, /#2 二枚目/);
+  assert.equal((await A.executeKanban({ action: "add", text: "#Bad_Slug x" }, env)).ok, false);
+});
+
 test("kanban: a first write creates the board, add -> list -> move -> edit", async () => {
   const add = await A.executeKanban({ action: "add", text: "first card" }, env);
   assert.equal(add.ok, true, add.text);

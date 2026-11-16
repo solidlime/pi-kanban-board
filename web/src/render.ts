@@ -670,7 +670,7 @@ function makeColumn(id: string, h: Handlers): ColView {
   more.addEventListener('click', () => h.onToggleDone());
   const add = el('form', 'addrow');
   const input = el('input');
-  input.placeholder = 'タスクを追加';
+  input.placeholder = '#proj !2 due:2026-12-01 タスク';
   input.setAttribute('aria-label', 'add card');
   const btn = el('button', undefined, '追加');
   btn.type = 'submit';

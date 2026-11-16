@@ -1039,7 +1039,7 @@ function makeColumn(id, h) {
   more.addEventListener("click", () => h.onToggleDone());
   const add = el2("form", "addrow");
   const input = el2("input");
-  input.placeholder = "\u30BF\u30B9\u30AF\u3092\u8FFD\u52A0";
+  input.placeholder = "#proj !2 due:2026-12-01 \u30BF\u30B9\u30AF";
   input.setAttribute("aria-label", "add card");
   const btn = el2("button", void 0, "\u8FFD\u52A0");
   btn.type = "submit";
@@ -2762,6 +2762,12 @@ async function doAddCard(columnId, title) {
   }
   try {
     const { card } = await createCard({ project, title, columnId });
+    if (card.projectId !== project) {
+      setProjects(store, (await getProjects()).projects);
+      await selectProject(card.projectId);
+      showToast(view, `#${card.id} \u3092 ${card.projectId} \u306B\u8FFD\u52A0`);
+      return true;
+    }
     if (upsertCard(store, card)) {
       store.error = null;
       render();

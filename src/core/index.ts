@@ -4,6 +4,7 @@ export * from "./validation.js";
 export * from "./project.js";
 export * from "./acceptance.js";
 export * from "./card.js";
+export * from "./quickadd.js";
 export * from "./dependency.js";
 export * from "./timeline.js";
 export * from "./board.js";

@@ -268,6 +268,16 @@ async function doAddCard(columnId: string, title: string): Promise<boolean> {
   if (!project) { showToast(view, 'プロジェクトを選んでください'); return false; }
   try {
     const { card } = await createCard({ project, title, columnId });
+    // `#slug` in the title retargets the card; follow it so the card is visible where it landed.
+    if (card.projectId !== project) {
+      // `#slug` may name a brand-new board. Refresh the picker, then switch through
+      // selectProject so resetBoard/saveProject run — assigning store.projectId here would
+      // leave the old board's cards in place and forget the choice on reload.
+      setProjects(store, (await getProjects()).projects);
+      await selectProject(card.projectId);
+      showToast(view, `#${card.id} を ${card.projectId} に追加`);
+      return true;
+    }
     if (upsertCard(store, card)) { store.error = null; render(); } else await loadBoard();
     return true;
   } catch (e) {

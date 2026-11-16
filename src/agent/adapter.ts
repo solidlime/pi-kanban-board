@@ -21,6 +21,7 @@ import type { RunningServer } from "../api/start.js";
 import { columnsByOrd } from "../core/project.js";
 import { sortCards } from "../core/card.js";
 import { assertBlockedReason, assertLabels, assertPriority, assertTitle, invalid, TITLE_MAX } from "../core/validation.js";
+import { parseQuickAdd } from "../core/quickadd.js";
 import { MAX_ATTACHMENT_BYTES, safeAttachmentName } from "../core/attachment.js";
 import { startLoop } from "../core/loop.js";
 import { buildDigest, parseSince } from "../core/digest.js";
@@ -478,16 +479,23 @@ export async function executeKanban(args: KanbanArgs, env: Env): Promise<Result>
     project = createProject(db, { slug: projectId, name: projectId }, actor);
   }
 
-  const details = (cards: Card[]): Result["details"] => ({ scope, cards, nextId: peekNextId(db, projectId, "card") });
+  const details = (cards: Card[], proj = projectId): Result["details"] => ({ scope, cards, nextId: peekNextId(db, proj, "card") });
 
   switch (action) {
     case "add": {
       const text = (args.text ?? "").trim();
       if (text === "") return fail(scope, "add requires a non-empty text");
-      const column = args.col === undefined ? firstTodoColumn(db, projectId) : resolveColumn(db, projectId, args.col);
-      const { title, body } = titleAndBody(text);
+      // v1 quick-add: `#proj` `!N` `due:DATE` in front of the title name the card's fields.
+      const qa = parseQuickAdd(text);
+      if (!qa.ok) return fail(scope, qa.error);
+      const target = qa.value.project ?? projectId;
+      if (target !== projectId && !getProjectBySlug(db, target)) {
+        createProject(db, { slug: target, name: target }, actor);
+      }
+      const column = args.col === undefined ? firstTodoColumn(db, target) : resolveColumn(db, target, args.col);
+      const { title, body } = titleAndBody(qa.value.title);
       const card = createCard(db, {
-        projectId,
+        projectId: target,
         columnId: column.id,
         title,
         body,
@@ -496,9 +504,10 @@ export async function executeKanban(args: KanbanArgs, env: Env): Promise<Result>
         sessionId: sessionOf(args.session) ?? env.sessionId ?? null,
         commit: commitOf(args.commit) ?? null,
         blockedReason: blockedOf(args.blocked) ?? null,
-        due: dueOf(args.nextFireAt) ?? null,
+        estimate: qa.value.estimate,
+        due: qa.value.due ?? dueOf(args.nextFireAt) ?? null,
       }, actor);
-      return { ok: true, text: `added #${card.id} to ${column.id} (project ${projectId})`, details: details(listCards(db, projectId)) };
+      return { ok: true, text: `added #${card.id} to ${column.id} (project ${target})`, details: details(listCards(db, target), target) };
     }
     case "move": {
       const id = requireId(scope, args, "move");
