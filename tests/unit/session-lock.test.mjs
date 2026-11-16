@@ -86,6 +86,25 @@ test("古い JSONL は止めない（新規セッションは素通し）", asyn
   fresh.release();
 });
 
+test("pi-web が not running と言っても直近の JSONL は止める（管理外の書き手）", async (t) => {
+  const { sessionDir } = sandbox(t);
+  // The list only covers sessions pi-web started; a `pi` a user runs elsewhere writes the same
+  // JSONL and is not on it.
+  writeFileSync(path.join(sessionDir, "sid-unlisted.jsonl"), '{"type":"message"}\n');
+  const piweb = fakePiWeb([]);
+  assert.equal(await acquireSessionLock("sid-unlisted", sessionDir, { fetch: piweb.fetch }), null,
+    "not running is no proof nobody is writing");
+  assert.deepEqual(piweb.calls, ["http://127.0.0.1:1/api/agent/running"]);
+
+  const file = path.join(sessionDir, "sid-stale-unlisted.jsonl");
+  writeFileSync(file, '{"type":"message"}\n');
+  const old = new Date(Date.now() - 60 * 60 * 1000);
+  utimesSync(file, old, old);
+  const lock = await acquireSessionLock("sid-stale-unlisted", sessionDir, { fetch: piweb.fetch });
+  assert.ok(lock, "an hour-old JSONL does not block");
+  lock.release();
+});
+
 test("pi-web の runningSessionIds に居たら null（mtime に関係なく）", async (t) => {
   const { sessionDir } = sandbox(t);
   const piweb = fakePiWeb(["sid-piweb"]);

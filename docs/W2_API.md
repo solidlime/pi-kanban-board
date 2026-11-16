@@ -134,10 +134,13 @@ starts one when asked (`{ loop: { intervalMs } }`), so tests stay quiet.
 
 A tick that finds a ready card moves it to DOING and wakes its session: pi-web first
 (`POST /api/agent/new` for a card with no session yet — pi-web mints the id and answers with it —
-and `POST /api/agent/<id>` for a card that has one), then a `pi -p` of our own when pi-web is not
-reachable. Two writers must never append to one JSONL, so both paths are gated: a lock file
-(`src/agent/session-lock.ts`) plus pi-web's `runningSessionIds`. A pi-web timeout is treated as
-"it may have started" and does not fall back to `pi`; only a refused connection does.
+and `POST /api/agent/<id>` for a card that has one, which also reaches a session pi-web is already
+running). Only when pi-web is unreachable — a refused connection or a 5xx — does the board spawn a
+`pi -p` of its own. A 4xx, a timeout, and a 2xx that carries `success:false` all claim nothing and
+start no process. That path is gated so two writers
+never append to one JSONL: a lock file (`src/agent/session-lock.ts`) plus pi-web's
+`runningSessionIds`, and — when either says nobody is there — a JSONL written in the last 120s,
+the only sign a `pi` started outside pi-web leaves behind.
 
 The tick also keeps the per-board "last tick / next card / why it stopped" that the UI's loop band
 and the timeline (`loop.tick` / `loop.resumed` / `loop.halted`) read.

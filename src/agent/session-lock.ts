@@ -105,7 +105,9 @@ export async function acquireSessionLock(
 ): Promise<SessionLock | null> {
   const running = await runningInPiWeb(sessionId, opts);
   if (running === true) return null;
-  if (running === null && touchedRecently(sessionId, sessionDir, opts.now ?? Date.now())) return null;
+  // pi-web answering "not running" is no proof nobody is: the list covers the sessions pi-web
+  // started, not a `pi` a user runs elsewhere. A JSONL touched seconds ago has a writer.
+  if (touchedRecently(sessionId, sessionDir, opts.now ?? Date.now())) return null;
 
   const lockPath = lockPathOf(sessionId);
   mkdirSync(path.dirname(lockPath), { recursive: true });

@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import "./_load.mjs";
@@ -145,6 +145,92 @@ test("an existing card session is handed to pi-web and no process is spawned", a
   assert.ok(post.body.message.includes("カードを実装してください"));
 });
 
+test("a session pi-web already runs still receives the prompt", async (t) => {
+  const db = memDb(t);
+  const { project, card } = board(db, "piweb-live");
+  const sid = "d1e2f3a4-1111-2222-3333-444455556666";
+  repos.updateCard(db, project.projectId, card.id, { sessionId: sid }, { actor: "test" });
+  const stored = getCard(db, project.projectId, card.id);
+  const { calls: spawned, spawn } = fakeSpawn();
+  // The card points at a session pi-web is running right now (the user's own session).
+  const { calls, fetch } = fakePiWeb([sid], null);
+
+  const out = await wakeCardSession(db, project, stored, { spawn, fetch });
+
+  assert.equal(out?.via, "pi-web", "a live session is woken, not mistaken for a second writer");
+  assert.equal(out?.sessionId, sid);
+  assert.equal(spawned.length, 0, "pi-web owns the run");
+  const post = calls.find(c => c.url.endsWith(`/api/agent/${sid}`));
+  assert.equal(post.body.type, "prompt", "the prompt reaches the live session");
+});
+
+test("a pi-web 404 is a refusal, not an absence: no process is spawned", async (t) => {
+  const db = memDb(t);
+  const { project, card } = board(db, "piweb-404");
+  const sid = "aa11bb22-1111-2222-3333-444455556666";
+  repos.updateCard(db, project.projectId, card.id, { sessionId: sid }, { actor: "test" });
+  const stored = getCard(db, project.projectId, card.id);
+  const { calls: spawned, spawn } = fakeSpawn();
+  // pi-web is up and knows nothing of this session: spawning pi would open a JSONL pi-web is
+  // about to refuse, so the wake claims nothing.
+  const notFound = async () => ({ ok: false, status: 404, json: async () => ({ error: "Session not found" }) });
+
+  const out = await wakeCardSession(db, project, stored, { spawn, fetch: notFound });
+
+  assert.equal(out, null);
+  assert.equal(spawned.length, 0, "a 4xx is not a fallback");
+});
+
+test("a 200 with success:false is not delivery", async (t) => {
+  const db = memDb(t);
+  const { project, card } = board(db, "piweb-soft-no");
+  const sid = "bb22cc33-1111-2222-3333-444455556666";
+  repos.updateCard(db, project.projectId, card.id, { sessionId: sid }, { actor: "test" });
+  const stored = getCard(db, project.projectId, card.id);
+  const { calls: spawned, spawn } = fakeSpawn();
+  const softNo = async () => ({ ok: true, status: 200, json: async () => ({ success: false, error: "busy" }) });
+
+  const out = await wakeCardSession(db, project, stored, { spawn, fetch: softNo });
+
+  assert.equal(out, null, "pi-web answered but rejected the prompt");
+  assert.equal(spawned.length, 0, "and a second writer is not started");
+});
+
+test("a 200 with an unreadable body is still delivery", async (t) => {
+  const db = memDb(t);
+  const { project, card } = board(db, "piweb-opaque");
+  const sid = "cc33dd44-1111-2222-3333-444455556666";
+  repos.updateCard(db, project.projectId, card.id, { sessionId: sid }, { actor: "test" });
+  const stored = getCard(db, project.projectId, card.id);
+  const { calls: spawned, spawn } = fakeSpawn();
+  // A proxy or a 204 answers 2xx without JSON. Reading that as "pi-web is gone" would put a
+  // second writer on the session it just accepted.
+  const opaque = async () => ({ ok: true, status: 200, json: async () => { throw new SyntaxError("Unexpected token O"); } });
+
+  const out = await wakeCardSession(db, project, stored, { spawn, fetch: opaque });
+
+  assert.equal(out?.via, "pi-web");
+  assert.equal(spawned.length, 0, "2xx means taken, whatever the body looks like");
+});
+
+test("pi-web down and the session locked elsewhere: no process is spawned", async (t) => {
+  const db = memDb(t);
+  const { project, card } = board(db, "piweb-down-locked");
+  const sid = "e1f2a3b4-1111-2222-3333-444455556666";
+  repos.updateCard(db, project.projectId, card.id, { sessionId: sid }, { actor: "test" });
+  const stored = getCard(db, project.projectId, card.id);
+  // Another live process holds the lock: pi would append to a JSONL someone else is writing.
+  const dir = path.join(process.env.HOME, ".pi", "kanban", "locks");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(path.join(dir, `${sid}.lock`), String(process.pid));
+  const { calls: spawned, spawn } = fakeSpawn();
+
+  const out = await wakeCardSession(db, project, stored, { spawn, fetch: noPiWeb });
+
+  assert.equal(out, null, "the lock still guards the pi path");
+  assert.equal(spawned.length, 0);
+});
+
 test("a new card takes the session id pi-web minted and stores it", async (t) => {
   const db = memDb(t);
   const { project, card } = board(db, "piweb-new", { cwd: "/tmp/kb-piweb" });
@@ -162,6 +248,22 @@ test("a new card takes the session id pi-web minted and stores it", async (t) =>
   assert.equal(post.body.type, "prompt");
   assert.equal(post.body.cwd, "/tmp/kb-piweb");
   assert.equal(post.body.sessionId, undefined, "pi-web mints the id; we do not pass one");
+});
+
+test("a new session answered without an id is not a wake", async (t) => {
+  const db = memDb(t);
+  const { project, card } = board(db, "piweb-no-id", { cwd: "/tmp/kb-piweb-no-id" });
+  const { calls: spawned, spawn } = fakeSpawn();
+  // Without the minted id the card never learns its session and the next tick opens a second one.
+  const noId = async (url) => String(url).endsWith("/api/agent/running")
+    ? { ok: true, status: 200, json: async () => ({ runningSessionIds: [] }) }
+    : { ok: true, status: 200, json: async () => ({ success: true, data: null }) };
+
+  const out = await wakeCardSession(db, project, card, { spawn, fetch: noId });
+
+  assert.equal(out, null);
+  assert.equal(getCard(db, project.projectId, card.id).sessionId, null, "no id, nothing to point at");
+  assert.equal(spawned.length, 0);
 });
 
 test("two concurrent wakes start one session, not two", async (t) => {

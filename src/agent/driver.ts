@@ -60,8 +60,7 @@ export interface WakeOptions {
 }
 
 export interface WakeResult {
-  /** null only when pi-web started a new session but did not report its id. */
-  sessionId: string | null;
+  sessionId: string;
   pid: number | undefined;
   /** Which runner took the card: pi-web's own queue, or a `pi -p` we spawned ourselves. */
   via: "pi-web" | "pi";
@@ -77,9 +76,10 @@ const PIWEB_WAKE_TIMEOUT_MS = 30000;
 /**
  * pi-web takes the session: a new card goes to `/api/agent/new` (pi-web mints the id and
  * answers with it), an existing one to `/api/agent/<id>`, which resumes the JSONL when the
- * session is not live. null = pi-web did not take it; the caller spawns pi itself.
+ * session is not live. null = pi-web is not there, so the caller may spawn pi itself;
+ * "unclear" = pi-web may be on it, so nobody else may.
  */
-async function wakeInPiWeb(project: Project, sessionId: string | null, prompt: string, opts: WakeOptions): Promise<{ sessionId: string | null } | "unclear" | null> {
+async function wakeInPiWeb(project: Project, sessionId: string | null, prompt: string, opts: WakeOptions): Promise<{ sessionId: string } | "unclear" | null> {
   const doFetch = opts.fetch ?? globalThis.fetch;
   const base = piWebUrl(opts.piwebUrl);
   try {
@@ -93,11 +93,23 @@ async function wakeInPiWeb(project: Project, sessionId: string | null, prompt: s
         : { type: "prompt", message: prompt }),
       signal: AbortSignal.timeout(PIWEB_WAKE_TIMEOUT_MS),
     });
-    if (!res.ok) return null; // a 4xx/5xx means the session did not start
+    // A 4xx is pi-web saying no to *this* session while it stays alive — spawning pi on top of
+    // a JSONL pi-web may still open is the corruption the lock exists to prevent. A 5xx is
+    // pi-web failing at its job, which is the same as it being absent.
+    if (!res.ok) return res.status >= 500 ? null : "unclear";
+    // A refused prompt still comes back 200 with success:false (a 4xx carries
+    // `accepted:false` instead); claiming delivery then is how a wake goes missing in silence.
+    // Any other 2xx is pi-web taking it, even with an empty or non-JSON body — reading that as
+    // "pi-web is gone" would put a second writer on the JSONL.
+    const body = await res.json().catch(() => ({})) as { sessionId?: unknown; success?: unknown; accepted?: unknown };
+    // `accepted:false` rides 4xx and 5xx, which the status check above already caught; checking it
+    // here too is insurance, not something pi-web is known to send with a 200.
+    if (body.success === false || body.accepted === false) return "unclear";
     if (sessionId !== null) return { sessionId };
-    // pi-web mints the id for a new session; the response is the only place it appears.
-    const body = await res.json() as { sessionId?: unknown };
-    return { sessionId: typeof body.sessionId === "string" ? body.sessionId : null };
+    // /api/agent/new mints the id and answers `{ success, sessionId, data, ... }`. Without it the
+    // card never learns its session and the next wake opens a second one.
+    const minted = typeof body.sessionId === "string" ? body.sessionId : null;
+    return minted === null ? "unclear" : { sessionId: minted };
   } catch (err) {
     // A timeout is not "pi-web is down": it may still be starting the session, and spawning a
     // second writer on top of that corrupts the JSONL. Only a refused connection means down.
@@ -124,37 +136,38 @@ export async function wakeCardSession(db: Db, project: Project, card: Card, opts
 }
 
 async function startSession(db: Db, project: Project, card: Card, opts: WakeOptions): Promise<WakeResult | null> {
+  // A wake that claims nothing has to say why: the card sits in DOING and nothing retries it.
+  const refuse = (why: string): null => {
+    console.error(`[kanban wake ${project.slug}#${card.id}] ${why}`);
+    return null;
+  };
   // An existing session is resumed (--session); a new one is minted (--session-id), and only a
   // new one gets a name — renaming a resumed session would overwrite the name its user gave it.
   const existing = card.sessionId ?? null;
   const prompt = buildCardPrompt(project, card);
-  // A card that has no session yet has nothing to lock: pi-web mints the id, and a `pi` of our
-  // own gets its lock from the id we mint below. An existing session is gated first — the gate
-  // covers both runners, because pi appends to the file without checking.
-  const lock = existing === null
-    ? null
-    : await acquireSessionLock(existing, sessionDirOf(project), { fetch: opts.fetch, url: opts.piwebUrl });
-  if (existing !== null && lock === null) return null;
-  // The lock is released for the pi-web path: pi-web reports the session as running itself, so
-  // a lock we took for it would only outlive the run (pi-web never tells us it exited).
+  // pi-web goes first. It owns the sessions it started, and a card pointed at a live session has
+  // to reach that session — asking the local gate first would call pi-web's own run a second
+  // writer and drop the prompt. A new card has nothing to gate: pi-web mints its id.
+  // Known gap: `waking`/`running` are per board, so two cards pointing at one session (on two
+  // boards) each get the prompt. The JSONL is safe — pi-web serializes one session — but that
+  // session gets two prompts.
   const viaPiWeb = await wakeInPiWeb(project, existing, prompt, opts);
   if (viaPiWeb === "unclear") {
-    // Someone may be on it now; the next tick's running list and mtime decide, not us.
-    lock?.release();
-    return null;
+    // pi-web may still start it; a pid we cannot see would be the second writer.
+    return refuse("pi-web did not clearly take the session (timeout, 4xx or success:false)");
   }
   if (viaPiWeb !== null) {
-    lock?.release();
     // Remember the id pi-web minted, or the next wake would start a second session.
-    if (existing === null && viaPiWeb.sessionId !== null) {
+    if (existing === null) {
       updateCard(db, project.projectId, card.id, { sessionId: viaPiWeb.sessionId }, { actor: "loop" });
     }
     return { sessionId: viaPiWeb.sessionId, pid: undefined, via: "pi-web" };
   }
-  // pi-web is not taking it: keep the lock until `pi` exits.
+  // pi-web is not there: we own the run, so the local gates decide and the lock is held until
+  // `pi` exits.
   const sessionId = existing ?? randomUUID();
-  const held = lock ?? await acquireSessionLock(sessionId, sessionDirOf(project), { fetch: opts.fetch, url: opts.piwebUrl });
-  if (held === null) return null;
+  const held = await acquireSessionLock(sessionId, sessionDirOf(project), { fetch: opts.fetch, url: opts.piwebUrl });
+  if (held === null) return refuse(`session ${sessionId} already has a writer (live lock, a pi-web run, or a JSONL written in the last 120s)`);
   if (existing === null) updateCard(db, project.projectId, card.id, { sessionId }, { actor: "loop" });
   const args = existing === null
     ? ["-p", "--session-id", sessionId, "--name", `kanban #${card.id}`, prompt]
