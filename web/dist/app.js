@@ -823,6 +823,21 @@ function makeColumn(id, h) {
       if (ok) input.value = "";
     });
   });
+  const clearDrop = () => section.classList.remove("drop");
+  section.addEventListener("dragover", (ev) => {
+    ev.preventDefault();
+    if (ev.dataTransfer) ev.dataTransfer.dropEffect = "move";
+    section.classList.add("drop");
+  });
+  section.addEventListener("dragleave", (ev) => {
+    if (!section.contains(ev.relatedTarget)) clearDrop();
+  });
+  section.addEventListener("drop", (ev) => {
+    ev.preventDefault();
+    clearDrop();
+    const key = ev.dataTransfer?.getData("text/plain");
+    if (key) h.onMove(key, id);
+  });
   section.append(head, editEl, list, add);
   return { el: section, name, count, list, editEl, editName, editWip, editNote };
 }
@@ -845,6 +860,13 @@ function fillMoves(moves, card, s, key, h) {
 function makeCardNode(key, h) {
   const node = el2("div", "card");
   node.dataset.key = key;
+  node.draggable = true;
+  node.addEventListener("dragstart", (ev) => {
+    node.classList.add("dragging");
+    ev.dataTransfer?.setData("text/plain", key);
+    if (ev.dataTransfer) ev.dataTransfer.effectAllowed = "move";
+  });
+  node.addEventListener("dragend", () => node.classList.remove("dragging"));
   const head = el2("div", "card-h");
   const prio = el2("span", "prio");
   const cid = el2("span", "cid");

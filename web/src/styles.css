@@ -30,11 +30,14 @@ button:disabled{opacity:.5;cursor:default}
 .col-name{margin:0;font-size:12px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);font-weight:600}
 .col-count{margin-left:auto;font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
 .col.over-wip .col-count{color:var(--danger)}
+.col.drop{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
 .cards{padding:8px;overflow-y:auto;flex:1;min-height:40px;display:flex;flex-direction:column;gap:8px}
 
 /* cards */
 .card{background:#1a2238;border:1px solid var(--line);border-radius:8px;padding:8px 10px;cursor:default}
 .card.pending{opacity:.6}
+.card[draggable=true]{cursor:grab}
+.card.dragging{opacity:.45;cursor:grabbing}
 .card.blocked{border-color:#7a5b20;background:#241f14}
 .card-h{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--muted);margin-bottom:4px}
 .prio{font-variant-numeric:tabular-nums}

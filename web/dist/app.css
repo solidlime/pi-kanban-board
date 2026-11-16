@@ -169,6 +169,10 @@ button:disabled {
 .col.over-wip .col-count {
   color: var(--danger);
 }
+.col.drop {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
 .cards {
   padding: 8px;
   overflow-y: auto;
@@ -187,6 +191,13 @@ button:disabled {
 }
 .card.pending {
   opacity: .6;
+}
+.card[draggable=true] {
+  cursor: grab;
+}
+.card.dragging {
+  opacity: .45;
+  cursor: grabbing;
 }
 .card.blocked {
   border-color: #7a5b20;

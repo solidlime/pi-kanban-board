@@ -450,6 +450,25 @@ function makeColumn(id: string, h: Handlers): ColView {
     void h.onAddCard(id, title).then(ok => { if (ok) input.value = ''; });
   });
 
+  // Drop target only: the move itself stays onMove → moveCard. A same-column drop is a no-op
+  // inside the repository, so it costs one round trip and changes nothing.
+  const clearDrop = () => section.classList.remove('drop');
+  section.addEventListener('dragover', (ev) => {
+    ev.preventDefault(); // without this the browser refuses the drop
+    if (ev.dataTransfer) ev.dataTransfer.dropEffect = 'move';
+    section.classList.add('drop');
+  });
+  // Entering a child fires dragleave on the section too; keep the highlight while still inside.
+  section.addEventListener('dragleave', (ev) => {
+    if (!section.contains(ev.relatedTarget as Node | null)) clearDrop();
+  });
+  section.addEventListener('drop', (ev) => {
+    ev.preventDefault();
+    clearDrop();
+    const key = ev.dataTransfer?.getData('text/plain');
+    if (key) h.onMove(key, id);
+  });
+
   section.append(head, editEl, list, add);
   return { el: section, name, count, list, editEl, editName, editWip, editNote };
 }
@@ -475,6 +494,14 @@ function fillMoves(moves: HTMLElement, card: Card, s: Store, key: CardKey, h: Ha
 function makeCardNode(key: CardKey, h: Handlers): HTMLElement {
   const node = el('div', 'card');
   node.dataset.key = key;
+  // HTML5 DnD: the whole card is the handle, the key rides in text/plain for the column's drop.
+  node.draggable = true;
+  node.addEventListener('dragstart', (ev) => {
+    node.classList.add('dragging');
+    ev.dataTransfer?.setData('text/plain', key);
+    if (ev.dataTransfer) ev.dataTransfer.effectAllowed = 'move';
+  });
+  node.addEventListener('dragend', () => node.classList.remove('dragging'));
   const head = el('div', 'card-h');
   const prio = el('span', 'prio');
   const cid = el('span', 'cid');
