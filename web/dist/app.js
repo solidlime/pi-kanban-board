@@ -719,7 +719,7 @@ function mount(root2, h) {
     projectSig: "",
     focusSig: "",
     panelSig: "",
-    panelTab: "deliverables"
+    panels: { deliverables: true, timeline: false }
   };
 }
 function makeColumn(id, h) {
@@ -968,9 +968,10 @@ function focusRow(key, h) {
   row.append(head, title, meta, moves);
   return row;
 }
-function panelSig(s, tab) {
+function panelSig(s, p2) {
   return [
-    tab,
+    p2.deliverables ? "d" : "",
+    p2.timeline ? "t" : "",
     s.projectId,
     ...s.deliverables.map((d) => `${d.id}:${d.title}:${d.kind}:${d.cardId ?? ""}`),
     ...s.timeline.slice(-40).map((e) => `${e.seq}:${e.kind}:${e.entityId}`)
@@ -993,18 +994,17 @@ function eventLabel(kind) {
   return map[kind] ?? kind;
 }
 function renderPanel(view2, s) {
-  const sig = panelSig(s, view2.panelTab);
+  const sig = panelSig(s, view2.panels);
   if (view2.panelSig === sig) return;
   view2.panelSig = sig;
   view2.panelBody.textContent = "";
   const tabs = el2("div", "panel-tabs");
   const makeTab = (id, label) => {
-    const btn = el2("button", `panel-tab${view2.panelTab === id ? " on" : ""}`, label);
+    const btn = el2("button", `panel-tab${view2.panels[id] ? " on" : ""}`, label);
     btn.type = "button";
-    btn.setAttribute("aria-pressed", String(view2.panelTab === id));
+    btn.setAttribute("aria-pressed", String(view2.panels[id]));
     btn.addEventListener("click", () => {
-      if (view2.panelTab === id) return;
-      view2.panelTab = id;
+      view2.panels[id] = !view2.panels[id];
       view2.panelSig = "";
       renderPanel(view2, s);
     });
@@ -1084,8 +1084,8 @@ function renderPanel(view2, s) {
     tl.append(row);
   }
   tlSec.append(tl);
-  delSec.hidden = view2.panelTab !== "deliverables";
-  tlSec.hidden = view2.panelTab !== "timeline";
+  delSec.hidden = !view2.panels.deliverables;
+  tlSec.hidden = !view2.panels.timeline;
   view2.panelBody.append(tabs, delSec, tlSec);
 }
 function renderFocus(view2, s) {

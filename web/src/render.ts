@@ -86,8 +86,8 @@ export interface View {
   projectSig: string;
   focusSig: string;
   panelSig: string;
-  /** Which of the two panel views is showing (deliverables and timeline share one panel). */
-  panelTab: "deliverables" | "timeline";
+  /** The two panel views are independent toggles, so both can be open at once. */
+  panels: { deliverables: boolean; timeline: boolean };
   // ---- v2 surfaces
   q: HTMLInputElement;
   qres: HTMLElement;
@@ -342,7 +342,7 @@ export function mount(root: HTMLElement, h: Handlers): View {
     paneTemplates: tplPane.aside, paneViews: viewPane.aside, paneNotif: notifPane.aside,
     paneSig: { templates: '', views: '', notif: '' },
     cols: new Map(), cards: new Map(), focusRows: new Map(), projectSig: '', focusSig: '', panelSig: '',
-    panelTab: 'deliverables',
+    panels: { deliverables: true, timeline: false },
   };
 }
 
@@ -606,9 +606,9 @@ function focusRow(key: CardKey, h: Handlers): HTMLElement {
   return row;
 }
 
-function panelSig(s: Store, tab: View['panelTab']): string {
+function panelSig(s: Store, p: View['panels']): string {
   return [
-    tab,
+    p.deliverables ? 'd' : '', p.timeline ? 't' : '',
     s.projectId,
     ...s.deliverables.map(d => `${d.id}:${d.title}:${d.kind}:${d.cardId ?? ''}`),
     ...s.timeline.slice(-40).map(e => `${e.seq}:${e.kind}:${e.entityId}`),
@@ -627,21 +627,20 @@ function eventLabel(kind: string): string {
 }
 
 function renderPanel(view: View, s: Store): void {
-  const sig = panelSig(s, view.panelTab);
+  const sig = panelSig(s, view.panels);
   if (view.panelSig === sig) return;
   view.panelSig = sig;
   view.panelBody.textContent = '';
 
-  // ---- tabs: deliverables and timeline are two views of one panel
+  // ---- two independent toggles: opening one must not close the other
   const tabs = el('div', 'panel-tabs');
-  const makeTab = (id: View['panelTab'], label: string) => {
-    const btn = el('button', `panel-tab${view.panelTab === id ? ' on' : ''}`, label);
+  const makeTab = (id: 'deliverables' | 'timeline', label: string) => {
+    const btn = el('button', `panel-tab${view.panels[id] ? ' on' : ''}`, label);
     btn.type = 'button';
-    btn.setAttribute('aria-pressed', String(view.panelTab === id));
+    btn.setAttribute('aria-pressed', String(view.panels[id]));
     btn.addEventListener('click', () => {
-      if (view.panelTab === id) return;
-      view.panelTab = id;
-      view.panelSig = ''; // the sig carries the tab, but blank it so a re-render is certain
+      view.panels[id] = !view.panels[id];
+      view.panelSig = ''; // force the re-render the toggle itself needs
       renderPanel(view, s);
     });
     return btn;
@@ -725,8 +724,8 @@ function renderPanel(view: View, s: Store): void {
   }
   tlSec.append(tl);
 
-  delSec.hidden = view.panelTab !== 'deliverables';
-  tlSec.hidden = view.panelTab !== 'timeline';
+  delSec.hidden = !view.panels.deliverables;
+  tlSec.hidden = !view.panels.timeline;
   view.panelBody.append(tabs, delSec, tlSec);
 }
 
