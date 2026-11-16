@@ -86,6 +86,8 @@ export interface View {
   projectSig: string;
   focusSig: string;
   panelSig: string;
+  /** Which of the two panel views is showing (deliverables and timeline share one panel). */
+  panelTab: "deliverables" | "timeline";
   // ---- v2 surfaces
   q: HTMLInputElement;
   qres: HTMLElement;
@@ -281,7 +283,7 @@ export function mount(root: HTMLElement, h: Handlers): View {
   const panel = el('aside', 'panel');
   panel.hidden = true;
   const panelHead = el('div', 'panel-h');
-  const panelTitle = el('h2', undefined, '成果物 / 履歴');
+  const panelTitle = el('h2', undefined, 'パネル');
   const panelClose = el('button', 'ic', '×');
   panelClose.type = 'button';
   panelClose.title = '閉じる';
@@ -340,6 +342,7 @@ export function mount(root: HTMLElement, h: Handlers): View {
     paneTemplates: tplPane.aside, paneViews: viewPane.aside, paneNotif: notifPane.aside,
     paneSig: { templates: '', views: '', notif: '' },
     cols: new Map(), cards: new Map(), focusRows: new Map(), projectSig: '', focusSig: '', panelSig: '',
+    panelTab: 'deliverables',
   };
 }
 
@@ -603,8 +606,9 @@ function focusRow(key: CardKey, h: Handlers): HTMLElement {
   return row;
 }
 
-function panelSig(s: Store): string {
+function panelSig(s: Store, tab: View['panelTab']): string {
   return [
+    tab,
     s.projectId,
     ...s.deliverables.map(d => `${d.id}:${d.title}:${d.kind}:${d.cardId ?? ''}`),
     ...s.timeline.slice(-40).map(e => `${e.seq}:${e.kind}:${e.entityId}`),
@@ -623,10 +627,26 @@ function eventLabel(kind: string): string {
 }
 
 function renderPanel(view: View, s: Store): void {
-  const sig = panelSig(s);
+  const sig = panelSig(s, view.panelTab);
   if (view.panelSig === sig) return;
   view.panelSig = sig;
   view.panelBody.textContent = '';
+
+  // ---- tabs: deliverables and timeline are two views of one panel
+  const tabs = el('div', 'panel-tabs');
+  const makeTab = (id: View['panelTab'], label: string) => {
+    const btn = el('button', `panel-tab${view.panelTab === id ? ' on' : ''}`, label);
+    btn.type = 'button';
+    btn.setAttribute('aria-pressed', String(view.panelTab === id));
+    btn.addEventListener('click', () => {
+      if (view.panelTab === id) return;
+      view.panelTab = id;
+      view.panelSig = ''; // the sig carries the tab, but blank it so a re-render is certain
+      renderPanel(view, s);
+    });
+    return btn;
+  };
+  tabs.append(makeTab('deliverables', `成果物 (${s.deliverables.length})`), makeTab('timeline', '履歴'));
 
   // ---- deliverables
   const delSec = el('section', 'p-sec');
@@ -705,7 +725,9 @@ function renderPanel(view: View, s: Store): void {
   }
   tlSec.append(tl);
 
-  view.panelBody.append(delSec, tlSec);
+  delSec.hidden = view.panelTab !== 'deliverables';
+  tlSec.hidden = view.panelTab !== 'timeline';
+  view.panelBody.append(tabs, delSec, tlSec);
 }
 
 function renderFocus(view: View, s: Store): void {

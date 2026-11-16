@@ -608,7 +608,7 @@ function mount(root2, h) {
   const panel = el2("aside", "panel");
   panel.hidden = true;
   const panelHead = el2("div", "panel-h");
-  const panelTitle = el2("h2", void 0, "\u6210\u679C\u7269 / \u5C65\u6B74");
+  const panelTitle = el2("h2", void 0, "\u30D1\u30CD\u30EB");
   const panelClose = el2("button", "ic", "\xD7");
   panelClose.type = "button";
   panelClose.title = "\u9589\u3058\u308B";
@@ -717,7 +717,8 @@ function mount(root2, h) {
     focusRows: /* @__PURE__ */ new Map(),
     projectSig: "",
     focusSig: "",
-    panelSig: ""
+    panelSig: "",
+    panelTab: "deliverables"
   };
 }
 function makeColumn(id, h) {
@@ -966,8 +967,9 @@ function focusRow(key, h) {
   row.append(head, title, meta, moves);
   return row;
 }
-function panelSig(s) {
+function panelSig(s, tab) {
   return [
+    tab,
     s.projectId,
     ...s.deliverables.map((d) => `${d.id}:${d.title}:${d.kind}:${d.cardId ?? ""}`),
     ...s.timeline.slice(-40).map((e) => `${e.seq}:${e.kind}:${e.entityId}`)
@@ -990,10 +992,24 @@ function eventLabel(kind) {
   return map[kind] ?? kind;
 }
 function renderPanel(view2, s) {
-  const sig = panelSig(s);
+  const sig = panelSig(s, view2.panelTab);
   if (view2.panelSig === sig) return;
   view2.panelSig = sig;
   view2.panelBody.textContent = "";
+  const tabs = el2("div", "panel-tabs");
+  const makeTab = (id, label) => {
+    const btn = el2("button", `panel-tab${view2.panelTab === id ? " on" : ""}`, label);
+    btn.type = "button";
+    btn.setAttribute("aria-pressed", String(view2.panelTab === id));
+    btn.addEventListener("click", () => {
+      if (view2.panelTab === id) return;
+      view2.panelTab = id;
+      view2.panelSig = "";
+      renderPanel(view2, s);
+    });
+    return btn;
+  };
+  tabs.append(makeTab("deliverables", `\u6210\u679C\u7269 (${s.deliverables.length})`), makeTab("timeline", "\u5C65\u6B74"));
   const delSec = el2("section", "p-sec");
   delSec.append(el2("h3", "p-h", `\u6210\u679C\u7269 (${s.deliverables.length})`));
   const addForm = el2("form", "p-add");
@@ -1067,7 +1083,9 @@ function renderPanel(view2, s) {
     tl.append(row);
   }
   tlSec.append(tl);
-  view2.panelBody.append(delSec, tlSec);
+  delSec.hidden = view2.panelTab !== "deliverables";
+  tlSec.hidden = view2.panelTab !== "timeline";
+  view2.panelBody.append(tabs, delSec, tlSec);
 }
 function renderFocus(view2, s) {
   view2.focus.hidden = !s.focus || !s.projectId;
