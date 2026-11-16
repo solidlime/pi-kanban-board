@@ -43,7 +43,10 @@ button:disabled{opacity:.5;cursor:default}
 /* error / empty / toast */
 .err{margin:12px 16px 0;padding:8px 12px;border:1px solid var(--danger-line);background:var(--danger-bg);color:var(--danger-fg);border-radius:8px;font-size:13px;white-space:pre-wrap}
 .empty{margin:16px;padding:18px;border:1px dashed var(--line);border-radius:10px;color:var(--muted);text-align:center}
-.toast{position:fixed;left:16px;bottom:16px;z-index:5;max-width:min(560px,80vw);padding:10px 14px;border-radius:8px;border:1px solid var(--danger-line);background:var(--danger-bg);color:var(--danger-fg);font-size:13px;box-shadow:0 6px 20px rgba(0,0,0,.4)}
+.toast{position:fixed;left:16px;bottom:16px;z-index:5;max-width:min(560px,80vw);padding:10px 14px;border-radius:8px;border:1px solid var(--danger-line);background:var(--danger-bg);color:var(--danger-fg);font-size:13px;box-shadow:0 6px 20px rgba(0,0,0,.4);display:flex;gap:10px;align-items:center}
+.toast-msg{flex:1 1 auto;min-width:0;overflow-wrap:anywhere}
+.toast-undo{flex:0 0 auto;padding:3px 10px;border-radius:6px;border:1px solid currentColor;background:transparent;color:inherit;font:inherit;font-weight:600;cursor:pointer}
+.toast-undo:hover{background:var(--danger-line)}
 
 /* board */
 .board{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(260px,1fr);gap:var(--gap);padding:16px;align-items:start;overflow-x:auto;min-height:calc(100vh - 120px)}

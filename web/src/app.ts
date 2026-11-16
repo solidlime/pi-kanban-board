@@ -9,7 +9,7 @@ import {
   getLoop, startLoop, stopLoop, tickLoop, getSessions,
 } from './api.js';
 import {
-  createStore, applySnapshot, upsertCard, removeCard, resetBoard, setProjects, setMeta,
+  createStore, applySnapshot, upsertCard, resetBoard, setProjects, setMeta, vanishCard, revealCard,
   applyLocalMove, parseKey, cardKey, type CardKey, type Store, type SearchHit,
 } from './store.js';
 import { loopBarText, mount, renderView, showToast, type View } from './render.js';
@@ -46,6 +46,54 @@ function saveProject(slug: string | null): void {
 // ---------------------------------------------------------------- loading
 
 let boardSeq = 0;
+
+// A delete waits out the toast: the card leaves the board at once, but the server keeps it
+// until the undo window closes, so 「取り消す」 restores the same card rather than a copy.
+const UNDO_MS = 6000;
+// shortcut: 同時に戻せる削除は1枚だけ（トーストが1スロット）, 複数枚を戻すなら pendingDeletes を列挙する UI にする
+const pendingDeletes = new Map<CardKey, { card: Card; timer: ReturnType<typeof setTimeout> }>();
+
+function undoDelete(key: CardKey): void {
+  const entry = pendingDeletes.get(key);
+  if (!entry) return;
+  clearTimeout(entry.timer);
+  pendingDeletes.delete(key);
+  // reveal first: upsertCard refuses a card the store still thinks is on its way out
+  revealCard(store, key);
+  if (!upsertCard(store, entry.card)) {
+    // The board switched under the undo. The card is still on the board it came from.
+    const name = store.projects.find(p => p.slug === entry.card.projectId)?.name ?? entry.card.projectId;
+    showToast(view, `#${entry.card.id} は「${name}」に切り替わっていたので戻せなかった`);
+    return;
+  }
+  showToast(view, `#${entry.card.id} の削除を取り消した`);
+  render();
+  // vanishCard dropped the card's edges; only a snapshot brings them (and the new version) back.
+  void loadBoard();
+}
+
+async function commitDelete(key: CardKey): Promise<void> {
+  const entry = pendingDeletes.get(key);
+  if (!entry) return;
+  pendingDeletes.delete(key);
+  try {
+    await deleteCard(entry.card.projectId, entry.card.id, { version: entry.card.version });
+  } catch (e) {
+    // 404 means the card is already gone, which is what this delete wanted; anything else is news.
+    if (!(e instanceof ApiError && e.status === 404)) {
+      // The card is still on the server, so put it back from our last copy. If this was a dropped
+      // connection the loadBoard below fails too, and a board that silently lost the card lies.
+      revealCard(store, key);
+      upsertCard(store, entry.card);
+      render();
+      showToast(view, `#${entry.card.id} を削除できなかった: ${describe(e)}`, undefined, true);
+    }
+  } finally {
+    // Stay hidden until the server answered: a poll in between would put the card back on the board.
+    revealCard(store, key);
+  }
+  await loadBoard(); // dependencies/timeline changed too, not just the card
+}
 
 async function loadMeta(): Promise<void> {
   try {
@@ -210,13 +258,14 @@ async function doEdit(key: CardKey): Promise<void> {
 async function doDelete(key: CardKey): Promise<void> {
   const cur = cardOf(key);
   if (!cur) { showToast(view, '別プロジェクトのカードです。再読み込みします。'); await loadBoard(); return; }
-  const { card, projectId, id } = cur;
+  const { card, id } = cur;
   if (!window.confirm(`カード #${id}「${card.title}」を削除する？`)) return;
-  removeCard(store, key);
-  await withPending(key, async () => {
-    await deleteCard(projectId, id, { version: card.version });
-  });
-  await loadBoard(); // dependencies/timeline changed too, not just the card
+  const prev = pendingDeletes.get(key);
+  if (prev) clearTimeout(prev.timer); // a second delete on one card replaces its window
+  vanishCard(store, key);
+  render();
+  pendingDeletes.set(key, { card, timer: setTimeout(() => void commitDelete(key), UNDO_MS) });
+  showToast(view, `カード #${id}「${card.title}」を削除`, () => undoDelete(key));
 }
 
 async function doSave(key: CardKey, patch: Omit<PatchCardReq, 'version'>): Promise<boolean> {

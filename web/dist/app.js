@@ -159,7 +159,8 @@ function createStore() {
     loaded: false,
     loading: false,
     error: null,
-    pending: /* @__PURE__ */ new Set()
+    pending: /* @__PURE__ */ new Set(),
+    vanishing: /* @__PURE__ */ new Set()
   };
 }
 function setMeta(s, meta) {
@@ -206,18 +207,26 @@ function applySnapshot(s, projectId, snap) {
   for (const c of snap.columns ?? []) s.columns[c.id] = c;
   s.columnOrder = [...snap.columns ?? []].sort((a, b) => a.ord - b.ord || a.id.localeCompare(b.id)).map((c) => c.id);
   s.cards = {};
-  for (const c of snap.cards ?? []) s.cards[keyOf(c)] = c;
+  for (const c of snap.cards ?? []) {
+    if (!s.vanishing.has(keyOf(c))) s.cards[keyOf(c)] = c;
+  }
   s.dependencies = (snap.dependencies ?? []).filter((d) => s.cards[cardKey(d.projectId, d.fromCard)] && s.cards[cardKey(d.projectId, d.toCard)]);
   s.loaded = true;
   return true;
 }
 function upsertCard(s, card) {
   if (!card || card.projectId !== s.projectId) return false;
+  if (s.vanishing.has(keyOf(card))) return false;
   s.cards[keyOf(card)] = card;
   return true;
 }
-function removeCard(s, key) {
+function vanishCard(s, key) {
+  s.vanishing.add(key);
   delete s.cards[key];
+  s.dependencies = s.dependencies.filter((d) => cardKey(d.projectId, d.fromCard) !== key && cardKey(d.projectId, d.toCard) !== key);
+}
+function revealCard(s, key) {
+  s.vanishing.delete(key);
 }
 function applyLocalMove(s, key, columnId) {
   const card = s.cards[key];
@@ -480,13 +489,19 @@ function keyedDiff(container, items) {
   }
 }
 var toastTimer;
-function showToast(view2, message) {
-  view2.toast.textContent = message;
+function showToast(view2, message, undo, urgent = false) {
+  if (!undo && !urgent && !view2.toast.hidden && !view2.toastUndo.hidden) return;
+  view2.toastMsg.textContent = message;
+  view2.toastUndo.hidden = !undo;
+  view2.toastUndo.onclick = undo ? () => {
+    view2.toast.hidden = true;
+    undo();
+  } : null;
   view2.toast.hidden = false;
   if (toastTimer) clearTimeout(toastTimer);
   toastTimer = setTimeout(() => {
     view2.toast.hidden = true;
-  }, 5e3);
+  }, undo ? 5500 : 5e3);
 }
 function mount(root2, h) {
   const top = el2("div", "top");
@@ -678,6 +693,10 @@ function mount(root2, h) {
     if (ev.key === "Escape" && !qres.hidden) h.onCloseSearch();
   });
   const toast = el2("div", "toast");
+  const toastMsg = el2("span", "toast-msg");
+  const toastUndo = el2("button", "toast-undo", "\u53D6\u308A\u6D88\u3059");
+  toastUndo.hidden = true;
+  toast.append(toastMsg, toastUndo);
   toast.hidden = true;
   const overview = el2("section", "ov");
   overview.hidden = true;
@@ -735,6 +754,8 @@ function mount(root2, h) {
     focusBtn,
     panelBtns,
     toast,
+    toastMsg,
+    toastUndo,
     panelWrap,
     panelDeliv: delivPanel.aside,
     panelDelivHead: delivPanel.head,
@@ -2322,6 +2343,41 @@ function saveProject(slug) {
   }
 }
 var boardSeq = 0;
+var UNDO_MS = 6e3;
+var pendingDeletes = /* @__PURE__ */ new Map();
+function undoDelete(key) {
+  const entry = pendingDeletes.get(key);
+  if (!entry) return;
+  clearTimeout(entry.timer);
+  pendingDeletes.delete(key);
+  revealCard(store, key);
+  if (!upsertCard(store, entry.card)) {
+    const name = store.projects.find((p2) => p2.slug === entry.card.projectId)?.name ?? entry.card.projectId;
+    showToast(view, `#${entry.card.id} \u306F\u300C${name}\u300D\u306B\u5207\u308A\u66FF\u308F\u3063\u3066\u3044\u305F\u306E\u3067\u623B\u305B\u306A\u304B\u3063\u305F`);
+    return;
+  }
+  showToast(view, `#${entry.card.id} \u306E\u524A\u9664\u3092\u53D6\u308A\u6D88\u3057\u305F`);
+  render();
+  void loadBoard();
+}
+async function commitDelete(key) {
+  const entry = pendingDeletes.get(key);
+  if (!entry) return;
+  pendingDeletes.delete(key);
+  try {
+    await deleteCard(entry.card.projectId, entry.card.id, { version: entry.card.version });
+  } catch (e) {
+    if (!(e instanceof ApiError && e.status === 404)) {
+      revealCard(store, key);
+      upsertCard(store, entry.card);
+      render();
+      showToast(view, `#${entry.card.id} \u3092\u524A\u9664\u3067\u304D\u306A\u304B\u3063\u305F: ${describe(e)}`, void 0, true);
+    }
+  } finally {
+    revealCard(store, key);
+  }
+  await loadBoard();
+}
 async function loadMeta() {
   try {
     setMeta(store, await getMeta());
@@ -2490,13 +2546,14 @@ async function doDelete(key) {
     await loadBoard();
     return;
   }
-  const { card, projectId, id } = cur;
+  const { card, id } = cur;
   if (!window.confirm(`\u30AB\u30FC\u30C9 #${id}\u300C${card.title}\u300D\u3092\u524A\u9664\u3059\u308B\uFF1F`)) return;
-  removeCard(store, key);
-  await withPending(key, async () => {
-    await deleteCard(projectId, id, { version: card.version });
-  });
-  await loadBoard();
+  const prev = pendingDeletes.get(key);
+  if (prev) clearTimeout(prev.timer);
+  vanishCard(store, key);
+  render();
+  pendingDeletes.set(key, { card, timer: setTimeout(() => void commitDelete(key), UNDO_MS) });
+  showToast(view, `\u30AB\u30FC\u30C9 #${id}\u300C${card.title}\u300D\u3092\u524A\u9664`, () => undoDelete(key));
 }
 async function doSave(key, patch) {
   const cur = cardOf(key);

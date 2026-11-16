@@ -210,6 +210,28 @@ button:disabled {
   color: var(--danger-fg);
   font-size: 13px;
   box-shadow: 0 6px 20px rgba(0, 0, 0, .4);
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.toast-msg {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.toast-undo {
+  flex: 0 0 auto;
+  padding: 3px 10px;
+  border-radius: 6px;
+  border: 1px solid currentColor;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.toast-undo:hover {
+  background: var(--danger-line);
 }
 .board {
   display: grid;

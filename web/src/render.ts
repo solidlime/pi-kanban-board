@@ -93,6 +93,8 @@ export interface View {
   focusBtn: HTMLButtonElement;
   panelBtns: Record<PanelKey, HTMLButtonElement>;
   toast: HTMLElement;
+  toastMsg: HTMLElement;
+  toastUndo: HTMLButtonElement;
   cols: Map<string, ColView>;
   cards: Map<CardKey, HTMLElement>;
   focusRows: Map<CardKey, HTMLElement>;
@@ -150,11 +152,19 @@ export function keyedDiff(container: HTMLElement, items: HTMLElement[]): void {
 
 let toastTimer: ReturnType<typeof setTimeout> | undefined;
 
-export function showToast(view: View, message: string): void {
-  view.toast.textContent = message;
+/** Shows `message`. With `undo` the toast stays up long enough to press it. */
+export function showToast(view: View, message: string, undo?: () => void, urgent = false): void {
+  // An undo on screen is a live offer; a passing notification must not take it away.
+  // Failures pass urgent: they are the one thing a live undo must not swallow.
+  if (!undo && !urgent && !view.toast.hidden && !view.toastUndo.hidden) return;
+  view.toastMsg.textContent = message;
+  view.toastUndo.hidden = !undo;
+  view.toastUndo.onclick = undo ? () => { view.toast.hidden = true; undo(); } : null;
   view.toast.hidden = false;
   if (toastTimer) clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { view.toast.hidden = true; }, 5000);
+  // A delete commits at 6s (UNDO_MS in app.ts); hiding the button a shade earlier keeps a
+  // button that is visible from being a button that no longer does anything.
+  toastTimer = setTimeout(() => { view.toast.hidden = true; }, undo ? 5500 : 5000);
 }
 
 export function mount(root: HTMLElement, h: Handlers): View {
@@ -359,6 +369,10 @@ export function mount(root: HTMLElement, h: Handlers): View {
   });
 
   const toast = el('div', 'toast');
+  const toastMsg = el('span', 'toast-msg');
+  const toastUndo = el('button', 'toast-undo', '取り消す');
+  toastUndo.hidden = true;
+  toast.append(toastMsg, toastUndo);
   toast.hidden = true;
 
   // ---- overview (総合管理) and graph replace the board while on
@@ -391,7 +405,7 @@ export function mount(root: HTMLElement, h: Handlers): View {
     tplPane.aside, viewPane.aside, notifPane.aside, toast);
   return {
     root, top, h, select, newName, status, errBar, empty, board,
-    focus, focusCount, focusList, focusEmpty, focusBtn, panelBtns, toast,
+    focus, focusCount, focusList, focusEmpty, focusBtn, panelBtns, toast, toastMsg, toastUndo,
     panelWrap,
     panelDeliv: delivPanel.aside, panelDelivHead: delivPanel.head, panelDelivBody: delivPanel.body, panelDelivSig: '',
     panelHist: histPanel.aside, panelHistHead: histPanel.head, panelHistBody: histPanel.body, panelHistSig: '',

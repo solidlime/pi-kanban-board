@@ -74,6 +74,11 @@ export interface Store {
   error: string | null;
   /** Cards with a request in flight (render only; never persisted). */
   pending: Set<CardKey>;
+  /**
+   * Cards whose delete is waiting out the undo window. Deliberately not board-scoped and not
+   * reset by resetBoard: a poll or a project switch inside the window must not resurrect one.
+   */
+  vanishing: Set<CardKey>;
 }
 
 export type Pane = 'none' | 'templates' | 'views' | 'notifications';
@@ -88,7 +93,7 @@ export function createStore(): Store {
     q: '', hits: null, searchAll: false, qFocus: false, notifications: [], attachments: [], locks: [], loop: null,
     templates: [], views: [],
     generation: null, buildHash: null, version: null,
-    loaded: false, loading: false, error: null, pending: new Set(),
+    loaded: false, loading: false, error: null, pending: new Set(), vanishing: new Set(),
   };
 }
 
@@ -149,7 +154,9 @@ export function applySnapshot(s: Store, projectId: string, snap: BoardSnapshot):
     .sort((a, b) => a.ord - b.ord || a.id.localeCompare(b.id))
     .map(c => c.id);
   s.cards = {};
-  for (const c of snap.cards ?? []) s.cards[keyOf(c)] = c;
+  for (const c of snap.cards ?? []) {
+    if (!s.vanishing.has(keyOf(c))) s.cards[keyOf(c)] = c;
+  }
   // Only keep edges whose endpoints exist on this board — a half-applied snapshot must not
   // make a card look blocked by an id the UI cannot name.
   s.dependencies = (snap.dependencies ?? []).filter(d => s.cards[cardKey(d.projectId, d.fromCard)] && s.cards[cardKey(d.projectId, d.toCard)]);
@@ -160,8 +167,23 @@ export function applySnapshot(s: Store, projectId: string, snap: BoardSnapshot):
 /** Server-authoritative card upsert (create/patch/move responses). */
 export function upsertCard(s: Store, card: Card): boolean {
   if (!card || card.projectId !== s.projectId) return false;
+  if (s.vanishing.has(keyOf(card))) return false; // on its way out: a poll or a tick may hand it back
   s.cards[keyOf(card)] = card;
   return true;
+}
+
+/** Hides a card until its undo window closes; `applySnapshot`/`upsertCard` skip it too. */
+export function vanishCard(s: Store, key: CardKey): void {
+  s.vanishing.add(key);
+  delete s.cards[key];
+  // Drop its edges too, or `openBlockers` reads the missing `from` as "nothing blocks this"
+  // and offers a card that is still blocked (the card is hidden, not gone).
+  s.dependencies = s.dependencies.filter(d => cardKey(d.projectId, d.fromCard) !== key && cardKey(d.projectId, d.toCard) !== key);
+}
+
+/** Ends the window: either an undo put the card back, or the server confirmed it is gone. */
+export function revealCard(s: Store, key: CardKey): void {
+  s.vanishing.delete(key);
 }
 
 export function removeCard(s: Store, key: CardKey): void { delete s.cards[key]; }
