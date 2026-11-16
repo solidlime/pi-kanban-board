@@ -17,8 +17,12 @@ export type CreateProjectRes = ApiEnvelope<{ project: Project; columns: ColumnDe
 export type CreateCardReq = { project: string; title: string; body?: string; columnId?: string; priority?: number; labels?: string[]; owner?: string | null; due?: string | null; estimate?: number | null };
 export type CreateCardRes = ApiEnvelope<{ card: Card }>;
 
-export type PatchCardReq = { title?: string; body?: string; priority?: number; labels?: string[]; owner?: string | null; due?: string | null; estimate?: number | null; blockedReason?: string | null; version: number };
+export type PatchCardReq = { title?: string; body?: string; priority?: number; labels?: string[]; owner?: string | null; due?: string | null; estimate?: number | null; blockedReason?: string | null; sessionId?: string | null; version: number };
 export type PatchCardRes = ApiEnvelope<{ card: Card }>;
+
+// A pi session a card can resume. The UI offers the name; the card stores the id.
+export type SessionRef = { id: string; name: string; updatedAt: string };
+export type GetSessions = ApiEnvelope<{ sessions: SessionRef[] }>;
 
 export type MoveCardReq = { columnId: string; position?: number; version: number };
 export type MoveCardRes = ApiEnvelope<{ card: Card }>;

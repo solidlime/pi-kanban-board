@@ -28,7 +28,12 @@ import { storeBlob } from "../media.js";
 
 export type Scope = "project" | "global";
 
-export interface Env { cwd: string; actor?: string }
+export interface Env {
+  cwd: string;
+  actor?: string;
+  /** The host's own session id: a card added from a pi session links back to it. */
+  sessionId?: string;
+}
 
 export interface KanbanArgs {
   action: string;
@@ -488,7 +493,7 @@ export async function executeKanban(args: KanbanArgs, env: Env): Promise<Result>
         body,
         priority: args.priority === undefined ? 0 : assertPriority(args.priority),
         labels: labelsOf(args.labels),
-        sessionId: sessionOf(args.session) ?? null,
+        sessionId: sessionOf(args.session) ?? env.sessionId ?? null,
         commit: commitOf(args.commit) ?? null,
         blockedReason: blockedOf(args.blocked) ?? null,
         due: dueOf(args.nextFireAt) ?? null,

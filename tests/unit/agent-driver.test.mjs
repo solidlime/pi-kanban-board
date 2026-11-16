@@ -7,7 +7,8 @@ import "./_load.mjs";
 
 const { openDb } = await import("../../src/persistence/db.ts");
 const { migrate } = await import("../../src/persistence/migrations.ts");
-const { createProject, createCard, getCard } = await import("../../src/persistence/repos.ts");
+const repos = await import("../../src/persistence/repos.ts");
+const { createProject, createCard, getCard } = repos;
 const { buildCardPrompt, sessionCwd, wakeCardSession } = await import("../../src/agent/driver.ts");
 
 function memDb(t) {
@@ -72,6 +73,25 @@ test("spawn gets -p, the session id, a name and the board cwd", (t) => {
   assert.deepEqual(opts.stdio, ["ignore", "pipe", "pipe"]);
   assert.equal(sessionCwd(project), "/tmp/kb-args");
   assert.equal(sessionCwd({ ...project, settings: {} }), process.cwd());
+});
+
+test("an existing card session is resumed with --session, not re-minted", (t) => {
+  const db = memDb(t);
+  const { project } = board(db, "resume-board");
+  const card = createCard(db, { projectId: project.projectId, columnId: "todo", title: "続きをやる" });
+  const sid = "b7c1d2e3-1111-2222-3333-444455556666";
+  const { updateCard } = repos;
+  updateCard(db, project.projectId, card.id, { sessionId: sid }, { actor: "test" });
+  const stored = getCard(db, project.projectId, card.id);
+  const { calls, spawn } = fakeSpawn();
+  const out = wakeCardSession(db, project, stored, { spawn });
+
+  assert.equal(out.sessionId, sid, "the card's own session id is reused");
+  const { args } = calls[0];
+  assert.equal(args[args.indexOf("--session") + 1], sid);
+  assert.equal(args.includes("--session-id"), false, "--session and --session-id cannot be combined");
+  assert.equal(args.includes("--name"), false, "a resumed session keeps its existing name");
+  assert.equal(getCard(db, project.projectId, card.id).sessionId, sid);
 });
 
 test("a second wake on the same board is refused while the child is alive", (t) => {

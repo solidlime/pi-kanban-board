@@ -61,15 +61,20 @@ const WIDGET_POLL_MS = 15_000;
 // One footer per session: pi shares this module scope across every session in the same cwd.
 const footers = new Map<string, { stop: () => void; draw: () => void }>();
 
-/** Session id for the per-session footer; hosts without one share a single slot. */
-function sessionKeyOf(ctx: ExtensionContext): string {
+/** The host's own session id, when it has one (a card added here links back to it). */
+function sessionIdOf(ctx: ExtensionContext): string | undefined {
 	try {
 		const id = (ctx as { sessionManager?: { getSessionId?: () => string } }).sessionManager?.getSessionId?.();
 		if (typeof id === "string" && id !== "") return id;
 	} catch {
-		// fall through to the shared slot
+		// no session manager: there is no id to record
 	}
-	return "default";
+	return undefined;
+}
+
+/** Session id for the per-session footer; hosts without one share a single slot. */
+function sessionKeyOf(ctx: ExtensionContext): string {
+	return sessionIdOf(ctx) ?? "default";
 }
 
 /** A disposed ctx must never take the process down: setWidget throws on a dead UI. */
@@ -223,7 +228,7 @@ export default function kanbanV2Extension(pi: ExtensionAPI): void {
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const m = await load();
-			const out = await m.executeKanban(params, { cwd: cwdOfCtx(ctx), actor: "agent" });
+			const out = await m.executeKanban(params, { cwd: cwdOfCtx(ctx), actor: "agent", sessionId: sessionIdOf(ctx) });
 			// Keep the per-turn injection in step with the board this call just touched.
 			void m.refreshInjection(cwdOfCtx(ctx)).catch(() => {});
 			footers.get(sessionKeyOf(ctx))?.draw();

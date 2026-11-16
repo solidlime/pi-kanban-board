@@ -53,12 +53,17 @@ export interface WakeResult { sessionId: string; pid: number | undefined }
  */
 export function wakeCardSession(db: Db, project: Project, card: Card, opts: WakeOptions = {}): WakeResult | null {
   if (running.has(project.projectId)) return null;
-  const sessionId = card.sessionId ?? randomUUID();
-  if (!card.sessionId) updateCard(db, project.projectId, card.id, { sessionId }, { actor: "loop" });
+  // An existing session is resumed (--session); a new one is minted (--session-id), and only a
+  // new one gets a name — renaming a resumed session would overwrite the name its user gave it.
+  const existing = card.sessionId ?? null;
+  const sessionId = existing ?? randomUUID();
+  if (existing === null) updateCard(db, project.projectId, card.id, { sessionId }, { actor: "loop" });
+  const prompt = buildCardPrompt(project, card);
+  const args = existing === null
+    ? ["-p", "--session-id", sessionId, "--name", `kanban #${card.id}`, prompt]
+    : ["-p", "--session", sessionId, prompt];
   const spawnFn = opts.spawn ?? nodeSpawn;
-  const child = spawnFn(opts.bin ?? "pi", [
-    "-p", "--session-id", sessionId, "--name", `kanban #${card.id}`, buildCardPrompt(project, card),
-  ], { cwd: sessionCwd(project), stdio: ["ignore", "pipe", "pipe"], env: process.env });
+  const child = spawnFn(opts.bin ?? "pi", args, { cwd: sessionCwd(project), stdio: ["ignore", "pipe", "pipe"], env: process.env });
   running.set(project.projectId, child);
   const release = (): void => {
     if (running.get(project.projectId) === child) running.delete(project.projectId);

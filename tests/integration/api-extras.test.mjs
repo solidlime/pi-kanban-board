@@ -407,3 +407,31 @@ test("loop: nextTickAt is lastTickAt + loopMs, and null when no supervisor runs"
   assert.equal(running.status, "running");
   assert.equal(Date.parse(running.nextTickAt), Date.parse(running.lastTickAt) + 15000);
 });
+
+test("card sessionId: writable on PATCH, \"\" clears it, and the picker lists no sessions yet", async (t) => {
+  const { call } = await server(t);
+  await call("POST", "/api/projects", { slug: "sess" });
+  const created = await call("POST", "/api/cards", { project: "sess", title: "wake me" });
+  const id = created.data.card.id;
+
+  const sid = "0a1b2c3d-1111-2222-3333-444455556666";
+  const patched = await call("PATCH", `/api/cards/sess/${id}`, { version: created.data.card.version, sessionId: sid });
+  assert.equal(patched.status, 200);
+  assert.equal(patched.data.card.sessionId, sid);
+  const cleared = await call("PATCH", `/api/cards/sess/${id}`, { version: patched.data.card.version, sessionId: "" });
+  assert.equal(cleared.data.card.sessionId, null, "an empty string falls back to null");
+
+  // The board's cwd is this repo, so real sessions may be listed: assert the shape, not the content.
+  const sessions = await call("GET", "/api/sessions?project=sess");
+  assert.equal(sessions.status, 200);
+  assert.ok(Array.isArray(sessions.data.sessions));
+  for (const s of sessions.data.sessions) {
+    assert.match(s.id, /^[0-9a-f-]{36}$/);
+    assert.equal(typeof s.name, "string");
+    assert.ok(Date.parse(s.updatedAt));
+  }
+  const sorted = sessions.data.sessions.map(s => s.updatedAt);
+  assert.deepEqual(sorted, [...sorted].sort().reverse(), "newest first");
+  assert.equal((await call("GET", "/api/sessions")).status, 400, "project is required");
+  assert.equal((await call("GET", "/api/sessions?project=nope")).status, 404);
+});

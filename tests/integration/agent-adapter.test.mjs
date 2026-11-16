@@ -84,6 +84,24 @@ test("kanban: a first write creates the board, add -> list -> move -> edit", asy
   assert.equal(unblocked.details.cards.find((c) => c.id === 1).blockedReason, null);
 });
 
+test("kanban: a card added from a pi session links to it, and an edit leaves it alone", async () => {
+  const linked = { ...env, sessionId: "0a1b2c3d-0000-4000-8000-000000000000" };
+  const added = await A.executeKanban({ action: "add", text: "wake me from here" }, linked);
+  assert.equal(added.ok, true, added.text);
+  const id = added.details.nextId - 1;
+  assert.equal(added.details.cards.find((c) => c.id === id).sessionId, linked.sessionId, "env session id names the card's session");
+
+  // The cwd alone carries no session: an add there stays unlinked.
+  const plain = await A.executeKanban({ action: "add", text: "no session here" }, env);
+  assert.equal(plain.details.cards.find((c) => c.id === plain.details.nextId - 1).sessionId, null);
+
+  // edit without `session` must not overwrite the id the card already has.
+  const edited = await A.executeKanban({ action: "edit", id, text: "renamed again" }, linked);
+  assert.equal(edited.details.cards.find((c) => c.id === id).sessionId, linked.sessionId);
+  const relinked = await A.executeKanban({ action: "edit", id, session: "s-explicit" }, linked);
+  assert.equal(relinked.details.cards.find((c) => c.id === id).sessionId, "s-explicit");
+});
+
 test("kanban: a long text keeps everything (head -> title, whole text -> body)", async () => {
   const long = `${"x".repeat(600)} tail`;
   const out = await A.executeKanban({ action: "add", text: long }, env);

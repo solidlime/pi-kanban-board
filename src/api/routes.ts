@@ -7,6 +7,8 @@
 //   - WIP limits are domain rules: they are enforced here with core.wipError, in addition
 //     to the repository's column check (repos does not know about WIP)
 import { createReadStream } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type http from "node:http";
 import { DomainError, fail, ok, type ErrorCode } from "../shared/errors.js";
 import type { Db } from "../persistence/db.js";
@@ -32,6 +34,8 @@ import { acquireLock, assertResource, assertTtlSeconds, listLocks, releaseLock }
 import { initialLoopState, startLoop, stopLoop } from "../core/loop.js";
 import { tickProject } from "../loop-runner.js";
 import { notifications } from "../core/notify.js";
+import { sessionCwd } from "../agent/driver.js";
+import { readSessions, sessionDirName } from "../core/sessions.js";
 import { clampSearchLimit, compareScored, searchBoardScored, type ScoredHit } from "../core/search.js";
 import {
   assertBody, assertBlockedReason, assertColumnId, assertDue, assertEstimate, assertId, assertLabels,
@@ -43,7 +47,7 @@ export const CAPABILITIES = [
   "meta", "selftest", "projects", "board", "timeline", "cards", "card.move", "card.delete",
   "dependencies", "deliverables",
   "columns.update", "views", "templates", "attachments", "search", "notifications", "graph", "overview", "loop",
-  "digest", "locks",
+  "digest", "locks", "sessions",
 ];
 
 const ACTOR = "ui";
@@ -343,7 +347,8 @@ async function patchCard(ctx: Ctx, m: RegExpExecArray): Promise<void> {
   if ("ref" in body) patch.ref = body.ref === null ? null : optText(body.ref, "ref", 2000) || null;
   // The digest reports landed commits, so the hash has to be writable from the API too.
   if ("commit" in body) patch.commit = body.commit === null ? null : optText(body.commit, "commit", 64) || null;
-
+  // The session a wake resumes. A card stores the id only; the picker shows the name it maps to.
+  if ("sessionId" in body) patch.sessionId = body.sessionId === null ? null : optText(body.sessionId, "sessionId", 128) || null;
   const card = updateCard(db, project.projectId, id, patch, { expectedVersion, actor: ACTOR });
   sendJson(ctx, 200, ok({ card }));
 }
@@ -727,6 +732,16 @@ function getGraph(ctx: Ctx): void {
   })));
 }
 
+// -------------------------------------------------------------- sessions
+// The card's session picker: a board's cwd names one folder of pi session files (src/core/sessions.ts
+// does the reading — a whole JSONL is tens of MB, so only its head and tail are read).
+async function getSessions(ctx: Ctx): Promise<void> {
+  const db = requireDb(ctx);
+  const project = projectOr404(db, str(ctx.url.searchParams.get("project"), "project"));
+  const dir = join(homedir(), ".pi", "agent", "sessions", sessionDirName(sessionCwd(project)));
+  sendJson(ctx, 200, ok({ sessions: await readSessions(dir) }));
+}
+
 /** Every project on one screen: the "総合管理" half of the board. */
 function getOverview(ctx: Ctx): void {
   const db = requireDb(ctx);
@@ -852,6 +867,7 @@ const routes: Route[] = [
   { m: "POST", re: /^\/api\/locks$/, h: postLock },
   { m: "DELETE", re: /^\/api\/locks\/([^/]+)$/, h: deleteLockRoute },
   { m: "GET", re: /^\/api\/overview$/, h: getOverview },
+  { m: "GET", re: /^\/api\/sessions$/, h: getSessions },
   { m: "GET", re: /^\/api\/loop$/, h: getLoopRoute },
   { m: "POST", re: /^\/api\/loop\/(start|stop|tick)$/, h: (ctx, m2) => postLoop(ctx, m2[1]) },
 ];
