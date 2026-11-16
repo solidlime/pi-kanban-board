@@ -245,7 +245,39 @@ export function mount(root: HTMLElement, h: Handlers): View {
   notifBtn.addEventListener('click', () => h.onTogglePane('notifications'));
 
   const status = el('div', 'status');
-  top.append(brand, pick, newForm, searchWrap, focusBtn, panelBtns.deliverables, panelBtns.timeline, overviewBtn, graphBtn, ganttBtn, viewsBtn, templatesBtn, notifBtn, el('div', 'grow'), status);
+  // Theme and density live on <html> as attributes, not in the store: they are presentation only,
+  // so a change must not go through a render pass. The keys are v1's on purpose — the two
+  // dashboards share an origin, and someone who picks light in one means it in the other.
+  const themeBtn = el('button', 'toggle theme');
+  const densityBtn = el('button', 'toggle density');
+  themeBtn.type = 'button';
+  themeBtn.title = 'ライト/ダークを切り替え（記憶する）';
+  densityBtn.type = 'button';
+  densityBtn.title = 'カードの詰まりを切り替え（記憶する）';
+  const applyTheme = (light: boolean): void => {
+    document.documentElement.setAttribute('data-theme', light ? 'light' : 'dark');
+    themeBtn.textContent = light ? 'テーマ: 明' : 'テーマ: 暗';
+  };
+  const applyDensity = (compact: boolean): void => {
+    document.documentElement.setAttribute('data-density', compact ? 'compact' : 'normal');
+    densityBtn.textContent = compact ? '密度: コンパクト' : '密度: 標準';
+  };
+  themeBtn.addEventListener('click', () => {
+    const light = document.documentElement.getAttribute('data-theme') !== 'light';
+    applyTheme(light);
+    try { localStorage.setItem('kb-theme', light ? 'light' : 'dark'); } catch { /* private mode: the choice lasts the session */ }
+  });
+  densityBtn.addEventListener('click', () => {
+    const compact = document.documentElement.getAttribute('data-density') !== 'compact';
+    applyDensity(compact);
+    try { localStorage.setItem('kb-density', compact ? 'compact' : 'normal'); } catch { /* private mode: the choice lasts the session */ }
+  });
+  try {
+    applyTheme(localStorage.getItem('kb-theme') === 'light');
+    applyDensity(localStorage.getItem('kb-density') === 'compact');
+  } catch { applyTheme(false); applyDensity(false); }
+
+  top.append(brand, pick, newForm, searchWrap, focusBtn, panelBtns.deliverables, panelBtns.timeline, overviewBtn, graphBtn, ganttBtn, viewsBtn, templatesBtn, notifBtn, themeBtn, densityBtn, el('div', 'grow'), status);
 
   const errBar = el('div', 'err');
   errBar.hidden = true;

@@ -571,7 +571,44 @@ function mount(root2, h) {
   notifBtn.append(notifCounts.danger, notifCounts.warn, notifCounts.info);
   notifBtn.addEventListener("click", () => h.onTogglePane("notifications"));
   const status = el2("div", "status");
-  top.append(brand, pick, newForm, searchWrap, focusBtn, panelBtns.deliverables, panelBtns.timeline, overviewBtn, graphBtn, ganttBtn, viewsBtn, templatesBtn, notifBtn, el2("div", "grow"), status);
+  const themeBtn = el2("button", "toggle theme");
+  const densityBtn = el2("button", "toggle density");
+  themeBtn.type = "button";
+  themeBtn.title = "\u30E9\u30A4\u30C8/\u30C0\u30FC\u30AF\u3092\u5207\u308A\u66FF\u3048\uFF08\u8A18\u61B6\u3059\u308B\uFF09";
+  densityBtn.type = "button";
+  densityBtn.title = "\u30AB\u30FC\u30C9\u306E\u8A70\u307E\u308A\u3092\u5207\u308A\u66FF\u3048\uFF08\u8A18\u61B6\u3059\u308B\uFF09";
+  const applyTheme = (light) => {
+    document.documentElement.setAttribute("data-theme", light ? "light" : "dark");
+    themeBtn.textContent = light ? "\u30C6\u30FC\u30DE: \u660E" : "\u30C6\u30FC\u30DE: \u6697";
+  };
+  const applyDensity = (compact) => {
+    document.documentElement.setAttribute("data-density", compact ? "compact" : "normal");
+    densityBtn.textContent = compact ? "\u5BC6\u5EA6: \u30B3\u30F3\u30D1\u30AF\u30C8" : "\u5BC6\u5EA6: \u6A19\u6E96";
+  };
+  themeBtn.addEventListener("click", () => {
+    const light = document.documentElement.getAttribute("data-theme") !== "light";
+    applyTheme(light);
+    try {
+      localStorage.setItem("kb-theme", light ? "light" : "dark");
+    } catch {
+    }
+  });
+  densityBtn.addEventListener("click", () => {
+    const compact = document.documentElement.getAttribute("data-density") !== "compact";
+    applyDensity(compact);
+    try {
+      localStorage.setItem("kb-density", compact ? "compact" : "normal");
+    } catch {
+    }
+  });
+  try {
+    applyTheme(localStorage.getItem("kb-theme") === "light");
+    applyDensity(localStorage.getItem("kb-density") === "compact");
+  } catch {
+    applyTheme(false);
+    applyDensity(false);
+  }
+  top.append(brand, pick, newForm, searchWrap, focusBtn, panelBtns.deliverables, panelBtns.timeline, overviewBtn, graphBtn, ganttBtn, viewsBtn, templatesBtn, notifBtn, themeBtn, densityBtn, el2("div", "grow"), status);
   const errBar = el2("div", "err");
   errBar.hidden = true;
   const loopBar = el2("section", "loop");

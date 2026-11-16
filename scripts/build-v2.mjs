@@ -4,7 +4,7 @@ import { build } from 'esbuild';
 
 await mkdir('web/dist', { recursive: true });
 await build({ entryPoints: ['web/src/app.ts'], outfile: 'web/dist/app.js', bundle: true, format: 'esm', platform: 'browser', sourcemap: false, target: ['es2022'] });
-const html = `<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Kanban v2</title><link rel="icon" type="image/svg+xml" href="./favicon.svg"><link rel="stylesheet" href="./app.css"></head><body><div id="app">Loading…</div><script type="module" src="./app.js"></script></body></html>`;
+const html = `<!doctype html><html lang="ja"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Kanban v2</title><link rel="icon" type="image/svg+xml" href="./favicon.svg"><link rel="stylesheet" href="./app.css"><script>/* Before the first paint: mount() runs after the module graph loads, which is already too late to keep a light user from seeing a dark frame. */try{if(localStorage.getItem("kb-theme")==="light")document.documentElement.dataset.theme="light";if(localStorage.getItem("kb-density")==="compact")document.documentElement.dataset.density="compact"}catch(e){}</script></head><body><div id="app">Loading…</div><script type="module" src="./app.js"></script></body></html>`;
 await writeFile('web/dist/index.html', html);
 await copyFile('docs/assets/logo.svg', 'web/dist/favicon.svg');
 const js = await readFile('web/dist/app.js', 'utf8');
