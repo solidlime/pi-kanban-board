@@ -31,7 +31,6 @@ import { deliverNotifications, parseSinkSetting, SINK_ENV } from "../core/notify
 import { acquireLock, assertResource, assertTtlSeconds, listLocks, releaseLock } from "../persistence/locks.js";
 import { initialLoopState, startLoop, stopLoop } from "../core/loop.js";
 import { tickProject } from "../loop-runner.js";
-import { wakeCardSession } from "../agent/driver.js";
 import { notifications } from "../core/notify.js";
 import { clampSearchLimit, compareScored, searchBoardScored, type ScoredHit } from "../core/search.js";
 import {
@@ -796,10 +795,8 @@ async function postLoop(ctx: Ctx, action: string): Promise<void> {
   const result = tickProject(db, project.projectId, now, ACTOR);
   // tickProject returns null for a loop that is not running: same CONFLICT tickLoop raises.
   if (!result) throw new DomainError("CONFLICT", `loop is ${current.status}: start it before ticking`, { status: current.status });
-  // The card is in DOING; a spawn that fails must not turn a successful tick into a 500.
-  if (result.moved) {
-    try { wakeCardSession(db, project, result.moved); } catch { /* the tick stands */ }
-  }
+  // Manual tick moves the card only: waking a session is the supervisor's job, so an HTTP
+  // call can never start a process (and a test can never spawn one by accident).
   const next = result.nextCardId === null ? null : listCards(db, project.projectId).find(c => c.id === result.nextCardId) ?? null;
   sendJson(ctx, 200, ok({ loop: result.loop, nextCard: next, moved: result.moved }));
 }

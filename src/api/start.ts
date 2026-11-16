@@ -14,7 +14,7 @@ import {
   type HomeState, type InitResult,
 } from "../persistence/init.js";
 import { createServer, type ServerDeps } from "./server.js";
-import { startSupervisor, type Supervisor } from "../supervisor.js";
+import { startSupervisor, type Supervisor, type Wake } from "../supervisor.js";
 import type http from "node:http";
 
 const repoRoot = path.resolve(import.meta.dirname, "../..");
@@ -28,6 +28,8 @@ export interface StartOptions {
   version?: string;
   /** Cross-board doing-loop heartbeat. Absent/0 = off (tests, and anyone who wants quiet). */
   loop?: { intervalMs?: number } | number | false;
+  /** Test seam: the heartbeat must not launch a real pi process. */
+  wake?: Wake;
   /** Token gate for the HTTP surface. Default: KANBAN_AUTH=on, else off. */
   auth?: boolean;
   /** Initialize a home that is not v2 yet. Default true; false keeps the old 503 refusal. */
@@ -105,7 +107,9 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   // No DB, no loop: an uninitialized home has nowhere to record a tick.
   const loopOpt = opts.loop;
   const loopMs = typeof loopOpt === "number" ? loopOpt : loopOpt === false || loopOpt === undefined ? 0 : loopOpt.intervalMs ?? 0;
-  const supervisor = db && loopMs > 0 ? startSupervisor(db, { intervalMs: loopMs }) : null;
+  const supervisor = db && loopMs > 0
+    ? startSupervisor(db, { intervalMs: loopMs, ...(opts.wake === undefined ? {} : { wake: opts.wake }) })
+    : null;
   return {
     server, db, home, state, token, buildHash, webRoot,
     host: addr.address,

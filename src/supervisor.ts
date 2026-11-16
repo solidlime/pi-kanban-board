@@ -21,8 +21,11 @@ export interface LoopTickReport {
   haltReason: string | null;
 }
 
-/** One pass over every board. Pure-ish: only loop_state and the timeline move. */
-export function tickAllLoops(db: Db, now: string = new Date().toISOString()): LoopTickReport[] {
+/** Injection point: tests pass a no-op so a tick never launches a real pi process. */
+export type Wake = typeof wakeCardSession;
+
+/** One pass over every board. Moves loop_state, the timeline and (via wake) one session. */
+export function tickAllLoops(db: Db, now: string = new Date().toISOString(), wake: Wake = wakeCardSession): LoopTickReport[] {
   const out: LoopTickReport[] = [];
   for (const project of listProjects(db)) {
     // One board throwing (SQLITE_BUSY, a row that will not parse) must not eat the other
@@ -32,7 +35,7 @@ export function tickAllLoops(db: Db, now: string = new Date().toISOString()): Lo
       if (!result) continue; // not running, or the project vanished between the two reads
       if (result.moved) {
         // A board that cannot spawn (no pi on PATH, no cwd) still reports its tick.
-        try { wakeCardSession(db, project, result.moved); } catch { /* retried next pass */ }
+        try { wake(db, project, result.moved); } catch { /* retried next pass */ }
       }
       out.push({
         projectId: project.projectId, slug: project.slug, status: result.loop.status,
@@ -58,6 +61,8 @@ export interface SupervisorOptions {
   setInterval?: (fn: () => void, ms: number) => unknown;
   clearInterval?: (h: unknown) => void;
   tickOnce?: (now?: string) => LoopTickReport[];
+  /** Test seam: the heartbeat must not launch a real pi process in tests. */
+  wake?: Wake;
 }
 
 /**
@@ -66,7 +71,7 @@ export interface SupervisorOptions {
  */
 export function startSupervisor(db: Db, opts: SupervisorOptions = {}): Supervisor {
   const intervalMs = opts.intervalMs ?? SUPERVISOR_INTERVAL_MS;
-  const tickOnce = opts.tickOnce ?? ((now?: string) => tickAllLoops(db, now));
+  const tickOnce = opts.tickOnce ?? ((now?: string) => tickAllLoops(db, now, opts.wake));
   const set = opts.setInterval ?? ((fn: () => void, ms: number) => setInterval(fn, ms));
   const clear = opts.clearInterval ?? ((h: unknown) => clearInterval(h as ReturnType<typeof setInterval>));
   const safeTick = (now?: string): LoopTickReport[] => {

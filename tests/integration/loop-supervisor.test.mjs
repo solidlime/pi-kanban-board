@@ -15,7 +15,7 @@ async function boot(t, opts = {}) {
   const dir = await mkdtemp(path.join(tmpdir(), "kb-loop-"));
   const home = path.join(dir, ".pi", "kanban");
   await executeInit(planInit(new Date(), home), { confirmed: true });
-  const run = await startServer({ home, port: 0, ...opts });
+  const run = await startServer({ home, port: 0, wake: () => null, ...opts });
   t.after(() => run.close());
   const base = run.url.replace(/\/$/, "");
   const call = async (method, p, body) => {
@@ -38,7 +38,7 @@ test("one pass ticks every running board and leaves idle ones alone", async (t) 
   await call("POST", "/api/loop/start", { project: "alpha" });
   await call("POST", "/api/loop/start", { project: "beta" });
 
-  const reports = tickAllLoops(run.db);
+  const reports = tickAllLoops(run.db, undefined, () => null);
   assert.deepEqual(reports.map(r => r.slug).sort(), ["alpha", "beta"], "gamma was never started, so it is not ticked");
   for (const r of reports) {
     assert.equal(r.status, "running");
@@ -66,14 +66,14 @@ test("a board that drains halts, and the other board keeps ticking", async (t) =
   await call("POST", "/api/loop/start", { project: "busy" });
   await call("POST", "/api/loop/start", { project: "drained" });
 
-  const first = tickAllLoops(run.db);
+  const first = tickAllLoops(run.db, undefined, () => null);
   const drained = first.find(r => r.slug === "drained");
   const busy = first.find(r => r.slug === "busy");
   assert.equal(drained.status, "halted");
   assert.match(drained.haltReason, /ready/);
   assert.equal(busy.status, "running");
 
-  const second = tickAllLoops(run.db);
+  const second = tickAllLoops(run.db, undefined, () => null);
   assert.equal(second.some(r => r.slug === "drained"), false, "a halted loop is not ticked again");
   assert.equal(second.find(r => r.slug === "busy").ticks, 2, "the halted board did not stop this one");
 });
