@@ -14,6 +14,10 @@ export interface TickProjectResult {
   moved: Card | null;
   /** "halted" when this tick stopped the loop (stuck card, no ready card, budget spent). */
   reason: "halted" | null;
+  /** Who is in DOING when this tick ends — moved now, or left over from an earlier tick. The
+   *  supervisor wakes this card: a card can sit here with no writer (a wake that refused, a
+   *  process that died, a restart), and nothing else in the system would retry it. */
+  doingCardId: EntityId | null;
 }
 
 /** null when the loop is not running (or the board is gone): nothing to tick. */
@@ -30,7 +34,7 @@ export function tickProject(db: Db, projectId: ProjectId, now = new Date().toISO
   if (stuck) {
     const reason = `DOING の #${stuck.card.id} が ${stuck.days} 日動いていない`;
     const saved = saveLoop(db, stopLoop(loop, now, reason), actor, "loop.halted");
-    return { loop: saved, nextCardId: null, moved: null, reason: "halted" };
+    return { loop: saved, nextCardId: null, moved: null, reason: "halted", doingCardId: stuck.card.id };
   }
   const result = tickLoop(loop, {
     columns: snapshot.columns, cards: snapshot.cards, deps: snapshot.dependencies ?? [], now, maxLoops: settings.maxLoops,
@@ -47,5 +51,6 @@ export function tickProject(db: Db, projectId: ProjectId, now = new Date().toISO
     }
   }
   const saved = saveLoop(db, result.state, actor, "loop.tick");
-  return { loop: saved, nextCardId: result.nextCardId, moved, reason: result.reason };
+  const standing = doing === undefined ? undefined : snapshot.cards.find(c => c.columnId === doing.id);
+  return { loop: saved, nextCardId: result.nextCardId, moved, reason: result.reason, doingCardId: moved?.id ?? standing?.id ?? null };
 }

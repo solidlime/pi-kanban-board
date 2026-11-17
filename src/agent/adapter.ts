@@ -14,10 +14,11 @@ import { detectState, initHomeIfNeeded, kanbanHome, openHomeDatabase, readToken,
 import { schemaVersion } from "../persistence/migrations.js";
 import {
   createAttachment, createCard, createDeliverable, createProject, deleteCard, deleteDeliverable, digestInput,
-  getLoop, getProjectBySlug, listCards, listColumns, listDeliverables, listProjects, moveCard, peekNextId,
+  getLoop, getProject, getProjectBySlug, listCards, listColumns, listDeliverables, listProjects, moveCard, peekNextId,
   saveLoop, updateCard, updateDeliverable, type UpdateCardPatch,
 } from "../persistence/repos.js";
 import type { RunningServer } from "../api/start.js";
+import { wakeCardSession } from "./driver.js";
 import { columnsByOrd } from "../core/project.js";
 import { sortCards } from "../core/card.js";
 import { assertBlockedReason, assertLabels, assertPriority, assertTitle, invalid, TITLE_MAX } from "../core/validation.js";
@@ -515,6 +516,12 @@ export async function executeKanban(args: KanbanArgs, env: Env): Promise<Result>
       if (args.col === undefined || args.col === "") return fail(scope, "move requires col (todo | doing | done | <column id>)");
       const column = resolveColumn(db, projectId, args.col);
       const card = moveCard(db, projectId, id, column.id, { actor });
+      // `/kanban move <id> doing` is the same request a drop is: run it. Not awaited — a
+      // pi-web wake takes seconds and the command must answer now; the supervisor retries.
+      if (column.kind === "doing") {
+        const project = getProject(db, projectId);
+        if (project) void wakeCardSession(db, project, card).catch(() => { /* retried next tick */ });
+      }
       return { ok: true, text: `moved #${card.id} to ${column.id} (project ${projectId})`, details: details(listCards(db, projectId)) };
     }
     case "remove": {

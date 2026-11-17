@@ -25,31 +25,17 @@ const nowIso = (): string => new Date().toISOString();
  */
 function assertWip(db: Db, projectId: ProjectId, columnId: string, excludeCardId?: EntityId): void {
   const col = getColumn(db, projectId, columnId);
-  if (!col || col.wipLimit === null) return;
+  if (!col) return;
+  // DOING ships with no wipLimit, and "no limit" there is not "unlimited": one card is what
+  // makes a board a board. A column that sets a limit outranks this default.
+  const limit = col.wipLimit ?? (col.kind === "doing" ? 1 : null);
+  if (limit === null) return;
   const inColumn = one<{ n: number }>(db,
     "SELECT COUNT(*) AS n FROM card WHERE project_id = ? AND column_id = ? AND id <> ?",
     projectId, columnId, excludeCardId ?? -1)?.n ?? 0;
-  if (inColumn >= col.wipLimit) {
-    throw new DomainError("WIP_LIMIT", `column "${col.name}" is at its WIP limit (${col.wipLimit})`,
-      { columnId, limit: col.wipLimit, count: inColumn });
-  }
-}
-
-/**
- * DOING holds exactly one card, and that is not a wipLimit setting: it is what makes a board a
- * board. It has to be checked here, inside the mover's transaction, because loop-runner reads
- * "is DOING empty" and writes in two separate transactions — two overlapping ticks both find it
- * empty, and `assertWip` lets them through since the default doing column has no limit.
- */
-function assertSingleDoing(db: Db, projectId: ProjectId, col: ColumnDef, cardId: EntityId): void {
-  if (col.kind !== "doing") return;
-  const other = one<{ id: number }>(db,
-    "SELECT id FROM card WHERE project_id = ? AND id <> ? AND column_id IN " +
-    "(SELECT id FROM column_def WHERE project_id = ? AND kind = 'doing') LIMIT 1",
-    projectId, cardId, projectId);
-  if (other) {
-    throw new DomainError("WIP_LIMIT", `column "${col.name}" already holds card #${other.id}: DOING takes one card`,
-      { columnId: col.id, limit: 1, count: 1 });
+  if (inColumn >= limit) {
+    throw new DomainError("WIP_LIMIT", `column "${col.name}" is at its WIP limit (${limit})`,
+      { columnId, limit, count: inColumn });
   }
 }
 
@@ -375,7 +361,6 @@ export function moveCard(db: Db, projectId: ProjectId, id: EntityId, toColumnId:
     // no timeline event, and above all no 409 for a drag the user did not make.
     if (cur.columnId === toColumnId) return cur;
     assertWip(db, projectId, toColumnId, id);
-    assertSingleDoing(db, projectId, col, id);
     const at = nowIso();
     run(db, "UPDATE card SET column_id = ?, moved_at = ?, updated_at = ?, closed_at = ?, version = version + 1 WHERE project_id = ? AND id = ?",
       toColumnId, at, at, col.kind === "done" ? at : null, projectId, id);

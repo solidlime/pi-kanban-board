@@ -50,6 +50,23 @@ test("moveCard: re-entering DOING with the card already there is still a no-op, 
   assert.equal(same.movedAt, cur.movedAt);
 });
 
+test("DOING takes one card by default, and only DOING has that default", (t) => {
+  const db = freshDb(t);
+  assert.equal(R.getColumn(db, "p", "doing").wipLimit, null, "the shipped doing column stores no limit");
+  R.createCard(db, { projectId: "p", columnId: "doing", title: "first" });
+  assert.equal(domainCode(() => R.createCard(db, { projectId: "p", columnId: "doing", title: "second" })), "WIP_LIMIT",
+    "one card is what makes a board a board, not a setting");
+
+  // A column that sets a limit outranks the default, so two can be in flight on purpose.
+  R.updateColumn(db, "p", "doing", { wipLimit: 2 });
+  assert.equal(R.createCard(db, { projectId: "p", columnId: "doing", title: "second" }).columnId, "doing");
+
+  // Every other column stays unlimited unless it asks.
+  R.createCard(db, { projectId: "p", columnId: "todo", title: "a" });
+  assert.equal(domainCode(() => R.createCard(db, { projectId: "p", columnId: "todo", title: "b" })), null);
+  assert.equal(R.listCards(db, "p", { columnId: "todo" }).length, 2, "todo has no default limit");
+});
+
 const card = (id, columnId, movedAt, updatedAt) => ({
   projectId: "p", id, columnId, title: `c${id}`, body: "", priority: 0,
   owner: null, due: null, estimate: null, blockedReason: null, labels: [],

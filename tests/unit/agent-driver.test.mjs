@@ -122,8 +122,7 @@ test("spawn gets -p, the session id, a name and the board cwd", async (t) => {
 
 test("an existing card session is resumed with --session, not re-minted", async (t) => {
   const db = memDb(t);
-  const { project } = board(db, "resume-board");
-  const card = createCard(db, { projectId: project.projectId, columnId: "doing", title: "続きをやる" });
+  const { project, card } = board(db, "resume-board");
   const sid = "b7c1d2e3-1111-2222-3333-444455556666";
   const { updateCard } = repos;
   updateCard(db, project.projectId, card.id, { sessionId: sid }, { actor: "test" });
@@ -439,4 +438,34 @@ test("a snapshot that says doing is refused once the card is done", async (t) =>
   assert.equal(await wakeCardSession(db, project, card, { spawn, fetch: noPiWeb }), null,
     "a stale snapshot is not a licence to run a closed card");
   assert.equal(calls.length, 0);
+});
+
+test("forgetCard frees the board once its card is gone", async (t) => {
+  const db = memDb(t);
+  const project = createProject(db, { slug: "forget-board" });
+  const first = createCard(db, { projectId: project.projectId, columnId: "doing", title: "消える" });
+  const { calls, child, spawn } = fakeSpawn(process.pid + 800001);
+  const out = await wakeCardSession(db, project, first, { spawn, fetch: noPiWeb });
+  assert.ok(out);
+  const { runningWakes, forgetCard } = await import("../../src/agent/driver.ts");
+  // The map is process-wide and earlier tests in this file leave their fake children in it.
+  const mine = () => runningWakes().filter((e) => e.projectId === project.projectId);
+  assert.deepEqual(mine().map((e) => [e.cardId, e.pid]), [[first.id, child.pid]],
+    "the process says which card it believes it is running");
+
+  // DOING takes one card, so the next one can only arrive after the first has left it.
+  repos.moveCard(db, project.projectId, first.id, "done", { actor: "test" });
+  const second = createCard(db, { projectId: project.projectId, columnId: "doing", title: "次" });
+  assert.equal(await wakeCardSession(db, project, second, { spawn, fetch: noPiWeb }), null,
+    "the board still believes the first child owns it");
+  forgetCard(project.projectId, first.id + 999);
+  assert.equal(await wakeCardSession(db, project, second, { spawn, fetch: noPiWeb }), null,
+    "forgetting a different card changes nothing");
+  assert.equal(calls.length, 1, "no second process yet");
+
+  forgetCard(project.projectId, first.id);
+  assert.deepEqual(mine(), [], "the forgotten card is no longer claimed");
+  const woken = await wakeCardSession(db, project, second, { spawn, fetch: noPiWeb });
+  assert.equal(woken?.via, "pi", "once the stale entry is gone the next card runs");
+  assert.equal(calls.length, 2);
 });

@@ -278,7 +278,7 @@ test("search: title, body and #id hits, deliverables included", async (t) => {
   assert.equal(byBody[0].id, a.id);
   assert.match(byBody[0].snippet, /金曜/);
 
-  const byId = (await call("GET", "/api/search?project=s&q=%23" + a.id)).data.hits;
+  const byId = (await call("GET", `/api/search?project=s&q=%23${a.id}`)).data.hits;
   assert.equal(byId[0].id, a.id, "an id query wins over substring matches");
 
   assert.deepEqual((await call("GET", "/api/search?project=s&q=")).data.hits, []);
@@ -301,7 +301,8 @@ test("notifications: overdue, blocked, deps, wip and acceptance all surface", as
   const accepted = (await call("POST", "/api/cards", { project: "n", title: "almost", body: "- [x] one\n- [ ] two" })).data.card;
   await call("POST", `/api/cards/n/${accepted.id}/move`, { columnId: "done", version: accepted.version });
 
-  // wip: two cards are allowed in, then the limit drops below the count
+  // wip: the limit is raised to two, two cards go in, then the limit drops below the count
+  await call("PATCH", "/api/columns/n/doing", { wipLimit: 2 });
   await call("POST", "/api/cards", { project: "n", title: "in flight", columnId: "doing" });
   await call("POST", "/api/cards", { project: "n", title: "second flight", columnId: "doing" });
   assert.equal((await call("PATCH", "/api/columns/n/doing", { wipLimit: 1 })).data.column.wipLimit, 1,
@@ -498,7 +499,7 @@ test("card sessionId: writable on PATCH, \"\" clears it, and the picker lists no
 // seek); `/view` wraps them in the smallest page that makes each kind readable.
 test("a manual move into DOING wakes the card's session; any other move does not", async (t) => {
   const woke = [];
-  const wake = async (db, project, card) => { woke.push(`${project.slug}#${card.id}`); return null; };
+  const wake = async (_db, project, card) => { woke.push(`${project.slug}#${card.id}`); return null; };
   const { call } = await server(t, { wake });
   await call("POST", "/api/projects", { slug: "wk" });
   const card = (await call("POST", "/api/cards", { project: "wk", title: "run me" })).data.card;
@@ -565,7 +566,7 @@ test("deliverable file: raw bytes, Range seek, and 404 for a missing, directory 
   assert.equal((await getBytes(`/api/deliverables/dv/${gone.id}/file`)).status, 404, "ref does not exist");
   const asDir = await add("dir", dir);
   assert.equal((await getBytes(`/api/deliverables/dv/${asDir.id}/file`)).status, 404, "a directory is not a file");
-  const trav = await add("trav", dir + "/../../../../../../etc/passwd");
+  const trav = await add("trav", `${dir}/../../../../../../etc/passwd`);
   assert.equal((await getBytes(`/api/deliverables/dv/${trav.id}/file`)).status, 404, "`..` never resolves");
 });
 
@@ -624,4 +625,58 @@ test("deliverable view: md is rendered, html passes through, media gets its elem
   assert.equal((await getText(`/api/deliverables/vw/${binId}/view`)).text.includes("<script"), false, "no dashboard js");
   assert.equal((await getText("/api/deliverables/vw/999/view")).status, 404);
   assert.equal((await getText(`/api/deliverables/vw/${(await add("gone", path.join(dir, "x.md"))).id}/view`)).status, 404);
+});
+
+// Every door into DOING is a request to run the card, and exactly one wake per door: a second
+// prompt for a card already running just refills pi-web's queue.
+test("a wake fires for each door into DOING, and for no other write", async (t) => {
+  const woke = [];
+  const wake = async (_db, project, card) => { woke.push(`${project.slug}#${card.id}`); return null; };
+  const { call } = await server(t, { wake });
+
+  // 1. a card created straight into DOING
+  await call("POST", "/api/projects", { slug: "door" });
+  const born = (await call("POST", "/api/cards", { project: "door", title: "born doing", columnId: "doing" })).data.card;
+  assert.deepEqual(woke, [`door#${born.id}`], "creating a card in DOING is the same request a drop is");
+
+  // 2. a card created without a column stays in TODO: nothing to run
+  await call("POST", "/api/cards", { project: "door", title: "just todo" });
+  assert.equal(woke.length, 1, "a card nobody put in DOING is not run");
+
+  // 3. the loop's own tick moved a card into DOING
+  await call("POST", "/api/projects", { slug: "runner" });
+  const ready = (await call("POST", "/api/cards", { project: "runner", title: "loop me" })).data.card;
+  await call("POST", "/api/loop/start", { project: "runner" });
+  const ticked = (await call("POST", "/api/loop/tick", { project: "runner" })).data;
+  assert.equal(ticked.moved.id, ready.id, "the tick moved the ready card");
+  assert.deepEqual(woke, [`door#${born.id}`, `runner#${ready.id}`], "a tick with no supervisor behind it still wakes what it moved");
+
+  // 4. a move into the column the card is already in is a no-op, not a second run
+  const same = await call("POST", `/api/cards/runner/${ready.id}/move`, { columnId: "doing", version: ticked.moved.version });
+  assert.equal(same.status, 200);
+  assert.equal(woke.length, 2, "re-dropping a card into its own column does not wake it again");
+
+  // 5. a move anywhere else is not a run
+  const done = await call("POST", `/api/cards/runner/${ready.id}/move`, { columnId: "done", version: same.data.card.version });
+  assert.equal(done.data.card.columnId, "done");
+  assert.equal(woke.length, 2, "moving out of DOING does not wake anything");
+});
+
+// #25: the loop route is the one place to ask "who does this process think it is running".
+test("the loop route reports the wakes this process believes are running", async (t) => {
+  const { call } = await server(t, { wake: async () => null });
+  await call("POST", "/api/projects", { slug: "diag" });
+  const card = (await call("POST", "/api/cards", { project: "diag", title: "who runs" })).data.card;
+  await call("POST", `/api/cards/diag/${card.id}/move`, { columnId: "doing", version: card.version });
+
+  const loop = (await call("GET", "/api/loop?project=diag")).data.loop;
+  assert.ok(Array.isArray(loop.running), "the response names the running wakes, even when there are none");
+  for (const e of loop.running) {
+    assert.equal(typeof e.projectId, "string");
+    assert.equal(typeof e.cardId, "number");
+    assert.equal(typeof e.startedAt, "number");
+  }
+  // The wake here is a spy, so no child was spawned and nothing is running. Format is what is
+  // asserted above; the entries themselves are covered by tests/unit/agent-driver.test.mjs.
+  assert.deepEqual(loop.running.filter((e) => e.projectId === "diag"), []);
 });

@@ -114,6 +114,9 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   const supervisor = db && loopMs > 0
     ? startSupervisor(db, { intervalMs: loopMs, ...(opts.wake === undefined ? {} : { wake: opts.wake }) })
     : null;
+  // createServer already holds this object, so a later field is what a live route reads: the
+  // saved interval re-arms the timer instead of waiting for a restart nobody performs.
+  deps.restartSupervisor = (ms: number): void => { if (ms > 0) supervisor?.restart(ms); else supervisor?.stop(); };
   return {
     server, db, home, state, token, buildHash, webRoot,
     host: addr.address,

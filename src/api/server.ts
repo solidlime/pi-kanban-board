@@ -28,6 +28,8 @@ export interface ServerDeps {
   loopMs: number;
   /** Wake a DOING card's session after a manual move. Absent = the board never wakes. */
   wake?: Wake;
+  /** Re-arm the supervisor's timer when the saved interval changes. Absent = restart needed. */
+  restartSupervisor?: (ms: number) => void;
 }
 
 const MIME: Record<string, string> = {

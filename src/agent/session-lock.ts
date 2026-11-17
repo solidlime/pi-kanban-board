@@ -21,9 +21,19 @@ const EXTERNAL_WRITE_WINDOW_MS = 120_000;
 const PIWEB_DEFAULT_URL = "http://127.0.0.1:8787";
 const PIWEB_TIMEOUT_MS = 1000;
 
+const LOOPBACK = /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(?::\d+)?\/?$/;
+let warnedRemote = false;
+
 /** The pi-web this board talks to: an explicit url, else KANBAN_PIWEB_URL, else the local port. */
 export function piWebUrl(url?: string): string {
-  return (url ?? process.env.KANBAN_PIWEB_URL ?? PIWEB_DEFAULT_URL).replace(/\/+$/, "");
+  const raw = (url ?? process.env.KANBAN_PIWEB_URL ?? PIWEB_DEFAULT_URL).replace(/\/+$/, "");
+  // A remote pi-web writes on another machine: this host's JSONL mtime says nothing about it,
+  // so the fallback below silently stops working. Say so once instead of missing it forever.
+  if (!warnedRemote && !LOOPBACK.test(raw)) {
+    warnedRemote = true;
+    console.error(`[kanban] KANBAN_PIWEB_URL points at ${raw}, which is not this machine: the JSONL writer fallback cannot see its writers`);
+  }
+  return raw;
 }
 
 export interface SessionLock {

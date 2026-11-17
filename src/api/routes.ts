@@ -18,7 +18,7 @@ import type { HomeState } from "../persistence/init.js";
 import {
   attachmentBlobName, createAttachment, createCard, createCardFromTemplate, createDeliverable, createProject,
   createTemplate, createView, deleteAttachment, deleteCard, deleteDeliverable, deleteTemplate, deleteView,
-  getAttachment, getColumn, getDeliverable, getLoop, getLoopSettings, getProject, getProjectBySlug, listAttachments,
+  getAttachment, getCard, getColumn, getDeliverable, getLoop, getLoopSettings, getProject, getProjectBySlug, listAttachments,
   listCards, listColumns,
   listDeliverables, listDependencies, listProjects, listTemplates, listTimeline, listViews, moveCard,
   readBoard, removeDependency, saveLoop, saveLoopSettings, updateCard, updateColumn, updateView, addDependency, digestInput,
@@ -37,7 +37,7 @@ import { initialLoopState, startLoop, stopLoop } from "../core/loop.js";
 import { tickProject } from "../loop-runner.js";
 import type { Wake } from "../supervisor.js";
 import { notifications } from "../core/notify.js";
-import { sessionDirOf } from "../agent/driver.js";
+import { forgetCard, runningWakes, sessionDirOf } from "../agent/driver.js";
 import { readSessions } from "../core/sessions.js";
 import { clampSearchLimit, compareScored, searchBoardScored, type ScoredHit } from "../core/search.js";
 import { parseQuickAdd } from "../core/quickadd.js";
@@ -73,6 +73,8 @@ export interface Ctx {
   loopMs: number;
   /** Wake a DOING card's session after a manual move. Absent = the board never wakes. */
   wake?: Wake;
+  /** Re-arm the supervisor when the saved interval changes; absent means the caller tests only. */
+  restartSupervisor?: (ms: number) => void;
 }
 
 /** A transport-level failure (status is not derivable from the domain ErrorCode alone). */
@@ -339,6 +341,8 @@ async function postCard(ctx: Ctx): Promise<void> {
     labels: assertLabels(body.labels),
     blockedReason: assertBlockedReason(body.blockedReason),
   }, ACTOR);
+  // A card created straight into DOING is the same request a drop is: run it.
+  fireWake(ctx, db, project, card);
   sendJson(ctx, 201, ok({ card }));
 }
 
@@ -369,6 +373,17 @@ async function patchCard(ctx: Ctx, m: RegExpExecArray): Promise<void> {
   sendJson(ctx, 200, ok({ card }));
 }
 
+/**
+ * A wake reaches pi-web, which may take a while to start the session: never await it here. A
+ * failed wake is logged, not thrown — the supervisor's pass is the retry.
+ */
+function fireWake(ctx: Ctx, db: Db, project: Parameters<Wake>[1], card: Parameters<Wake>[2]): void {
+  if (!ctx.wake || getColumn(db, project.projectId, card.columnId)?.kind !== "doing") return;
+  void ctx.wake(db, project, card).catch((err: unknown) => {
+    console.error(`[kanban] wake ${project.slug}#${card.id} failed:`, err instanceof Error ? err.message : err);
+  });
+}
+
 async function postCardMove(ctx: Ctx, m: RegExpExecArray): Promise<void> {
   const db = requireDb(ctx);
   const project = projectOr404(db, decodeSegment(m[1]));
@@ -379,15 +394,11 @@ async function postCardMove(ctx: Ctx, m: RegExpExecArray): Promise<void> {
 
   // WIP and the same-column no-op live in repos.moveCard, so templates and the agent
   // adapter hit the same rule as this route.
+  const before = getCard(db, project.projectId, id);
   const card = moveCard(db, project.projectId, id, columnId, { expectedVersion, actor: ACTOR });
-  // A card dropped into DOING is a request to run it, so the HTTP move wakes like the
-  // supervisor's tick does. The wake is not awaited: it reaches pi-web, which may take a while
-  // to start a session, and the drop must not wait on it. A failed wake is logged, not thrown.
-  if (ctx.wake && getColumn(db, project.projectId, columnId)?.kind === "doing") {
-    void ctx.wake(db, project, card).catch((err: unknown) => {
-      console.error(`[kanban] wake ${project.slug}#${card.id} failed:`, err instanceof Error ? err.message : err);
-    });
-  }
+  // A drop into the column the card is already in is a no-op, not a second run: waking it
+  // would only refill the queue with the prompt the running session already has.
+  if (before?.columnId !== columnId) fireWake(ctx, db, project, card);
   sendJson(ctx, 200, ok({ card }));
 }
 
@@ -400,6 +411,8 @@ async function deleteCardRoute(ctx: Ctx, m: RegExpExecArray): Promise<void> {
   const expectedVersion = raw === undefined ? undefined : assertVersion(Number(raw));
 
   deleteCard(db, project.projectId, id, { expectedVersion, actor: ACTOR });
+  // The watcher entry outliving its card would make every later wake for this board look busy.
+  forgetCard(project.projectId, id);
   sendJson(ctx, 200, ok({ deleted: { projectId: project.projectId, id } }));
 }
 
@@ -985,7 +998,10 @@ function getLoopRoute(ctx: Ctx): void {
   const nextTickAt = loop.status === "running" && ctx.loopMs > 0 && loop.lastTickAt
     ? new Date(Date.parse(loop.lastTickAt) + ctx.loopMs).toISOString()
     : null;
-  sendJson(ctx, 200, ok({ loop: { ...loop, nextTickAt } }));
+  // `running` answers the one question the loop row cannot: a wake this process started and has
+  // not seen end. Without it a card sitting in DOING looks the same whether a child owns it or
+  // the wake was refused, and the retry below is invisible from outside.
+  sendJson(ctx, 200, ok({ loop: { ...loop, nextTickAt, running: runningWakes() } }));
 }
 
 /**
@@ -996,14 +1012,20 @@ function getLoopSettingsRoute(ctx: Ctx): void {
   const db = requireDb(ctx);
   // KANBAN_LOOP_MS is the default for a home that never saved one; the saved value wins.
   const fallback = ctx.loopMs > 0 ? { intervalMs: ctx.loopMs } : {};
-  sendJson(ctx, 200, ok({ ...getLoopSettings(db, fallback), intervalAppliesOnRestart: true }));
+  // Only a server that can re-arm its timer may say a change takes effect now.
+  const appliesLater = ctx.restartSupervisor === undefined;
+  sendJson(ctx, 200, ok({ ...getLoopSettings(db, fallback), intervalAppliesOnRestart: appliesLater }));
 }
 
-/** A partial update. `intervalAppliesOnRestart` is honest: the running timer is not re-armed. */
+/** A partial update. The timer is re-armed here; `true` means this server has no timer to arm. */
 async function patchLoopSettings(ctx: Ctx): Promise<void> {
   const db = requireDb(ctx);
   const settings = saveLoopSettings(db, await readJson(ctx) as Partial<LoopSettings>);
-  sendJson(ctx, 200, ok({ ...settings, intervalAppliesOnRestart: true }));
+  // The saved interval only matters if the timer picks it up: re-arm instead of asking for a
+  // restart, which nobody does and every board then keeps ticking at the old cadence.
+  const appliesLater = ctx.restartSupervisor === undefined;
+  ctx.restartSupervisor?.(settings.intervalMs);
+  sendJson(ctx, 200, ok({ ...settings, intervalAppliesOnRestart: appliesLater }));
 }
 
 /**
@@ -1032,8 +1054,9 @@ async function postLoop(ctx: Ctx, action: string): Promise<void> {
   const result = tickProject(db, project.projectId, now, ACTOR);
   // tickProject returns null for a loop that is not running: same CONFLICT tickLoop raises.
   if (!result) throw new DomainError("CONFLICT", `loop is ${current.status}: start it before ticking`, { status: current.status });
-  // An HTTP tick moves the card only: the supervisor's pass is what wakes a session there.
-  // A manual move into DOING does wake (postCardMove) — that is the user asking for it.
+  // An HTTP tick wakes the card it moved: the supervisor is not the only caller, and a tick
+  // with no supervisor behind it would otherwise move a card into DOING and leave it there.
+  if (result.moved) fireWake(ctx, db, project, result.moved);
   const next = result.nextCardId === null ? null : listCards(db, project.projectId).find(c => c.id === result.nextCardId) ?? null;
   sendJson(ctx, 200, ok({ loop: result.loop, nextCard: next, moved: result.moved }));
 }

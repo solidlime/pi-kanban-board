@@ -8,7 +8,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Db } from "../persistence/db.js";
 import type { Card, Project } from "../shared/dto.js";
-import type { ProjectId } from "../shared/ids.js";
+import type { EntityId, ProjectId } from "../shared/ids.js";
 import { getCard, getColumn, updateCard } from "../persistence/repos.js";
 import { parseAcceptance } from "../core/acceptance.js";
 import { sessionDirName } from "../core/sessions.js";
@@ -28,6 +28,16 @@ export function sessionCwd(project: Project): string {
  * board can write) from the human speaking now. It stays in the message, not a system header:
  * a prefix that changes every turn would miss the prompt cache (same reason as `[NOUS STATE]`).
  */
+/** A card body is user input: 200,000 characters in a prompt is a paper cut, not a spec. */
+const MAX_PROMPT_BODY = 4000;
+
+function clipForPrompt(body: string | null | undefined): string {
+  const text = body?.trim() ?? "";
+  if (text === "") return "（なし）";
+  if (text.length <= MAX_PROMPT_BODY) return text;
+  return `${text.slice(0, MAX_PROMPT_BODY)}\n…（残り ${text.length - MAX_PROMPT_BODY} 文字は card get で読むこと）`;
+}
+
 export function buildCardPrompt(project: Project, card: Card): string {
   const acceptance = parseAcceptance(card.body);
   const criteria = acceptance.length === 0
@@ -43,7 +53,7 @@ export function buildCardPrompt(project: Project, card: Card): string {
     `project: ${project.slug}`,
     `card id: ${card.id}`,
     `title: ${card.title}`,
-    `body: ${card.body?.trim() || "（なし）"}`,
+    `body: ${clipForPrompt(card.body)}`,
     `受け入れ条件:`,
     criteria,
     ``,
@@ -55,7 +65,21 @@ export function buildCardPrompt(project: Project, card: Card): string {
 }
 
 /** One live child per board: a second DOING card on the same board waits for the first. */
-const running = new Map<ProjectId, { child: ChildProcess; startedAt: number }>();
+const running = new Map<ProjectId, { child: ChildProcess; startedAt: number; cardId: EntityId }>();
+
+/**
+ * The card is gone (deleted, or moved off the board): drop its watcher entry so the next wake
+ * is not refused on behalf of a card nobody can see. The process is left alone — killing a
+ * turn loses whatever it was writing, and its own kanban call now fails with NOT_FOUND.
+ */
+export function forgetCard(projectId: ProjectId, cardId: EntityId): void {
+  if (running.get(projectId)?.cardId === cardId) running.delete(projectId);
+}
+
+/** Diagnostics for GET /api/loop: who this process believes it is running, and since when. */
+export function runningWakes(): Array<{ projectId: string; cardId: EntityId; pid: number | undefined; startedAt: number }> {
+  return [...running.entries()].map(([projectId, e]) => ({ projectId, cardId: e.cardId, pid: e.child.pid, startedAt: e.startedAt }));
+}
 /** A wake already in flight. `/api/agent/new` mints the id on the pi-web side, so two
  *  concurrent calls would create two sessions the card can never reconcile. */
 const waking = new Set<ProjectId>();
@@ -177,8 +201,10 @@ async function startSession(db: Db, project: Project, card: Card, opts: WakeOpti
   }
   // An existing session is resumed (--session); a new one is minted (--session-id), and only a
   // new one gets a name — renaming a resumed session would overwrite the name its user gave it.
-  const existing = card.sessionId ?? null;
-  const prompt = buildCardPrompt(project, card);
+  // A stale snapshot would resume a session the board no longer answers to, and rows wake from
+  // queued prompts long after the card moved: read both the column and the session from fresh.
+  const existing = fresh.sessionId ?? card.sessionId ?? null;
+  const prompt = buildCardPrompt(project, fresh);
   // pi-web goes first. It owns the sessions it started, and a card pointed at a live session has
   // to reach that session — asking the local gate first would call pi-web's own run a second
   // writer and drop the prompt. A new card has nothing to gate: pi-web mints its id.
@@ -193,7 +219,7 @@ async function startSession(db: Db, project: Project, card: Card, opts: WakeOpti
   if (viaPiWeb !== null) {
     // Remember the id pi-web minted, or the next wake would start a second session.
     if (existing === null) {
-      updateCard(db, project.projectId, card.id, { sessionId: viaPiWeb.sessionId }, { actor: "loop" });
+      updateCard(db, project.projectId, card.id, { sessionId: viaPiWeb.sessionId }, { actor: "loop", touch: false });
     }
     return { sessionId: viaPiWeb.sessionId, pid: undefined, via: "pi-web" };
   }
@@ -207,7 +233,7 @@ async function startSession(db: Db, project: Project, card: Card, opts: WakeOpti
     : ["-p", "--session", sessionId, prompt];
   const spawnFn = opts.spawn ?? nodeSpawn;
   const child = spawnFn(opts.bin ?? "pi", args, { cwd: sessionCwd(project), stdio: ["ignore", "pipe", "pipe"], env: process.env });
-  running.set(project.projectId, { child, startedAt: Date.now() });
+  running.set(project.projectId, { child, startedAt: Date.now(), cardId: card.id });
   // `error` and `exit` both end the child, and they can both fire (error, then exit). A second
   // release would delete the lock a wake that started in between now owns.
   let released = false;
@@ -239,6 +265,6 @@ async function startSession(db: Db, project: Project, card: Card, opts: WakeOpti
   // The child outlives us: the lock names the writer, not the process that spawned it.
   held.bind(child.pid);
   // Only a started session is worth remembering, or the next wake reuses a dead id.
-  if (existing === null) updateCard(db, project.projectId, card.id, { sessionId }, { actor: "loop" });
+  if (existing === null) updateCard(db, project.projectId, card.id, { sessionId }, { actor: "loop", touch: false });
   return { sessionId, pid: child.pid, via: "pi" };
 }
