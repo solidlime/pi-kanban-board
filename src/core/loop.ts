@@ -30,6 +30,8 @@ export interface TickInput {
   cards: readonly Card[];
   deps: readonly Dependency[];
   now: string;
+  /** Tick budget from loop.settings: 0 (or absent) is unlimited, v1 #67's cap. */
+  maxLoops?: number;
 }
 
 export interface TickResult { state: LoopState; nextCardId: EntityId | null }
@@ -46,6 +48,10 @@ export function tickLoop(state: LoopState, input: TickInput): TickResult {
   if (state.status !== "running") {
     throw new DomainError("CONFLICT", `loop is ${state.status}: start it before ticking`, { status: state.status });
   }
+  const cap = input.maxLoops ?? 0;
+  if (cap > 0 && state.ticks >= cap) {
+    return { state: stopLoop({ ...state, nextCardId: null }, input.now, "maxLoops に達した"), nextCardId: null };
+  }
   const next = readyCards(input);
   if (next.length === 0) {
     return {
@@ -58,4 +64,22 @@ export function tickLoop(state: LoopState, input: TickInput): TickResult {
     state: { ...state, ticks: state.ticks + 1, lastTickAt: input.now, nextCardId: card.id },
     nextCardId: card.id,
   };
+}
+
+/**
+ * The DOING card nobody has touched for `stuckDays` whole days, with that count. v1 halted on
+ * a settle chain of the same card; v2 has no executor to count settles, so the card's own
+ * `updatedAt` is the clock. 0 days (or less) turns the check off, like v1's unlimited cap.
+ */
+export function stuckDoingCard(
+  cards: readonly Card[], doingColumnId: string, now: string, stuckDays: number,
+): { card: Card; days: number } | null {
+  if (!(stuckDays > 0)) return null;
+  const nowMs = Date.parse(now);
+  for (const card of cards) {
+    if (card.columnId !== doingColumnId) continue;
+    const days = Math.floor((nowMs - Date.parse(card.updatedAt)) / 86_400_000);
+    if (days >= stuckDays) return { card, days };
+  }
+  return null;
 }

@@ -10,6 +10,7 @@ import { createReadStream, readFileSync, realpathSync, statSync } from "node:fs"
 import { basename, extname, isAbsolute, join } from "node:path";
 import type http from "node:http";
 import { DomainError, fail, ok, type ErrorCode } from "../shared/errors.js";
+import type { LoopSettings } from "../shared/dto.js";
 import type { Db } from "../persistence/db.js";
 import { one } from "../persistence/db.js";
 import { LATEST_SCHEMA_VERSION, schemaVersion } from "../persistence/migrations.js";
@@ -17,9 +18,10 @@ import type { HomeState } from "../persistence/init.js";
 import {
   attachmentBlobName, createAttachment, createCard, createCardFromTemplate, createDeliverable, createProject,
   createTemplate, createView, deleteAttachment, deleteCard, deleteDeliverable, deleteTemplate, deleteView,
-  getAttachment, getColumn, getDeliverable, getLoop, getProject, getProjectBySlug, listAttachments, listCards, listColumns,
+  getAttachment, getColumn, getDeliverable, getLoop, getLoopSettings, getProject, getProjectBySlug, listAttachments,
+  listCards, listColumns,
   listDeliverables, listDependencies, listProjects, listTemplates, listTimeline, listViews, moveCard,
-  readBoard, removeDependency, saveLoop, updateCard, updateColumn, updateView, addDependency, digestInput,
+  readBoard, removeDependency, saveLoop, saveLoopSettings, updateCard, updateColumn, updateView, addDependency, digestInput,
   type UpdateCardPatch,
 } from "../persistence/repos.js";
 import { defaultColumnId, makeBoard, staleDoingCount } from "../core/board.js";
@@ -987,6 +989,24 @@ function getLoopRoute(ctx: Ctx): void {
 }
 
 /**
+ * The thresholds are process-wide, not per board, so this route takes no project: the same
+ * numbers decide every board's cadence, budget and stuck halt.
+ */
+function getLoopSettingsRoute(ctx: Ctx): void {
+  const db = requireDb(ctx);
+  // KANBAN_LOOP_MS is the default for a home that never saved one; the saved value wins.
+  const fallback = ctx.loopMs > 0 ? { intervalMs: ctx.loopMs } : {};
+  sendJson(ctx, 200, ok({ ...getLoopSettings(db, fallback), intervalAppliesOnRestart: true }));
+}
+
+/** A partial update. `intervalAppliesOnRestart` is honest: the running timer is not re-armed. */
+async function patchLoopSettings(ctx: Ctx): Promise<void> {
+  const db = requireDb(ctx);
+  const settings = saveLoopSettings(db, await readJson(ctx) as Partial<LoopSettings>);
+  sendJson(ctx, 200, ok({ ...settings, intervalAppliesOnRestart: true }));
+}
+
+/**
  * Start marks the loop running; a tick names the next TODO card and moves it into DOING
  * (WIP=1, `moved` in the response) without waking a model. When nothing is ready the loop
  * halts itself with a reason, which is the whole point of keeping this state observable.
@@ -1066,6 +1086,8 @@ const routes: Route[] = [
   { m: "GET", re: /^\/api\/overview$/, h: getOverview },
   { m: "GET", re: /^\/api\/sessions$/, h: getSessions },
   { m: "GET", re: /^\/api\/loop$/, h: getLoopRoute },
+  { m: "GET", re: /^\/api\/loop\/settings$/, h: getLoopSettingsRoute },
+  { m: "PATCH", re: /^\/api\/loop\/settings$/, h: patchLoopSettings },
   { m: "POST", re: /^\/api\/loop\/(start|stop|tick)$/, h: (ctx, m2) => postLoop(ctx, m2[1]) },
 ];
 

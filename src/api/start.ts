@@ -14,6 +14,7 @@ import {
   type HomeState, type InitResult,
 } from "../persistence/init.js";
 import { createServer, type ServerDeps } from "./server.js";
+import { getLoopSettings } from "../persistence/repos.js";
 import { startSupervisor, type Supervisor, type Wake } from "../supervisor.js";
 import type http from "node:http";
 
@@ -90,7 +91,10 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
   const auth = opts.auth ?? process.env.KANBAN_AUTH === "on";
   // No DB, no loop: an uninitialized home has nowhere to record a tick.
   const loopOpt = opts.loop;
-  const loopMs = typeof loopOpt === "number" ? loopOpt : loopOpt === false || loopOpt === undefined ? 0 : loopOpt.intervalMs ?? 0;
+  // KANBAN_LOOP_MS is only the default: a saved loop.settings row outranks it, and 0 still
+  // means "no supervisor" (the setting has nothing to re-arm).
+  const envLoopMs = typeof loopOpt === "number" ? loopOpt : loopOpt === false || loopOpt === undefined ? 0 : loopOpt.intervalMs ?? 0;
+  const loopMs = db && envLoopMs > 0 ? getLoopSettings(db, { intervalMs: envLoopMs }).intervalMs : envLoopMs;
   const deps: ServerDeps = { db, home, state, token, auth, webRoot, buildHash, version: opts.version, loopMs, wake: opts.wake };
 
   const server = createServer(deps);

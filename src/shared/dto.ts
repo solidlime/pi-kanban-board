@@ -70,6 +70,13 @@ export interface LoopState {
   lastTickAt: string | null; ticks: number; nextCardId: EntityId | null;
 }
 
+/**
+ * The three loop knobs v1 kept behind /api/interval, /api/stuck and /api/maxloops, as one
+ * row in kv_meta. `stuckDays` 0 disables the stuck halt, `maxLoops` 0 means unlimited.
+ * `intervalMs` only takes effect on the next start: a running supervisor keeps its cadence.
+ */
+export interface LoopSettings { intervalMs: number; stuckDays: number; maxLoops: number }
+
 export type NotificationLevel = "danger" | "warn" | "info";
 export type NotificationKind = "overdue" | "blocked" | "deps" | "wip" | "acceptance" | "stale" | "loop";
 export interface Notification {

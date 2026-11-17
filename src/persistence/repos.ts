@@ -2,7 +2,8 @@
 // inside that same transaction — a state change that is not described is a bug.
 // Nothing here resolves a bare entity id: every call takes projectId + entity id.
 import type {
-  Attachment, BoardSnapshot, Card, CardTemplate, ColumnDef, ColumnKind, Deliverable, LoopState, Project, SavedView, ViewQuery
+  Attachment, BoardSnapshot, Card, CardTemplate, ColumnDef, ColumnKind, Deliverable, LoopSettings, LoopState, Project,
+  SavedView, ViewQuery
 } from "../shared/dto.js";
 import type { EntityId, ProjectId } from "../shared/ids.js";
 import { formatCid } from "../shared/ids.js";
@@ -803,4 +804,56 @@ export function saveLoop(db: Db, state: LoopState, actor = "system", kind: Event
     });
     return getLoop(db, state.projectId);
   });
+}
+
+// ---------------------------------------------------------------- loop settings
+
+const LOOP_SETTINGS_KEY = "loop.settings";
+
+/** What a home that never wrote a setting gets: v2's own cadence, a week, no budget. */
+export const LOOP_SETTINGS_DEFAULTS: LoopSettings = { intervalMs: 15_000, stuckDays: 7, maxLoops: 0 };
+
+export const LOOP_SETTINGS_RANGE: Record<keyof LoopSettings, readonly [number, number]> = {
+  intervalMs: [1_000, 600_000], stuckDays: [0, 365], maxLoops: [0, 100_000],
+};
+
+function inLoopRange(key: keyof LoopSettings, n: unknown): n is number {
+  const [lo, hi] = LOOP_SETTINGS_RANGE[key];
+  return typeof n === "number" && Number.isInteger(n) && n >= lo && n <= hi;
+}
+
+/**
+ * The stored settings over `fallback` over the defaults, in that order: KANBAN_LOOP_MS is a
+ * default only, and a saved value always wins. A hand-edited row contributes just the fields
+ * it got right — one bad number must not take the loop down.
+ */
+export function getLoopSettings(db: Db, fallback: Partial<LoopSettings> = {}): LoopSettings {
+  const out: LoopSettings = { ...LOOP_SETTINGS_DEFAULTS, ...fallback };
+  const row = one<{ v: string }>(db, "SELECT v FROM kv_meta WHERE k = ?", LOOP_SETTINGS_KEY);
+  if (!row) return out;
+  let stored = {} as Record<string, unknown>;
+  try {
+    const parsed: unknown = JSON.parse(row.v);
+    if (parsed !== null && typeof parsed === "object") stored = parsed as Record<string, unknown>;
+  } catch { /* hand-edited: the defaults stand */ }
+  for (const key of Object.keys(LOOP_SETTINGS_DEFAULTS) as (keyof LoopSettings)[]) {
+    const v = stored[key];
+    if (inLoopRange(key, v)) out[key] = v;
+  }
+  return out;
+}
+
+/** A partial write: the named fields are validated, the rest keep their current value. */
+export function saveLoopSettings(db: Db, patch: Partial<LoopSettings>): LoopSettings {
+  for (const [key, v] of Object.entries(patch)) {
+    if (!(key in LOOP_SETTINGS_RANGE)) throw new DomainError("VALIDATION", `unknown loop setting: ${key}`, { field: key });
+    if (!inLoopRange(key as keyof LoopSettings, v)) {
+      const [lo, hi] = LOOP_SETTINGS_RANGE[key as keyof LoopSettings];
+      throw new DomainError("VALIDATION", `${key} must be an integer ${lo}..${hi}`, { field: key, min: lo, max: hi });
+    }
+  }
+  const next: LoopSettings = { ...getLoopSettings(db), ...patch };
+  run(db, "INSERT INTO kv_meta (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v",
+    LOOP_SETTINGS_KEY, JSON.stringify(next));
+  return next;
 }

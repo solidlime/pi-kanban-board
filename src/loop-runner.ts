@@ -3,8 +3,8 @@
 import type { Db } from "./persistence/db.js";
 import type { Card, LoopState } from "./shared/dto.js";
 import type { EntityId, ProjectId } from "./shared/ids.js";
-import { getLoop, moveCard, readBoard, saveLoop } from "./persistence/repos.js";
-import { tickLoop } from "./core/loop.js";
+import { getLoop, getLoopSettings, moveCard, readBoard, saveLoop } from "./persistence/repos.js";
+import { stopLoop, stuckDoingCard, tickLoop } from "./core/loop.js";
 
 export interface TickProjectResult {
   loop: LoopState;
@@ -20,10 +20,18 @@ export function tickProject(db: Db, projectId: ProjectId, now = new Date().toISO
   if (loop.status !== "running") return null;
   const snapshot = readBoard(db, projectId);
   if (!snapshot) return null;
-  const result = tickLoop(loop, {
-    columns: snapshot.columns, cards: snapshot.cards, deps: snapshot.dependencies ?? [], now,
-  });
+  const settings = getLoopSettings(db);
   const doing = snapshot.columns.find(c => c.kind === "doing");
+  // A DOING card that has not moved for `stuckDays` stops the board: moving on would bury it.
+  const stuck = doing === undefined ? null : stuckDoingCard(snapshot.cards, doing.id, now, settings.stuckDays);
+  if (stuck) {
+    const reason = `DOING の #${stuck.card.id} が ${stuck.days} 日動いていない`;
+    const saved = saveLoop(db, stopLoop(loop, now, reason), actor, "loop.halted");
+    return { loop: saved, nextCardId: null, moved: null };
+  }
+  const result = tickLoop(loop, {
+    columns: snapshot.columns, cards: snapshot.cards, deps: snapshot.dependencies ?? [], now, maxLoops: settings.maxLoops,
+  });
   const occupied = doing !== undefined && snapshot.cards.some(c => c.columnId === doing.id);
   const moved = result.nextCardId !== null && doing !== undefined && !occupied
     ? moveCard(db, projectId, result.nextCardId, doing.id, { actor })
