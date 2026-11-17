@@ -1474,6 +1474,9 @@ div.gantt-row:focus-visible {
   background: var(--sunken);
   display: block;
 }
+.thumb[alt]:not(.doc) {
+  cursor: pointer;
+}
 .thumb.doc {
   display: flex;
   align-items: center;
@@ -1514,6 +1517,73 @@ div.gantt-row:focus-visible {
 }
 .d-file.sm {
   max-width: 170px;
+}
+button.chip {
+  font: inherit;
+  line-height: 1.7;
+}
+.viewer {
+  width: min(1100px, 94vw);
+  max-height: 92vh;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--sunken);
+  color: var(--fg);
+}
+.viewer::backdrop {
+  background: rgba(4, 7, 16, .8);
+}
+.v-h {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.v-cap {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.v-count {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.v-body {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px;
+  min-height: 180px;
+  max-height: calc(92vh - 48px);
+  overflow: auto;
+}
+.v-img {
+  max-width: 100%;
+  max-height: calc(92vh - 72px);
+  border-radius: 8px;
+  background: var(--bg);
+}
+.v-media {
+  max-width: 100%;
+  max-height: calc(92vh - 72px);
+  border-radius: 8px;
+  background: var(--bg);
+}
+.v-frame {
+  width: min(1000px, 90vw);
+  height: calc(92vh - 90px);
+  border: 0;
+  border-radius: 8px;
+  background: var(--card);
+}
+.v-dl {
+  color: var(--accent);
+  font-size: 13px;
 }
 @media (max-width: 860px) {
   .ov-row {

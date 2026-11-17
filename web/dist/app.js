@@ -2166,17 +2166,148 @@ function installKeys(actions) {
   });
 }
 
+// web/src/viewer.ts
+var IMAGE = /\.(png|jpe?g|gif|webp)$/i;
+var VIDEO = /\.(mp4|webm|mov)$/i;
+var DOC = /\.(md|markdown|txt|csv|json|log|ya?ml)$/i;
+function kindOf(name, mime) {
+  const m = (mime ?? "").split(";")[0]?.trim() ?? "";
+  if (m.startsWith("image/") || IMAGE.test(name)) return "image";
+  if (m.startsWith("video/") || VIDEO.test(name)) return "video";
+  if (m === "application/pdf" || /\.pdf$/i.test(name)) return "pdf";
+  if (m === "text/html" || /\.html?$/i.test(name)) return "html";
+  if (m.startsWith("text/") || m === "application/json" || DOC.test(name)) return "markdown";
+  return "other";
+}
+function deliverableItems(list) {
+  return list.map((d) => ({
+    title: d.title,
+    name: d.ref.split(/[\\/]/).pop() || d.ref,
+    fileSrc: deliverableFileSrc(d.projectId, d.id),
+    viewSrc: deliverableViewSrc(d.projectId, d.id)
+  }));
+}
+function attachmentItems(projectId, list) {
+  return list.map((a) => ({
+    title: a.name,
+    name: a.name,
+    mime: a.mime,
+    fileSrc: attachmentSrc(projectId, a.id),
+    viewSrc: attachmentViewSrc(projectId, a.id)
+  }));
+}
+function el3(tag, cls) {
+  const n = document.createElement(tag);
+  n.className = cls;
+  return n;
+}
+function mountViewer(root2) {
+  const dlg = el3("dialog", "viewer");
+  dlg.tabIndex = -1;
+  const head = el3("div", "v-h");
+  const cap = el3("span", "v-cap");
+  const count = el3("span", "v-count");
+  const closeBtn = el3("button", "ic");
+  closeBtn.type = "button";
+  closeBtn.textContent = "\xD7";
+  closeBtn.title = "\u9589\u3058\u308B";
+  head.append(cap, count, closeBtn);
+  const body = el3("div", "v-body");
+  dlg.append(head, body);
+  root2.append(dlg);
+  let list = [];
+  let at = 0;
+  function box(item) {
+    const kind = kindOf(item.name, item.mime);
+    if (kind === "image") {
+      const img = el3("img", "v-img");
+      img.src = item.fileSrc;
+      img.alt = item.title;
+      return img;
+    }
+    if (kind === "video") {
+      const vid = el3("video", "v-media");
+      vid.controls = true;
+      vid.autoplay = true;
+      vid.src = item.fileSrc;
+      return vid;
+    }
+    if (kind === "other") {
+      const a = el3("a", "v-dl");
+      a.href = item.fileSrc;
+      a.download = item.name;
+      a.textContent = `${item.name} \u3092\u30C0\u30A6\u30F3\u30ED\u30FC\u30C9`;
+      return a;
+    }
+    const fr = el3("iframe", "v-frame");
+    fr.src = item.viewSrc;
+    if (kind === "html") fr.setAttribute("sandbox", "allow-scripts allow-forms allow-popups");
+    if (kind === "markdown") fr.setAttribute("sandbox", "");
+    return fr;
+  }
+  function show(i) {
+    if (!list.length) return;
+    at = (i + list.length) % list.length;
+    const item = list[at];
+    body.replaceChildren(box(item));
+    cap.textContent = item.title;
+    cap.title = item.title;
+    count.textContent = list.length > 1 ? `${at + 1} / ${list.length}` : "";
+    count.hidden = list.length <= 1;
+  }
+  function reset() {
+    list = [];
+    body.replaceChildren();
+    cap.textContent = "";
+    count.textContent = "";
+  }
+  function close() {
+    reset();
+    if (dlg.open) dlg.close();
+  }
+  function open(items, index) {
+    if (!items.length) return;
+    list = items;
+    show(index);
+    if (!dlg.open) dlg.showModal();
+    dlg.focus();
+  }
+  closeBtn.addEventListener("click", close);
+  dlg.addEventListener("cancel", (ev) => {
+    ev.preventDefault();
+    close();
+  });
+  dlg.addEventListener("close", reset);
+  dlg.addEventListener("click", (ev) => {
+    if (ev.target === dlg) close();
+  });
+  dlg.addEventListener("keydown", (ev) => {
+    if (ev.key === "ArrowLeft") {
+      ev.preventDefault();
+      show(at - 1);
+      return;
+    }
+    if (ev.key === "ArrowRight") {
+      ev.preventDefault();
+      show(at + 1);
+      return;
+    }
+    ev.stopPropagation();
+  });
+  return { open, close };
+}
+
 // web/src/detail.ts
 var ATTACH_ACCEPT = "image/*,application/pdf,video/*,audio/*,.md,.txt,.csv,.json,.log,.yaml,.yml,.zip";
-function el3(tag, cls, text) {
+function el4(tag, cls, text) {
   const n = document.createElement(tag);
   if (cls) n.className = cls;
   if (text !== void 0) n.textContent = text;
   return n;
 }
 function field(label, input) {
-  const wrap = el3("label", "f");
-  wrap.append(el3("span", "f-l", label), input);
+  const wrap = el4("label", "f");
+  wrap.append(el4("span", "f-l", label), input);
   return wrap;
 }
 var SESSION_LIST_ID = "kb-session-names";
@@ -2199,37 +2330,37 @@ function mountDetail(root2, h) {
   let key = null;
   let snapshot = null;
   let sessions = [];
-  const dlg = el3("dialog", "detail");
-  const head = el3("div", "d-h");
-  const heading = el3("h2", "d-title");
-  const actorLine = el3("div", "d-actor");
+  const dlg = el4("dialog", "detail");
+  const head = el4("div", "d-h");
+  const heading = el4("h2", "d-title");
+  const actorLine = el4("div", "d-actor");
   actorLine.hidden = true;
-  const closeBtn = el3("button", "ic", "\xD7");
+  const closeBtn = el4("button", "ic", "\xD7");
   closeBtn.type = "button";
   closeBtn.title = "\u9589\u3058\u308B";
   head.append(heading, actorLine, closeBtn);
-  const title = el3("input", "f-title");
+  const title = el4("input", "f-title");
   title.placeholder = "\u30BF\u30A4\u30C8\u30EB";
   title.required = true;
-  const prio = el3("input", "f-prio");
+  const prio = el4("input", "f-prio");
   prio.type = "number";
   prio.step = "1";
-  const owner = el3("input", "f-owner");
+  const owner = el4("input", "f-owner");
   owner.placeholder = "\u672A\u5272\u5F53";
-  const due = el3("input", "f-due");
+  const due = el4("input", "f-due");
   due.type = "date";
-  const blocked = el3("input", "f-blocked");
+  const blocked = el4("input", "f-blocked");
   blocked.placeholder = "\u7406\u7531\u304C\u3042\u308C\u3070\u5165\u529B\uFF08\u7A7A\u3067\u89E3\u9664\uFF09";
-  const body = el3("textarea", "f-body");
+  const body = el4("textarea", "f-body");
   body.rows = 7;
   body.placeholder = "\u30E1\u30E2\u30FB\u53D7\u3051\u5165\u308C\u6761\u4EF6\uFF08- [ ] \u9805\u76EE\uFF09";
-  const accHint = el3("div", "acc-hint");
-  const sessionPick = el3("input", "f-session");
+  const accHint = el4("div", "acc-hint");
+  const sessionPick = el4("input", "f-session");
   sessionPick.placeholder = "\u7A7A\u306A\u3089\u65B0\u898F\u30BB\u30C3\u30B7\u30E7\u30F3";
   sessionPick.setAttribute("list", SESSION_LIST_ID);
-  const sessionOpts = el3("datalist");
+  const sessionOpts = el4("datalist");
   sessionOpts.id = SESSION_LIST_ID;
-  const grid = el3("div", "d-grid");
+  const grid = el4("div", "d-grid");
   grid.append(
     field("\u30BF\u30A4\u30C8\u30EB", title),
     field("\u512A\u5148\u5EA6", prio),
@@ -2240,21 +2371,21 @@ function mountDetail(root2, h) {
     field("\u672C\u6587", body)
   );
   grid.append(accHint, sessionOpts);
-  const depSec = el3("section", "d-sec");
-  depSec.append(el3("h3", void 0, "\u4F9D\u5B58\u95A2\u4FC2"));
-  const depList = el3("div", "d-deps");
-  const depForm = el3("form", "d-depadd");
-  const depTarget = el3("select");
+  const depSec = el4("section", "d-sec");
+  depSec.append(el4("h3", void 0, "\u4F9D\u5B58\u95A2\u4FC2"));
+  const depList = el4("div", "d-deps");
+  const depForm = el4("form", "d-depadd");
+  const depTarget = el4("select");
   depTarget.setAttribute("aria-label", "dependency target");
-  const depType = el3("select");
+  const depType = el4("select");
   for (const [v, t] of [["blocks", "\u30D6\u30ED\u30C3\u30AF\u3059\u308B"], ["relates", "\u95A2\u9023"]]) {
-    const o = el3("option", void 0, t);
+    const o = el4("option", void 0, t);
     o.value = v;
     depType.append(o);
   }
-  const depAdd = el3("button", void 0, "\u8FFD\u52A0");
+  const depAdd = el4("button", void 0, "\u8FFD\u52A0");
   depAdd.type = "submit";
-  depForm.append(el3("span", "f-l", "\u5BFE\u8C61"), depTarget, depType, depAdd);
+  depForm.append(el4("span", "f-l", "\u5BFE\u8C61"), depTarget, depType, depAdd);
   depForm.addEventListener("submit", (ev) => {
     ev.preventDefault();
     if (!key) return;
@@ -2265,14 +2396,14 @@ function mountDetail(root2, h) {
     });
   });
   depSec.append(depList, depForm);
-  const dvSec = el3("section", "d-sec");
-  dvSec.append(el3("h3", void 0, "\u6210\u679C\u7269"));
-  const dvList = el3("div", "d-dvs");
-  const dvForm = el3("form", "d-dvadd");
-  const dvTitle = el3("input");
+  const dvSec = el4("section", "d-sec");
+  dvSec.append(el4("h3", void 0, "\u6210\u679C\u7269"));
+  const dvList = el4("div", "d-dvs");
+  const dvForm = el4("form", "d-dvadd");
+  const dvTitle = el4("input");
   dvTitle.placeholder = "\u3053\u306E\u30AB\u30FC\u30C9\u306B\u7D10\u3065\u304F\u6210\u679C\u7269";
   dvTitle.setAttribute("aria-label", "add deliverable for card");
-  const dvAdd = el3("button", void 0, "\u8FFD\u52A0");
+  const dvAdd = el4("button", void 0, "\u8FFD\u52A0");
   dvAdd.type = "submit";
   dvForm.append(dvTitle, dvAdd);
   dvForm.addEventListener("submit", (ev) => {
@@ -2286,13 +2417,13 @@ function mountDetail(root2, h) {
     });
   });
   dvSec.append(dvList, dvForm);
-  const tlSec = el3("section", "d-sec");
-  tlSec.append(el3("h3", void 0, "\u3053\u306E\u30AB\u30FC\u30C9\u306E\u5C65\u6B74"));
-  const tlList = el3("div", "d-tl");
-  const atSec = el3("section", "d-sec");
-  atSec.append(el3("h3", void 0, "\u6DFB\u4ED8\u30D5\u30A1\u30A4\u30EB"));
-  const atList = el3("div", "d-atts");
-  const atPick = el3("input", "d-file");
+  const tlSec = el4("section", "d-sec");
+  tlSec.append(el4("h3", void 0, "\u3053\u306E\u30AB\u30FC\u30C9\u306E\u5C65\u6B74"));
+  const tlList = el4("div", "d-tl");
+  const atSec = el4("section", "d-sec");
+  atSec.append(el4("h3", void 0, "\u6DFB\u4ED8\u30D5\u30A1\u30A4\u30EB"));
+  const atList = el4("div", "d-atts");
+  const atPick = el4("input", "d-file");
   atPick.type = "file";
   atPick.accept = ATTACH_ACCEPT;
   atPick.setAttribute("aria-label", "\u30D5\u30A1\u30A4\u30EB\u3092\u6DFB\u4ED8");
@@ -2306,24 +2437,30 @@ function mountDetail(root2, h) {
     });
   });
   atSec.append(atList, atPick);
-  const foot = el3("div", "d-foot");
-  const moveSel = el3("select");
+  const foot = el4("div", "d-foot");
+  const moveSel = el4("select");
   moveSel.setAttribute("aria-label", "move to column");
-  const delBtn = el3("button", "danger", "\u524A\u9664");
+  const delBtn = el4("button", "danger", "\u524A\u9664");
   delBtn.type = "button";
-  const tplBtn = el3("button", "ghost", "\u30C6\u30F3\u30D7\u30EC\u30FC\u30C8\u5316");
+  const tplBtn = el4("button", "ghost", "\u30C6\u30F3\u30D7\u30EC\u30FC\u30C8\u5316");
   tplBtn.type = "button";
   tplBtn.title = "\u3053\u306E\u30AB\u30FC\u30C9\u306E\u5185\u5BB9\u3092\u96DB\u5F62\u3068\u3057\u3066\u4FDD\u5B58";
   tplBtn.addEventListener("click", () => {
     if (key) h.onTemplateFromCard(key);
   });
-  const cancelBtn = el3("button", "ghost", "\u9589\u3058\u308B");
+  const cancelBtn = el4("button", "ghost", "\u9589\u3058\u308B");
   cancelBtn.type = "button";
-  const saveBtn = el3("button", "primary", "\u4FDD\u5B58");
+  const saveBtn = el4("button", "primary", "\u4FDD\u5B58");
   saveBtn.type = "button";
-  foot.append(el3("div", "grow"), tplBtn, moveSel, delBtn, cancelBtn, saveBtn);
+  foot.append(el4("div", "grow"), tplBtn, moveSel, delBtn, cancelBtn, saveBtn);
   dlg.append(head, grid, depSec, dvSec, atSec, tlSec, foot);
   root2.append(dlg);
+  const viewer = mountViewer(root2);
+  const openStrip = (projectId, list) => {
+    const images = list.filter((a) => a.mime.startsWith("image/"));
+    const items = attachmentItems(projectId, images);
+    return (a) => viewer.open(items, images.findIndex((x) => x.id === a.id));
+  };
   const close = () => {
     key = null;
     snapshot = null;
@@ -2399,7 +2536,7 @@ function mountDetail(root2, h) {
     void h.onSessions(parsed.projectId).then((list) => {
       sessions = list;
       sessionOpts.replaceChildren(...list.map((s) => {
-        const o = el3("option");
+        const o = el4("option");
         o.value = s.name;
         return o;
       }));
@@ -2417,19 +2554,19 @@ function mountDetail(root2, h) {
   function renderDeps(s, card) {
     const edges = edgesOf(s, card.id);
     depList.textContent = "";
-    if (!edges.length) depList.append(el3("div", "d-empty", "\u4F9D\u5B58\u306A\u3057"));
+    if (!edges.length) depList.append(el4("div", "d-empty", "\u4F9D\u5B58\u306A\u3057"));
     for (const e of edges) {
       const outgoing = e.fromCard === card.id;
       const otherId = outgoing ? e.toCard : e.fromCard;
       const other = s.cards[cardKey(s.projectId, otherId)];
-      const row = el3("div", "d-dep");
+      const row = el4("div", "d-dep");
       const label = e.type === "blocks" ? outgoing ? "\u30D6\u30ED\u30C3\u30AF\u3059\u308B" : "\u30D6\u30ED\u30C3\u30AF\u3055\u308C\u3066\u3044\u308B" : "\u95A2\u9023";
-      row.append(el3("span", `chip kind${e.type === "relates" ? " rel" : ""}`, label));
-      const name = el3("span", "d-dep-name", other ? `#${other.id} ${other.title}` : `#${otherId}\uFF08\u4E0D\u5728\uFF09`);
+      row.append(el4("span", `chip kind${e.type === "relates" ? " rel" : ""}`, label));
+      const name = el4("span", "d-dep-name", other ? `#${other.id} ${other.title}` : `#${otherId}\uFF08\u4E0D\u5728\uFF09`);
       name.title = name.textContent;
       row.append(name);
-      if (e.type === "blocks" && !outgoing && other && !isClosed(other)) row.append(el3("span", "chip warn", "\u672A\u5B8C\u4E86"));
-      const rm = el3("button", "ic", "\xD7");
+      if (e.type === "blocks" && !outgoing && other && !isClosed(other)) row.append(el4("span", "chip warn", "\u672A\u5B8C\u4E86"));
+      const rm = el4("button", "ic", "\xD7");
       rm.type = "button";
       rm.title = "\u4F9D\u5B58\u3092\u89E3\u9664";
       rm.addEventListener("click", () => {
@@ -2447,7 +2584,7 @@ function mountDetail(root2, h) {
     for (const id of s.columnOrder) {
       for (const c of Object.values(s.cards)) {
         if (c.columnId !== id || c.projectId !== s.projectId || c.id === card.id) continue;
-        const o = el3("option", void 0, `#${c.id} ${c.title}`);
+        const o = el4("option", void 0, `#${c.id} ${c.title}`);
         o.value = String(c.id);
         depTarget.append(o);
       }
@@ -2461,16 +2598,17 @@ function mountDetail(root2, h) {
     if (mime.includes("zip")) return "ZIP";
     return "\u6587\u66F8";
   };
-  function thumb(a, projectId, onRemove) {
-    const wrap = el3("span", "thumb-w");
+  function thumb(a, projectId, onRemove, onOpen) {
+    const wrap = el4("span", "thumb-w");
     if (a.mime.startsWith("image/")) {
-      const img = el3("img", "thumb");
+      const img = el4("img", "thumb");
       img.src = attachmentSrc(projectId, a.id);
       img.alt = a.name;
       img.title = a.name;
+      if (onOpen) img.addEventListener("click", onOpen);
       wrap.append(img);
     } else {
-      const link = el3("a", "thumb doc");
+      const link = el4("a", "thumb doc");
       link.href = attachmentViewSrc(projectId, a.id);
       link.target = "_blank";
       link.rel = "noopener";
@@ -2479,7 +2617,7 @@ function mountDetail(root2, h) {
       wrap.append(link);
     }
     if (onRemove) {
-      const rm = el3("button", "ic thumb-x", "\xD7");
+      const rm = el4("button", "ic thumb-x", "\xD7");
       rm.type = "button";
       rm.title = `${a.name} \u3092\u5916\u3059`;
       rm.addEventListener("click", () => {
@@ -2499,12 +2637,13 @@ function mountDetail(root2, h) {
     if (sigs.att === sig) return;
     sigs.att = sig;
     atList.textContent = "";
-    if (!mine.length) atList.append(el3("div", "d-empty", "\u6DFB\u4ED8\u306A\u3057"));
+    if (!mine.length) atList.append(el4("div", "d-empty", "\u6DFB\u4ED8\u306A\u3057"));
+    const openAtt = openStrip(card.projectId, mine);
     for (const a of mine) {
       atList.append(thumb(a, card.projectId, () => h.onDeleteAttachment(card.projectId, a.id).then((ok) => {
         if (ok) h.notify("\u6DFB\u4ED8\u3092\u5916\u3057\u305F");
         return ok;
-      })));
+      }), () => openAtt(a)));
     }
   }
   function renderDeliverables(s, card) {
@@ -2513,21 +2652,22 @@ function mountDetail(root2, h) {
     if (sigs.dv === sig) return;
     sigs.dv = sig;
     dvList.textContent = "";
-    if (!mine.length) dvList.append(el3("div", "d-empty", "\u7D10\u3065\u304F\u6210\u679C\u7269\u306A\u3057"));
+    if (!mine.length) dvList.append(el4("div", "d-empty", "\u7D10\u3065\u304F\u6210\u679C\u7269\u306A\u3057"));
+    const viewable = mine.filter((d) => d.ref);
+    const items = deliverableItems(viewable);
     for (const d of mine) {
-      const row = el3("div", "d-dv");
-      const t = el3("span", "d-dv-title", d.title);
+      const row = el4("div", "d-dv");
+      const t = el4("span", "d-dv-title", d.title);
       t.title = d.title;
-      row.append(el3("span", "chip kind", d.kind), t);
+      row.append(el4("span", "chip kind", d.kind), t);
       if (d.ref) {
-        const link = el3("a", "chip", d.ref.split(/[\\/]/).pop() || d.ref);
-        link.href = deliverableViewSrc(d.projectId, d.id);
-        link.target = "_blank";
-        link.rel = "noopener";
-        link.title = d.ref;
-        row.append(link);
+        const btn = el4("button", "chip v-open", d.ref.split(/[\\/]/).pop() || d.ref);
+        btn.type = "button";
+        btn.title = d.ref;
+        btn.addEventListener("click", () => viewer.open(items, viewable.indexOf(d)));
+        row.append(btn);
       }
-      const rm = el3("button", "ic", "\xD7");
+      const rm = el4("button", "ic", "\xD7");
       rm.type = "button";
       rm.title = "\u6210\u679C\u7269\u3092\u524A\u9664";
       rm.addEventListener("click", () => {
@@ -2536,14 +2676,15 @@ function mountDetail(root2, h) {
       row.append(rm);
       dvList.append(row);
       const atts = s.attachments.filter((a) => a.deliverableId === d.id);
-      const strip = el3("div", "d-dv-atts");
+      const strip = el4("div", "d-dv-atts");
+      const openAtt = openStrip(d.projectId, atts);
       for (const a of atts) {
         strip.append(thumb(a, d.projectId, () => h.onDeleteAttachment(d.projectId, a.id).then((ok) => {
           if (ok) h.notify("\u6DFB\u4ED8\u3092\u5916\u3057\u305F");
           return ok;
-        })));
+        }), () => openAtt(a)));
       }
-      const pick2 = el3("input", "d-file sm");
+      const pick2 = el4("input", "d-file sm");
       pick2.type = "file";
       pick2.accept = ATTACH_ACCEPT;
       pick2.setAttribute("aria-label", `${d.title} \u306B\u30D5\u30A1\u30A4\u30EB\u3092\u6DFB\u4ED8`);
@@ -2566,11 +2707,11 @@ function mountDetail(root2, h) {
     if (sigs.tl === sig) return;
     sigs.tl = sig;
     tlList.textContent = "";
-    if (!mine.length) tlList.append(el3("div", "d-empty", "\u5C65\u6B74\u306A\u3057"));
+    if (!mine.length) tlList.append(el4("div", "d-empty", "\u5C65\u6B74\u306A\u3057"));
     for (const e of shown.slice().reverse()) {
-      const row = el3("div", "d-tl-row");
-      row.append(el3("span", "tl-at", e.at.slice(5, 16).replace("T", " ")), el3("span", "tl-kind", e.kind));
-      if (e.actor) row.append(el3("span", "tl-actor", e.actor));
+      const row = el4("div", "d-tl-row");
+      row.append(el4("span", "tl-at", e.at.slice(5, 16).replace("T", " ")), el4("span", "tl-kind", e.kind));
+      if (e.actor) row.append(el4("span", "tl-actor", e.actor));
       tlList.append(row);
     }
   }
@@ -2618,12 +2759,12 @@ function mountDetail(root2, h) {
     renderTimeline(s, card);
     const prev = moveSel.value;
     moveSel.textContent = "";
-    const ph = el3("option", void 0, "\u2192 \u79FB\u52D5\u5148");
+    const ph = el4("option", void 0, "\u2192 \u79FB\u52D5\u5148");
     ph.value = "";
     moveSel.append(ph);
     for (const id of s.columnOrder) {
       if (id === card.columnId) continue;
-      const o = el3("option", void 0, s.columns[id]?.name ?? id);
+      const o = el4("option", void 0, s.columns[id]?.name ?? id);
       o.value = id;
       moveSel.append(o);
     }

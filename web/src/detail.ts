@@ -1,14 +1,15 @@
 // Card detail dialog: the fields the board card cannot fit (owner/due/priority/blocked reason),
 // the dependency editor, linked deliverables, and this card's slice of the timeline.
 // Everything here is project-scoped through the composite CardKey — a bare id never crosses the wire.
-import type { Card, Dependency, Deliverable } from '../../src/shared/dto.js';
+import type { Attachment, Card, Dependency, Deliverable } from '../../src/shared/dto.js';
 import type { ProjectRef } from '../../src/shared/api.js';
 import type { TimelineEvent } from '../../src/shared/events.js';
 import type { DependencyType, PatchCardReq, SessionRef } from '../../src/shared/api.js';
 import {
   acceptanceProgress, cardKey, edgesOf, isClosed, keyOf, lastActorOf, parseKey, type CardKey, type Store,
 } from './store.js';
-import { attachmentSrc, attachmentViewSrc, deliverableViewSrc } from './api.js';
+import { attachmentSrc, attachmentViewSrc } from './api.js';
+import { attachmentItems, deliverableItems, mountViewer } from './viewer.js';
 
 /** The server sniffs bytes anyway; this is only to fail fast with a friendlier sentence. */
 const ATTACH_ACCEPT = 'image/*,application/pdf,video/*,audio/*,.md,.txt,.csv,.json,.log,.yaml,.yml,.zip';
@@ -213,6 +214,16 @@ export function mountDetail(root: HTMLElement, h: DetailHandlers): DetailView {
 
   dlg.append(head, grid, depSec, dvSec, atSec, tlSec, foot);
   root.append(dlg);
+  // #16/#19: one viewer for the whole dialog, opened directly — no handler, no new tab. It lives in
+  // the top layer next to this dialog, so Esc closes the viewer and leaves the card open.
+  const viewer = mountViewer(root);
+
+  /** ←/→ walk the strip the thumbnail lives in, which is v1's lbList (every .thumb in the lightbox). */
+  const openStrip = (projectId: string, list: Attachment[]) => {
+    const images = list.filter(a => a.mime.startsWith('image/'));
+    const items = attachmentItems(projectId, images);
+    return (a: { id: number }) => viewer.open(items, images.findIndex(x => x.id === a.id));
+  };
 
   const close = () => {
     key = null;
@@ -343,13 +354,19 @@ export function mountDetail(root: HTMLElement, h: DetailHandlers): DetailView {
     return '文書';
   };
 
-  function thumb(a: { id: number; name: string; mime: string; size: number }, projectId: string, onRemove?: () => Promise<boolean>): HTMLElement {
+  function thumb(
+    a: { id: number; name: string; mime: string; size: number },
+    projectId: string,
+    onRemove?: () => Promise<boolean>,
+    onOpen?: () => void,
+  ): HTMLElement {
     const wrap = el('span', 'thumb-w');
     if (a.mime.startsWith('image/')) {
       const img = el('img', 'thumb');
       img.src = attachmentSrc(projectId, a.id);
       img.alt = a.name;
       img.title = a.name;
+      if (onOpen) img.addEventListener('click', onOpen);
       wrap.append(img);
     } else {
       // Only images paint in the strip; everything else opens through the shared /view wrapper.
@@ -386,11 +403,12 @@ export function mountDetail(root: HTMLElement, h: DetailHandlers): DetailView {
     sigs.att = sig;
     atList.textContent = '';
     if (!mine.length) atList.append(el('div', 'd-empty', '添付なし'));
+    const openAtt = openStrip(card.projectId, mine);
     for (const a of mine) {
       atList.append(thumb(a, card.projectId, () => h.onDeleteAttachment(card.projectId, a.id).then(ok => {
         if (ok) h.notify('添付を外した');
         return ok;
-      })));
+      }), () => openAtt(a)));
     }
   }
 
@@ -401,19 +419,22 @@ export function mountDetail(root: HTMLElement, h: DetailHandlers): DetailView {
     sigs.dv = sig;
     dvList.textContent = '';
     if (!mine.length) dvList.append(el('div', 'd-empty', '紐づく成果物なし'));
+    // A ref is what makes a deliverable openable; note-only rows keep their title and nothing else.
+    const viewable = mine.filter(d => d.ref);
+    const items = deliverableItems(viewable);
     for (const d of mine) {
       const row = el('div', 'd-dv');
       const t = el('span', 'd-dv-title', d.title);
       t.title = d.title;
       row.append(el('span', 'chip kind', d.kind), t);
       if (d.ref) {
-        // Same regression as the panel: the ref has to open, not just print.
-        const link = el('a', 'chip', d.ref.split(/[\\/]/).pop() || d.ref);
-        link.href = deliverableViewSrc(d.projectId, d.id);
-        link.target = '_blank';
-        link.rel = 'noopener';
-        link.title = d.ref;
-        row.append(link);
+        // Same regression as the panel: the ref has to open, not just print — and #19 says in a
+        // dialog, not a new tab.
+        const btn = el('button', 'chip v-open', d.ref.split(/[\\/]/).pop() || d.ref);
+        btn.type = 'button';
+        btn.title = d.ref;
+        btn.addEventListener('click', () => viewer.open(items, viewable.indexOf(d)));
+        row.append(btn);
       }
       const rm = el('button', 'ic', '×');
       rm.type = 'button';
@@ -425,11 +446,12 @@ export function mountDetail(root: HTMLElement, h: DetailHandlers): DetailView {
       // Images attached to the deliverable itself (keyed by deliverableId, not cardId).
       const atts = s.attachments.filter(a => a.deliverableId === d.id);
       const strip = el('div', 'd-dv-atts');
+      const openAtt = openStrip(d.projectId, atts);
       for (const a of atts) {
         strip.append(thumb(a, d.projectId, () => h.onDeleteAttachment(d.projectId, a.id).then(ok => {
           if (ok) h.notify('添付を外した');
           return ok;
-        })));
+        }), () => openAtt(a)));
       }
       const pick = el('input', 'd-file sm');
       pick.type = 'file';
