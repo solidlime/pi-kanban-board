@@ -34,6 +34,8 @@ export function tickProject(db: Db, projectId: ProjectId, now = new Date().toISO
   const stuck = doing === undefined ? null : stuckDoingCard(snapshot.cards, doing.id, now, settings.stuckDays);
   if (stuck) {
     const reason = `DOING の #${stuck.card.id} が ${stuck.days} 日動いていない`;
+    // Stuck returns before the tick's kind is chosen below, so this literal is its own record:
+    // it is what the stuck test pins, not the `loop.halted` branch of that ternary.
     const saved = saveLoop(db, stopLoop(loop, now, reason), actor, "loop.halted");
     return { loop: saved, nextCardId: null, moved: null, reason: "halted", doingCardId: stuck.card.id };
   }

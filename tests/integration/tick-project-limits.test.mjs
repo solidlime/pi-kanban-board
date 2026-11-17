@@ -32,8 +32,9 @@ function board(t, n) {
 /** `mins` minutes from now, so the boards never look stale by accident. */
 const at = (mins) => new Date(Date.now() + mins * 60_000).toISOString();
 
-/** The last timeline row. `seq` is what tells "this tick wrote a row" from "a row was already there". */
-const latest = (db) => db.prepare("SELECT seq, kind FROM timeline_event WHERE project_id = 'p' ORDER BY seq DESC LIMIT 1").get();
+/** The last loop row. `seq` is what tells "this tick wrote a row" from "a row was already there";
+ *  the entity filter keeps a card row written by moveCard earlier in the same tick out of it. */
+const latest = (db) => db.prepare("SELECT seq, kind FROM timeline_event WHERE project_id = 'p' AND entity_type = 'loop' ORDER BY seq DESC LIMIT 1").get();
 
 test("maxLoops: the loop halts on the tick after its budget is spent", (t) => {
   const db = board(t, 3);
@@ -57,7 +58,7 @@ test("maxLoops: the loop halts on the tick after its budget is spent", (t) => {
   assert.match(third.loop.haltReason, /maxLoops/);
   assert.equal(third.moved, null);
   assert.equal(third.nextCardId, null);
-  assert.ok(latest(db).seq > afterFirst, "a halt writes a row");
+  assert.equal(latest(db).seq, afterFirst + 1, "a halt writes exactly one row");
   assert.equal(latest(db).kind, "loop.halted", "a budget halt is a halt, not a tick");
 });
 
