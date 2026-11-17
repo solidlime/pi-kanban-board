@@ -35,6 +35,24 @@ function assertWip(db: Db, projectId: ProjectId, columnId: string, excludeCardId
   }
 }
 
+/**
+ * DOING holds exactly one card, and that is not a wipLimit setting: it is what makes a board a
+ * board. It has to be checked here, inside the mover's transaction, because loop-runner reads
+ * "is DOING empty" and writes in two separate transactions — two overlapping ticks both find it
+ * empty, and `assertWip` lets them through since the default doing column has no limit.
+ */
+function assertSingleDoing(db: Db, projectId: ProjectId, col: ColumnDef, cardId: EntityId): void {
+  if (col.kind !== "doing") return;
+  const other = one<{ id: number }>(db,
+    "SELECT id FROM card WHERE project_id = ? AND id <> ? AND column_id IN " +
+    "(SELECT id FROM column_def WHERE project_id = ? AND kind = 'doing') LIMIT 1",
+    projectId, cardId, projectId);
+  if (other) {
+    throw new DomainError("WIP_LIMIT", `column "${col.name}" already holds card #${other.id}: DOING takes one card`,
+      { columnId: col.id, limit: 1, count: 1 });
+  }
+}
+
 // ---------- row mapping ----------
 
 interface ProjectRow { project_id: string; slug: string; name: string; settings_json: string; created_at: string; updated_at: string }
@@ -305,15 +323,26 @@ export interface UpdateCardPatch {
   sessionId?: string | null; commit?: string | null; ref?: string | null;
 }
 
-export function updateCard(db: Db, projectId: ProjectId, id: EntityId, patch: UpdateCardPatch, opts: { expectedVersion?: number; actor?: string } = {}): Card {
+export interface UpdateCardOpts {
+  expectedVersion?: number;
+  actor?: string;
+  /**
+   * `false` leaves `updated_at` and `version` alone: the bookkeeping a wake writes (sessionId)
+   * is not an edit, and bumping the version makes the user's in-flight write 409 for no reason.
+   */
+  touch?: boolean;
+}
+
+export function updateCard(db: Db, projectId: ProjectId, id: EntityId, patch: UpdateCardPatch, opts: UpdateCardOpts = {}): Card {
   return withTx(db, () => {
     const cur = getCard(db, projectId, id);
     if (!cur) throw new DomainError("NOT_FOUND", `card ${projectId}#${id} not found`);
     checkVersion(cur, opts.expectedVersion);
+    const bump = opts.touch !== false;
     const at = nowIso();
     run(db,
       `UPDATE card SET title = ?, body = ?, priority = ?, owner = ?, due = ?, estimate = ?, blocked_reason = ?,
-        labels_json = ?, session_id = ?, commit_sha = ?, ref = ?, updated_at = ?, version = version + 1
+        labels_json = ?, session_id = ?, commit_sha = ?, ref = ?, updated_at = ?, version = version + ?
        WHERE project_id = ? AND id = ?`,
       patch.title ?? cur.title, patch.body ?? cur.body ?? "", Math.trunc(patch.priority ?? cur.priority),
       patch.owner === undefined ? (cur.owner ?? null) : patch.owner,
@@ -324,7 +353,7 @@ export function updateCard(db: Db, projectId: ProjectId, id: EntityId, patch: Up
       patch.sessionId === undefined ? (cur.sessionId ?? null) : patch.sessionId,
       patch.commit === undefined ? (cur.commit ?? null) : patch.commit,
       patch.ref === undefined ? (cur.ref ?? null) : patch.ref,
-      at, projectId, id);
+      bump ? at : cur.updatedAt, bump ? 1 : 0, projectId, id);
     const next = getCard(db, projectId, id)!;
     appendTimeline(db, {
       projectId, entityType: "card", entityId: formatCid({ projectId, id }),
@@ -346,6 +375,7 @@ export function moveCard(db: Db, projectId: ProjectId, id: EntityId, toColumnId:
     // no timeline event, and above all no 409 for a drag the user did not make.
     if (cur.columnId === toColumnId) return cur;
     assertWip(db, projectId, toColumnId, id);
+    assertSingleDoing(db, projectId, col, id);
     const at = nowIso();
     run(db, "UPDATE card SET column_id = ?, moved_at = ?, updated_at = ?, closed_at = ?, version = version + 1 WHERE project_id = ? AND id = ?",
       toColumnId, at, at, col.kind === "done" ? at : null, projectId, id);
@@ -529,14 +559,18 @@ function lastActors(db: Db, projectId: ProjectId): Map<number, string> {
   return out;
 }
 
-/** One read for the UI/API: project + columns + cards + dependency edges. */
-export function readBoard(db: Db, projectId: ProjectId): BoardSnapshot | null {
+/**
+ * One read for the UI/API: project + columns + cards + dependency edges. `withActors: false`
+ * skips the lastActors GROUP BY, which is a full timeline scan nobody but the UI reads.
+ */
+export function readBoard(db: Db, projectId: ProjectId, opts: { withActors?: boolean } = {}): BoardSnapshot | null {
   const project = getProject(db, projectId);
   if (!project) return null;
-  const actors = lastActors(db, projectId);
+  const cards = listCards(db, projectId);
+  const actors = opts.withActors === false ? null : lastActors(db, projectId);
   return {
     project, columns: listColumns(db, projectId),
-    cards: listCards(db, projectId).map(c => ({ ...c, lastActor: actors.get(c.id) ?? null })),
+    cards: actors === null ? cards : cards.map(c => ({ ...c, lastActor: actors.get(c.id) ?? null })),
     dependencies: listDependencies(db, projectId)
   };
 }

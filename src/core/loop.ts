@@ -34,7 +34,12 @@ export interface TickInput {
   maxLoops?: number;
 }
 
-export interface TickResult { state: LoopState; nextCardId: EntityId | null }
+export interface TickResult {
+  state: LoopState;
+  nextCardId: EntityId | null;
+  /** "halted" when this tick stopped the loop, so a caller can log it without unpacking state. */
+  reason: "halted" | null;
+}
 
 /** A TODO-column card with no open blocker (manual `blockedReason` does not count: it is a note). */
 function readyCards(input: TickInput): Card[] {
@@ -50,26 +55,27 @@ export function tickLoop(state: LoopState, input: TickInput): TickResult {
   }
   const cap = input.maxLoops ?? 0;
   if (cap > 0 && state.ticks >= cap) {
-    return { state: stopLoop({ ...state, nextCardId: null }, input.now, "maxLoops に達した"), nextCardId: null };
+    return { state: stopLoop({ ...state, nextCardId: null }, input.now, "maxLoops に達した"), nextCardId: null, reason: "halted" };
   }
   const next = readyCards(input);
   if (next.length === 0) {
     return {
       state: stopLoop({ ...state, ticks: state.ticks + 1, lastTickAt: input.now, nextCardId: null }, input.now, "ready なカードが無い"),
-      nextCardId: null,
+      nextCardId: null, reason: "halted",
     };
   }
   const card = next[0];
   return {
     state: { ...state, ticks: state.ticks + 1, lastTickAt: input.now, nextCardId: card.id },
-    nextCardId: card.id,
+    nextCardId: card.id, reason: null,
   };
 }
 
 /**
- * The DOING card nobody has touched for `stuckDays` whole days, with that count. v1 halted on
- * a settle chain of the same card; v2 has no executor to count settles, so the card's own
- * `updatedAt` is the clock. 0 days (or less) turns the check off, like v1's unlimited cap.
+ * The DOING card that has not moved for `stuckDays` whole days, with that count. The clock is
+ * `movedAt`, not `updatedAt`: a wake writes sessionId and a note rewrites blockedReason, and
+ * either would make a card that has sat in DOING for a week look fresh. `createdAt` covers a
+ * row whose movedAt is unreadable. 0 days (or less) turns the check off, like v1's unlimited cap.
  */
 export function stuckDoingCard(
   cards: readonly Card[], doingColumnId: string, now: string, stuckDays: number,
@@ -78,7 +84,7 @@ export function stuckDoingCard(
   const nowMs = Date.parse(now);
   for (const card of cards) {
     if (card.columnId !== doingColumnId) continue;
-    const days = Math.floor((nowMs - Date.parse(card.updatedAt)) / 86_400_000);
+    const days = Math.floor((nowMs - Date.parse(card.movedAt || card.createdAt)) / 86_400_000);
     if (days >= stuckDays) return { card, days };
   }
   return null;

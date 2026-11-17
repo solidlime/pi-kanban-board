@@ -12,13 +12,16 @@ export interface TickProjectResult {
   nextCardId: EntityId | null;
   /** The card this tick actually moved into DOING, if any. */
   moved: Card | null;
+  /** "halted" when this tick stopped the loop (stuck card, no ready card, budget spent). */
+  reason: "halted" | null;
 }
 
 /** null when the loop is not running (or the board is gone): nothing to tick. */
 export function tickProject(db: Db, projectId: ProjectId, now = new Date().toISOString(), actor = "loop"): TickProjectResult | null {
   const loop = getLoop(db, projectId);
   if (loop.status !== "running") return null;
-  const snapshot = readBoard(db, projectId);
+  // No lastActor here: this tick never reads it, and the GROUP BY is a full timeline scan.
+  const snapshot = readBoard(db, projectId, { withActors: false });
   if (!snapshot) return null;
   const settings = getLoopSettings(db);
   const doing = snapshot.columns.find(c => c.kind === "doing");
@@ -27,15 +30,22 @@ export function tickProject(db: Db, projectId: ProjectId, now = new Date().toISO
   if (stuck) {
     const reason = `DOING の #${stuck.card.id} が ${stuck.days} 日動いていない`;
     const saved = saveLoop(db, stopLoop(loop, now, reason), actor, "loop.halted");
-    return { loop: saved, nextCardId: null, moved: null };
+    return { loop: saved, nextCardId: null, moved: null, reason: "halted" };
   }
   const result = tickLoop(loop, {
     columns: snapshot.columns, cards: snapshot.cards, deps: snapshot.dependencies ?? [], now, maxLoops: settings.maxLoops,
   });
+  // Display only: moveCard is the one that decides, inside its own transaction. The catch is for
+  // the race this read cannot close — the loser of two ticks reports "nothing moved", not a torn tick.
   const occupied = doing !== undefined && snapshot.cards.some(c => c.columnId === doing.id);
-  const moved = result.nextCardId !== null && doing !== undefined && !occupied
-    ? moveCard(db, projectId, result.nextCardId, doing.id, { actor })
-    : null;
+  let moved: Card | null = null;
+  if (result.nextCardId !== null && doing !== undefined && !occupied) {
+    try {
+      moved = moveCard(db, projectId, result.nextCardId, doing.id, { actor });
+    } catch (err) {
+      if ((err as { code?: string }).code !== "WIP_LIMIT") throw err;
+    }
+  }
   const saved = saveLoop(db, result.state, actor, "loop.tick");
-  return { loop: saved, nextCardId: result.nextCardId, moved };
+  return { loop: saved, nextCardId: result.nextCardId, moved, reason: result.reason };
 }
