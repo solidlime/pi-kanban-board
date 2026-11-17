@@ -59,7 +59,7 @@ test("a DOING card already in place is woken once, then not again until WAKE_RET
   R.createCard(db, { projectId: project.projectId, columnId: "todo", title: "behind it" });
 
   const woke = [];
-  const wake = async (_db, p, c) => { woke.push(`${p.slug}#${c.id}`); return null; };
+  const wake = async (_db, p, c) => { woke.push(`${p.slug}#${c.id}`); return { sessionId: "s", pid: undefined, via: "pi-web" }; };
   const log = new Map();
 
   const first = await tickAllLoops(db, at(0), wake, log);
@@ -82,14 +82,178 @@ test("a card the tick actually moved is woken at once even when the log holds an
   const first = R.createCard(db, { projectId: project.projectId, columnId: "todo", title: "first" });
   const second = R.createCard(db, { projectId: project.projectId, columnId: "todo", title: "second" });
 
-  const woke = [];
-  const wake = async (_db, p, c) => { woke.push(`${p.slug}#${c.id}`); return null; };
+  const moved = [];
+  const wake = async (_db, p, c) => { moved.push(`${p.slug}#${c.id}`); return { sessionId: "s", pid: undefined, via: "pi-web" }; };
   const log = new Map();
 
   await tickAllLoops(db, at(0), wake, log);
-  assert.deepEqual(woke, [`moved#${first.id}`]);
+  assert.deepEqual(moved, [`moved#${first.id}`]);
   // The card left DOING, so the next pass moves the second one — a move never waits for the retry.
   R.moveCard(db, project.projectId, first.id, "done");
   await tickAllLoops(db, at(1), wake, log);
-  assert.deepEqual(woke, [`moved#${first.id}`, `moved#${second.id}`], "a fresh move is woken immediately");
+  assert.deepEqual(moved, [`moved#${first.id}`, `moved#${second.id}`], "a fresh move is woken immediately");
+});
+
+// #26: busy/in-flight means the session has a writer and the card moves when that turn ends, so
+// the retry belongs on the next pass (15s) — not after WAKE_RETRY_MS, and not never.
+test("busy で見送ったカードは WAKE_RETRY_MS を待たずに次の tick で再試行される", async (t) => {
+  const db = memDb(t);
+  const base = Date.now();
+  const at = (min) => new Date(base + min * 60_000).toISOString();
+  const project = R.createProject(db, { slug: "busy-retry" });
+  R.saveLoop(db, L.startLoop(L.initialLoopState(project.projectId), at(0)));
+  const card = R.createCard(db, { projectId: project.projectId, columnId: "todo", title: "run" });
+  R.createCard(db, { projectId: project.projectId, columnId: "todo", title: "behind it" });
+
+  const woke = [];
+  const wake = async (_db, p, c) => { woke.push(`${p.slug}#${c.id}`); return { refused: "busy" }; };
+  const log = new Map();
+
+  await tickAllLoops(db, at(0), wake, log);
+  assert.deepEqual(woke, [`busy-retry#${card.id}`]);
+  // 15s later — far below WAKE_RETRY_MS.
+  await tickAllLoops(db, at(0.25), wake, log);
+  assert.equal(woke.length, 2, "a busy card is retried on the next tick");
+  await tickAllLoops(db, at(0.5), wake, log);
+  assert.equal(woke.length, 3, "and again, for as long as the session is busy");
+});
+
+test("in-flight も同じく次の tick で再試行される", async (t) => {
+  const db = memDb(t);
+  const base = Date.now();
+  const at = (min) => new Date(base + min * 60_000).toISOString();
+  const project = R.createProject(db, { slug: "in-flight-retry" });
+  R.saveLoop(db, L.startLoop(L.initialLoopState(project.projectId), at(0)));
+  const card = R.createCard(db, { projectId: project.projectId, columnId: "todo", title: "run" });
+  R.createCard(db, { projectId: project.projectId, columnId: "todo", title: "behind it" });
+
+  let calls = 0;
+  const wake = async () => { calls += 1; return { refused: "in-flight" }; };
+  const log = new Map();
+
+  await tickAllLoops(db, at(0), wake, log);
+  await tickAllLoops(db, at(0.25), wake, log);
+  assert.equal(calls, 2, "the wake in flight is attempted again next pass");
+  assert.ok(card.id > 0);
+});
+
+test("unclear / not-doing は 5 分待つ（POST ストームを防ぐ）", async (t) => {
+  const base = Date.now();
+  const at = (min) => new Date(base + min * 60_000).toISOString();
+  for (const reason of ["unclear", "not-doing"]) {
+    // One board per reason: a pass ticks every project, so a shared db would count its neighbour.
+    const db = memDb(t);
+    const project = R.createProject(db, { slug: `no-retry-${reason}` });
+    R.saveLoop(db, L.startLoop(L.initialLoopState(project.projectId), at(0)));
+    R.createCard(db, { projectId: project.projectId, columnId: "todo", title: "run" });
+    R.createCard(db, { projectId: project.projectId, columnId: "todo", title: "behind it" });
+
+    let calls = 0;
+    const wake = async () => { calls += 1; return { refused: reason }; };
+    const log = new Map();
+
+    await tickAllLoops(db, at(0), wake, log);
+    assert.equal(calls, 1, `${reason}: woken once`);
+    await tickAllLoops(db, at(1), wake, log);
+    assert.equal(calls, 1, `${reason}: the 5 minute wait still applies`);
+    await tickAllLoops(db, at(WAKE_RETRY_MS / 60_000 + 1), wake, log);
+    assert.equal(calls, 2, `${reason}: past WAKE_RETRY_MS it is retried`);
+  }
+});
+
+test("配送成功したカードは 5 分呼ばれない", async (t) => {
+  const db = memDb(t);
+  const base = Date.now();
+  const at = (min) => new Date(base + min * 60_000).toISOString();
+  const project = R.createProject(db, { slug: "delivered" });
+  R.saveLoop(db, L.startLoop(L.initialLoopState(project.projectId), at(0)));
+  R.createCard(db, { projectId: project.projectId, columnId: "todo", title: "run" });
+  R.createCard(db, { projectId: project.projectId, columnId: "todo", title: "behind it" });
+
+  let calls = 0;
+  const wake = async () => { calls += 1; return { sessionId: "s", pid: undefined, via: "pi-web" }; };
+  const log = new Map();
+
+  await tickAllLoops(db, at(0), wake, log);
+  await tickAllLoops(db, at(1), wake, log);
+  assert.equal(calls, 1, "a delivered wake is not repeated inside WAKE_RETRY_MS");
+  await tickAllLoops(db, at(WAKE_RETRY_MS / 60_000 + 1), wake, log);
+  assert.equal(calls, 2, "the level trigger still retries after it");
+});
+
+// The one test that kills `at: clock` on the busy path: advancing the timestamp would push the
+// busy card onto the 5 minute wait, and its wake would land behind the turn it is waiting for.
+test("busy で見送っても at は据え置き: 5 分経過後の busy は 15 秒後に再試行される", async (t) => {
+  const db = memDb(t);
+  const base = Date.now();
+  const at = (min) => new Date(base + min * 60_000).toISOString();
+  const at_ = (min, sec) => new Date(base + min * 60_000 + sec * 1_000).toISOString();
+  const project = R.createProject(db, { slug: "busy-keeps-at" });
+  R.saveLoop(db, L.startLoop(L.initialLoopState(project.projectId), at(0)));
+  R.createCard(db, { projectId: project.projectId, columnId: "todo", title: "run" });
+  R.createCard(db, { projectId: project.projectId, columnId: "todo", title: "behind it" });
+
+  let calls = 0;
+  // Delivered at t0, busy once the 5 minute retry comes round.
+  const wake = async () => { calls += 1; return calls === 1 ? { sessionId: "s", pid: undefined, via: "pi-web" } : { refused: "busy" }; };
+  const log = new Map();
+
+  await tickAllLoops(db, at(0), wake, log);
+  assert.equal(calls, 1, "t0: delivered");
+  assert.equal(log.get(project.projectId).at, Date.parse(at(0)), "t0 is the timestamp that has to survive");
+
+  await tickAllLoops(db, at(6), wake, log);
+  assert.equal(calls, 2, "t0+6m: past WAKE_RETRY_MS, so the standing card is asked again");
+  assert.equal(log.get(project.projectId).at, Date.parse(at(0)), "a busy refusal must not move `at` to t0+6m");
+  assert.equal(log.get(project.projectId).busy, true, "the streak is recorded so the next pass is due");
+
+  await tickAllLoops(db, at_(6, 15), wake, log);
+  assert.equal(calls, 3, "t0+6m15s: the busy card is retried on the next pass, not 5 minutes later");
+});
+
+// An unexpected throw is a wait, not a reason to hammer pi-web every 15s.
+// §6: a busy streak is visible once. Without an entry for the first refusal there is no streak
+// to compare against, and the error repeats every pass (15s) for as long as the turn runs.
+test("busy 連続の console.error は最初の 1 回だけ", async (t) => {
+  const db = memDb(t);
+  const base = Date.now();
+  const at = (min) => new Date(base + min * 60_000).toISOString();
+  const project = R.createProject(db, { slug: "busy-log-once" });
+  R.saveLoop(db, L.startLoop(L.initialLoopState(project.projectId), at(0)));
+  R.createCard(db, { projectId: project.projectId, columnId: "todo", title: "run" });
+  R.createCard(db, { projectId: project.projectId, columnId: "todo", title: "behind it" });
+
+  const logged = [];
+  const real = console.error;
+  console.error = (...a) => { logged.push(a.join(" ")); };
+  t.after(() => { console.error = real; });
+  const wake = async () => ({ refused: "busy" });
+  const log = new Map();
+
+  for (const min of [0, 0.25, 0.5, 0.75]) await tickAllLoops(db, at(min), wake, log);
+  assert.equal(log.get(project.projectId).busy, true, "the refusal leaves a streak marker behind");
+  assert.equal(log.get(project.projectId).at, Date.parse(at(0)), "the first refusal's timestamp is kept");
+  assert.equal(logged.filter((l) => l.includes("busy")).length, 1, `one line per streak, got ${logged.length}`);
+});
+
+test("wake が throw したら 5 分待つ", async (t) => {
+  const db = memDb(t);
+  const base = Date.now();
+  const at = (min) => new Date(base + min * 60_000).toISOString();
+  const project = R.createProject(db, { slug: "throw-waits" });
+  R.saveLoop(db, L.startLoop(L.initialLoopState(project.projectId), at(0)));
+  R.createCard(db, { projectId: project.projectId, columnId: "todo", title: "run" });
+  R.createCard(db, { projectId: project.projectId, columnId: "todo", title: "behind it" });
+
+  let calls = 0;
+  const wake = async () => { calls += 1; throw new Error("boom"); };
+  const log = new Map();
+
+  await tickAllLoops(db, at(0), wake, log);
+  assert.equal(calls, 1, "the throw is contained by the pass");
+  await tickAllLoops(db, at(1), wake, log);
+  await tickAllLoops(db, at(4), wake, log);
+  assert.equal(calls, 1, "a throwing wake is not retried inside WAKE_RETRY_MS");
+  await tickAllLoops(db, at(WAKE_RETRY_MS / 60_000 + 1), wake, log);
+  assert.equal(calls, 2, "past WAKE_RETRY_MS it is retried");
 });

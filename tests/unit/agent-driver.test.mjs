@@ -66,11 +66,43 @@ function fakePiWeb(runningIds = [], mintedId = null) {
   const calls = [];
   const fetch = async (url, init) => {
     const u = String(url);
-    calls.push({ url: u, body: init?.body ? JSON.parse(init.body) : null });
+    calls.push({ url: u, method: init?.method ?? "GET", body: init?.body ? JSON.parse(init.body) : null });
     if (u.endsWith("/api/agent/running")) return { ok: true, status: 200, json: async () => ({ runningSessionIds: runningIds }) };
     return { ok: true, status: 200, json: async () => ({ success: true, sessionId: mintedId }) };
   };
   return { calls, fetch };
+}
+
+/** A pi-web holding one session in a given state: the probe answers it, the wake POST succeeds. */
+function fakePiWebState(state) {
+  const calls = [];
+  const fetch = async (url, init) => {
+    calls.push({ url: String(url), method: init?.method ?? "GET", body: init?.body ? JSON.parse(init.body) : null });
+    if (init?.method === "POST") return { ok: true, status: 200, json: async () => ({ success: true }) };
+    return { ok: true, status: 200, json: async () => state };
+  };
+  return { calls, fetch };
+}
+
+/** The shape of `GET /api/agent/<id>?systemPrompt=0`. */
+/**
+ * The shape of `GET /api/agent/<id>?systemPrompt=0`, as measured: the top level carries only
+ * `running` and `state`, and the counters (`pendingMessageCount`, `queuedMessages`) are inside
+ * `state`. Putting them on the top level here would bake in a shape pi-web never sends.
+ */
+const agentState = (state, pendingMessageCount = 0) => ({
+  running: true,
+  state: { queuedMessages: { steering: [], followUp: [] }, ...state, pendingMessageCount },
+});
+const idleAgent = () => agentState({ isStreaming: false, isPromptRunning: false, isCompacting: false });
+/** Every request the wake actually sent, i.e. not the probe. */
+const posts = (calls) => calls.filter((c) => c.method === "POST");
+
+/** A doing card already pointing at a session, the way a second wake finds it. */
+function withSession(db, slug, sid) {
+  const { project, card } = board(db, slug);
+  repos.updateCard(db, project.projectId, card.id, { sessionId: sid }, { actor: "test" });
+  return { project, card: getCard(db, project.projectId, card.id) };
 }
 
 test("buildCardPrompt names the board, the card, its title and the done step", (t) => {
@@ -142,8 +174,10 @@ test("a second wake on the same board is refused while the child is alive", asyn
   const db = memDb(t);
   const { project, card } = board(db, "busy-board");
   const { calls, spawn } = fakeSpawn();
-  assert.notEqual(await wakeCardSession(db, project, card, { spawn, fetch: noPiWeb }), null);
-  assert.equal(await wakeCardSession(db, project, card, { spawn, fetch: noPiWeb }), null);
+  const first = await wakeCardSession(db, project, card, { spawn, fetch: noPiWeb });
+  assert.equal(first.via, "pi");
+  // in-flight is its own reason: the supervisor retries it like busy, not after WAKE_RETRY_MS.
+  assert.deepEqual(await wakeCardSession(db, project, card, { spawn, fetch: noPiWeb }), { refused: "in-flight" });
   assert.equal(calls.length, 1, "no second process");
 });
 
@@ -204,7 +238,7 @@ test("a pi-web 404 is a refusal, not an absence: no process is spawned", async (
 
   const out = await wakeCardSession(db, project, stored, { spawn, fetch: notFound });
 
-  assert.equal(out, null);
+  assert.deepEqual(out, { refused: "unclear" });
   assert.equal(spawned.length, 0, "a 4xx is not a fallback");
 });
 
@@ -219,7 +253,7 @@ test("a 200 with success:false is not delivery", async (t) => {
 
   const out = await wakeCardSession(db, project, stored, { spawn, fetch: softNo });
 
-  assert.equal(out, null, "pi-web answered but rejected the prompt");
+  assert.deepEqual(out, { refused: "unclear" }, "pi-web answered but rejected the prompt");
   assert.equal(spawned.length, 0, "and a second writer is not started");
 });
 
@@ -254,7 +288,7 @@ test("pi-web down and the session locked elsewhere: no process is spawned", asyn
 
   const out = await wakeCardSession(db, project, stored, { spawn, fetch: noPiWeb });
 
-  assert.equal(out, null, "the lock still guards the pi path");
+  assert.deepEqual(out, { refused: "locked" }, "the lock still guards the pi path");
   assert.equal(spawned.length, 0);
 });
 
@@ -288,7 +322,7 @@ test("a new session answered without an id is not a wake", async (t) => {
 
   const out = await wakeCardSession(db, project, card, { spawn, fetch: noId });
 
-  assert.equal(out, null);
+  assert.deepEqual(out, { refused: "unclear" });
   assert.equal(getCard(db, project.projectId, card.id).sessionId, null, "no id, nothing to point at");
   assert.equal(spawned.length, 0);
 });
@@ -305,24 +339,120 @@ test("a 500 that names the prompt as rejected is a refusal, not an absence", asy
 
   const out = await wakeCardSession(db, project, stored, { spawn, fetch: busy });
 
-  assert.equal(out, null);
+  assert.deepEqual(out, { refused: "unclear" });
   assert.equal(spawned.length, 0, "a refused prompt is not a reason to spawn a second writer");
 });
 
-test("a wake queues behind a turn the session is already running", async (t) => {
+// #26: a wake is injected only into a session that has stopped. Busy is a positive answer from
+// `GET /api/agent/<id>?systemPrompt=0`; anything the probe cannot answer is `unknown`, and the POST
+// itself is then the test — pi refuses a prompt on a running session, so a race is never queued.
+test("streaming なセッションには POST を出さずに busy を返す", async (t) => {
   const db = memDb(t);
-  const { project, card } = board(db, "piweb-followup");
-  const sid = "ee22ff33-1111-2222-3333-444455556666";
-  repos.updateCard(db, project.projectId, card.id, { sessionId: sid }, { actor: "test" });
-  const stored = getCard(db, project.projectId, card.id);
-  const { spawn } = fakeSpawn();
-  const { calls, fetch } = fakePiWeb([sid], null);
+  const sid = "a1b2c3d4-1111-2222-3333-444455556666";
+  const { project, card } = withSession(db, "probe-streaming", sid);
+  const { calls, fetch } = fakePiWebState(agentState({ isStreaming: true, isPromptRunning: false, isCompacting: false }));
 
-  const out = await wakeCardSession(db, project, stored, { spawn, fetch });
+  const out = await wakeCardSession(db, project, card, { spawn: fakeSpawn().spawn, fetch });
+
+  assert.deepEqual(out, { refused: "busy" });
+  assert.equal(posts(calls).length, 0, "the turn is not queued behind");
+  assert.ok(calls[0].url.includes(`/api/agent/${sid}?systemPrompt=0`), "the probe answers cheaply, before the POST");
+});
+
+test("busy はどのシグナルでも拾う: isCompacting / isPromptRunning / pendingMessageCount", async (t) => {  const db = memDb(t);
+  const signals = {
+    isCompacting: agentState({ isStreaming: false, isPromptRunning: false, isCompacting: true }),
+    // isStreaming と isPromptRunning は実測で独立している: 片方だけ見ると busy を取りこぼす。
+    isPromptRunning: agentState({ isStreaming: false, isPromptRunning: true, isCompacting: false }),
+    // 積まれた分は必ず実行されるので、二重積みは同じカードの 2 回目の実行になる。
+    pendingMessageCount: agentState({ isStreaming: false, isPromptRunning: false, isCompacting: false }, 2),
+  };
+  for (const [name, state] of Object.entries(signals)) {
+    const { project, card } = withSession(db, `probe-${name}`, "b2c3d4e5-1111-2222-3333-444455556666");
+    const { calls, fetch } = fakePiWebState(state);
+    assert.deepEqual(await wakeCardSession(db, project, card, { spawn: fakeSpawn().spawn, fetch }), { refused: "busy" }, name);
+    assert.equal(posts(calls).length, 0, `${name}: nothing is queued`);
+  }
+});
+
+// The measured body of a session that already has a wake queued (nous#44): fed verbatim, so a
+// probe that reads the counter off the top level is caught here instead of in production.
+test("実測 body（state 内に pendingMessageCount）をそのまま食わせても busy", async (t) => {
+  const db = memDb(t);
+  const sid = "a2b3c4d5-1111-2222-3333-444455556666";
+  const { project, card } = withSession(db, "probe-measured", sid);
+  const measured = {
+    running: true,
+    state: {
+      isStreaming: true, isPromptRunning: false, isCompacting: false, isBashRunning: false,
+      pendingMessageCount: 5,
+      queuedMessages: { steering: [], followUp: ["[kanban nous#44] …", "[kanban nous#44] …"] },
+      messageCount: 0, thinkingLevel: "max",
+    },
+  };
+  const { calls, fetch } = fakePiWebState(measured);
+
+  assert.deepEqual(await wakeCardSession(db, project, card, { spawn: fakeSpawn().spawn, fetch }), { refused: "busy" });
+  assert.equal(posts(calls).length, 0, "a queued wake is not stacked a second time");
+});
+
+test("判定できない probe は busy にしない: 不明 = POST を試す", async (t) => {
+  const db = memDb(t);
+  const probes = {
+    "500": async () => ({ ok: false, status: 500, json: async () => ({}) }),
+    "非 JSON": async () => ({ ok: true, status: 200, json: async () => { throw new SyntaxError("Unexpected token <"); } }),
+    ECONNREFUSED: async () => { throw new Error("ECONNREFUSED"); },
+    timeout: async () => { throw Object.assign(new Error("timed out"), { name: "TimeoutError" }); },
+  };
+  for (const [name, probe] of Object.entries(probes)) {
+    const { project, card } = withSession(db, `probe-unknown-${name}`, "c3d4e5f6-1111-2222-3333-444455556666");
+    const calls = [];
+    const fetch = async (url, init) => {
+      calls.push({ url: String(url), method: init?.method ?? "GET" });
+      if (init?.method !== "POST") return probe();
+      return { ok: true, status: 200, json: async () => ({ success: true }) };
+    };
+    const out = await wakeCardSession(db, project, card, { spawn: fakeSpawn().spawn, fetch });
+    assert.equal(out?.via, "pi-web", `${name}: an unreadable probe still delivers`);
+    assert.equal(posts(calls).length, 1, `${name}: the POST was tried`);
+  }
+});
+
+test("idle なセッションへの POST に streamingBehavior は無い", async (t) => {
+  const db = memDb(t);
+  const sid = "d4e5f6a7-1111-2222-3333-444455556666";
+  const { project, card } = withSession(db, "probe-idle", sid);
+  const { calls, fetch } = fakePiWebState(idleAgent());
+
+  const out = await wakeCardSession(db, project, card, { spawn: fakeSpawn().spawn, fetch });
 
   assert.equal(out?.via, "pi-web");
-  const post = calls.find(c => c.url.endsWith(`/api/agent/${sid}`));
-  assert.equal(post.body.streamingBehavior, "followUp", "a busy session must not swallow the wake");
+  const post = posts(calls).find(c => c.url.endsWith(`/api/agent/${sid}`));
+  assert.equal(post.body.type, "prompt");
+  assert.equal("streamingBehavior" in post.body, false, "followUp is what queued a wake behind a long turn");
+});
+
+test("pi-web で開いているだけの idle セッション（running:true / フラグ無し）には配送する", async (t) => {
+  const db = memDb(t);
+  const sid = "e5f6a7b8-1111-2222-3333-444455556666";
+  const { project, card } = withSession(db, "probe-open-idle", sid);
+  const { calls, fetch } = fakePiWebState(idleAgent());
+
+  const out = await wakeCardSession(db, project, card, { spawn: fakeSpawn().spawn, fetch });
+
+  assert.equal(out?.via, "pi-web", "running:true alone is not busy");
+  assert.equal(posts(calls).length, 1);
+});
+
+test("新しいセッションは probe しない（問い合わせ先がまだ無い）", async (t) => {
+  const db = memDb(t);
+  const { project, card } = board(db, "probe-new", { cwd: "/tmp/kb-probe-new" });
+  const { calls, fetch } = fakePiWeb([], "f6a7b8c9-1111-2222-3333-444455556666");
+
+  const out = await wakeCardSession(db, project, card, { spawn: fakeSpawn().spawn, fetch });
+
+  assert.equal(out?.via, "pi-web");
+  assert.equal(calls.filter(c => c.url.includes("systemPrompt=0")).length, 0, "nothing to ask about yet");
 });
 
 test("two concurrent wakes start one session, not two", async (t) => {
@@ -336,7 +466,7 @@ test("two concurrent wakes start one session, not two", async (t) => {
     wakeCardSession(db, project, card, { spawn, fetch }),
   ]);
 
-  assert.equal(both.filter(x => x !== null).length, 1, "one caller wins, the other is refused");
+  assert.equal(both.filter(x => x?.refused === undefined).length, 1, "one caller wins, the other is refused");
   assert.equal(calls.filter(c => c.url.endsWith("/api/agent/new")).length, 1, "one session requested");
 });
 
@@ -349,7 +479,7 @@ test("a pi-web timeout is not a refusal: pi is not spawned on top of it", async 
 
   const out = await wakeCardSession(db, project, card, { spawn, fetch: slow });
 
-  assert.equal(out, null, "we do not know whether pi-web started it, so we claim nothing");
+  assert.deepEqual(out, { refused: "unclear" }, "we do not know whether pi-web started it, so we claim nothing");
   assert.equal(spawned.length, 0, "a second writer would corrupt the JSONL");
 });
 
@@ -372,7 +502,7 @@ test("a spawn that fails with ENOENT wakes nothing and writes no session id", as
 
   const out = await wakeCardSession(db, project, card, { spawn, fetch: noPiWeb });
 
-  assert.equal(out, null, "a process that never started is not a wake");
+  assert.deepEqual(out, { refused: "spawn-failed" }, "a process that never started is not a wake");
   assert.equal(getCard(db, project.projectId, card.id).sessionId, null,
     "the card must not point at a session nobody started");
   assert.deepEqual(existsSync(locksDir()) ? readdirSync(locksDir()).sort() : [], locksBefore,
@@ -404,9 +534,9 @@ test("a stale running entry does not block the board forever", async (t) => {
   const later = () => Date.now() + 61 * 60 * 1000;
   assert.notEqual(await wakeCardSession(db, project, card, { spawn, fetch: noPiWeb }), null);
 
-  assert.equal(await wakeCardSession(db, project, card, { spawn, fetch: noPiWeb, now: Date.now }), null,
+  assert.deepEqual(await wakeCardSession(db, project, card, { spawn, fetch: noPiWeb, now: Date.now }), { refused: "in-flight" },
     "a child we believe is alive still owns the board");
-  assert.equal(await wakeCardSession(db, project, card, { spawn, fetch: noPiWeb, now: later }), null,
+  assert.deepEqual(await wakeCardSession(db, project, card, { spawn, fetch: noPiWeb, now: later }), { refused: "in-flight" },
     "an hour old but alive is never dropped (no turn is killed)");
   assert.equal(calls.length, 1);
 
@@ -423,8 +553,8 @@ test("a card outside a doing column is not woken", async (t) => {
   const doneCard = createCard(db, { projectId: project.projectId, columnId: "done", title: "もう終わった" });
   const { calls, spawn } = fakeSpawn();
 
-  assert.equal(await wakeCardSession(db, project, todoCard, { spawn, fetch: noPiWeb }), null);
-  assert.equal(await wakeCardSession(db, project, doneCard, { spawn, fetch: noPiWeb }), null);
+  assert.deepEqual(await wakeCardSession(db, project, todoCard, { spawn, fetch: noPiWeb }), { refused: "not-doing" });
+  assert.deepEqual(await wakeCardSession(db, project, doneCard, { spawn, fetch: noPiWeb }), { refused: "not-doing" });
   assert.equal(calls.length, 0, "no process for a card nobody asked to run");
 });
 
@@ -435,7 +565,7 @@ test("a snapshot that says doing is refused once the card is done", async (t) =>
   // The queue holds an old copy of the card; the board is what counts.
   repos.moveCard(db, project.projectId, card.id, "done", { actor: "test" });
 
-  assert.equal(await wakeCardSession(db, project, card, { spawn, fetch: noPiWeb }), null,
+  assert.deepEqual(await wakeCardSession(db, project, card, { spawn, fetch: noPiWeb }), { refused: "not-doing" },
     "a stale snapshot is not a licence to run a closed card");
   assert.equal(calls.length, 0);
 });
@@ -456,10 +586,10 @@ test("forgetCard frees the board once its card is gone", async (t) => {
   // DOING takes one card, so the next one can only arrive after the first has left it.
   repos.moveCard(db, project.projectId, first.id, "done", { actor: "test" });
   const second = createCard(db, { projectId: project.projectId, columnId: "doing", title: "次" });
-  assert.equal(await wakeCardSession(db, project, second, { spawn, fetch: noPiWeb }), null,
+  assert.deepEqual(await wakeCardSession(db, project, second, { spawn, fetch: noPiWeb }), { refused: "in-flight" },
     "the board still believes the first child owns it");
   forgetCard(project.projectId, first.id + 999);
-  assert.equal(await wakeCardSession(db, project, second, { spawn, fetch: noPiWeb }), null,
+  assert.deepEqual(await wakeCardSession(db, project, second, { spawn, fetch: noPiWeb }), { refused: "in-flight" },
     "forgetting a different card changes nothing");
   assert.equal(calls.length, 1, "no second process yet");
 

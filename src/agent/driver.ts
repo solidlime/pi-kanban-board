@@ -112,8 +112,47 @@ export interface WakeOptions {
 export interface WakeResult {
   sessionId: string;
   pid: number | undefined;
-  /** Which runner took the card: pi-web's own queue, or a `pi -p` we spawned ourselves. */
+  /** Which runner took the card: a prompt handed to pi-web, or a `pi -p` we spawned ourselves. */
   via: "pi-web" | "pi";
+}
+
+/** Why a wake delivered nothing. The caller decides what to retry from the reason alone. */
+export type WakeRefusal = { refused: "busy" | "in-flight" | "unclear" | "not-doing" | "locked" | "spawn-failed" };
+
+type BusyProbe = "busy" | "idle" | "unknown";
+
+const BUSY_PROBE_TIMEOUT_MS = 1000;
+
+/**
+ * Is the session mid-turn? Only a positive answer counts. A probe that cannot answer (non-2xx,
+ * unreadable body, timeout, refused connection) is `unknown`, and the POST then is the test: pi
+ * refuses a prompt on a running session. Reading unknown as busy leaves a card in DOING forever;
+ * the opposite costs one refusal. The two are not symmetric.
+ */
+async function probeSession(base: string, sessionId: string, doFetch: typeof fetch): Promise<BusyProbe> {
+  try {
+    // `?systemPrompt=0` drops the system prompt from the answer (5.8KB -> 1.1KB).
+    const res = await doFetch(`${base}/api/agent/${sessionId}?systemPrompt=0`, {
+      signal: AbortSignal.timeout(BUSY_PROBE_TIMEOUT_MS),
+    });
+    if (!res.ok) return "unknown";
+    // The counters live inside `state`; the top level carries only `running` and `state`
+    // (measured: top-level pendingMessageCount is absent, state.pendingMessageCount is the count).
+    const body = await res.json() as {
+      running?: unknown;
+      state?: { isPromptRunning?: unknown; isStreaming?: unknown; isCompacting?: unknown; pendingMessageCount?: unknown };
+    };
+    // `running:false` is pi-web holding no agent at all: nothing can be running.
+    if (body.running === false) return "idle";
+    const s = body.state ?? {};
+    // `isStreaming` and `isPromptRunning` are independent: one alone misses a busy session.
+    if (s.isPromptRunning === true || s.isStreaming === true || s.isCompacting === true) return "busy";
+    // Already queued prompts are delivered for sure, so a second one is only a duplicate run.
+    if (typeof s.pendingMessageCount === "number" && s.pendingMessageCount > 0) return "busy";
+    return "idle";
+  } catch {
+    return "unknown";
+  }
 }
 
 /** Where pi keeps the JSONL of this board's sessions (the folder the picker reads). */
@@ -126,22 +165,27 @@ const PIWEB_WAKE_TIMEOUT_MS = 30000;
 /**
  * pi-web takes the session: a new card goes to `/api/agent/new` (pi-web mints the id and
  * answers with it), an existing one to `/api/agent/<id>`, which resumes the JSONL when the
- * session is not live. null = pi-web is not there, so the caller may spawn pi itself;
- * "unclear" = pi-web may be on it, so nobody else may.
+ * session is not live. null = pi-web is not there, so the caller may spawn pi itself; a refusal
+ * says why nothing was delivered (pi-web may be on it, it is busy, ...).
  */
-async function wakeInPiWeb(project: Project, sessionId: string | null, prompt: string, opts: WakeOptions): Promise<{ sessionId: string } | "unclear" | null> {
+async function wakeInPiWeb(project: Project, sessionId: string | null, prompt: string, opts: WakeOptions): Promise<{ sessionId: string } | WakeRefusal | null> {
   const doFetch = opts.fetch ?? globalThis.fetch;
   const base = piWebUrl(opts.piwebUrl);
+  // A queued prompt outlives the turn it waits for and lands on a card that may be done by then.
+  // Ask first; only a positive answer refuses, and a new session has nothing to ask about.
+  if (sessionId !== null && await probeSession(base, sessionId, doFetch) === "busy") {
+    return { refused: "busy" };
+  }
   try {
     const res = await doFetch(sessionId === null ? `${base}/api/agent/new` : `${base}/api/agent/${sessionId}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       // pi's own RPC body: pi-web forwards it to the session untouched, and only a `prompt`
-      // command starts a turn. `followUp` queues behind a turn the session is already running
-      // instead of failing it — a card moved while its session is busy still has to arrive.
+      // command starts a turn. No `streamingBehavior`: a followUp hides the race as "an old
+      // prompt arrives later", and pi answering an error to a busy session is the atomic test.
       body: JSON.stringify(sessionId === null
         ? { cwd: sessionCwd(project), type: "prompt", message: prompt }
-        : { type: "prompt", message: prompt, streamingBehavior: "followUp" }),
+        : { type: "prompt", message: prompt }),
       signal: AbortSignal.timeout(PIWEB_WAKE_TIMEOUT_MS),
     });
     // A 4xx is pi-web saying no to *this* session while it stays alive — spawning pi on top of
@@ -150,7 +194,7 @@ async function wakeInPiWeb(project: Project, sessionId: string | null, prompt: s
     // prompt as rejected, which means it is alive and knows the session.
     if (!res.ok) {
       const why = await res.json().catch(() => ({})) as { accepted?: unknown };
-      return res.status >= 500 && why.accepted !== false ? null : "unclear";
+      return res.status >= 500 && why.accepted !== false ? null : { refused: "unclear" };
     }
     // A refused prompt still comes back 200 with success:false (a 4xx carries
     // `accepted:false` instead); claiming delivery then is how a wake goes missing in silence.
@@ -159,34 +203,34 @@ async function wakeInPiWeb(project: Project, sessionId: string | null, prompt: s
     const body = await res.json().catch(() => ({})) as { sessionId?: unknown; success?: unknown; accepted?: unknown };
     // `accepted:false` rides 4xx and 5xx, which the status check above already caught; checking it
     // here too is insurance, not something pi-web is known to send with a 200.
-    if (body.success === false || body.accepted === false) return "unclear";
+    if (body.success === false || body.accepted === false) return { refused: "unclear" };
     if (sessionId !== null) return { sessionId };
     // /api/agent/new mints the id and answers `{ success, sessionId, data, ... }`. Without it the
     // card never learns its session and the next wake opens a second one.
     const minted = typeof body.sessionId === "string" ? body.sessionId : null;
-    return minted === null ? "unclear" : { sessionId: minted };
+    return minted === null ? { refused: "unclear" } : { sessionId: minted };
   } catch (err) {
     // A timeout is not "pi-web is down": it may still be starting the session, and spawning a
     // second writer on top of that corrupts the JSONL. Only a refused connection means down.
     const name = (err as { name?: string } | null)?.name;
-    if (name === "TimeoutError" || name === "AbortError") return "unclear";
+    if (name === "TimeoutError" || name === "AbortError") return { refused: "unclear" };
     return null; // connection refused / DNS: pi-web is not there, spawn pi ourselves
   }
 }
 
 /**
  * Start a session for a card: pi-web when it is up (it owns the spawn queue and knows which
- * sessions are live), else a `pi -p` of our own. Returns null when the session already has a
+ * sessions are live), else a `pi -p` of our own. Refuses when the session already has a
  * writer — pi appends, so two writers corrupt the JSONL. stdout is dropped: the conversation
  * belongs to the session file, which pi-web reads.
  */
-export async function wakeCardSession(db: Db, project: Project, card: Card, opts: WakeOptions = {}): Promise<WakeResult | null> {
+export async function wakeCardSession(db: Db, project: Project, card: Card, opts: WakeOptions = {}): Promise<WakeResult | WakeRefusal> {
   const entry = running.get(project.projectId);
   if (entry && (opts.now?.() ?? Date.now()) - entry.startedAt > WAKE_CHILD_TTL_MS
     && (entry.child.exitCode !== null || entry.child.killed)) {
     running.delete(project.projectId);
   }
-  if (running.has(project.projectId) || waking.has(project.projectId)) return null;
+  if (running.has(project.projectId) || waking.has(project.projectId)) return { refused: "in-flight" };
   waking.add(project.projectId);
   try {
     return await startSession(db, project, card, opts);
@@ -195,17 +239,18 @@ export async function wakeCardSession(db: Db, project: Project, card: Card, opts
   }
 }
 
-async function startSession(db: Db, project: Project, card: Card, opts: WakeOptions): Promise<WakeResult | null> {
+async function startSession(db: Db, project: Project, card: Card, opts: WakeOptions): Promise<WakeResult | WakeRefusal> {
   // A wake that claims nothing has to say why: the card sits in DOING and nothing retries it.
-  const refuse = (why: string): null => {
-    console.error(`[kanban wake ${project.slug}#${card.id}] ${why}`);
-    return null;
+  // `busy` is an expected answer, not an error — the supervisor logs the first of a streak.
+  const refuse = (why: string, code: WakeRefusal["refused"]): WakeRefusal => {
+    if (code !== "busy") console.error(`[kanban wake ${project.slug}#${card.id}] ${why}`);
+    return { refused: code };
   };
   // A wake can be queued before the card moves (or after it is closed). The board is the truth:
   // a stale snapshot or a finished card must not be run, or the card resurrects in DOING.
   const fresh = getCard(db, project.projectId, card.id) ?? card;
   if (getColumn(db, project.projectId, fresh.columnId)?.kind !== "doing") {
-    return refuse(`card is not in a doing column (${fresh.columnId}), so nothing is woken`);
+    return refuse(`card is not in a doing column (${fresh.columnId}), so nothing is woken`, "not-doing");
   }
   // An existing session is resumed (--session); a new one is minted (--session-id), and only a
   // new one gets a name — renaming a resumed session would overwrite the name its user gave it.
@@ -220,9 +265,10 @@ async function startSession(db: Db, project: Project, card: Card, opts: WakeOpti
   // boards) each get the prompt. The JSONL is safe — pi-web serializes one session — but that
   // session gets two prompts.
   const viaPiWeb = await wakeInPiWeb(project, existing, prompt, opts);
-  if (viaPiWeb === "unclear") {
-    // pi-web may still start it; a pid we cannot see would be the second writer.
-    return refuse("pi-web did not clearly take the session (timeout, 4xx or success:false)");
+  if (viaPiWeb !== null && "refused" in viaPiWeb) {
+    // busy: the turn will end and the supervisor retries. unclear: pi-web may still start it, and
+    // a pid we cannot see would be the second writer.
+    return viaPiWeb;
   }
   if (viaPiWeb !== null) {
     // Remember the id pi-web minted, or the next wake would start a second session.
@@ -235,7 +281,7 @@ async function startSession(db: Db, project: Project, card: Card, opts: WakeOpti
   // `pi` exits.
   const sessionId = existing ?? randomUUID();
   const held = await acquireSessionLock(sessionId, sessionDirOf(project), { fetch: opts.fetch, url: opts.piwebUrl });
-  if (held === null) return refuse(`session ${sessionId} already has a writer (live lock, a pi-web run, or a JSONL written in the last 120s)`);
+  if (held === null) return refuse(`session ${sessionId} already has a writer (live lock, a pi-web run, or a JSONL written in the last 120s)`, "locked");
   const args = existing === null
     ? ["-p", "--session-id", sessionId, "--name", `kanban #${card.id}`, prompt]
     : ["-p", "--session", sessionId, prompt];
@@ -268,7 +314,7 @@ async function startSession(db: Db, project: Project, card: Card, opts: WakeOpti
       child.once("exit", () => resolve("exited before it started"));
     });
     release();
-    return refuse(`spawn failed: ${why}`);
+    return refuse(`spawn failed: ${why}`, "spawn-failed");
   }
   // The child outlives us: the lock names the writer, not the process that spawned it.
   held.bind(child.pid);

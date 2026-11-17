@@ -6,9 +6,11 @@
 // edge: a card left in DOING with no writer (a refused wake, a dead process, a restart) is
 // retried on a later pass instead of sitting there until a human notices.
 import type { Db } from "./persistence/db.js";
-import type { EntityId } from "./shared/ids.js";
+import type { EntityId, ProjectId } from "./shared/ids.js";
+import type { Project } from "./shared/dto.js";
 import { listProjects } from "./persistence/repos.js";
 import { tickProject } from "./loop-runner.js";
+import type { TickProjectResult } from "./loop-runner.js";
 import { wakeCardSession } from "./agent/driver.js";
 
 export const SUPERVISOR_INTERVAL_MS = 15_000;
@@ -28,7 +30,49 @@ export interface LoopTickReport {
 /** Injection point: tests pass a no-op so a tick never launches a real pi process. */
 export type Wake = typeof wakeCardSession;
 
-type WakeLog = Map<string, { cardId: EntityId; at: number }>;
+type WakeLogEntry = { cardId: EntityId; at: number; busy?: boolean };
+type WakeLog = Map<string, WakeLogEntry>;
+
+/** The card to wake this pass, or null when it is too soon (WAKE_RETRY_MS). */
+function dueWake(result: TickProjectResult, projectId: ProjectId, log: WakeLog, clock: number): EntityId | null {
+  // A card this tick just moved is woken at once. One that was already here is woken again only
+  // after WAKE_RETRY_MS, or every pass would refill pi-web's prompt queue.
+  const cardId = result.moved?.id ?? result.doingCardId;
+  if (cardId === null) return null;
+  const seen = log.get(projectId);
+  // A card whose last wake was refused as busy is due on every pass: `at` is not advanced then.
+  const due = result.moved !== null || seen === undefined || seen.cardId !== cardId
+    || seen.busy === true || clock - seen.at >= WAKE_RETRY_MS;
+  return due ? cardId : null;
+}
+
+/**
+ * Deliver one wake and record it. `busy`/`in-flight` leaves the log where it was, so the next
+ * pass retries the card (15s) instead of waiting WAKE_RETRY_MS: the session has a writer and the
+ * card moves when that turn ends.
+ */
+async function wakeAndRecord(
+  db: Db, project: Project, card: Parameters<Wake>[2], cardId: EntityId, wake: Wake, log: WakeLog, clock: number,
+): Promise<void> {
+  const seen = log.get(project.projectId);
+  // A board that cannot spawn (no pi on PATH, no cwd) still reports its tick.
+  try {
+    const out = await wake(db, project, card);
+    const refused = out !== null && "refused" in out ? out.refused : undefined;
+    if (refused === "busy" || refused === "in-flight") {
+      if (seen?.busy !== true) console.error(`[kanban wake ${project.slug}#${cardId}] ${refused}: will retry next pass`);
+      // `at` is held back: advancing it would put the busy card on the 5 minute wait and delay
+      // its wake behind the very turn it is waiting for. Entering the log at all is what makes
+      // the streak visible (`busy: true` above) and the next pass due.
+      log.set(project.projectId, { cardId, at: seen?.at ?? clock, busy: true });
+      return;
+    }
+    log.set(project.projectId, { cardId, at: clock });
+  } catch {
+    // An unexpected throw is not a reason to hammer pi-web on every pass: wait out the clock.
+    log.set(project.projectId, { cardId, at: clock });
+  }
+}
 
 /** One pass over every board. Moves loop_state, the timeline and (via wake) one session. */
 export async function tickAllLoops(
@@ -46,21 +90,11 @@ export async function tickAllLoops(
     try {
       const result = tickProject(db, project.projectId, now, "supervisor");
       if (!result) continue; // not running, or the project vanished between the two reads
-      const cardId = result.moved?.id ?? result.doingCardId;
+      const cardId = dueWake(result, project.projectId, log, clock);
       if (cardId !== null) {
-        // A card this tick just moved is woken at once. One that was already here is woken
-        // again only after WAKE_RETRY_MS, or every pass would refill pi-web's prompt queue.
-        const seen = log.get(project.projectId);
-        const fresh = result.moved !== null || seen === undefined || seen.cardId !== cardId || clock - seen.at >= WAKE_RETRY_MS;
-        if (fresh) {
-          log.set(project.projectId, { cardId, at: clock });
-          // Wake in parallel: pi-web takes up to 30s, and boards must not queue behind each other.
-          const card = result.moved ?? { id: cardId };
-          pending.push((async () => {
-            // A board that cannot spawn (no pi on PATH, no cwd) still reports its tick.
-            try { await wake(db, project, card as Parameters<Wake>[2]); } catch { /* retried next pass */ }
-          })());
-        }
+        // Wake in parallel: pi-web takes up to 30s, and boards must not queue behind each other.
+        const card = result.moved ?? { id: cardId };
+        pending.push(wakeAndRecord(db, project, card as Parameters<Wake>[2], cardId, wake, log, clock));
       }
       out.push({
         projectId: project.projectId, slug: project.slug, status: result.loop.status,
