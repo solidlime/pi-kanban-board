@@ -2,7 +2,7 @@
 // POST/PATCH/DELETE and the response card replaces the local copy.
 import './styles.css';
 import {
-  ApiError, getMeta, getProjects, getBoard, createProject, createCard, moveCard, patchCard, deleteCard,
+  ApiError, getMeta, getProjects, getBoard, createProject, deleteProject, createCard, moveCard, patchCard, deleteCard,
   getDeliverables, getTimeline, createDeliverable, deleteDeliverable, addDependency, removeDependency,
   patchColumn, getViews, createView, deleteView, getTemplates, createTemplate, useTemplate, deleteTemplate,
   getAttachments, uploadAttachment, deleteAttachment, searchBoard, getLocks, getNotifications, getGraph, getOverview,
@@ -434,6 +434,57 @@ async function doCreateProject(name: string): Promise<boolean> {
   }
 }
 
+/**
+ * 削除は取り消せない（timeline だけが残る）。誤クリックで消えないよう、
+ * slug の打ち込みを確認にする。空のボードでも同じ手順を踏ませる。
+ */
+async function doDeleteProject(slug: string): Promise<boolean> {
+  const p = store.projects.find(x => x.slug === slug);
+  const name = p?.name || slug;
+  const cards = store.projectId === slug ? Object.keys(store.cards).length : null;
+  const deliv = store.projectId === slug ? store.deliverables.length : null;
+  const stuff = [
+    cards === null ? null : `カード ${cards} 枚`,
+    deliv === null ? null : `成果物 ${deliv} 件`,
+  ].filter(Boolean).join('・');
+  const typed = window.prompt(
+    `プロジェクト「${name}」(${slug}) を削除する。${stuff ? `${stuff}も一緒に消える。` : ''}\n` +
+    `元に戻せない。続けるには slug を入力して。`,
+  );
+  if (typed === null) return false;
+  if (typed.trim() !== slug) { showToast(view, 'slug が一致しないので削除しなかった'); return false; }
+  try {
+    await deleteProject(slug);
+    showToast(view, `プロジェクト「${name}」を削除した`);
+  } catch (e) {
+    // 404 means the board is already gone, which is what this delete wanted (same as commitDelete).
+    if (!(e instanceof ApiError && e.status === 404)) {
+      store.error = describe(e);
+      showToast(view, describe(e));
+      render();
+      return false;
+    }
+    showToast(view, `プロジェクト「${name}」は既に無かった`);
+  }
+  // Drop it from the picker's data right away, so the failure path below can tell whether the
+  // board on screen is still one that exists.
+  setProjects(store, store.projects.filter(x => x.slug !== slug));
+  try {
+    const { projects } = await getProjects();
+    setProjects(store, projects);
+    // Deleting the board you are looking at falls through to the first one; deleting another
+    // must not move the view.
+    if (projects.some(x => x.slug === store.projectId)) render();
+    else await selectProject(projects[0]?.slug ?? null);
+  } catch (e) {
+    // resetBoard clears store.error, so select first and write the message after it.
+    if (!store.projects.some(x => x.slug === store.projectId)) await selectProject(null);
+    store.error = `projects: ${describe(e)}`;
+    render();
+  }
+  return true;
+}
+
 // ---------------------------------------------------------------- v2 surfaces
 
 let searchSeq = 0;
@@ -751,6 +802,7 @@ async function doDeleteAttachment(projectId: string, id: number): Promise<boolea
 const view: View = mount(root, {
   onProject: (slug) => { store.overview = false; void selectProject(slug || null); },
   onCreateProject: doCreateProject,
+  onDeleteProject: (slug) => { void doDeleteProject(slug); },
   onAddCard: doAddCard,
   onMove: (key, columnId) => { void doMove(key, columnId); },
   onEdit: (key) => { void doEdit(key); },

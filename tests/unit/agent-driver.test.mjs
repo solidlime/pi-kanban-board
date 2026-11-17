@@ -469,3 +469,28 @@ test("forgetCard frees the board once its card is gone", async (t) => {
   assert.equal(woken?.via, "pi", "once the stale entry is gone the next card runs");
   assert.equal(calls.length, 2);
 });
+
+test("forgetProject frees the board without a card to match", async (t) => {
+  const db = memDb(t);
+  const project = createProject(db, { slug: "forget-project" });
+  const card = createCard(db, { projectId: project.projectId, columnId: "doing", title: "消える板" });
+  const { spawn } = fakeSpawn(process.pid + 800002);
+  assert.ok(await wakeCardSession(db, project, card, { spawn, fetch: noPiWeb }));
+  const { runningWakes, forgetProject } = await import("../../src/agent/driver.ts");
+  const mine = () => runningWakes().filter((e) => e.projectId === project.projectId);
+  assert.equal(mine().length, 1, "the board owns the wake");
+
+  forgetProject("some-other-board");
+  assert.equal(mine().length, 1, "another board's entry is not touched");
+
+  // The board and its cards are gone together, so nothing about the card id can matter here.
+  forgetProject(project.projectId);
+  assert.deepEqual(mine(), []);
+
+  // The slug may come back as a fresh board; a leftover entry would still refuse its wakes.
+  repos.deleteProject(db, project.projectId, "test");
+  const again = createProject(db, { slug: "forget-project" });
+  const fresh = createCard(db, { projectId: again.projectId, columnId: "doing", title: "新世代" });
+  const woken = await wakeCardSession(db, again, fresh, { spawn, fetch: noPiWeb });
+  assert.equal(woken?.via, "pi", "the recreated board wakes its own card");
+});

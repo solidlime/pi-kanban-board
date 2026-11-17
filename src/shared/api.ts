@@ -13,6 +13,7 @@ export type GetBoard = ApiEnvelope<BoardSnapshot>;
 // Write
 export type CreateProjectReq = { slug?: string; name?: string };
 export type CreateProjectRes = ApiEnvelope<{ project: Project; columns: ColumnDef[] }>;
+export type DeleteProjectRes = ApiEnvelope<{ deleted: { projectId: string; slug: string } }>;
 
 export type CreateCardReq = { project: string; title: string; body?: string; columnId?: string; priority?: number; labels?: string[]; owner?: string | null; due?: string | null; estimate?: number | null };
 export type CreateCardRes = ApiEnvelope<{ card: Card }>;

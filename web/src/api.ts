@@ -85,6 +85,9 @@ export const getBoard = (project: string) => req<BoardSnapshot>('GET', `/api/boa
 export const createProject = (body: { slug?: string; name?: string }) =>
   req<{ project: Project; columns: ColumnDef[] }>('POST', '/api/projects', body);
 
+export const deleteProject = (project: string) =>
+  req<{ deleted: { projectId: string; slug: string } }>('DELETE', `/api/projects/${p(project)}`);
+
 export const createCard = (body: CreateCardReq) => req<{ card: Card }>('POST', '/api/cards', body);
 
 const cardPath = (project: string, id: number) => `/api/cards/${p(project)}/${p(String(id))}`;

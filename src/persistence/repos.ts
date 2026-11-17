@@ -212,6 +212,38 @@ export function updateProject(db: Db, projectId: ProjectId, patch: { name?: stri
   });
 }
 
+/**
+ * Deletes the board and every row under it. The slug is free again afterwards, which is visible
+ * here and nowhere else: project_id is the slug and counters die with the board, so card ids
+ * restart at 1. A wake child spawned before the delete can therefore write to the new generation's
+ * card of the same id for up to WAKE_CHILD_TTL_MS. Deleting a board should not burn its name, so
+ * that window is accepted and recorded in plans/card-25-project-delete.md.
+ */
+export function deleteProject(db: Db, projectId: ProjectId, actor = "system"): void {
+  withTx(db, () => {
+    const cur = one<ProjectRow>(db, "SELECT * FROM project WHERE project_id = ?", projectId);
+    if (!cur) throw new DomainError("NOT_FOUND", `project ${projectId} not found`);
+    // The timeline is append-only and has no FK to project: the row outlives the board,
+    // so a later board with the same slug still shows what was deleted here.
+    appendTimeline(db, {
+      projectId, entityType: "project", entityId: projectId, kind: "project.deleted",
+      actor, payload: { slug: cur.slug, name: cur.name }, at: nowIso(),
+    });
+    // Delete in dependency order instead of trusting SQLite's cascade order. card.column_id is
+    // ON DELETE RESTRICT, and the composite FKs on (project_id, card_id)/(project_id, deliverable_id)
+    // are SET NULL on both columns — a cascade that reaches column_def or deliverable first would
+    // null a NOT NULL column and fail the whole statement.
+    run(db, "DELETE FROM attachment WHERE project_id = ?", projectId);
+    run(db, "DELETE FROM deliverable WHERE project_id = ?", projectId);
+    run(db, "DELETE FROM dependency WHERE project_id = ?", projectId);
+    run(db, "DELETE FROM card WHERE project_id = ?", projectId);
+    run(db, "DELETE FROM column_def WHERE project_id = ?", projectId);
+    // saved_view, card_template, loop_state, card_lock and counters carry no RESTRICT or SET NULL
+    // edge, so the project row's own cascade is enough for them.
+    run(db, "DELETE FROM project WHERE project_id = ?", projectId);
+  });
+}
+
 // ---------- columns ----------
 
 export interface CreateColumnInput { projectId: ProjectId; id: string; name: string; kind: ColumnKind; ord?: number; wipLimit?: number | null }

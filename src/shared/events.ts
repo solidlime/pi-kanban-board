@@ -1,7 +1,7 @@
 // Timeline / domain events (append-only in persistence). Payloads are JSON-serializable.
 export type EntityType = "project" | "board" | "card" | "deliverable" | "attachment" | "dependency" | "view" | "loop";
 export type EventKind =
-  | "project.created" | "project.updated"
+  | "project.created" | "project.updated" | "project.deleted"
   | "card.created" | "card.updated" | "card.moved" | "card.deleted"
   | "board.column.updated"
   | "dependency.added" | "dependency.removed"

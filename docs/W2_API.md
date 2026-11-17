@@ -51,6 +51,7 @@ Writes additionally require a same-origin `Origin` when one is present (or `Sec-
 | GET | `/api/selftest` | `ok`, `db.ok/db.error`, `home{path,status,initialized}`, schema |
 | GET | `/api/projects` | `{projects:[{projectId,slug,name}]}` |
 | POST | `/api/projects` | `{slug?,name?}` → 201 `{project,columns}`; slug derived from name when absent; dup → 409 |
+| DELETE | `/api/projects/:slug` | ボードを丸ごと削除（cards/columns/deliverables/attachments/views/templates/loop/locks は全行消える）。timeline は残る。200 `{deleted:{projectId,slug}}` / 404。削除後に同じ slug を作り直せるが、card id は 1 から振り直す |
 | GET | `/api/board?project=` | `BoardSnapshot` (slug or id), 404 when unknown |
 | GET | `/api/timeline?project=&limit=&since=` | `{events}` |
 | POST | `/api/cards` | `{project,title,body?,columnId?,priority?,labels?,owner?,due?,estimate?,blockedReason?,ref?}` → 201 `{card}` |

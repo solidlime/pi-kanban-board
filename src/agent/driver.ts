@@ -76,6 +76,14 @@ export function forgetCard(projectId: ProjectId, cardId: EntityId): void {
   if (running.get(projectId)?.cardId === cardId) running.delete(projectId);
 }
 
+/**
+ * The whole board went away, and the watcher entry points at no card that can ever come back.
+ * The process is left alone for the same reason as forgetCard.
+ */
+export function forgetProject(projectId: ProjectId): void {
+  running.delete(projectId);
+}
+
 /** Diagnostics for GET /api/loop: who this process believes it is running, and since when. */
 export function runningWakes(): Array<{ projectId: string; cardId: EntityId; pid: number | undefined; startedAt: number }> {
   return [...running.entries()].map(([projectId, e]) => ({ projectId, cardId: e.cardId, pid: e.child.pid, startedAt: e.startedAt }));

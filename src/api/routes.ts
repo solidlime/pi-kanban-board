@@ -17,7 +17,7 @@ import { LATEST_SCHEMA_VERSION, schemaVersion } from "../persistence/migrations.
 import type { HomeState } from "../persistence/init.js";
 import {
   attachmentBlobName, createAttachment, createCard, createCardFromTemplate, createDeliverable, createProject,
-  createTemplate, createView, deleteAttachment, deleteCard, deleteDeliverable, deleteTemplate, deleteView,
+  createTemplate, createView, deleteAttachment, deleteCard, deleteDeliverable, deleteProject, deleteTemplate, deleteView,
   getAttachment, getCard, getColumn, getDeliverable, getLoop, getLoopSettings, getProject, getProjectBySlug, listAttachments,
   listCards, listColumns,
   listDeliverables, listDependencies, listProjects, listTemplates, listTimeline, listViews, moveCard,
@@ -37,7 +37,7 @@ import { initialLoopState, startLoop, stopLoop } from "../core/loop.js";
 import { tickProject } from "../loop-runner.js";
 import type { Wake } from "../supervisor.js";
 import { notifications } from "../core/notify.js";
-import { forgetCard, runningWakes, sessionDirOf } from "../agent/driver.js";
+import { forgetCard, forgetProject, runningWakes, sessionDirOf } from "../agent/driver.js";
 import { readSessions } from "../core/sessions.js";
 import { clampSearchLimit, compareScored, searchBoardScored, type ScoredHit } from "../core/search.js";
 import { parseQuickAdd } from "../core/quickadd.js";
@@ -48,7 +48,7 @@ import {
 
 export const API_VERSION = "2.0.0-dev";
 export const CAPABILITIES = [
-  "meta", "selftest", "projects", "board", "timeline", "cards", "card.move", "card.delete",
+  "meta", "selftest", "projects", "project.delete", "board", "timeline", "cards", "card.move", "card.delete",
   "dependencies", "deliverables",
   "columns.update", "views", "templates", "attachments", "search", "notifications", "graph", "overview", "loop",
   "digest", "locks", "sessions",
@@ -281,6 +281,16 @@ async function postProject(ctx: Ctx): Promise<void> {
     ...(body.settings === undefined ? {} : { settings: assertSettings(body.settings) }),
   }, ACTOR);
   sendJson(ctx, 201, ok({ project, columns: listColumns(db, slug) }));
+}
+
+function deleteProjectRoute(ctx: Ctx, m: RegExpExecArray): void {
+  const db = requireDb(ctx);
+  const project = projectOr404(db, decodeSegment(m[1]));
+  deleteProject(db, project.projectId, ACTOR);
+  // Same reason as deleteCard's forgetCard: a watcher entry for a board that no longer exists
+  // would refuse every later wake once the slug is created again.
+  forgetProject(project.projectId);
+  sendJson(ctx, 200, ok({ deleted: { projectId: project.projectId, slug: project.slug } }));
 }
 
 /** Board settings are a plain JSON object (`cwd` is the one this code reads). */
@@ -1071,6 +1081,7 @@ const routes: Route[] = [
   { m: "GET", re: /^\/api\/selftest$/, h: getSelftest },
   { m: "GET", re: /^\/api\/projects$/, h: getProjects },
   { m: "POST", re: /^\/api\/projects$/, h: postProject },
+  { m: "DELETE", re: /^\/api\/projects\/([^/]+)$/, h: deleteProjectRoute },
   { m: "GET", re: /^\/api\/board$/, h: getBoard },
   { m: "GET", re: /^\/api\/timeline$/, h: getTimeline },
   { m: "POST", re: /^\/api\/cards$/, h: postCard },

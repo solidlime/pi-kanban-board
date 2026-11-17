@@ -15,6 +15,7 @@ import { renderGantt, type GanttScale } from './gantt.js';
 export interface Handlers {
   onProject(slug: string): void;
   onCreateProject(name: string): Promise<boolean>;
+  onDeleteProject(slug: string): void;
   /** Resolves true when the card was created (the input is cleared only then). */
   onAddCard(columnId: string, title: string): Promise<boolean>;
   onMove(key: CardKey, columnId: string): void;
@@ -344,7 +345,13 @@ export function mount(root: HTMLElement, h: Handlers): View {
   const select = el('select');
   select.setAttribute('aria-label', 'project');
   select.addEventListener('change', () => h.onProject(select.value));
-  pick.append(el('span', 'lbl', 'project'), select);
+  const delProject = el('button', 'ic danger', '×');
+  delProject.type = 'button';
+  delProject.title = 'このプロジェクトを削除';
+  delProject.addEventListener('click', () => {
+    if (select.value) h.onDeleteProject(select.value);
+  });
+  pick.append(el('span', 'lbl', 'project'), select, delProject);
 
   const newForm = el('form', 'newproj');
   const newName = el('input');
@@ -924,7 +931,7 @@ function histPanelSig(s: Store): string {
 
 function eventLabel(kind: string): string {
   const map: Record<string, string> = {
-    'project.created': '作成', 'project.updated': '更新',
+    'project.created': '作成', 'project.updated': '更新', 'project.deleted': '削除',
     'card.created': 'カード追加', 'card.updated': 'カード更新',
     'card.moved': '移動', 'card.deleted': '削除',
     'dependency.added': '依存追加', 'dependency.removed': '依存解除',

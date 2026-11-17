@@ -58,6 +58,7 @@ var getMeta = () => req("GET", "/api/meta");
 var getProjects = () => req("GET", "/api/projects");
 var getBoard = (project) => req("GET", `/api/board?project=${p(project)}`);
 var createProject = (body) => req("POST", "/api/projects", body);
+var deleteProject = (project) => req("DELETE", `/api/projects/${p(project)}`);
 var createCard = (body) => req("POST", "/api/cards", body);
 var cardPath = (project, id) => `/api/cards/${p(project)}/${p(String(id))}`;
 var moveCard = (project, id, body) => req("POST", `${cardPath(project, id)}/move`, body);
@@ -806,7 +807,13 @@ function mount(root2, h) {
   const select = el3("select");
   select.setAttribute("aria-label", "project");
   select.addEventListener("change", () => h.onProject(select.value));
-  pick2.append(el3("span", "lbl", "project"), select);
+  const delProject = el3("button", "ic danger", "\xD7");
+  delProject.type = "button";
+  delProject.title = "\u3053\u306E\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8\u3092\u524A\u9664";
+  delProject.addEventListener("click", () => {
+    if (select.value) h.onDeleteProject(select.value);
+  });
+  pick2.append(el3("span", "lbl", "project"), select, delProject);
   const newForm = el3("form", "newproj");
   const newName = el3("input");
   newName.placeholder = "new project name";
@@ -1415,6 +1422,7 @@ function eventLabel(kind) {
   const map = {
     "project.created": "\u4F5C\u6210",
     "project.updated": "\u66F4\u65B0",
+    "project.deleted": "\u524A\u9664",
     "card.created": "\u30AB\u30FC\u30C9\u8FFD\u52A0",
     "card.updated": "\u30AB\u30FC\u30C9\u66F4\u65B0",
     "card.moved": "\u79FB\u52D5",
@@ -3219,6 +3227,49 @@ async function doCreateProject(name) {
     return false;
   }
 }
+async function doDeleteProject(slug) {
+  const p2 = store.projects.find((x) => x.slug === slug);
+  const name = p2?.name || slug;
+  const cards = store.projectId === slug ? Object.keys(store.cards).length : null;
+  const deliv = store.projectId === slug ? store.deliverables.length : null;
+  const stuff = [
+    cards === null ? null : `\u30AB\u30FC\u30C9 ${cards} \u679A`,
+    deliv === null ? null : `\u6210\u679C\u7269 ${deliv} \u4EF6`
+  ].filter(Boolean).join("\u30FB");
+  const typed = window.prompt(
+    `\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8\u300C${name}\u300D(${slug}) \u3092\u524A\u9664\u3059\u308B\u3002${stuff ? `${stuff}\u3082\u4E00\u7DD2\u306B\u6D88\u3048\u308B\u3002` : ""}
+\u5143\u306B\u623B\u305B\u306A\u3044\u3002\u7D9A\u3051\u308B\u306B\u306F slug \u3092\u5165\u529B\u3057\u3066\u3002`
+  );
+  if (typed === null) return false;
+  if (typed.trim() !== slug) {
+    showToast(view, "slug \u304C\u4E00\u81F4\u3057\u306A\u3044\u306E\u3067\u524A\u9664\u3057\u306A\u304B\u3063\u305F");
+    return false;
+  }
+  try {
+    await deleteProject(slug);
+    showToast(view, `\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8\u300C${name}\u300D\u3092\u524A\u9664\u3057\u305F`);
+  } catch (e) {
+    if (!(e instanceof ApiError && e.status === 404)) {
+      store.error = describe(e);
+      showToast(view, describe(e));
+      render();
+      return false;
+    }
+    showToast(view, `\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8\u300C${name}\u300D\u306F\u65E2\u306B\u7121\u304B\u3063\u305F`);
+  }
+  setProjects(store, store.projects.filter((x) => x.slug !== slug));
+  try {
+    const { projects } = await getProjects();
+    setProjects(store, projects);
+    if (projects.some((x) => x.slug === store.projectId)) render();
+    else await selectProject(projects[0]?.slug ?? null);
+  } catch (e) {
+    if (!store.projects.some((x) => x.slug === store.projectId)) await selectProject(null);
+    store.error = `projects: ${describe(e)}`;
+    render();
+  }
+  return true;
+}
 var searchSeq = 0;
 var searchTimer;
 async function runSearch(q) {
@@ -3551,6 +3602,9 @@ var view = mount(root, {
     void selectProject(slug || null);
   },
   onCreateProject: doCreateProject,
+  onDeleteProject: (slug) => {
+    void doDeleteProject(slug);
+  },
   onAddCard: doAddCard,
   onMove: (key, columnId) => {
     void doMove(key, columnId);
