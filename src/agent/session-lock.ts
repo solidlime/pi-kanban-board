@@ -2,7 +2,7 @@
 // one session (pi-web's own agent loop, the supervisor, a manual wake) corrupt it. The
 // authority is pi-web, which spawns sessions through its own queue and never takes this lock;
 // the lock file and a recent mtime are the fallback for a board that runs without pi-web.
-import { closeSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeSync } from "node:fs";
+import { closeSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 
@@ -26,7 +26,15 @@ export function piWebUrl(url?: string): string {
   return (url ?? process.env.KANBAN_PIWEB_URL ?? PIWEB_DEFAULT_URL).replace(/\/+$/, "");
 }
 
-export interface SessionLock { release: () => void }
+export interface SessionLock {
+  /**
+   * Hand the lock to the process that actually writes the JSONL. A spawned `pi -p` outlives us:
+   * if the owner stayed our pid, our death would look like a free lock and the next wake would
+   * write the same session alongside the orphan.
+   */
+  bind: (pid: number) => void;
+  release: () => void;
+}
 
 export interface SessionLockOptions {
   /** Test seam: a unit test must not depend on a running pi-web. */
@@ -82,7 +90,7 @@ function isAlive(pid: number | null): boolean {
 }
 
 /** "wx" is the atomic part: exactly one caller can create the file. */
-function claim(lockPath: string): boolean {
+function claimSessionLock(lockPath: string, pid: number): boolean {
   let fd: number;
   try {
     fd = openSync(lockPath, "wx");
@@ -90,7 +98,7 @@ function claim(lockPath: string): boolean {
     return false;
   }
   try {
-    writeSync(fd, String(process.pid));
+    writeSync(fd, String(pid));
   } finally {
     closeSync(fd);
   }
@@ -111,16 +119,23 @@ export async function acquireSessionLock(
 
   const lockPath = lockPathOf(sessionId);
   mkdirSync(path.dirname(lockPath), { recursive: true });
-  if (!claim(lockPath)) {
+  // Our own pid is only a placeholder until a child exists; `bind` names the real writer.
+  if (!claimSessionLock(lockPath, process.pid)) {
     if (isAlive(ownerPid(lockPath))) return null;
     // The owner is gone (a spawn that died, a reboot): the lock is debris, take it.
     try { unlinkSync(lockPath); } catch { return null; }
-    if (!claim(lockPath)) return null;
+    if (!claimSessionLock(lockPath, process.pid)) return null;
   }
+  let owner = process.pid;
   return {
+    bind: (pid: number): void => {
+      if (ownerPid(lockPath) !== owner) return; // a later owner rewrote it: not ours to steer
+      writeFileSync(lockPath, String(pid));
+      owner = pid;
+    },
     /** Only our own lock: never delete the file a later owner wrote. */
     release: (): void => {
-      if (ownerPid(lockPath) !== process.pid) return;
+      if (ownerPid(lockPath) !== owner) return;
       try { unlinkSync(lockPath); } catch { /* already gone */ }
     },
   };

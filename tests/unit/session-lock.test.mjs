@@ -2,7 +2,9 @@
 // ~/.pi/kanban is never touched, and pi-web is never called: the socket is pointed at port 1.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import "./_load.mjs";
@@ -124,4 +126,50 @@ test("pi-web が落ちていれば mtime フォールバックだけが止める
   assert.equal(await acquireSessionLock("sid-quiet", sessionDir, { fetch: down }), null, "fresh JSONL still blocks");
   const dead = async () => ({ ok: false, status: 502, json: async () => ({}) });
   assert.ok(await acquireSessionLock("sid-never-seen", sessionDir, { fetch: dead }), "no JSONL means a new session");
+});
+
+/** A live process whose pid is not ours, so "is the owner alive" is answered by the child. */
+async function spareChild(t) {
+  const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 3000)"], { stdio: "ignore" });
+  t.after(() => { try { child.kill("SIGKILL"); } catch { /* already gone */ } });
+  await once(child, "spawn");
+  return child;
+}
+
+test("bind は持ち主を子の pid に書き換え、子が死ぬまでロックは奪えない", async (t) => {
+  const { sessionDir, lockPath } = sandbox(t);
+  const lock = await acquireSessionLock("sid-bind", sessionDir);
+  assert.ok(lock);
+  assert.equal(Number(readFileSync(lockPath("sid-bind"), "utf8")), process.pid, "a placeholder owner is us");
+
+  const child = await spareChild(t);
+  lock.bind(child.pid);
+
+  assert.equal(Number(readFileSync(lockPath("sid-bind"), "utf8")), child.pid, "the orphan owns the JSONL, not us");
+  assert.equal(await acquireSessionLock("sid-bind", sessionDir), null,
+    "a dead parent pid must not free a lock the child is still holding");
+
+  const exited = once(child, "exit");
+  child.kill("SIGKILL");
+  await exited;
+  const taken = await acquireSessionLock("sid-bind", sessionDir);
+  assert.ok(taken, "once the child is gone the lock is debris again");
+  taken.release();
+});
+
+test("bind 後の release は子のものであるときだけ消す", async (t) => {
+  const { sessionDir, lockPath } = sandbox(t);
+  const lock = await acquireSessionLock("sid-bind-release", sessionDir);
+  assert.ok(lock);
+  const child = await spareChild(t);
+  lock.bind(child.pid);
+
+  // A later wake took the lock over before our exited child was noticed.
+  writeFileSync(lockPath("sid-bind-release"), String(process.pid));
+  lock.release();
+  assert.equal(existsSync(lockPath("sid-bind-release")), true, "release never deletes a lock someone else rewrote");
+
+  writeFileSync(lockPath("sid-bind-release"), String(child.pid));
+  lock.release();
+  assert.equal(existsSync(lockPath("sid-bind-release")), false, "it does delete the lock it bound to");
 });
