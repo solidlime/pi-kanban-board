@@ -332,6 +332,142 @@ function cardMatches(card, q) {
   return hay.includes(needle);
 }
 
+// web/src/viewer.ts
+var IMAGE = /\.(png|jpe?g|gif|webp)$/i;
+var VIDEO = /\.(mp4|webm|mov)$/i;
+var DOC = /\.(md|markdown|txt|csv|json|log|ya?ml)$/i;
+function kindOf(name, mime) {
+  const m = (mime ?? "").split(";")[0]?.trim() ?? "";
+  if (m.startsWith("image/") || IMAGE.test(name)) return "image";
+  if (m.startsWith("video/") || VIDEO.test(name)) return "video";
+  if (m === "application/pdf" || /\.pdf$/i.test(name)) return "pdf";
+  if (m === "text/html" || /\.html?$/i.test(name)) return "html";
+  if (m.startsWith("text/") || m === "application/json" || DOC.test(name)) return "markdown";
+  return "other";
+}
+function deliverableItems(list) {
+  return list.map((d) => ({
+    title: d.title,
+    name: d.ref.split(/[\\/]/).pop() || d.ref,
+    fileSrc: deliverableFileSrc(d.projectId, d.id),
+    viewSrc: deliverableViewSrc(d.projectId, d.id)
+  }));
+}
+function attachmentItems(projectId, list) {
+  return list.map((a) => ({
+    title: a.name,
+    name: a.name,
+    mime: a.mime,
+    fileSrc: attachmentSrc(projectId, a.id),
+    viewSrc: attachmentViewSrc(projectId, a.id)
+  }));
+}
+function el(tag, cls) {
+  const n = document.createElement(tag);
+  n.className = cls;
+  return n;
+}
+function mountViewer(root2) {
+  const dlg = el("dialog", "viewer");
+  dlg.tabIndex = -1;
+  const head = el("div", "v-h");
+  const cap = el("span", "v-cap");
+  const count = el("span", "v-count");
+  const closeBtn = el("button", "ic");
+  closeBtn.type = "button";
+  closeBtn.textContent = "\xD7";
+  closeBtn.title = "\u9589\u3058\u308B";
+  head.append(cap, count, closeBtn);
+  const body = el("div", "v-body");
+  dlg.append(head, body);
+  root2.append(dlg);
+  let list = [];
+  let at = 0;
+  function box(item) {
+    const kind = kindOf(item.name, item.mime);
+    if (kind === "image") {
+      const img = el("img", "v-img");
+      img.src = item.fileSrc;
+      img.alt = item.title;
+      return img;
+    }
+    if (kind === "video") {
+      const vid = el("video", "v-media");
+      vid.controls = true;
+      vid.autoplay = true;
+      vid.src = item.fileSrc;
+      return vid;
+    }
+    if (kind === "other") {
+      const a = el("a", "v-dl");
+      a.href = item.fileSrc;
+      a.download = item.name;
+      a.textContent = `${item.name} \u3092\u30C0\u30A6\u30F3\u30ED\u30FC\u30C9`;
+      return a;
+    }
+    const fr = el("iframe", "v-frame");
+    fr.src = item.viewSrc;
+    if (kind === "html") fr.setAttribute("sandbox", "allow-scripts allow-forms allow-popups");
+    if (kind === "markdown") fr.setAttribute("sandbox", "");
+    return fr;
+  }
+  function show(i) {
+    if (!list.length) return;
+    at = (i + list.length) % list.length;
+    const item = list[at];
+    body.replaceChildren(box(item));
+    cap.textContent = item.title;
+    cap.title = item.title;
+    count.textContent = list.length > 1 ? `${at + 1} / ${list.length}` : "";
+    count.hidden = list.length <= 1;
+  }
+  function reset() {
+    list = [];
+    body.replaceChildren();
+    cap.textContent = "";
+    count.textContent = "";
+  }
+  function close() {
+    reset();
+    if (dlg.open) dlg.close();
+  }
+  function open(items, index) {
+    if (!items.length) return;
+    list = items;
+    show(index);
+    if (!dlg.open) dlg.showModal();
+    dlg.focus();
+  }
+  closeBtn.addEventListener("click", close);
+  dlg.addEventListener("cancel", (ev) => {
+    ev.preventDefault();
+    close();
+  });
+  dlg.addEventListener("close", reset);
+  dlg.addEventListener("click", (ev) => {
+    if (ev.target === dlg) close();
+  });
+  dlg.addEventListener("keydown", (ev) => {
+    if (ev.key === "ArrowLeft") {
+      ev.preventDefault();
+      show(at - 1);
+      return;
+    }
+    if (ev.key === "ArrowRight") {
+      ev.preventDefault();
+      show(at + 1);
+      return;
+    }
+    ev.stopPropagation();
+  });
+  return { open, close };
+}
+var shared = null;
+function sharedViewer() {
+  if (shared === null) shared = mountViewer(document.body);
+  return shared;
+}
+
 // web/src/gantt.ts
 var DAY = 864e5;
 var WEEK = 7 * DAY;
@@ -402,7 +538,7 @@ function ganttAxis(rows, scale, now) {
   }
   return { from, to, ticks };
 }
-function el(tag, cls, text) {
+function el2(tag, cls, text) {
   const n = document.createElement(tag);
   if (cls) n.className = cls;
   if (text !== void 0) n.textContent = text;
@@ -424,11 +560,11 @@ function renderGantt(host, cards, o) {
   if (host.dataset.sig === sig) return;
   host.dataset.sig = sig;
   host.textContent = "";
-  const head = el("div", "ov-h");
-  head.append(el("h2", void 0, "\u6642\u9593"), el("span", "ov-n", `${rows.length} \u4EF6`));
-  const seg = el("div", "gseg");
+  const head = el2("div", "ov-h");
+  head.append(el2("h2", void 0, "\u6642\u9593"), el2("span", "ov-n", `${rows.length} \u4EF6`));
+  const seg = el2("div", "gseg");
   for (const scale of ["week", "month"]) {
-    const b = el("button", `toggle${o.scale === scale ? " on" : ""}`, scale === "week" ? "\u9031" : "\u6708");
+    const b = el2("button", `toggle${o.scale === scale ? " on" : ""}`, scale === "week" ? "\u9031" : "\u6708");
     b.type = "button";
     b.setAttribute("aria-pressed", String(o.scale === scale));
     b.title = scale === "week" ? "\u65E5\u523B\u307F\u30674\u9031\u524D\u5F8C" : "\u9031\u523B\u307F\u3067\u6570\u304B\u6708";
@@ -437,32 +573,32 @@ function renderGantt(host, cards, o) {
   }
   head.append(seg);
   host.append(head);
-  host.append(el("div", "ov-n", "\u8AAD\u307F\u53D6\u308A\u5C02\u7528\uFF08due\u30FB\u79FB\u52D5\u30FB\u5B8C\u4E86\u304B\u3089\u5C0E\u51FA\u3002\u30C9\u30E9\u30C3\u30B0\u3057\u3066\u3082\u4FDD\u5B58\u3057\u306A\u3044\uFF09"));
+  host.append(el2("div", "ov-n", "\u8AAD\u307F\u53D6\u308A\u5C02\u7528\uFF08due\u30FB\u79FB\u52D5\u30FB\u5B8C\u4E86\u304B\u3089\u5C0E\u51FA\u3002\u30C9\u30E9\u30C3\u30B0\u3057\u3066\u3082\u4FDD\u5B58\u3057\u306A\u3044\uFF09"));
   if (!rows.length) {
-    host.append(el("div", "empty", "\u30AB\u30FC\u30C9\u304C\u7121\u3044"));
+    host.append(el2("div", "empty", "\u30AB\u30FC\u30C9\u304C\u7121\u3044"));
     return;
   }
-  const axisRow = el("div", "gantt-row axis");
-  axisRow.append(el("div", "g-label"));
-  const axisTrack = el("div", "g-track");
+  const axisRow = el2("div", "gantt-row axis");
+  axisRow.append(el2("div", "g-label"));
+  const axisTrack = el2("div", "g-track");
   for (const t of axis.ticks) {
-    const tick = el("span", `g-tick${t.major ? " major" : ""}`, t.label);
+    const tick = el2("span", `g-tick${t.major ? " major" : ""}`, t.label);
     tick.style.left = `${pct(t.at, axis)}%`;
     axisTrack.append(tick);
   }
   axisRow.append(axisTrack);
   host.append(axisRow);
-  const body = el("div", "gantt-rows");
+  const body = el2("div", "gantt-rows");
   for (const r of rows) {
-    const row = el("div", "gantt-row");
+    const row = el2("div", "gantt-row");
     row.setAttribute("role", "button");
     row.setAttribute("tabindex", "0");
     const range = `${M(r.start)} \u2192 ${r.openEnded ? "\u672A\u5B9A" : M(r.end)}`;
     row.setAttribute("aria-label", `#${r.card.id} ${r.card.title} ${range}`);
-    const label = el("div", "g-label");
-    label.append(el("span", "cid", `#${r.card.id}`), el("span", void 0, r.card.title));
-    const track = el("div", "g-track");
-    const bar = el("div", "g-bar");
+    const label = el2("div", "g-label");
+    label.append(el2("span", "cid", `#${r.card.id}`), el2("span", void 0, r.card.title));
+    const track = el2("div", "g-track");
+    const bar = el2("div", "g-bar");
     const left = pct(r.start, axis);
     bar.style.left = `${left}%`;
     bar.style.width = `${Math.max(0, pct(r.end, axis) - left)}%`;
@@ -474,7 +610,7 @@ function renderGantt(host, cards, o) {
 ${col} \xB7 ${range}${r.card.due ? ` \xB7 due ${r.card.due}` : ""}`;
     track.append(bar);
     if (r.due !== null && r.due >= axis.from && r.due <= axis.to) {
-      const mark = el("span", "g-due");
+      const mark = el2("span", "g-due");
       mark.style.left = `${pct(r.due, axis)}%`;
       mark.title = `due ${r.card.due}`;
       track.append(mark);
@@ -490,11 +626,11 @@ ${col} \xB7 ${range}${r.card.due ? ` \xB7 due ${r.card.due}` : ""}`;
     body.append(row);
   }
   host.append(body);
-  host.append(el("div", "ov-n", "\u9752=\u9032\u884C\u4E2D / \u7DD1=\u5B8C\u4E86 / \u8D64=\u671F\u9650\u8D85\u904E\u3002\u9EC4\u8272\u306E\u7E26\u7DDA\u304C due"));
+  host.append(el2("div", "ov-n", "\u9752=\u9032\u884C\u4E2D / \u7DD1=\u5B8C\u4E86 / \u8D64=\u671F\u9650\u8D85\u904E\u3002\u9EC4\u8272\u306E\u7E26\u7DDA\u304C due"));
 }
 
 // web/src/render.ts
-function el2(tag, cls, text) {
+function el3(tag, cls, text) {
   const n = document.createElement(tag);
   if (cls) n.className = cls;
   if (text !== void 0) n.textContent = text;
@@ -531,7 +667,7 @@ var menuEl = null;
 var menuUnlisten = null;
 function cardMenu() {
   if (!menuEl) {
-    menuEl = el2("div", "ctxmenu");
+    menuEl = el3("div", "ctxmenu");
     menuEl.hidden = true;
     document.body.append(menuEl);
   }
@@ -565,10 +701,10 @@ function openCardMenu(view2, s, key, x, y) {
   let first = null;
   for (const e of entries) {
     if ("sep" in e) {
-      m.append(el2("div", "sep"));
+      m.append(el3("div", "sep"));
       continue;
     }
-    const b = el2("button", e.danger ? "danger" : void 0, e.label);
+    const b = el3("button", e.danger ? "danger" : void 0, e.label);
     b.type = "button";
     b.disabled = Boolean(e.disabled);
     if (!e.disabled) {
@@ -624,7 +760,7 @@ function wireMarquee(board, h) {
     if (!drag || drag.id !== ev.pointerId) return;
     if (!drag.rect) {
       if (Math.abs(ev.clientX - drag.x) < 4 && Math.abs(ev.clientY - drag.y) < 4) return;
-      drag.rect = el2("div", "mq");
+      drag.rect = el3("div", "mq");
       document.body.append(drag.rect);
       document.body.classList.add("mq-on");
     }
@@ -664,18 +800,18 @@ function wireMarquee(board, h) {
   });
 }
 function mount(root2, h) {
-  const top = el2("div", "top");
-  const brand = el2("div", "brand", "Kanban v2");
-  const pick2 = el2("label", "pick");
-  const select = el2("select");
+  const top = el3("div", "top");
+  const brand = el3("div", "brand", "Kanban v2");
+  const pick2 = el3("label", "pick");
+  const select = el3("select");
   select.setAttribute("aria-label", "project");
   select.addEventListener("change", () => h.onProject(select.value));
-  pick2.append(el2("span", "lbl", "project"), select);
-  const newForm = el2("form", "newproj");
-  const newName = el2("input");
+  pick2.append(el3("span", "lbl", "project"), select);
+  const newForm = el3("form", "newproj");
+  const newName = el3("input");
   newName.placeholder = "new project name";
   newName.setAttribute("aria-label", "new project name");
-  const newBtn = el2("button", void 0, "\u4F5C\u6210");
+  const newBtn = el3("button", void 0, "\u4F5C\u6210");
   newBtn.type = "submit";
   newForm.append(newName, newBtn);
   newForm.addEventListener("submit", (ev) => {
@@ -686,31 +822,31 @@ function mount(root2, h) {
       if (ok) newName.value = "";
     });
   });
-  const focusBtn = el2("button", "toggle", "\u30D5\u30A9\u30FC\u30AB\u30B9");
+  const focusBtn = el3("button", "toggle", "\u30D5\u30A9\u30FC\u30AB\u30B9");
   focusBtn.type = "button";
   focusBtn.title = "\u3044\u307E\u7740\u624B\u3067\u304D\u308B\u30AB\u30FC\u30C9\u3060\u3051\u3092\u8868\u793A";
   focusBtn.addEventListener("click", () => h.onToggleFocus());
-  const staleWrap = el2("label", "stale-set");
+  const staleWrap = el3("label", "stale-set");
   staleWrap.title = "DOING \u306E\u30AB\u30FC\u30C9\u304C\u52D5\u304B\u306A\u3044\u307E\u307E\u4F55\u65E5\u3067\u300C\u505C\u6EDE\u300D\u3068\u3059\u308B\u304B\uFF080 \u3067\u7121\u52B9\uFF09";
-  const stale = el2("input", "stale-days");
+  const stale = el3("input", "stale-days");
   stale.type = "number";
   stale.min = "0";
   stale.max = "365";
   stale.step = "1";
   stale.setAttribute("aria-label", "\u505C\u6EDE\u3068\u307F\u306A\u3059\u65E5\u6570");
   stale.addEventListener("change", () => h.onStaleDays(stale.valueAsNumber));
-  staleWrap.append(el2("span", "lbl", "\u505C\u6EDE"), stale, el2("span", "unit", "\u65E5"));
+  staleWrap.append(el3("span", "lbl", "\u505C\u6EDE"), stale, el3("span", "unit", "\u65E5"));
   const panelBtns = {
-    deliverables: el2("button", "toggle", "\u6210\u679C\u7269"),
-    timeline: el2("button", "toggle", "\u5C65\u6B74")
+    deliverables: el3("button", "toggle", "\u6210\u679C\u7269"),
+    timeline: el3("button", "toggle", "\u5C65\u6B74")
   };
   for (const [id, btn] of Object.entries(panelBtns)) {
     btn.type = "button";
     btn.title = id === "deliverables" ? "\u6210\u679C\u7269\u3092\u958B\u304F" : "\u6700\u8FD1\u306E\u51FA\u6765\u4E8B\u3092\u958B\u304F";
     btn.addEventListener("click", () => h.onTogglePanel(id));
   }
-  const searchWrap = el2("div", "search");
-  const q = el2("input", "q");
+  const searchWrap = el3("div", "search");
+  const q = el3("input", "q");
   q.type = "search";
   q.placeholder = "\u691C\u7D22\u2026";
   q.setAttribute("aria-label", "\u30AB\u30FC\u30C9\u30FB\u6210\u679C\u7269\u3092\u691C\u7D22");
@@ -722,43 +858,43 @@ function mount(root2, h) {
       q.blur();
     }
   });
-  const qres = el2("div", "qres");
+  const qres = el3("div", "qres");
   qres.hidden = true;
   qres.setAttribute("role", "listbox");
-  const searchAllBtn = el2("button", "toggle searchall", "\u5168\u677F");
+  const searchAllBtn = el3("button", "toggle searchall", "\u5168\u677F");
   searchAllBtn.type = "button";
   searchAllBtn.title = "\u5168\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8\u3092\u307E\u3068\u3081\u3066\u691C\u7D22";
   searchAllBtn.addEventListener("click", () => h.onToggleSearchAll());
   searchWrap.append(q, searchAllBtn, qres);
-  const overviewBtn = el2("button", "toggle", "\u5168\u4F53");
+  const overviewBtn = el3("button", "toggle", "\u5168\u4F53");
   overviewBtn.type = "button";
   overviewBtn.title = "\u5168\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8\u3092\u4E00\u753B\u9762\u3067\uFF08\u7DCF\u5408\u7BA1\u7406\uFF09";
   overviewBtn.addEventListener("click", () => h.onToggleOverview());
-  const graphBtn = el2("button", "toggle", "\u4F9D\u5B58\u30DE\u30C3\u30D7");
+  const graphBtn = el3("button", "toggle", "\u4F9D\u5B58\u30DE\u30C3\u30D7");
   graphBtn.type = "button";
   graphBtn.title = "\u4F9D\u5B58\u95A2\u4FC2\u3092\u30EC\u30A4\u30E4\u3067\u8868\u793A";
   graphBtn.addEventListener("click", () => h.onToggleGraph());
-  const ganttBtn = el2("button", "toggle", "\u6642\u9593");
+  const ganttBtn = el3("button", "toggle", "\u6642\u9593");
   ganttBtn.type = "button";
   ganttBtn.title = "due\u30FB\u79FB\u52D5\u30FB\u5B8C\u4E86\u304B\u3089\u6642\u9593\u306E\u68D2\u3092\u51FA\u3059\uFF08\u8AAD\u307F\u53D6\u308A\u5C02\u7528\uFF09";
   ganttBtn.addEventListener("click", () => h.onToggleGantt());
-  const viewsBtn = el2("button", "toggle", "\u30D3\u30E5\u30FC");
+  const viewsBtn = el3("button", "toggle", "\u30D3\u30E5\u30FC");
   viewsBtn.type = "button";
   viewsBtn.title = "\u4FDD\u5B58\u3057\u305F\u691C\u7D22\u30D3\u30E5\u30FC";
   viewsBtn.addEventListener("click", () => h.onTogglePane("views"));
-  const templatesBtn = el2("button", "toggle", "\u30C6\u30F3\u30D7\u30EC\u30FC\u30C8");
+  const templatesBtn = el3("button", "toggle", "\u30C6\u30F3\u30D7\u30EC\u30FC\u30C8");
   templatesBtn.type = "button";
   templatesBtn.title = "\u30AB\u30FC\u30C9\u306E\u96DB\u5F62";
   templatesBtn.addEventListener("click", () => h.onTogglePane("templates"));
-  const notifBtn = el2("button", "toggle notif", "\u901A\u77E5");
+  const notifBtn = el3("button", "toggle notif", "\u901A\u77E5");
   notifBtn.type = "button";
   notifBtn.title = "\u8B66\u544A\u30FB\u901A\u77E5\u3092\u958B\u304F";
-  const notifCounts = { danger: el2("span", "nb danger"), warn: el2("span", "nb warn"), info: el2("span", "nb info") };
+  const notifCounts = { danger: el3("span", "nb danger"), warn: el3("span", "nb warn"), info: el3("span", "nb info") };
   notifBtn.append(notifCounts.danger, notifCounts.warn, notifCounts.info);
   notifBtn.addEventListener("click", () => h.onTogglePane("notifications"));
-  const status = el2("div", "status");
-  const themeBtn = el2("button", "toggle theme");
-  const densityBtn = el2("button", "toggle density");
+  const status = el3("div", "status");
+  const themeBtn = el3("button", "toggle theme");
+  const densityBtn = el3("button", "toggle density");
   themeBtn.type = "button";
   themeBtn.title = "\u30E9\u30A4\u30C8/\u30C0\u30FC\u30AF\u3092\u5207\u308A\u66FF\u3048\uFF08\u8A18\u61B6\u3059\u308B\uFF09";
   densityBtn.type = "button";
@@ -794,21 +930,21 @@ function mount(root2, h) {
     applyTheme(false);
     applyDensity(false);
   }
-  top.append(brand, pick2, newForm, searchWrap, focusBtn, staleWrap, panelBtns.deliverables, panelBtns.timeline, overviewBtn, graphBtn, ganttBtn, viewsBtn, templatesBtn, notifBtn, themeBtn, densityBtn, el2("div", "grow"), status);
-  const errBar = el2("div", "err");
+  top.append(brand, pick2, newForm, searchWrap, focusBtn, staleWrap, panelBtns.deliverables, panelBtns.timeline, overviewBtn, graphBtn, ganttBtn, viewsBtn, templatesBtn, notifBtn, themeBtn, densityBtn, el3("div", "grow"), status);
+  const errBar = el3("div", "err");
   errBar.hidden = true;
-  const loopBar = el2("section", "loop");
+  const loopBar = el3("section", "loop");
   loopBar.hidden = true;
-  const loopStatus = el2("span", "loop-st");
-  const loopText = el2("span", "loop-txt");
-  const loopNext = el2("button", "link next");
+  const loopStatus = el3("span", "loop-st");
+  const loopText = el3("span", "loop-txt");
+  const loopNext = el3("button", "link next");
   loopNext.type = "button";
   loopNext.hidden = true;
-  const loopStart = el2("button", void 0, "\u958B\u59CB");
+  const loopStart = el3("button", void 0, "\u958B\u59CB");
   loopStart.type = "button";
-  const loopStop = el2("button", void 0, "\u505C\u6B62");
+  const loopStop = el3("button", void 0, "\u505C\u6B62");
   loopStop.type = "button";
-  const loopTick = el2("button", "primary", "\u6B21\u3092\u5F15\u304F");
+  const loopTick = el3("button", "primary", "\u6B21\u3092\u5F15\u304F");
   loopTick.type = "button";
   loopStart.addEventListener("click", () => h.onLoop("start"));
   loopStop.addEventListener("click", () => h.onLoop("stop"));
@@ -817,42 +953,42 @@ function mount(root2, h) {
     const id = Number(loopNext.dataset.id ?? "");
     if (Number.isFinite(id) && id > 0) h.onOpenCard(id);
   });
-  loopBar.append(loopStatus, loopText, loopNext, el2("div", "grow"), loopStart, loopStop, loopTick);
-  const locksBar = el2("section", "locks");
+  loopBar.append(loopStatus, loopText, loopNext, el3("div", "grow"), loopStart, loopStop, loopTick);
+  const locksBar = el3("section", "locks");
   locksBar.hidden = true;
   locksBar.setAttribute("role", "status");
-  const locksText = el2("span", "loop-txt");
-  locksBar.append(el2("span", "lock-ic", "\u{1F512}"), locksText);
-  const empty = el2("div", "empty");
+  const locksText = el3("span", "loop-txt");
+  locksBar.append(el3("span", "lock-ic", "\u{1F512}"), locksText);
+  const empty = el3("div", "empty");
   empty.hidden = true;
   empty.setAttribute("role", "status");
-  const board = el2("div", "board");
+  const board = el3("div", "board");
   wireMarquee(board, h);
-  const selbar = el2("div", "selbar");
+  const selbar = el3("div", "selbar");
   selbar.hidden = true;
   selbar.setAttribute("role", "status");
-  const focus = el2("section", "focus");
+  const focus = el3("section", "focus");
   focus.hidden = true;
-  const focusHead = el2("div", "focus-h");
-  const focusTitle = el2("h2", void 0, "\u3044\u307E\u3084\u308B");
-  const focusCount = el2("span", "focus-n");
+  const focusHead = el3("div", "focus-h");
+  const focusTitle = el3("h2", void 0, "\u3044\u307E\u3084\u308B");
+  const focusCount = el3("span", "focus-n");
   focusHead.append(focusTitle, focusCount);
-  const focusList = el2("div", "focus-list");
-  const focusEmpty = el2("div", "focus-empty", "\u7740\u624B\u3067\u304D\u308B\u30AB\u30FC\u30C9\u306F\u306A\u3044\uFF08\u5168\u90E8\u30D6\u30ED\u30C3\u30AF\u4E2D\u304B\u5B8C\u4E86\uFF09");
+  const focusList = el3("div", "focus-list");
+  const focusEmpty = el3("div", "focus-empty", "\u7740\u624B\u3067\u304D\u308B\u30AB\u30FC\u30C9\u306F\u306A\u3044\uFF08\u5168\u90E8\u30D6\u30ED\u30C3\u30AF\u4E2D\u304B\u5B8C\u4E86\uFF09");
   focusEmpty.hidden = true;
   focus.append(focusHead, focusList, focusEmpty);
-  const panelWrap = el2("div", "panels");
+  const panelWrap = el3("div", "panels");
   const mkSidePanel = (id, title) => {
-    const aside = el2("aside", "panel");
+    const aside = el3("aside", "panel");
     aside.hidden = true;
-    const head = el2("div", "panel-h");
-    const h2 = el2("h2", void 0, title);
-    const close = el2("button", "ic", "\xD7");
+    const head = el3("div", "panel-h");
+    const h2 = el3("h2", void 0, title);
+    const close = el3("button", "ic", "\xD7");
     close.type = "button";
     close.title = "\u9589\u3058\u308B";
     close.addEventListener("click", () => h.onTogglePanel(id));
     head.append(h2, close);
-    const body = el2("div", "panel-body");
+    const body = el3("div", "panel-body");
     aside.append(head, body);
     panelWrap.append(aside);
     return { aside, head: h2, body };
@@ -870,28 +1006,28 @@ function mount(root2, h) {
       h.onCloseSearch();
     }
   });
-  const toast = el2("div", "toast");
-  const toastMsg = el2("span", "toast-msg");
-  const toastUndo = el2("button", "toast-undo", "\u53D6\u308A\u6D88\u3059");
+  const toast = el3("div", "toast");
+  const toastMsg = el3("span", "toast-msg");
+  const toastUndo = el3("button", "toast-undo", "\u53D6\u308A\u6D88\u3059");
   toastUndo.hidden = true;
   toast.append(toastMsg, toastUndo);
   toast.hidden = true;
-  const overview = el2("section", "ov");
+  const overview = el3("section", "ov");
   overview.hidden = true;
-  const graph = el2("section", "graph");
+  const graph = el3("section", "graph");
   graph.hidden = true;
-  const gantt = el2("section", "gantt");
+  const gantt = el3("section", "gantt");
   gantt.hidden = true;
   const mkPane = (title, onClose) => {
-    const aside = el2("aside", "panel pane");
+    const aside = el3("aside", "panel pane");
     aside.hidden = true;
-    const head = el2("div", "panel-h");
-    const close = el2("button", "ic", "\xD7");
+    const head = el3("div", "panel-h");
+    const close = el3("button", "ic", "\xD7");
     close.type = "button";
     close.title = "\u9589\u3058\u308B";
     close.addEventListener("click", onClose);
-    head.append(el2("h2", void 0, title), close);
-    const body = el2("div", "panel-body");
+    head.append(el3("h2", void 0, title), close);
+    const body = el3("div", "panel-body");
     aside.append(head, body);
     return { aside, body };
   };
@@ -982,31 +1118,31 @@ function mount(root2, h) {
   };
 }
 function makeColumn(id, h) {
-  const section = el2("section", "col");
+  const section = el3("section", "col");
   section.dataset.col = id;
-  const head = el2("div", "col-h");
-  const name = el2("h2", "col-name");
-  const count = el2("span", "col-count");
-  const editBtn = el2("button", "ic", "\u2699");
+  const head = el3("div", "col-h");
+  const name = el3("h2", "col-name");
+  const count = el3("span", "col-count");
+  const editBtn = el3("button", "ic", "\u2699");
   editBtn.type = "button";
   editBtn.title = "\u5217\u540D\u3068 WIP \u4E0A\u9650\u3092\u7DE8\u96C6";
   head.append(name, count, editBtn);
-  const editEl = el2("form", "col-edit");
+  const editEl = el3("form", "col-edit");
   editEl.hidden = true;
-  const editName = el2("input", "ce-name");
+  const editName = el3("input", "ce-name");
   editName.placeholder = "\u5217\u540D";
   editName.setAttribute("aria-label", "column name");
-  const editWip = el2("input", "ce-wip");
+  const editWip = el3("input", "ce-wip");
   editWip.type = "number";
   editWip.min = "0";
   editWip.step = "1";
   editWip.placeholder = "WIP\u4E0A\u9650\uFF08\u7A7A=\u7121\u5236\u9650\uFF09";
   editWip.setAttribute("aria-label", "wip limit");
-  const editSave = el2("button", "primary", "\u4FDD\u5B58");
+  const editSave = el3("button", "primary", "\u4FDD\u5B58");
   editSave.type = "submit";
-  const editCancel = el2("button", "ghost", "\xD7");
+  const editCancel = el3("button", "ghost", "\xD7");
   editCancel.type = "button";
-  const editNote = el2("div", "ce-err");
+  const editNote = el3("div", "ce-err");
   editNote.hidden = true;
   editEl.append(editName, editWip, editSave, editCancel, editNote);
   editBtn.addEventListener("click", () => {
@@ -1046,16 +1182,16 @@ function makeColumn(id, h) {
       editEl.hidden = true;
     });
   });
-  const list = el2("div", "cards");
-  const more = el2("button", "col-more");
+  const list = el3("div", "cards");
+  const more = el3("button", "col-more");
   more.type = "button";
   more.hidden = true;
   more.addEventListener("click", () => h.onToggleDone());
-  const add = el2("form", "addrow");
-  const input = el2("input");
+  const add = el3("form", "addrow");
+  const input = el3("input");
   input.placeholder = "#proj !2 due:2026-12-01 \u30BF\u30B9\u30AF";
   input.setAttribute("aria-label", "add card");
-  const btn = el2("button", void 0, "\u8FFD\u52A0");
+  const btn = el3("button", void 0, "\u8FFD\u52A0");
   btn.type = "submit";
   add.append(input, btn);
   add.addEventListener("submit", (ev) => {
@@ -1089,7 +1225,7 @@ function fillMoves(moves, card, s, key, h) {
   for (const id of s.columnOrder) {
     const col = s.columns[id];
     if (!col || id === card.columnId) continue;
-    const b = el2("button", "mv", `\u2192 ${col.name}`);
+    const b = el3("button", "mv", `\u2192 ${col.name}`);
     b.type = "button";
     b.dataset.col = id;
     moves.append(b);
@@ -1101,7 +1237,7 @@ function fillMoves(moves, card, s, key, h) {
   };
 }
 function makeCardNode(key, h) {
-  const node = el2("div", "card");
+  const node = el3("div", "card");
   node.dataset.key = key;
   node.draggable = true;
   node.addEventListener("dragstart", (ev) => {
@@ -1110,28 +1246,28 @@ function makeCardNode(key, h) {
     if (ev.dataTransfer) ev.dataTransfer.effectAllowed = "move";
   });
   node.addEventListener("dragend", () => node.classList.remove("dragging"));
-  const head = el2("div", "card-h");
-  const prio = el2("span", "prio");
-  const cid = el2("span", "cid");
-  const due = el2("span", "due");
-  const open = el2("button", "ic", "\u2922");
+  const head = el3("div", "card-h");
+  const prio = el3("span", "prio");
+  const cid = el3("span", "cid");
+  const due = el3("span", "due");
+  const open = el3("button", "ic", "\u2922");
   open.type = "button";
   open.title = "\u8A73\u7D30\u30FB\u4F9D\u5B58\u30FB\u5C65\u6B74";
-  const edit = el2("button", "ic", "\u270E");
+  const edit = el3("button", "ic", "\u270E");
   edit.type = "button";
   edit.title = "\u30BF\u30A4\u30C8\u30EB\u3092\u7DE8\u96C6";
-  const del = el2("button", "ic", "\xD7");
+  const del = el3("button", "ic", "\xD7");
   del.type = "button";
   del.title = "\u524A\u9664";
   open.addEventListener("click", () => h.onOpen(node.dataset.key));
   edit.addEventListener("click", () => h.onEdit(node.dataset.key));
   del.addEventListener("click", () => h.onDelete(node.dataset.key));
   head.append(prio, cid, due, open, edit, del);
-  const title = el2("div", "title");
-  const meta = el2("div", "meta");
-  const body = el2("div", "body");
-  const deps = el2("div", "deps");
-  const moves = el2("div", "moves");
+  const title = el3("div", "title");
+  const meta = el3("div", "meta");
+  const body = el3("div", "body");
+  const deps = el3("div", "deps");
+  const moves = el3("div", "moves");
   node.addEventListener("dblclick", (ev) => {
     if (ev.target.closest("button, input, select, textarea")) return;
     h.onOpen(node.dataset.key);
@@ -1189,19 +1325,19 @@ function updateCard(node, card, s, h) {
     due.classList.toggle("overdue", Boolean(card.due && card.due < today && !isClosed(card)));
     const meta = q(".meta");
     meta.textContent = "";
-    if (card.owner) meta.append(el2("span", "chip owner", `@${card.owner}`));
+    if (card.owner) meta.append(el3("span", "chip owner", `@${card.owner}`));
     const actor = lastActorOf(card);
     if (actor) {
-      const chip = el2("span", "chip actor", `\u21BB ${actor}`);
+      const chip = el3("span", "chip actor", `\u21BB ${actor}`);
       chip.title = `\u6700\u7D42\u66F4\u65B0\u8005: ${actor}`;
       meta.append(chip);
     }
     if (progress.total > 0) {
-      const chip = el2("span", "chip acc", `\u2611 ${progress.done}/${progress.total}`);
+      const chip = el3("span", "chip acc", `\u2611 ${progress.done}/${progress.total}`);
       chip.classList.toggle("acc-done", progress.done === progress.total);
       meta.append(chip);
     }
-    if (card.blockedReason) meta.append(el2("span", "chip blocked-chip", `\u26D4 ${card.blockedReason}`));
+    if (card.blockedReason) meta.append(el3("span", "chip blocked-chip", `\u26D4 ${card.blockedReason}`));
     node.classList.toggle("blocked", blocked);
     node.classList.toggle("closed", isClosed(card) || isDoneColumn(s, card.columnId));
     const hints = [
@@ -1217,12 +1353,12 @@ function updateCard(node, card, s, h) {
     const deps = node.querySelector(".deps");
     deps.textContent = "";
     for (const b of blockers) {
-      const chip = el2("span", "chip dep", `\u26D4 #${b.id}`);
+      const chip = el3("span", "chip dep", `\u26D4 #${b.id}`);
       chip.title = b.title;
       deps.append(chip);
     }
     for (const o of blocksCards(s, card.id)) {
-      const chip = el2("span", "chip dep-out", `\u2192 #${o.id}`);
+      const chip = el3("span", "chip dep-out", `\u2192 #${o.id}`);
       chip.title = o.title;
       deps.append(chip);
     }
@@ -1238,26 +1374,26 @@ function updateCard(node, card, s, h) {
   const metaEl = node.querySelector(".meta");
   let staleChip = metaEl?.querySelector(".chip.stale-chip");
   if (stalled) {
-    if (!staleChip && metaEl) staleChip = metaEl.appendChild(el2("span", "chip warn stale-chip"));
+    if (!staleChip && metaEl) staleChip = metaEl.appendChild(el3("span", "chip warn stale-chip"));
     if (staleChip) staleChip.textContent = `${daysSinceMoved(card)}\u65E5\u505C\u6EDE`;
   } else if (staleChip) staleChip.remove();
   if (metaEl) metaEl.hidden = metaEl.childElementCount === 0;
   node.classList.toggle("pending", s.pending.has(node.dataset.key));
 }
 function focusRow(key, h) {
-  const row = el2("div", "focus-row");
+  const row = el3("div", "focus-row");
   row.dataset.key = key;
-  const head = el2("div", "fr-h");
-  const prio = el2("span", "prio");
-  const cid = el2("span", "cid");
-  const open = el2("button", "ic", "\u2922");
+  const head = el3("div", "fr-h");
+  const prio = el3("span", "prio");
+  const cid = el3("span", "cid");
+  const open = el3("button", "ic", "\u2922");
   open.type = "button";
   open.title = "\u8A73\u7D30";
   open.addEventListener("click", () => h.onOpen(row.dataset.key));
-  head.append(prio, cid, el2("div", "grow"), open);
-  const title = el2("div", "title");
-  const meta = el2("div", "meta");
-  const moves = el2("div", "moves");
+  head.append(prio, cid, el3("div", "grow"), open);
+  const title = el3("div", "title");
+  const meta = el3("div", "meta");
+  const moves = el3("div", "moves");
   row.append(head, title, meta, moves);
   return row;
 }
@@ -1298,20 +1434,20 @@ function renderDelivPanel(view2, s) {
   view2.panelDelivHead.textContent = "";
   const shown = panelDeliverables(s);
   const total = s.deliverables.length;
-  const sortBtn = el2("button", "ic del-sort", s.delSort === "old" ? "\u65E7\u2192\u65B0" : "\u65B0\u2192\u65E7");
+  const sortBtn = el3("button", "ic del-sort", s.delSort === "old" ? "\u65E7\u2192\u65B0" : "\u65B0\u2192\u65E7");
   sortBtn.type = "button";
   sortBtn.title = s.delSort === "old" ? "\u53E4\u3044\u9806\uFF08\u30AF\u30EA\u30C3\u30AF\u3067\u65B0\u3057\u3044\u9806\uFF09" : "\u65B0\u3057\u3044\u9806\uFF08\u30AF\u30EA\u30C3\u30AF\u3067\u53E4\u3044\u9806\uFF09";
   sortBtn.setAttribute("aria-pressed", String(s.delSort === "old"));
   sortBtn.addEventListener("click", () => view2.h.onToggleDelSort());
   const headText = shown.length === total ? `\u6210\u679C\u7269 ($total)` : `\u7D5E\u8FBC\u4E2D ${shown.length} / \u5168 ${total} \u679A`;
-  view2.panelDelivHead.append(el2("span", void 0, headText), sortBtn);
+  view2.panelDelivHead.append(el3("span", void 0, headText), sortBtn);
   view2.panelDelivBody.textContent = "";
-  const delSec = el2("section", "p-sec");
-  const addForm = el2("form", "p-add");
-  const addInput = el2("input");
+  const delSec = el3("section", "p-sec");
+  const addForm = el3("form", "p-add");
+  const addInput = el3("input");
   addInput.placeholder = "\u6210\u679C\u7269\u3092\u8FFD\u52A0";
   addInput.setAttribute("aria-label", "add deliverable");
-  const addBtn = el2("button", void 0, "\u8FFD\u52A0");
+  const addBtn = el3("button", void 0, "\u8FFD\u52A0");
   addBtn.type = "submit";
   addForm.append(addInput, addBtn);
   addForm.addEventListener("submit", (ev) => {
@@ -1323,20 +1459,20 @@ function renderDelivPanel(view2, s) {
     });
   });
   delSec.append(addForm);
-  const list = el2("div", "p-list");
-  if (!total) list.append(el2("div", "p-empty", "\u6210\u679C\u7269\u306F\u307E\u3060\u306A\u3044"));
-  else if (!shown.length) list.append(el2("div", "p-empty", "\u4E00\u81F4\u3059\u308B\u6210\u679C\u7269\u304C\u7121\u3044"));
-  for (const d of shown) {
-    const row = el2("div", "p-row");
-    const main = el2("div", "p-main");
-    const t = el2("div", "p-title", d.title);
+  const list = el3("div", "p-list");
+  if (!total) list.append(el3("div", "p-empty", "\u6210\u679C\u7269\u306F\u307E\u3060\u306A\u3044"));
+  else if (!shown.length) list.append(el3("div", "p-empty", "\u4E00\u81F4\u3059\u308B\u6210\u679C\u7269\u304C\u7121\u3044"));
+  for (const [i, d] of shown.entries()) {
+    const row = el3("div", "p-row");
+    const main = el3("div", "p-main");
+    const t = el3("div", "p-title", d.title);
     t.title = d.title;
     main.append(t);
-    const sub = el2("div", "p-sub");
-    sub.append(el2("span", "chip kind", d.kind));
-    if (d.ref) sub.append(refLink(d));
+    const sub = el3("div", "p-sub");
+    sub.append(el3("span", "chip kind", d.kind));
+    if (d.ref) sub.append(refLink(d, shown, i));
     if (d.cardId !== null && d.cardId !== void 0) {
-      const link = el2("button", "link", `#${d.cardId}`);
+      const link = el3("button", "link", `#${d.cardId}`);
       link.type = "button";
       link.addEventListener("click", () => {
         const key = cardKey(s.projectId, d.cardId);
@@ -1346,11 +1482,11 @@ function renderDelivPanel(view2, s) {
       sub.append(link);
     }
     main.append(sub);
-    const shot = refImageThumb(d);
+    const shot = refImageThumb(d, shown, i);
     if (shot) main.append(shot);
     const thumbs = thumbStrip(s.attachments.filter((a) => a.deliverableId === d.id), d.projectId);
     if (thumbs) main.append(thumbs);
-    const rm = el2("button", "ic", "\xD7");
+    const rm = el3("button", "ic", "\xD7");
     rm.type = "button";
     rm.title = "\u6210\u679C\u7269\u3092\u524A\u9664";
     rm.addEventListener("click", () => view2.h.onDeleteDeliverable(d.projectId, d.id));
@@ -1365,17 +1501,17 @@ function renderHistPanel(view2, s) {
   if (view2.panelHistSig === sig) return;
   view2.panelHistSig = sig;
   view2.panelHistBody.textContent = "";
-  const tlSec = el2("section", "p-sec");
-  const tl = el2("div", "p-list tl");
-  if (!s.timeline.length) tl.append(el2("div", "p-empty", "\u51FA\u6765\u4E8B\u306F\u307E\u3060\u306A\u3044"));
+  const tlSec = el3("section", "p-sec");
+  const tl = el3("div", "p-list tl");
+  if (!s.timeline.length) tl.append(el3("div", "p-empty", "\u51FA\u6765\u4E8B\u306F\u307E\u3060\u306A\u3044"));
   for (const e of s.timeline.slice(-40).reverse()) {
-    const row = el2("div", "tl-row");
-    const at = el2("span", "tl-at", e.at.slice(5, 16).replace("T", " "));
-    const what = el2("span", "tl-kind", eventLabel(e.kind));
+    const row = el3("div", "tl-row");
+    const at = el3("span", "tl-at", e.at.slice(5, 16).replace("T", " "));
+    const what = el3("span", "tl-kind", eventLabel(e.kind));
     row.append(at, what);
     const target = e.entityType === "card" || e.entityType === "deliverable" ? e.entityId : "";
     if (target) {
-      row.append(el2("span", "tl-id", target.slice(target.indexOf("#") + 1)));
+      row.append(el3("span", "tl-id", target.slice(target.indexOf("#") + 1)));
       if (e.entityType === "card") {
         const key = e.entityId;
         if (s.cards[key]) {
@@ -1410,11 +1546,11 @@ function renderFocus(view2, s) {
         row.querySelector(".title").textContent = card.title;
         const meta = row.querySelector(".meta");
         meta.textContent = "";
-        meta.append(el2("span", "chip", s.columns[card.columnId]?.name ?? card.columnId));
-        if (card.owner) meta.append(el2("span", "chip owner", `@${card.owner}`));
-        if (card.due) meta.append(el2("span", "chip", `due ${card.due}`));
+        meta.append(el3("span", "chip", s.columns[card.columnId]?.name ?? card.columnId));
+        if (card.owner) meta.append(el3("span", "chip owner", `@${card.owner}`));
+        if (card.due) meta.append(el3("span", "chip", `due ${card.due}`));
         const progress = acceptanceProgress(card.body);
-        if (progress.total) meta.append(el2("span", "chip acc", `\u2611 ${progress.done}/${progress.total}`));
+        if (progress.total) meta.append(el3("span", "chip acc", `\u2611 ${progress.done}/${progress.total}`));
         fillMoves(row.querySelector(".moves"), card, s, key, view2.h);
         row.classList.toggle("pending", s.pending.has(key));
         els.push(row);
@@ -1433,46 +1569,49 @@ function renderFocus(view2, s) {
 }
 var REF_IMAGE = /\.(png|jpe?g|gif|webp)$/i;
 var refName = (ref) => ref.split(/[\\/]/).pop() || ref;
-function refLink(d) {
-  const link = el2("a", "chip", refName(d.ref));
-  link.href = deliverableViewSrc(d.projectId, d.id);
-  link.target = "_blank";
-  link.rel = "noopener";
+var theViewer = sharedViewer;
+function refLink(d, list, index) {
+  const link = el3("button", "chip", refName(d.ref));
+  link.type = "button";
   link.title = d.ref;
+  link.addEventListener("click", () => theViewer().open(deliverableItems(list), index));
   return link;
 }
-function refImageThumb(d) {
+function refImageThumb(d, list, index) {
   if (!REF_IMAGE.test(d.ref)) return null;
-  const a = el2("a", "thumbs");
-  a.href = deliverableViewSrc(d.projectId, d.id);
-  a.target = "_blank";
-  a.rel = "noopener";
+  const a = el3("button", "thumb-w");
+  a.type = "button";
   a.title = d.ref;
-  const img = el2("img", "thumb");
+  const img = el3("img", "thumb");
   img.src = deliverableFileSrc(d.projectId, d.id);
   img.alt = refName(d.ref);
   img.loading = "lazy";
   a.append(img);
+  a.addEventListener("click", () => theViewer().open(deliverableItems(list), index));
   return a;
 }
 function thumbStrip(list, projectId) {
   if (!list.length) return null;
-  const wrap = el2("div", "thumbs");
-  for (const a of list) {
+  const items = attachmentItems(projectId, list);
+  const wrap = el3("div", "thumbs");
+  for (const [i, a] of list.entries()) {
     if (a.mime.startsWith("image/")) {
-      const img = el2("img", "thumb");
+      const btn = el3("button", "thumb-w");
+      btn.type = "button";
+      btn.title = a.name;
+      const img = el3("img", "thumb");
       img.loading = "lazy";
       img.src = attachmentSrc(projectId, a.id);
       img.alt = a.name;
-      img.title = a.name;
-      wrap.append(img);
+      btn.append(img);
+      btn.addEventListener("click", () => theViewer().open(items, i));
+      wrap.append(btn);
     } else {
-      const doc = el2("a", "thumb doc");
-      doc.href = attachmentViewSrc(projectId, a.id);
-      doc.target = "_blank";
-      doc.rel = "noopener";
+      const doc = el3("button", "thumb doc");
+      doc.type = "button";
       doc.textContent = docLabel(a.mime);
       doc.title = a.name;
+      doc.addEventListener("click", () => theViewer().open(items, i));
       wrap.append(doc);
     }
   }
@@ -1494,29 +1633,29 @@ function renderSearch(view2, s) {
   view2.qres.dataset.sig = sig;
   view2.qres.textContent = "";
   if (!hits.length) {
-    view2.qres.append(el2("div", "p-empty", "\u8A72\u5F53\u306A\u3057"));
+    view2.qres.append(el3("div", "p-empty", "\u8A72\u5F53\u306A\u3057"));
     return;
   }
   for (const hit of hits) {
-    const row = el2(hit.type === "card" ? "button" : "div", "q-hit");
+    const row = el3(hit.type === "card" ? "button" : "div", "q-hit");
     row.setAttribute("role", "option");
     if (row instanceof HTMLButtonElement) {
       row.type = "button";
       row.addEventListener("click", () => view2.h.onOpenHit(hit));
     }
-    const top = el2("div", "q-h");
-    top.append(el2("span", "q-type", hit.type === "card" ? "\u30AB\u30FC\u30C9" : "\u6210\u679C\u7269"), el2("span", "cid", `#${hit.id}`));
+    const top = el3("div", "q-h");
+    top.append(el3("span", "q-type", hit.type === "card" ? "\u30AB\u30FC\u30C9" : "\u6210\u679C\u7269"), el3("span", "cid", `#${hit.id}`));
     if (s.searchAll) {
       const name = s.projects.find((x) => x.slug === hit.projectId)?.name ?? hit.projectId;
       const onBoard = hit.projectId === s.projectId;
-      top.append(el2("span", onBoard ? "chip" : "chip other-board", name));
+      top.append(el3("span", onBoard ? "chip" : "chip other-board", name));
     }
     if (hit.columnId && hit.projectId === s.projectId) {
-      top.append(el2("span", "chip", s.columns[hit.columnId]?.name ?? hit.columnId));
+      top.append(el3("span", "chip", s.columns[hit.columnId]?.name ?? hit.columnId));
     }
-    const title = el2("div", "q-title", hit.title);
+    const title = el3("div", "q-title", hit.title);
     row.append(top, title);
-    if (hit.snippet && hit.snippet !== hit.title) row.append(el2("div", "q-snip", hit.snippet));
+    if (hit.snippet && hit.snippet !== hit.title) row.append(el3("div", "q-snip", hit.snippet));
     view2.qres.append(row);
   }
 }
@@ -1577,25 +1716,25 @@ function renderNotifications(view2, s) {
   const body = paneBody(view2.paneNotif);
   body.textContent = "";
   if (!s.notifications.length) {
-    body.append(el2("div", "p-empty", "\u901A\u77E5\u306F\u306A\u3044"));
+    body.append(el3("div", "p-empty", "\u901A\u77E5\u306F\u306A\u3044"));
     return;
   }
   for (const level of LEVELS) {
     const group = s.notifications.filter((n) => n.level === level);
     if (!group.length) continue;
-    const sec = el2("section", "p-sec");
-    sec.append(el2("h3", `p-h lv-${level}`, `${LEVEL_LABEL[level]} (${group.length})`));
-    const list = el2("div", "p-list");
+    const sec = el3("section", "p-sec");
+    sec.append(el3("h3", `p-h lv-${level}`, `${LEVEL_LABEL[level]} (${group.length})`));
+    const list = el3("div", "p-list");
     for (const n of group) {
-      const row = el2("div", "p-row");
-      const main = el2("div", "p-main");
-      const title = el2("div", "p-title", n.title);
+      const row = el3("div", "p-row");
+      const main = el3("div", "p-main");
+      const title = el3("div", "p-title", n.title);
       title.title = n.title;
       main.append(title);
-      const sub = el2("div", "p-sub");
-      sub.append(el2("span", "chip kind", n.kind));
-      if (n.cardId != null) sub.append(el2("span", "cid", `#${n.cardId}`));
-      if (n.detail) sub.append(el2("span", "p-note", n.detail));
+      const sub = el3("div", "p-sub");
+      sub.append(el3("span", "chip kind", n.kind));
+      if (n.cardId != null) sub.append(el3("span", "cid", `#${n.cardId}`));
+      if (n.detail) sub.append(el3("span", "p-note", n.detail));
       main.append(sub);
       row.append(main);
       if (n.cardId != null) {
@@ -1619,26 +1758,26 @@ function renderTemplates(view2, s) {
   const body = paneBody(view2.paneTemplates);
   body.textContent = "";
   if (!s.templates.length) {
-    body.append(el2("div", "p-empty", "\u30C6\u30F3\u30D7\u30EC\u30FC\u30C8\u306F\u307E\u3060\u306A\u3044\uFF08\u30AB\u30FC\u30C9\u3092\u958B\u3044\u3066\u300C\u30C6\u30F3\u30D7\u30EC\u30FC\u30C8\u5316\u300D\uFF09"));
+    body.append(el3("div", "p-empty", "\u30C6\u30F3\u30D7\u30EC\u30FC\u30C8\u306F\u307E\u3060\u306A\u3044\uFF08\u30AB\u30FC\u30C9\u3092\u958B\u3044\u3066\u300C\u30C6\u30F3\u30D7\u30EC\u30FC\u30C8\u5316\u300D\uFF09"));
     return;
   }
-  const list = el2("div", "p-list");
+  const list = el3("div", "p-list");
   for (const t of s.templates) {
-    const row = el2("div", "p-row");
-    const main = el2("div", "p-main");
-    const title = el2("div", "p-title", t.name);
+    const row = el3("div", "p-row");
+    const main = el3("div", "p-main");
+    const title = el3("div", "p-title", t.name);
     title.title = t.name;
     main.append(title);
-    const sub = el2("div", "p-sub");
-    sub.append(el2("span", "chip", t.title));
-    sub.append(el2("span", "chip", `p${t.priority}`));
-    if (t.columnId) sub.append(el2("span", "chip", s.columns[t.columnId]?.name ?? t.columnId));
+    const sub = el3("div", "p-sub");
+    sub.append(el3("span", "chip", t.title));
+    sub.append(el3("span", "chip", `p${t.priority}`));
+    if (t.columnId) sub.append(el3("span", "chip", s.columns[t.columnId]?.name ?? t.columnId));
     main.append(sub);
-    const use = el2("button", "link", "\u4F7F\u3046");
+    const use = el3("button", "link", "\u4F7F\u3046");
     use.type = "button";
     use.title = "\u3053\u306E\u30C6\u30F3\u30D7\u30EC\u30FC\u30C8\u304B\u3089\u30AB\u30FC\u30C9\u3092\u4F5C\u308B";
     use.addEventListener("click", () => view2.h.onUseTemplate(t.id));
-    const rm = el2("button", "ic", "\xD7");
+    const rm = el3("button", "ic", "\xD7");
     rm.type = "button";
     rm.title = "\u30C6\u30F3\u30D7\u30EC\u30FC\u30C8\u3092\u524A\u9664";
     rm.addEventListener("click", () => view2.h.onDeleteTemplate(t.id));
@@ -1656,10 +1795,10 @@ function renderViews(view2, s) {
   if (body.dataset.built !== "1") {
     body.dataset.built = "1";
     body.textContent = "";
-    const form = el2("form", "p-add");
-    const nameInput2 = el2("input");
+    const form = el3("form", "p-add");
+    const nameInput2 = el3("input");
     nameInput2.setAttribute("aria-label", "view name");
-    const save = el2("button", void 0, "\u4FDD\u5B58");
+    const save = el3("button", void 0, "\u4FDD\u5B58");
     save.type = "submit";
     form.append(nameInput2, save);
     form.addEventListener("submit", (ev) => {
@@ -1670,12 +1809,12 @@ function renderViews(view2, s) {
         if (ok) nameInput2.value = "";
       });
     });
-    const focus = el2("label", "ce-focus");
-    const box = el2("input");
+    const focus = el3("label", "ce-focus");
+    const box = el3("input");
     box.type = "checkbox";
     box.addEventListener("change", () => view2.h.onToggleFocusQuery(box.checked));
-    focus.append(box, el2("span", void 0, "\u30DC\u30FC\u30C9\u3082\u3053\u306E\u6761\u4EF6\u3067\u7D5E\u308A\u8FBC\u3080"));
-    body.append(form, focus, el2("div", "p-list"));
+    focus.append(box, el3("span", void 0, "\u30DC\u30FC\u30C9\u3082\u3053\u306E\u6761\u4EF6\u3067\u7D5E\u308A\u8FBC\u3080"));
+    body.append(form, focus, el3("div", "p-list"));
   }
   const nameInput = body.querySelector(".p-add input");
   if (nameInput instanceof HTMLInputElement) nameInput.placeholder = s.q ? `\u300C${s.q}\u300D\u3092\u30D3\u30E5\u30FC\u3068\u3057\u3066\u4FDD\u5B58` : "\u30D3\u30E5\u30FC\u540D";
@@ -1691,21 +1830,21 @@ function renderViews(view2, s) {
   const list = body.querySelector(".p-list");
   if (!(list instanceof HTMLElement)) return;
   list.textContent = "";
-  if (!s.views.length) list.append(el2("div", "p-empty", "\u30D3\u30E5\u30FC\u306F\u307E\u3060\u306A\u3044"));
+  if (!s.views.length) list.append(el3("div", "p-empty", "\u30D3\u30E5\u30FC\u306F\u307E\u3060\u306A\u3044"));
   for (const v of s.views) {
-    const row = el2("div", "p-row");
-    const main = el2("div", "p-main");
-    const title = el2("div", "p-title", v.name);
+    const row = el3("div", "p-row");
+    const main = el3("div", "p-main");
+    const title = el3("div", "p-title", v.name);
     title.title = v.name;
     main.append(title);
-    const sub = el2("div", "p-sub");
-    sub.append(el2("span", "chip", v.query.q ? `q: ${v.query.q}` : "\u6761\u4EF6\u306A\u3057"));
-    if (v.query.focus) sub.append(el2("span", "chip", "\u7D5E\u308A\u8FBC\u307F"));
+    const sub = el3("div", "p-sub");
+    sub.append(el3("span", "chip", v.query.q ? `q: ${v.query.q}` : "\u6761\u4EF6\u306A\u3057"));
+    if (v.query.focus) sub.append(el3("span", "chip", "\u7D5E\u308A\u8FBC\u307F"));
     main.append(sub);
-    const apply = el2("button", "link", "\u9069\u7528");
+    const apply = el3("button", "link", "\u9069\u7528");
     apply.type = "button";
     apply.addEventListener("click", () => view2.h.onApplyView(v.id));
-    const rm = el2("button", "ic", "\xD7");
+    const rm = el3("button", "ic", "\xD7");
     rm.type = "button";
     rm.title = "\u30D3\u30E5\u30FC\u3092\u524A\u9664";
     rm.addEventListener("click", () => view2.h.onDeleteView(v.id));
@@ -1723,37 +1862,37 @@ function renderOverview(view2, s) {
   if (view2.overviewSig === sig) return;
   view2.overviewSig = sig;
   view2.overview.textContent = "";
-  const head = el2("div", "ov-h");
-  head.append(el2("h2", void 0, "\u7DCF\u5408\u7BA1\u7406"), el2("span", "ov-n", `${s.overviewRows.length} \u30D7\u30ED\u30B8\u30A7\u30AF\u30C8`));
+  const head = el3("div", "ov-h");
+  head.append(el3("h2", void 0, "\u7DCF\u5408\u7BA1\u7406"), el3("span", "ov-n", `${s.overviewRows.length} \u30D7\u30ED\u30B8\u30A7\u30AF\u30C8`));
   view2.overview.append(head);
   if (!s.overviewRows.length) {
-    view2.overview.append(el2("div", "empty", "\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8\u304C\u7121\u3044"));
+    view2.overview.append(el3("div", "empty", "\u30D7\u30ED\u30B8\u30A7\u30AF\u30C8\u304C\u7121\u3044"));
     return;
   }
-  const rows = el2("div", "ov-rows");
+  const rows = el3("div", "ov-rows");
   for (const row of s.overviewRows) {
     const slug = s.projects.find((p2) => p2.projectId === row.projectId)?.slug ?? row.projectId;
-    const b = el2("button", "ov-row");
+    const b = el3("button", "ov-row");
     b.type = "button";
     b.title = `${row.name} \u306E\u30DC\u30FC\u30C9\u3092\u958B\u304F`;
-    b.append(el2("div", "ov-name", row.name));
+    b.append(el3("div", "ov-name", row.name));
     if (row.loop !== "idle") {
-      const live = el2("span", "ov-loop", row.loop === "running" ? "\u81EA\u8D70\u4E2D" : "\u505C\u6B62");
+      const live = el3("span", "ov-loop", row.loop === "running" ? "\u81EA\u8D70\u4E2D" : "\u505C\u6B62");
       live.classList.add(row.loop === "running" ? "on" : "halt");
       b.append(live);
     }
-    const cols = el2("div", "ov-cols");
+    const cols = el3("div", "ov-cols");
     for (const c of row.columns) {
-      const chip = el2("span", "ov-col");
-      chip.append(el2("span", "ov-col-n", c.name));
+      const chip = el3("span", "ov-col");
+      chip.append(el3("span", "ov-col-n", c.name));
       const over = c.wipLimit !== null && c.count > c.wipLimit;
-      chip.append(el2("span", "ov-col-c", c.wipLimit !== null ? `${c.count}/${c.wipLimit}` : String(c.count)));
+      chip.append(el3("span", "ov-col-c", c.wipLimit !== null ? `${c.count}/${c.wipLimit}` : String(c.count)));
       if (over) chip.classList.add("over");
       if (c.kind === "done") chip.classList.add("done");
       cols.append(chip);
     }
     b.append(cols);
-    const counts = el2("div", "ov-counts");
+    const counts = el3("div", "ov-counts");
     const stats = [
       { label: "\u5168\u4F53", value: row.counts.total, hot: false },
       { label: "\u672A\u5B8C\u4E86", value: row.counts.open, hot: false },
@@ -1763,7 +1902,7 @@ function renderOverview(view2, s) {
       { label: "WIP\u8D85", value: row.counts.wipOver, hot: row.counts.wipOver > 0 }
     ];
     for (const st of stats) {
-      const cell = el2("span", "ov-c", `${st.label} ${st.value}`);
+      const cell = el3("span", "ov-c", `${st.label} ${st.value}`);
       if (st.hot) cell.classList.add("hot");
       counts.append(cell);
     }
@@ -1791,15 +1930,15 @@ function renderGraph(view2, s) {
   if (view2.graphSig === sig) return;
   view2.graphSig = sig;
   view2.graph.textContent = "";
-  const head = el2("div", "ov-h");
-  head.append(el2("h2", void 0, "\u4F9D\u5B58\u30DE\u30C3\u30D7"), el2("span", "ov-n", layout ? `${layout.nodes.length} \u30CE\u30FC\u30C9 / ${layout.edges.length} \u4F9D\u5B58` : ""));
+  const head = el3("div", "ov-h");
+  head.append(el3("h2", void 0, "\u4F9D\u5B58\u30DE\u30C3\u30D7"), el3("span", "ov-n", layout ? `${layout.nodes.length} \u30CE\u30FC\u30C9 / ${layout.edges.length} \u4F9D\u5B58` : ""));
   view2.graph.append(head);
   if (!layout) {
-    view2.graph.append(el2("div", "empty", "\u8AAD\u307F\u8FBC\u307F\u4E2D\u2026"));
+    view2.graph.append(el3("div", "empty", "\u8AAD\u307F\u8FBC\u307F\u4E2D\u2026"));
     return;
   }
   if (!layout.nodes.length) {
-    view2.graph.append(el2("div", "empty", "\u30AB\u30FC\u30C9\u304C\u7121\u3044"));
+    view2.graph.append(el3("div", "empty", "\u30AB\u30FC\u30C9\u304C\u7121\u3044"));
     return;
   }
   const NW = 190, NH = 34, GX = 70, GY = 46, PAD = 18;
@@ -1891,10 +2030,10 @@ function renderGraph(view2, s) {
     });
     svg.append(g);
   }
-  const scroll = el2("div", "gscroll");
+  const scroll = el3("div", "gscroll");
   scroll.append(svg);
   view2.graph.append(scroll);
-  view2.graph.append(el2("div", "ov-n", "\u9589\u3058\u305F\u30AB\u30FC\u30C9\u306F\u6DE1\u304F\u3001\u30D6\u30ED\u30C3\u30AF\u4E2D\u306F\u67A0\u7DDA\u4ED8\u304D"));
+  view2.graph.append(el3("div", "ov-n", "\u9589\u3058\u305F\u30AB\u30FC\u30C9\u306F\u6DE1\u304F\u3001\u30D6\u30ED\u30C3\u30AF\u4E2D\u306F\u67A0\u7DDA\u4ED8\u304D"));
 }
 function renderLocks(view2, s) {
   const locks = s.projectId ? s.locks : [];
@@ -1917,11 +2056,11 @@ function renderSelectionBar(view2, s) {
   bar.textContent = "";
   if (off) return;
   const h = view2.h;
-  bar.append(el2("span", "n", `${keys.length} \u4EF6\u9078\u629E`));
+  bar.append(el3("span", "n", `${keys.length} \u4EF6\u9078\u629E`));
   for (const id of s.columnOrder) {
     const col = s.columns[id];
     const move = keys.filter((k) => s.cards[k].columnId !== id);
-    const b = el2("button", void 0, `\u2192 ${col.name}`);
+    const b = el3("button", void 0, `\u2192 ${col.name}`);
     b.type = "button";
     b.disabled = move.length === 0;
     b.addEventListener("click", () => {
@@ -1930,10 +2069,10 @@ function renderSelectionBar(view2, s) {
     });
     bar.append(b);
   }
-  const del = el2("button", "danger", "\u524A\u9664");
+  const del = el3("button", "danger", "\u524A\u9664");
   del.type = "button";
   del.addEventListener("click", () => h.onDeleteMany(keys));
-  const clear = el2("button", void 0, "\u89E3\u9664");
+  const clear = el3("button", void 0, "\u89E3\u9664");
   clear.type = "button";
   clear.addEventListener("click", () => h.onSelect([]));
   bar.append(del, clear);
@@ -1945,12 +2084,12 @@ function renderView(view2, s) {
     view2.projectSig = projectSig;
     view2.select.textContent = "";
     if (!s.projects.length) {
-      const o = el2("option", void 0, "(\u306A\u3057)");
+      const o = el3("option", void 0, "(\u306A\u3057)");
       o.value = "";
       view2.select.append(o);
     }
     for (const p2 of s.projects) {
-      const o = el2("option", void 0, p2.name || p2.slug);
+      const o = el3("option", void 0, p2.name || p2.slug);
       o.value = p2.slug;
       view2.select.append(o);
     }
@@ -2185,137 +2324,6 @@ function installKeys(actions) {
   });
 }
 
-// web/src/viewer.ts
-var IMAGE = /\.(png|jpe?g|gif|webp)$/i;
-var VIDEO = /\.(mp4|webm|mov)$/i;
-var DOC = /\.(md|markdown|txt|csv|json|log|ya?ml)$/i;
-function kindOf(name, mime) {
-  const m = (mime ?? "").split(";")[0]?.trim() ?? "";
-  if (m.startsWith("image/") || IMAGE.test(name)) return "image";
-  if (m.startsWith("video/") || VIDEO.test(name)) return "video";
-  if (m === "application/pdf" || /\.pdf$/i.test(name)) return "pdf";
-  if (m === "text/html" || /\.html?$/i.test(name)) return "html";
-  if (m.startsWith("text/") || m === "application/json" || DOC.test(name)) return "markdown";
-  return "other";
-}
-function deliverableItems(list) {
-  return list.map((d) => ({
-    title: d.title,
-    name: d.ref.split(/[\\/]/).pop() || d.ref,
-    fileSrc: deliverableFileSrc(d.projectId, d.id),
-    viewSrc: deliverableViewSrc(d.projectId, d.id)
-  }));
-}
-function attachmentItems(projectId, list) {
-  return list.map((a) => ({
-    title: a.name,
-    name: a.name,
-    mime: a.mime,
-    fileSrc: attachmentSrc(projectId, a.id),
-    viewSrc: attachmentViewSrc(projectId, a.id)
-  }));
-}
-function el3(tag, cls) {
-  const n = document.createElement(tag);
-  n.className = cls;
-  return n;
-}
-function mountViewer(root2) {
-  const dlg = el3("dialog", "viewer");
-  dlg.tabIndex = -1;
-  const head = el3("div", "v-h");
-  const cap = el3("span", "v-cap");
-  const count = el3("span", "v-count");
-  const closeBtn = el3("button", "ic");
-  closeBtn.type = "button";
-  closeBtn.textContent = "\xD7";
-  closeBtn.title = "\u9589\u3058\u308B";
-  head.append(cap, count, closeBtn);
-  const body = el3("div", "v-body");
-  dlg.append(head, body);
-  root2.append(dlg);
-  let list = [];
-  let at = 0;
-  function box(item) {
-    const kind = kindOf(item.name, item.mime);
-    if (kind === "image") {
-      const img = el3("img", "v-img");
-      img.src = item.fileSrc;
-      img.alt = item.title;
-      return img;
-    }
-    if (kind === "video") {
-      const vid = el3("video", "v-media");
-      vid.controls = true;
-      vid.autoplay = true;
-      vid.src = item.fileSrc;
-      return vid;
-    }
-    if (kind === "other") {
-      const a = el3("a", "v-dl");
-      a.href = item.fileSrc;
-      a.download = item.name;
-      a.textContent = `${item.name} \u3092\u30C0\u30A6\u30F3\u30ED\u30FC\u30C9`;
-      return a;
-    }
-    const fr = el3("iframe", "v-frame");
-    fr.src = item.viewSrc;
-    if (kind === "html") fr.setAttribute("sandbox", "allow-scripts allow-forms allow-popups");
-    if (kind === "markdown") fr.setAttribute("sandbox", "");
-    return fr;
-  }
-  function show(i) {
-    if (!list.length) return;
-    at = (i + list.length) % list.length;
-    const item = list[at];
-    body.replaceChildren(box(item));
-    cap.textContent = item.title;
-    cap.title = item.title;
-    count.textContent = list.length > 1 ? `${at + 1} / ${list.length}` : "";
-    count.hidden = list.length <= 1;
-  }
-  function reset() {
-    list = [];
-    body.replaceChildren();
-    cap.textContent = "";
-    count.textContent = "";
-  }
-  function close() {
-    reset();
-    if (dlg.open) dlg.close();
-  }
-  function open(items, index) {
-    if (!items.length) return;
-    list = items;
-    show(index);
-    if (!dlg.open) dlg.showModal();
-    dlg.focus();
-  }
-  closeBtn.addEventListener("click", close);
-  dlg.addEventListener("cancel", (ev) => {
-    ev.preventDefault();
-    close();
-  });
-  dlg.addEventListener("close", reset);
-  dlg.addEventListener("click", (ev) => {
-    if (ev.target === dlg) close();
-  });
-  dlg.addEventListener("keydown", (ev) => {
-    if (ev.key === "ArrowLeft") {
-      ev.preventDefault();
-      show(at - 1);
-      return;
-    }
-    if (ev.key === "ArrowRight") {
-      ev.preventDefault();
-      show(at + 1);
-      return;
-    }
-    ev.stopPropagation();
-  });
-  return { open, close };
-}
-
 // web/src/detail.ts
 var ATTACH_ACCEPT = "image/*,application/pdf,video/*,audio/*,.md,.txt,.csv,.json,.log,.yaml,.yml,.zip";
 function el4(tag, cls, text) {
@@ -2474,7 +2482,7 @@ function mountDetail(root2, h) {
   foot.append(el4("div", "grow"), tplBtn, moveSel, delBtn, cancelBtn, saveBtn);
   dlg.append(head, grid, depSec, dvSec, atSec, tlSec, foot);
   root2.append(dlg);
-  const viewer = mountViewer(root2);
+  const viewer = sharedViewer();
   const openStrip = (projectId, list) => {
     const images = list.filter((a) => a.mime.startsWith("image/"));
     const items = attachmentItems(projectId, images);

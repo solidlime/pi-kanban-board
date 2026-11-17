@@ -9,7 +9,7 @@ import {
   acceptanceProgress, cardKey, edgesOf, isClosed, keyOf, lastActorOf, parseKey, type CardKey, type Store,
 } from './store.js';
 import { attachmentSrc, attachmentViewSrc } from './api.js';
-import { attachmentItems, deliverableItems, mountViewer } from './viewer.js';
+import { attachmentItems, deliverableItems, sharedViewer } from './viewer.js';
 
 /** The server sniffs bytes anyway; this is only to fail fast with a friendlier sentence. */
 const ATTACH_ACCEPT = 'image/*,application/pdf,video/*,audio/*,.md,.txt,.csv,.json,.log,.yaml,.yml,.zip';
@@ -216,7 +216,7 @@ export function mountDetail(root: HTMLElement, h: DetailHandlers): DetailView {
   root.append(dlg);
   // #16/#19: one viewer for the whole dialog, opened directly — no handler, no new tab. It lives in
   // the top layer next to this dialog, so Esc closes the viewer and leaves the card open.
-  const viewer = mountViewer(root);
+  const viewer = sharedViewer();
 
   /** ←/→ walk the strip the thumbnail lives in, which is v1's lbList (every .thumb in the lightbox). */
   const openStrip = (projectId: string, list: Attachment[]) => {

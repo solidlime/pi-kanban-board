@@ -4,7 +4,8 @@
 import type {
   Attachment, Card, ColumnDef, Deliverable, GraphLayout, GraphNode, NotificationLevel, SearchHit,
 } from '../../src/shared/dto.js';
-import { attachmentSrc, attachmentViewSrc, deliverableFileSrc, deliverableViewSrc, type LoopInfo } from './api.js';
+import { attachmentSrc, deliverableFileSrc, type LoopInfo } from './api.js';
+import { attachmentItems, deliverableItems, sharedViewer } from './viewer.js';
 import {
   acceptanceProgress, blocksCards, cardKey, cardMatches, cardsInColumn, daysSinceMoved, isBlocked, isClosed,
   isDoneColumn, isStalled, lastActorOf, openBlockers, panelDeliverables, readyCards, DONE_PREVIEW, type CardKey, type Store,
@@ -968,7 +969,7 @@ function renderDelivPanel(view: View, s: Store): void {
   if (!total) list.append(el('div', 'p-empty', '成果物はまだない'));
   // 絞込で0件なのと、そもそも0件なのは別のこと。同じ文言だと何をすればいいか分からない。
   else if (!shown.length) list.append(el('div', 'p-empty', '一致する成果物が無い'));
-  for (const d of shown) {
+  for (const [i, d] of shown.entries()) {
     const row = el('div', 'p-row');
     const main = el('div', 'p-main');
     const t = el('div', 'p-title', d.title);
@@ -976,7 +977,7 @@ function renderDelivPanel(view: View, s: Store): void {
     main.append(t);
     const sub = el('div', 'p-sub');
     sub.append(el('span', 'chip kind', d.kind));
-    if (d.ref) sub.append(refLink(d));
+    if (d.ref) sub.append(refLink(d, shown, i));
     if (d.cardId !== null && d.cardId !== undefined) {
       const link = el('button', 'link', `#${d.cardId}`);
       link.type = 'button';
@@ -988,7 +989,7 @@ function renderDelivPanel(view: View, s: Store): void {
       sub.append(link);
     }
     main.append(sub);
-    const shot = refImageThumb(d);
+    const shot = refImageThumb(d, shown, i);
     if (shot) main.append(shot);
     const thumbs = thumbStrip(s.attachments.filter(a => a.deliverableId === d.id), d.projectId);
     if (thumbs) main.append(thumbs);
@@ -1080,51 +1081,57 @@ const REF_IMAGE = /\.(png|jpe?g|gif|webp)$/i;
 /** `ref` is a full path: the chip shows the file name and keeps the path in the tooltip. */
 const refName = (ref: string): string => ref.split(/[\\/]/).pop() || ref;
 
-/** The chip opens the readable view of the ref in a new tab. */
-function refLink(d: Deliverable): HTMLElement {
-  const link = el('a', 'chip', refName(d.ref));
-  link.href = deliverableViewSrc(d.projectId, d.id);
-  link.target = '_blank';
-  link.rel = 'noopener';
+// #16/#19: the board and the card dialog share one viewer, made on first use. The dialog lives in
+// the top layer, so Esc closes it and leaves whatever was behind it open.
+const theViewer = sharedViewer;
+
+/** The chip opens the readable view in place — no new tab, no page change. */
+function refLink(d: Deliverable, list: readonly Deliverable[], index: number): HTMLElement {
+  const link = el('button', 'chip', refName(d.ref));
+  link.type = 'button';
   link.title = d.ref;
+  link.addEventListener('click', () => theViewer().open(deliverableItems(list), index));
   return link;
 }
 
-/** An image ref gets a thumbnail too; its `src` is the raw bytes, the click opens the view. */
-function refImageThumb(d: Deliverable): HTMLElement | null {
+/** An image ref gets a thumbnail too; its `src` is the raw bytes, the click opens the viewer. */
+function refImageThumb(d: Deliverable, list: readonly Deliverable[], index: number): HTMLElement | null {
   if (!REF_IMAGE.test(d.ref)) return null;
-  const a = el('a', 'thumbs');
-  a.href = deliverableViewSrc(d.projectId, d.id);
-  a.target = '_blank';
-  a.rel = 'noopener';
+  const a = el('button', 'thumb-w');
+  a.type = 'button';
   a.title = d.ref;
   const img = el('img', 'thumb');
   img.src = deliverableFileSrc(d.projectId, d.id);
   img.alt = refName(d.ref);
   img.loading = 'lazy';
   a.append(img);
+  a.addEventListener('click', () => theViewer().open(deliverableItems(list), index));
   return a;
 }
 
 export function thumbStrip(list: Attachment[], projectId: string): HTMLElement | null {
   if (!list.length) return null;
+  const items = attachmentItems(projectId, list);
   const wrap = el('div', 'thumbs');
-  for (const a of list) {
+  for (const [i, a] of list.entries()) {
     if (a.mime.startsWith('image/')) {
+      const btn = el('button', 'thumb-w');
+      btn.type = 'button';
+      btn.title = a.name;
       const img = el('img', 'thumb');
       img.loading = 'lazy';
       img.src = attachmentSrc(projectId, a.id);
       img.alt = a.name;
-      img.title = a.name;
-      wrap.append(img);
+      btn.append(img);
+      btn.addEventListener('click', () => theViewer().open(items, i));
+      wrap.append(btn);
     } else {
       // Same split as the detail strip: only images paint, everything else opens through /view.
-      const doc = el('a', 'thumb doc');
-      doc.href = attachmentViewSrc(projectId, a.id);
-      doc.target = '_blank';
-      doc.rel = 'noopener';
+      const doc = el('button', 'thumb doc');
+      doc.type = 'button';
       doc.textContent = docLabel(a.mime);
       doc.title = a.name;
+      doc.addEventListener('click', () => theViewer().open(items, i));
       wrap.append(doc);
     }
   }

@@ -168,3 +168,10 @@ export function mountViewer(root: HTMLElement): ViewerView {
 
   return { open, close };
 }
+
+let shared: ViewerView | null = null;
+/** One viewer per document: the card dialog and the board both open the same one. */
+export function sharedViewer(): ViewerView {
+  if (shared === null) shared = mountViewer(document.body);
+  return shared;
+}
