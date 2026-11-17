@@ -149,7 +149,8 @@ never append to one JSONL: a lock file (`src/agent/session-lock.ts`) plus pi-web
 the only sign a `pi` started outside pi-web leaves behind.
 
 The tick also keeps the per-board "last tick / next card / why it stopped" that the UI's loop band
-and the timeline (`loop.tick` / `loop.resumed` / `loop.halted`) read. A wake answered `busy` or
+and the timeline (`loop.resumed` / `loop.halted` always; `loop.tick` only for a tick that moved a
+card — an empty tick moves the clock, not the record). A wake answered `busy` or
 `in-flight` does not advance the retry clock, so the next tick (15s) tries again — that session has
 a writer and the card moves when its turn ends. Every other refusal (`unclear`, `not-doing`,
 `locked`, `spawn-failed`) waits `WAKE_RETRY_MS` (5 min), so a probe that cannot answer does not

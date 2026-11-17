@@ -32,21 +32,33 @@ function board(t, n) {
 /** `mins` minutes from now, so the boards never look stale by accident. */
 const at = (mins) => new Date(Date.now() + mins * 60_000).toISOString();
 
+/** The last timeline row. `seq` is what tells "this tick wrote a row" from "a row was already there". */
+const latest = (db) => db.prepare("SELECT seq, kind FROM timeline_event WHERE project_id = 'p' ORDER BY seq DESC LIMIT 1").get();
+
 test("maxLoops: the loop halts on the tick after its budget is spent", (t) => {
   const db = board(t, 3);
   R.saveLoopSettings(db, { maxLoops: 2 });
+  // The kind is the audit trail: a budget stop must not be filed as a plain tick.
+  const seed = latest(db).seq; // board() seeds the loop with one loop.tick row
   const first = tickProject(db, "p", at(1));
   assert.equal(first.loop.status, "running");
   assert.equal(first.loop.ticks, 1);
+  assert.ok(latest(db).seq > seed, "a tick that moved a card writes a row");
+  assert.equal(latest(db).kind, "loop.tick", "a tick that moved a card is a tick");
+  const afterFirst = latest(db).seq;
   const second = tickProject(db, "p", at(2));
   assert.equal(second.loop.status, "running", "two ticks were allowed");
   assert.equal(second.loop.ticks, 2);
+  // DOING is occupied by card 1, so tick 2 named a card and moved nothing: quiet, no row.
+  assert.equal(latest(db).seq, afterFirst, "a tick that moved nothing writes no row");
   const third = tickProject(db, "p", at(3));
   assert.equal(third.loop.status, "halted");
   assert.equal(third.loop.ticks, 2, "a halted tick does not spend a third one");
   assert.match(third.loop.haltReason, /maxLoops/);
   assert.equal(third.moved, null);
   assert.equal(third.nextCardId, null);
+  assert.ok(latest(db).seq > afterFirst, "a halt writes a row");
+  assert.equal(latest(db).kind, "loop.halted", "a budget halt is a halt, not a tick");
 });
 
 test("maxLoops 0 is unlimited: the same board keeps ticking", (t) => {
@@ -68,6 +80,7 @@ test("stuckDays: a DOING card nobody touched halts the loop and names it", (t) =
   const result = tickProject(db, "p", at(0));
   assert.equal(result.loop.status, "halted");
   assert.equal(result.loop.haltReason, "DOING の #1 が 10 日動いていない");
+  assert.equal(latest(db).kind, "loop.halted", "a stuck halt is filed as a halt too");
   assert.equal(result.moved, null);
   assert.equal(result.nextCardId, null, "a stuck board is not asked for its next card");
 });
