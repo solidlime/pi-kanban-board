@@ -135,8 +135,13 @@ starts one when asked (`{ loop: { intervalMs } }`), so tests stay quiet.
 
 A tick that finds a ready card moves it to DOING and wakes its session: pi-web first
 (`POST /api/agent/new` for a card with no session yet — pi-web mints the id and answers with it —
-and `POST /api/agent/<id>` for a card that has one, which also reaches a session pi-web is already
-running). Only when pi-web is unreachable — a refused connection or a 5xx — does the board spawn a
+and `POST /api/agent/<id>` for a card that has one). A wake is injected only into a session that
+has stopped: `GET /api/agent/<id>?systemPrompt=0` is asked first, and a `busy` answer
+(`isStreaming`, `isPromptRunning`, `isCompacting`, or `pendingMessageCount > 0`) sends no POST —
+a queued prompt outlives the turn it waits for and lands on a card that may already be done. The
+probe is a positive check only: an unreachable, slow or non-2xx probe counts as idle, and the
+`prompt` POST itself is the refusal on a running session (no `streamingBehavior`, which would
+queue instead). Only when pi-web is unreachable — a refused connection or a 5xx — does the board spawn a
 `pi -p` of its own. A 4xx, a timeout, and a 2xx that carries `success:false` all claim nothing and
 start no process. That path is gated so two writers
 never append to one JSONL: a lock file (`src/agent/session-lock.ts`) plus pi-web's
@@ -144,7 +149,11 @@ never append to one JSONL: a lock file (`src/agent/session-lock.ts`) plus pi-web
 the only sign a `pi` started outside pi-web leaves behind.
 
 The tick also keeps the per-board "last tick / next card / why it stopped" that the UI's loop band
-and the timeline (`loop.tick` / `loop.resumed` / `loop.halted`) read.
+and the timeline (`loop.tick` / `loop.resumed` / `loop.halted`) read. A wake answered `busy` or
+`in-flight` does not advance the retry clock, so the next tick (15s) tries again — that session has
+a writer and the card moves when its turn ends. Every other refusal (`unclear`, `not-doing`,
+`locked`, `spawn-failed`) waits `WAKE_RETRY_MS` (5 min), so a probe that cannot answer does not
+turn into a POST storm.
 
 `POST /api/cards/:id/move` into a `doing` column wakes the card the same way. That wake is
 fire-and-forget: a slow session start must not delay the drop, and a failed wake is logged rather
