@@ -251,7 +251,8 @@ function openCardMenu(view: View, s: Store, key: CardKey, x: number, y: number):
   first?.focus();
 
   const onDoc = (ev: Event): void => {
-    if (ev instanceof KeyboardEvent) { if (ev.key === 'Escape') closeCardMenu(); return; }
+    // Esc marks itself handled: keys.ts runs its own chain and must stop at this stage.
+    if (ev instanceof KeyboardEvent) { if (ev.key === 'Escape') { ev.preventDefault(); closeCardMenu(); } return; }
     // A click inside the menu is the menu's own business (the button closes it).
     if (m.contains(ev.target as Node)) return;
     closeCardMenu();
@@ -391,7 +392,7 @@ export function mount(root: HTMLElement, h: Handlers): View {
   q.placeholder = '検索…';
   q.setAttribute('aria-label', 'カード・成果物を検索');
   q.addEventListener('input', () => h.onSearch(q.value));
-  q.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') { h.onCloseSearch(); q.blur(); } });
+  q.addEventListener('keydown', (ev) => { if (ev.key === 'Escape') { ev.preventDefault(); h.onCloseSearch(); q.blur(); } });
   const qres = el('div', 'qres');
   qres.hidden = true;
   qres.setAttribute('role', 'listbox');
@@ -547,7 +548,7 @@ export function mount(root: HTMLElement, h: Handlers): View {
     h.onCloseSearch();
   });
   document.addEventListener('keydown', (ev) => {
-    if (ev.key === 'Escape' && !qres.hidden) h.onCloseSearch();
+    if (ev.key === 'Escape' && !qres.hidden) { ev.preventDefault(); h.onCloseSearch(); }
   });
 
   const toast = el('div', 'toast');

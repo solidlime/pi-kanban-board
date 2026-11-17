@@ -28,7 +28,9 @@ test("every card carries a contextmenu handler that opens the menu instead of th
   // Outside click, Escape and scroll close it; the listeners exist only while it is open.
   assert.match(render, /document\.addEventListener\('pointerdown', onDoc, true\);/,
     "pointerdown, not click: a press that never moves still closes the menu");
-  assert.match(render, /if \(ev\.key === 'Escape'\) closeCardMenu\(\);/);
+  // The menu marks its own Esc handled, so keys.ts's Esc chain stops here instead of clearing
+  // the selection underneath the menu that just closed.
+  assert.match(render, /if \(ev\.key === 'Escape'\) \{ ev\.preventDefault\(\); closeCardMenu\(\); \}/);
   assert.match(render, /document\.addEventListener\('scroll', onDoc, true\);/);
 });
 

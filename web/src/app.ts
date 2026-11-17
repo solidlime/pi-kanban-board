@@ -10,9 +10,10 @@ import {
 } from './api.js';
 import {
   STALE_DAYS_DEFAULT, createStore, applySnapshot, upsertCard, resetBoard, setProjects, setMeta, vanishCard,
-  revealCard, applyLocalMove, parseKey, cardKey, type CardKey, type Store, type SearchHit,
+  revealCard, applyLocalMove, parseKey, cardKey, cardsInColumn, type CardKey, type Store, type SearchHit,
 } from './store.js';
 import { loopBarText, mount, renderView, showToast, type View } from './render.js';
+import { installKeys } from './keys.js';
 import { mountDetail, type DetailView } from './detail.js';
 import type { DependencyType, PatchCardReq } from '../../src/shared/api.js';
 import type { Card, LoopState } from '../../src/shared/dto.js';
@@ -821,6 +822,18 @@ const detail: DetailView = mountDetail(root, {
   onTemplateFromCard: key => { void doSaveTemplate(key); },
   onSessions: projectId => getSessions(projectId).then(r => r.sessions),
   notify: message => showToast(view, message),
+});
+
+// v1's global keys (web/dash/_app.js:1862). One listener; the surfaces above keep their own Esc.
+installKeys({
+  selected: () => [...store.selection],
+  onSelect: keys => { store.selection = new Set(keys); render(); },
+  onOpen: key => detail.open(key),
+  doingFirst: () => {
+    const id = store.columnOrder.find(c => store.columns[c]?.kind === 'doing');
+    const card = id === undefined ? undefined : cardsInColumn(store, id)[0];
+    return card ? cardKey(card.projectId, card.id) : null;
+  },
 });
 
 function render(): void {

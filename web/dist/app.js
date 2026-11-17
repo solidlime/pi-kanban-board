@@ -580,7 +580,10 @@ function openCardMenu(view2, s, key, x, y) {
   first?.focus();
   const onDoc = (ev) => {
     if (ev instanceof KeyboardEvent) {
-      if (ev.key === "Escape") closeCardMenu();
+      if (ev.key === "Escape") {
+        ev.preventDefault();
+        closeCardMenu();
+      }
       return;
     }
     if (m.contains(ev.target)) return;
@@ -656,11 +659,11 @@ function wireMarquee(board, h) {
 function mount(root2, h) {
   const top = el2("div", "top");
   const brand = el2("div", "brand", "Kanban v2");
-  const pick = el2("label", "pick");
+  const pick2 = el2("label", "pick");
   const select = el2("select");
   select.setAttribute("aria-label", "project");
   select.addEventListener("change", () => h.onProject(select.value));
-  pick.append(el2("span", "lbl", "project"), select);
+  pick2.append(el2("span", "lbl", "project"), select);
   const newForm = el2("form", "newproj");
   const newName = el2("input");
   newName.placeholder = "new project name";
@@ -707,6 +710,7 @@ function mount(root2, h) {
   q.addEventListener("input", () => h.onSearch(q.value));
   q.addEventListener("keydown", (ev) => {
     if (ev.key === "Escape") {
+      ev.preventDefault();
       h.onCloseSearch();
       q.blur();
     }
@@ -783,7 +787,7 @@ function mount(root2, h) {
     applyTheme(false);
     applyDensity(false);
   }
-  top.append(brand, pick, newForm, searchWrap, focusBtn, staleWrap, panelBtns.deliverables, panelBtns.timeline, overviewBtn, graphBtn, ganttBtn, viewsBtn, templatesBtn, notifBtn, themeBtn, densityBtn, el2("div", "grow"), status);
+  top.append(brand, pick2, newForm, searchWrap, focusBtn, staleWrap, panelBtns.deliverables, panelBtns.timeline, overviewBtn, graphBtn, ganttBtn, viewsBtn, templatesBtn, notifBtn, themeBtn, densityBtn, el2("div", "grow"), status);
   const errBar = el2("div", "err");
   errBar.hidden = true;
   const loopBar = el2("section", "loop");
@@ -854,7 +858,10 @@ function mount(root2, h) {
     h.onCloseSearch();
   });
   document.addEventListener("keydown", (ev) => {
-    if (ev.key === "Escape" && !qres.hidden) h.onCloseSearch();
+    if (ev.key === "Escape" && !qres.hidden) {
+      ev.preventDefault();
+      h.onCloseSearch();
+    }
   });
   const toast = el2("div", "toast");
   const toastMsg = el2("span", "toast-msg");
@@ -2065,6 +2072,100 @@ function renderView(view2, s) {
   view2.notifBtn.title = s.notifications.length ? `\u901A\u77E5 ${s.notifications.length} \u4EF6\uFF08\u5371\u967A ${levels.danger} / \u8B66\u544A ${levels.warn} / \u60C5\u5831 ${levels.info}\uFF09` : "\u901A\u77E5\u306F\u306A\u3044";
 }
 
+// web/src/keys.ts
+function isTyping(target) {
+  const n = target;
+  if (!n || typeof n.tagName !== "string") return false;
+  const tag = n.tagName.toLowerCase();
+  return tag === "input" || tag === "textarea" || n.isContentEditable === true;
+}
+function stepKey(keys, selected, delta) {
+  if (!keys.length) return null;
+  const cursor = selected.at(-1);
+  const at = cursor === void 0 ? -1 : keys.indexOf(cursor);
+  return keys[Math.max(0, Math.min(keys.length - 1, at + delta))] ?? null;
+}
+function rowKeys() {
+  const out = [];
+  for (const n of document.querySelectorAll(".card[data-key], .focus-row[data-key]")) {
+    if (!n.closest("[hidden]")) out.push(n.dataset.key);
+  }
+  return out;
+}
+function pick(actions, key) {
+  actions.onSelect([key]);
+  document.querySelector(`.card[data-key="${key}"], .focus-row[data-key="${key}"]`)?.scrollIntoView({ block: "nearest" });
+}
+function installKeys(actions) {
+  document.addEventListener("keydown", (ev) => {
+    if (ev.repeat) return;
+    if (ev.defaultPrevented) return;
+    const typing = isTyping(ev.target);
+    if (ev.key === "Escape") {
+      if (typing) {
+        ev.target.blur();
+        return;
+      }
+      if (document.querySelector("dialog[open]")) return;
+      if (!actions.selected().length) return;
+      ev.preventDefault();
+      actions.onSelect([]);
+      return;
+    }
+    if (typing) return;
+    if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
+    if (ev.key >= "1" && ev.key <= "9") {
+      const sel = document.querySelector(".pick select");
+      const opt = sel?.options[Number(ev.key) - 1];
+      if (!sel || !opt || !opt.value) return;
+      ev.preventDefault();
+      sel.value = opt.value;
+      sel.dispatchEvent(new Event("change"));
+      return;
+    }
+    switch (ev.key) {
+      case "j":
+      case "k": {
+        const next = stepKey(rowKeys(), actions.selected(), ev.key === "j" ? 1 : -1);
+        if (!next) return;
+        ev.preventDefault();
+        pick(actions, next);
+        return;
+      }
+      case "Enter": {
+        const key = actions.selected().at(-1);
+        if (key === void 0) return;
+        ev.preventDefault();
+        actions.onOpen(key);
+        return;
+      }
+      case "d": {
+        const key = actions.doingFirst();
+        if (!key) return;
+        ev.preventDefault();
+        pick(actions, key);
+        return;
+      }
+      case "/": {
+        const q = document.querySelector("input.q");
+        if (!q) return;
+        ev.preventDefault();
+        q.focus();
+        return;
+      }
+      case "c": {
+        const input = document.querySelector('.board .col[data-col="todo"] .addrow input') ?? document.querySelector(".board .col .addrow input");
+        if (!input) return;
+        ev.preventDefault();
+        input.focus();
+        return;
+      }
+      default:
+        return;
+    }
+  });
+}
+
 // web/src/detail.ts
 var ATTACH_ACCEPT = "image/*,application/pdf,video/*,audio/*,.md,.txt,.csv,.json,.log,.yaml,.yml,.zip";
 function el3(tag, cls, text) {
@@ -2442,19 +2543,19 @@ function mountDetail(root2, h) {
           return ok;
         })));
       }
-      const pick = el3("input", "d-file sm");
-      pick.type = "file";
-      pick.accept = ATTACH_ACCEPT;
-      pick.setAttribute("aria-label", `${d.title} \u306B\u30D5\u30A1\u30A4\u30EB\u3092\u6DFB\u4ED8`);
-      pick.addEventListener("change", () => {
-        const f = pick.files?.[0];
+      const pick2 = el3("input", "d-file sm");
+      pick2.type = "file";
+      pick2.accept = ATTACH_ACCEPT;
+      pick2.setAttribute("aria-label", `${d.title} \u306B\u30D5\u30A1\u30A4\u30EB\u3092\u6DFB\u4ED8`);
+      pick2.addEventListener("change", () => {
+        const f = pick2.files?.[0];
         if (!f) return;
         void h.onUploadDeliverableAttachment(d.id, f).then((ok) => {
-          pick.value = "";
+          pick2.value = "";
           if (ok) h.notify("\u30D5\u30A1\u30A4\u30EB\u3092\u6DFB\u4ED8\u3057\u305F");
         });
       });
-      strip.append(pick);
+      strip.append(pick2);
       dvList.append(strip);
     }
   }
@@ -2722,9 +2823,9 @@ async function loadProjects() {
     const { projects } = await getProjects();
     setProjects(store, projects);
     const wanted = store.projectId ?? readSavedProject();
-    const pick = projects.find((x) => x.slug === wanted)?.slug ?? projects[0]?.slug ?? null;
-    if (store.projectId === pick) render();
-    else await selectProject(pick);
+    const pick2 = projects.find((x) => x.slug === wanted)?.slug ?? projects[0]?.slug ?? null;
+    if (store.projectId === pick2) render();
+    else await selectProject(pick2);
   } catch (e) {
     store.error = `projects: ${describe(e)}`;
     render();
@@ -3402,6 +3503,19 @@ var detail = mountDetail(root, {
   },
   onSessions: (projectId) => getSessions(projectId).then((r) => r.sessions),
   notify: (message) => showToast(view, message)
+});
+installKeys({
+  selected: () => [...store.selection],
+  onSelect: (keys) => {
+    store.selection = new Set(keys);
+    render();
+  },
+  onOpen: (key) => detail.open(key),
+  doingFirst: () => {
+    const id = store.columnOrder.find((c) => store.columns[c]?.kind === "doing");
+    const card = id === void 0 ? void 0 : cardsInColumn(store, id)[0];
+    return card ? cardKey(card.projectId, card.id) : null;
+  }
 });
 function render() {
   renderView(view, store);
