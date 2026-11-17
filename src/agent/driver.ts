@@ -9,7 +9,7 @@ import { join } from "node:path";
 import type { Db } from "../persistence/db.js";
 import type { Card, Project } from "../shared/dto.js";
 import type { ProjectId } from "../shared/ids.js";
-import { updateCard } from "../persistence/repos.js";
+import { getCard, getColumn, updateCard } from "../persistence/repos.js";
 import { parseAcceptance } from "../core/acceptance.js";
 import { sessionDirName } from "../core/sessions.js";
 import { acquireSessionLock, piWebUrl } from "./session-lock.js";
@@ -35,6 +35,9 @@ export function buildCardPrompt(project: Project, card: Card): string {
     : acceptance.map(a => `- [${a.done ? "x" : " "}] ${a.text}`).join("\n");
   return [
     `[kanban ${project.slug}#${card.id}]`,
+    // A queued wake outlives the card it was written for: the session has to look before it works.
+    // Model-dependent, not a guarantee — the tool call is the only exit condition we control.
+    `まず kanban ツールでこのカードが doing に居るか確認し、done か doing 以外なら何もせず終了してください。`,
     `カードを実装してください。`,
     ``,
     `project: ${project.slug}`,
@@ -45,16 +48,23 @@ export function buildCardPrompt(project: Project, card: Card): string {
     criteria,
     ``,
     `完了したら kanban ツールでこのカードを done 列へ移してください（project: "${project.slug}", id: ${card.id}）。`,
-    `中断するなら kanban ツールで blockedReason を書いて doing に残してください。`,
+    // WIP=1: a blocked card left in doing starves the board until the stuck halt.
+    `中断するなら kanban ツールで blockedReason を書いて TODO に戻してください。`,
     `cwd の外のファイルは触らないこと。`,
   ].join("\n");
 }
 
 /** One live child per board: a second DOING card on the same board waits for the first. */
-const running = new Map<ProjectId, ChildProcess>();
+const running = new Map<ProjectId, { child: ChildProcess; startedAt: number }>();
 /** A wake already in flight. `/api/agent/new` mints the id on the pi-web side, so two
  *  concurrent calls would create two sessions the card can never reconcile. */
 const waking = new Set<ProjectId>();
+/**
+ * A child whose exit we never saw keeps a board's wakes dead for good. After this long the entry
+ * is a leftover and is swept — the process itself is never killed, that would throw a turn away.
+ * Long on purpose: a real card turn can run for a long time.
+ */
+const WAKE_CHILD_TTL_MS = 60 * 60 * 1000;
 
 export interface WakeOptions {
   spawn?: SpawnFn;
@@ -63,6 +73,8 @@ export interface WakeOptions {
   fetch?: typeof globalThis.fetch;
   /** Test seam for the pi-web base URL; defaults to KANBAN_PIWEB_URL. */
   piwebUrl?: string;
+  /** Test seam for the running-entry TTL; defaults to Date.now. */
+  now?: () => number;
 }
 
 export interface WakeResult {
@@ -137,6 +149,11 @@ async function wakeInPiWeb(project: Project, sessionId: string | null, prompt: s
  * belongs to the session file, which pi-web reads.
  */
 export async function wakeCardSession(db: Db, project: Project, card: Card, opts: WakeOptions = {}): Promise<WakeResult | null> {
+  const entry = running.get(project.projectId);
+  if (entry && (opts.now?.() ?? Date.now()) - entry.startedAt > WAKE_CHILD_TTL_MS
+    && (entry.child.exitCode !== null || entry.child.killed)) {
+    running.delete(project.projectId);
+  }
   if (running.has(project.projectId) || waking.has(project.projectId)) return null;
   waking.add(project.projectId);
   try {
@@ -152,6 +169,12 @@ async function startSession(db: Db, project: Project, card: Card, opts: WakeOpti
     console.error(`[kanban wake ${project.slug}#${card.id}] ${why}`);
     return null;
   };
+  // A wake can be queued before the card moves (or after it is closed). The board is the truth:
+  // a stale snapshot or a finished card must not be run, or the card resurrects in DOING.
+  const fresh = getCard(db, project.projectId, card.id) ?? card;
+  if (getColumn(db, project.projectId, fresh.columnId)?.kind !== "doing") {
+    return refuse(`card is not in a doing column (${fresh.columnId}), so nothing is woken`);
+  }
   // An existing session is resumed (--session); a new one is minted (--session-id), and only a
   // new one gets a name — renaming a resumed session would overwrite the name its user gave it.
   const existing = card.sessionId ?? null;
@@ -179,16 +202,20 @@ async function startSession(db: Db, project: Project, card: Card, opts: WakeOpti
   const sessionId = existing ?? randomUUID();
   const held = await acquireSessionLock(sessionId, sessionDirOf(project), { fetch: opts.fetch, url: opts.piwebUrl });
   if (held === null) return refuse(`session ${sessionId} already has a writer (live lock, a pi-web run, or a JSONL written in the last 120s)`);
-  if (existing === null) updateCard(db, project.projectId, card.id, { sessionId }, { actor: "loop" });
   const args = existing === null
     ? ["-p", "--session-id", sessionId, "--name", `kanban #${card.id}`, prompt]
     : ["-p", "--session", sessionId, prompt];
   const spawnFn = opts.spawn ?? nodeSpawn;
   const child = spawnFn(opts.bin ?? "pi", args, { cwd: sessionCwd(project), stdio: ["ignore", "pipe", "pipe"], env: process.env });
-  running.set(project.projectId, child);
+  running.set(project.projectId, { child, startedAt: Date.now() });
+  // `error` and `exit` both end the child, and they can both fire (error, then exit). A second
+  // release would delete the lock a wake that started in between now owns.
+  let released = false;
   const release = (): void => {
+    if (released) return;
+    released = true;
     held.release();
-    if (running.get(project.projectId) === child) running.delete(project.projectId);
+    if (running.get(project.projectId)?.child === child) running.delete(project.projectId);
   };
   child.on("exit", release);
   child.on("error", release);
@@ -198,5 +225,20 @@ async function startSession(db: Db, project: Project, card: Card, opts: WakeOpti
     if (line !== "") console.error(`[kanban wake ${project.slug}] ${line}`);
   });
   child.stdout?.resume();
+  // spawn() does not throw for a missing binary or cwd: the failure arrives as an async `error`
+  // event and the pid stays undefined. Claiming the wake then leaves the card pointing at a
+  // session nobody started.
+  if (child.pid === undefined) {
+    const why = await new Promise<string>((resolve) => {
+      child.once("error", (err: Error) => resolve(err.message));
+      child.once("exit", () => resolve("exited before it started"));
+    });
+    release();
+    return refuse(`spawn failed: ${why}`);
+  }
+  // The child outlives us: the lock names the writer, not the process that spawned it.
+  held.bind(child.pid);
+  // Only a started session is worth remembering, or the next wake reuses a dead id.
+  if (existing === null) updateCard(db, project.projectId, card.id, { sessionId }, { actor: "loop" });
   return { sessionId, pid: child.pid, via: "pi" };
 }

@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import "./_load.mjs";
@@ -26,21 +26,40 @@ function memDb(t) {
   return db;
 }
 
+/** A card in a doing column: that is the only column a wake is allowed to run. */
 function board(db, slug, settings) {
   const project = createProject(db, { slug, settings });
-  const card = createCard(db, { projectId: project.projectId, columnId: "todo", title: "配線を直す", body: "右パネルが落ちる" });
+  const card = createCard(db, { projectId: project.projectId, columnId: "doing", title: "配線を直す", body: "右パネルが落ちる" });
   return { project, card };
 }
 
 /** Fake child: exposes the surface driver.ts touches, never exits on its own. */
-function fakeSpawn() {
+function fakeSpawn(pid = 4242) {
   const calls = [];
   const child = new EventEmitter();
-  child.pid = 4242;
+  child.pid = pid;
+  child.exitCode = null;
+  child.killed = false;
   child.stdout = { resume() {} };
   child.stderr = new EventEmitter();
   return { calls, child, spawn: (bin, args, opts) => { calls.push({ bin, args, opts }); return child; } };
 }
+
+/** A child that never started: node leaves pid undefined and reports the failure asynchronously. */
+function deadSpawn(message = "spawn pi ENOENT") {
+  const child = new EventEmitter();
+  child.pid = undefined;
+  child.stdout = { resume() {} };
+  child.stderr = new EventEmitter();
+  const spawn = () => {
+    process.nextTick(() => child.emit("error", Object.assign(new Error(message), { code: "ENOENT" })));
+    return child;
+  };
+  return { child, spawn };
+}
+
+const locksDir = () => path.join(process.env.HOME, ".pi", "kanban", "locks");
+const lockFileOf = (sessionId) => path.join(locksDir(), `${sessionId}.lock`);
 
 /** A pi-web that answers the running list and the wake POST; records every request body. */
 function fakePiWeb(runningIds = [], mintedId = null) {
@@ -63,7 +82,11 @@ test("buildCardPrompt names the board, the card, its title and the done step", (
   });
   const prompt = buildCardPrompt(project, card);
   assert.ok(prompt.startsWith(`[kanban ${project.slug}#${card.id}]`), "the card's origin leads the message");
-  for (const needle of ["prompt-board", "1", "配線を直す", "右パネルが落ちる", "タブが切り替わる", "done"]) {
+  for (const needle of [
+    "prompt-board", "1", "配線を直す", "右パネルが落ちる", "タブが切り替わる", "done",
+    // A queued prompt can outlive the card: the session has to check before it works.
+    "doing に居るか確認", "TODO に戻してください",
+  ]) {
     assert.ok(prompt.includes(needle), `prompt is missing "${needle}"`);
   }
   assert.ok(prompt.split("\n").length <= 20, "prompt stays short");
@@ -100,7 +123,7 @@ test("spawn gets -p, the session id, a name and the board cwd", async (t) => {
 test("an existing card session is resumed with --session, not re-minted", async (t) => {
   const db = memDb(t);
   const { project } = board(db, "resume-board");
-  const card = createCard(db, { projectId: project.projectId, columnId: "todo", title: "続きをやる" });
+  const card = createCard(db, { projectId: project.projectId, columnId: "doing", title: "続きをやる" });
   const sid = "b7c1d2e3-1111-2222-3333-444455556666";
   const { updateCard } = repos;
   updateCard(db, project.projectId, card.id, { sessionId: sid }, { actor: "test" });
@@ -340,4 +363,80 @@ test("a refused pi-web connection falls back to spawning pi", async (t) => {
 
   assert.equal(out.via, "pi");
   assert.equal(spawned.length, 1, "nobody else is writing: pi takes it");
+});
+
+test("a spawn that fails with ENOENT wakes nothing and writes no session id", async (t) => {
+  const db = memDb(t);
+  const { project, card } = board(db, "spawn-enoent");
+  const { spawn } = deadSpawn();
+  const locksBefore = existsSync(locksDir()) ? readdirSync(locksDir()).sort() : [];
+
+  const out = await wakeCardSession(db, project, card, { spawn, fetch: noPiWeb });
+
+  assert.equal(out, null, "a process that never started is not a wake");
+  assert.equal(getCard(db, project.projectId, card.id).sessionId, null,
+    "the card must not point at a session nobody started");
+  assert.deepEqual(existsSync(locksDir()) ? readdirSync(locksDir()).sort() : [], locksBefore,
+    "the lock is released, not left as debris");
+});
+
+test("error の後に exit が来ても release は1回だけ（他人のロックを消さない）", async (t) => {
+  const db = memDb(t);
+  const { project, card } = board(db, "double-release");
+  const { child, spawn } = fakeSpawn();
+  const out = await wakeCardSession(db, project, card, { spawn, fetch: noPiWeb });
+  assert.ok(out);
+  const lockFile = lockFileOf(out.sessionId);
+  assert.equal(existsSync(lockFile), true, "the pi path holds the lock");
+
+  child.emit("error", new Error("boom"));
+  assert.equal(existsSync(lockFile), false, "the error event releases it");
+  // A later wake claimed the lock between the two events.
+  writeFileSync(lockFile, String(process.pid));
+  child.emit("exit", 1, null);
+
+  assert.equal(readFileSync(lockFile, "utf8"), String(process.pid), "a second release must not delete a lock that is not ours");
+});
+
+test("a stale running entry does not block the board forever", async (t) => {
+  const db = memDb(t);
+  const { project, card } = board(db, "ttl-board");
+  const { calls, child, spawn } = fakeSpawn(process.pid + 900000); // a pid nobody has
+  const later = () => Date.now() + 61 * 60 * 1000;
+  assert.notEqual(await wakeCardSession(db, project, card, { spawn, fetch: noPiWeb }), null);
+
+  assert.equal(await wakeCardSession(db, project, card, { spawn, fetch: noPiWeb, now: Date.now }), null,
+    "a child we believe is alive still owns the board");
+  assert.equal(await wakeCardSession(db, project, card, { spawn, fetch: noPiWeb, now: later }), null,
+    "an hour old but alive is never dropped (no turn is killed)");
+  assert.equal(calls.length, 1);
+
+  child.exitCode = 1; // the exit event was lost; the entry is a leftover
+  assert.notEqual(await wakeCardSession(db, project, card, { spawn, fetch: noPiWeb, now: later }), null,
+    "a stale dead entry is swept, so the board can wake again");
+  assert.equal(calls.length, 2);
+});
+
+test("a card outside a doing column is not woken", async (t) => {
+  const db = memDb(t);
+  const project = createProject(db, { slug: "gate-board" });
+  const todoCard = createCard(db, { projectId: project.projectId, columnId: "todo", title: "まだやらない" });
+  const doneCard = createCard(db, { projectId: project.projectId, columnId: "done", title: "もう終わった" });
+  const { calls, spawn } = fakeSpawn();
+
+  assert.equal(await wakeCardSession(db, project, todoCard, { spawn, fetch: noPiWeb }), null);
+  assert.equal(await wakeCardSession(db, project, doneCard, { spawn, fetch: noPiWeb }), null);
+  assert.equal(calls.length, 0, "no process for a card nobody asked to run");
+});
+
+test("a snapshot that says doing is refused once the card is done", async (t) => {
+  const db = memDb(t);
+  const { project, card } = board(db, "gate-moved");
+  const { calls, spawn } = fakeSpawn();
+  // The queue holds an old copy of the card; the board is what counts.
+  repos.moveCard(db, project.projectId, card.id, "done", { actor: "test" });
+
+  assert.equal(await wakeCardSession(db, project, card, { spawn, fetch: noPiWeb }), null,
+    "a stale snapshot is not a licence to run a closed card");
+  assert.equal(calls.length, 0);
 });
