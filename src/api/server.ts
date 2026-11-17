@@ -112,6 +112,8 @@ export function createServer(deps: ServerDeps) {
         req: r, res: s, url: url!, db: deps.db, home: deps.home, state: deps.state,
         token: deps.token, auth: deps.auth, version: deps.version ?? API_VERSION, buildHash: deps.buildHash,
         loopMs: deps.loopMs, wake: deps.wake,
+        // Read through `deps` on every request: startServer fills this in after createServer.
+        ...(deps.restartSupervisor === undefined ? {} : { restartSupervisor: deps.restartSupervisor }),
       };
     }
     const ctx = rawCtx(req, res);

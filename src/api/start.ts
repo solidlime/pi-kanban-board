@@ -115,8 +115,11 @@ export async function startServer(opts: StartOptions = {}): Promise<RunningServe
     ? startSupervisor(db, { intervalMs: loopMs, ...(opts.wake === undefined ? {} : { wake: opts.wake }) })
     : null;
   // createServer already holds this object, so a later field is what a live route reads: the
-  // saved interval re-arms the timer instead of waiting for a restart nobody performs.
-  deps.restartSupervisor = (ms: number): void => { if (ms > 0) supervisor?.restart(ms); else supervisor?.stop(); };
+  // saved interval re-arms the timer instead of waiting for a restart nobody performs. No
+  // supervisor means no timer to arm, and the route says so (`intervalAppliesOnRestart`).
+  if (supervisor) {
+    deps.restartSupervisor = (ms: number): void => { if (ms > 0) supervisor.restart(ms); else supervisor.stop(); };
+  }
   return {
     server, db, home, state, token, buildHash, webRoot,
     host: addr.address,
