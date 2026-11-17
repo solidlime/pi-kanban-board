@@ -108,16 +108,28 @@ body {
 }
 .top {
   display: flex;
-  gap: 12px;
+  gap: 8px;
   align-items: center;
   flex-wrap: wrap;
-  padding: 10px 16px;
+  padding: 7px 14px;
   border-bottom: 1px solid var(--line);
   position: sticky;
   top: 0;
   z-index: 6;
   background: var(--top);
   backdrop-filter: blur(6px);
+}
+.tools {
+  flex: 1 0 100%;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 8px 0 2px;
+  border-top: 1px solid var(--hr);
+}
+.tools .status {
+  margin-left: auto;
 }
 .brand {
   font-weight: 700;
@@ -130,6 +142,12 @@ body {
   color: var(--muted);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
+}
+.spin {
+  color: var(--accent);
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
 }
 .pick {
   display: flex;
@@ -241,7 +259,7 @@ button:disabled {
   padding: 16px;
   align-items: start;
   overflow-x: auto;
-  min-height: calc(100vh - 120px);
+  min-height: calc(100vh - var(--top-h,45px) - 62px);
 }
 .col {
   background: var(--card);
@@ -249,7 +267,7 @@ button:disabled {
   border-radius: 10px;
   display: flex;
   flex-direction: column;
-  max-height: calc(100vh - 130px);
+  max-height: calc(100vh - var(--top-h,45px) - 84px);
   min-height: 140px;
 }
 .col-h {
@@ -659,23 +677,23 @@ a.chip:hover {
   top: var(--top-h,45px);
   right: 0;
   bottom: 0;
-  z-index: 4;
+  z-index: 5;
   display: flex;
   gap: 8px;
   pointer-events: none;
 }
 .panel {
   position: fixed;
-  top: 0;
+  top: var(--top-h,45px);
   right: 0;
   bottom: 0;
   width: min(420px, 92vw);
-  z-index: 4;
+  z-index: 5;
   background: var(--panel);
   border-left: 1px solid var(--line);
   display: flex;
   flex-direction: column;
-  box-shadow: -12px 0 28px rgba(0, 0, 0, .45);
+  box-shadow: -8px 0 22px rgba(0, 0, 0, .26);
 }
 .panels > .panel {
   position: static;
@@ -1235,11 +1253,12 @@ div.gantt-row:focus-visible {
   gap: 10px;
   align-items: center;
   flex-wrap: wrap;
-  margin: 12px 16px 0;
-  padding: 8px 12px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: var(--panel);
+  margin: 0;
+  padding: 5px 16px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
   font-size: 12px;
 }
 .loop-st {
@@ -1261,6 +1280,8 @@ div.gantt-row:focus-visible {
   background: var(--danger-bg);
 }
 .loop-txt {
+  flex: 1 1 auto;
+  min-width: 0;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
   overflow: hidden;
@@ -1698,7 +1719,9 @@ button.chip {
   .focus {
     padding: 12px;
   }
-  .loop,
+  .loop {
+    padding: 5px 10px;
+  }
   .locks {
     margin: 8px 10px 0;
   }

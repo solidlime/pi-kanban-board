@@ -52,7 +52,7 @@ test("a DOING card already in place is woken once, then not again until WAKE_RET
   const base = Date.now();
   const at = (min) => new Date(base + min * 60_000).toISOString();
   const project = R.createProject(db, { slug: "level" });
-  R.saveLoop(db, L.startLoop(L.initialLoopState(project.projectId), at(0)));
+  R.saveLoop(db, L.startLoop(L.initialLoopState(project.projectId, at(0)), at(0)));
   const card = R.createCard(db, { projectId: project.projectId, columnId: "todo", title: "run once" });
   // A second TODO keeps the loop running: with nothing ready behind DOING the loop halts and
   // there is no later pass left to test the retry with.
@@ -78,7 +78,7 @@ test("a card the tick actually moved is woken at once even when the log holds an
   const base = Date.now();
   const at = (min) => new Date(base + min * 60_000).toISOString();
   const project = R.createProject(db, { slug: "moved" });
-  R.saveLoop(db, L.startLoop(L.initialLoopState(project.projectId), at(0)));
+  R.saveLoop(db, L.startLoop(L.initialLoopState(project.projectId, at(0)), at(0)));
   const first = R.createCard(db, { projectId: project.projectId, columnId: "todo", title: "first" });
   const second = R.createCard(db, { projectId: project.projectId, columnId: "todo", title: "second" });
 
@@ -101,7 +101,7 @@ test("busy で見送ったカードは WAKE_RETRY_MS を待たずに次の tick 
   const base = Date.now();
   const at = (min) => new Date(base + min * 60_000).toISOString();
   const project = R.createProject(db, { slug: "busy-retry" });
-  R.saveLoop(db, L.startLoop(L.initialLoopState(project.projectId), at(0)));
+  R.saveLoop(db, L.startLoop(L.initialLoopState(project.projectId, at(0)), at(0)));
   const card = R.createCard(db, { projectId: project.projectId, columnId: "todo", title: "run" });
   R.createCard(db, { projectId: project.projectId, columnId: "todo", title: "behind it" });
 
@@ -123,7 +123,7 @@ test("in-flight も同じく次の tick で再試行される", async (t) => {
   const base = Date.now();
   const at = (min) => new Date(base + min * 60_000).toISOString();
   const project = R.createProject(db, { slug: "in-flight-retry" });
-  R.saveLoop(db, L.startLoop(L.initialLoopState(project.projectId), at(0)));
+  R.saveLoop(db, L.startLoop(L.initialLoopState(project.projectId, at(0)), at(0)));
   const card = R.createCard(db, { projectId: project.projectId, columnId: "todo", title: "run" });
   R.createCard(db, { projectId: project.projectId, columnId: "todo", title: "behind it" });
 
@@ -144,7 +144,7 @@ test("unclear / not-doing は 5 分待つ（POST ストームを防ぐ）", asyn
     // One board per reason: a pass ticks every project, so a shared db would count its neighbour.
     const db = memDb(t);
     const project = R.createProject(db, { slug: `no-retry-${reason}` });
-    R.saveLoop(db, L.startLoop(L.initialLoopState(project.projectId), at(0)));
+    R.saveLoop(db, L.startLoop(L.initialLoopState(project.projectId, at(0)), at(0)));
     R.createCard(db, { projectId: project.projectId, columnId: "todo", title: "run" });
     R.createCard(db, { projectId: project.projectId, columnId: "todo", title: "behind it" });
 
@@ -166,7 +166,7 @@ test("配送成功したカードは 5 分呼ばれない", async (t) => {
   const base = Date.now();
   const at = (min) => new Date(base + min * 60_000).toISOString();
   const project = R.createProject(db, { slug: "delivered" });
-  R.saveLoop(db, L.startLoop(L.initialLoopState(project.projectId), at(0)));
+  R.saveLoop(db, L.startLoop(L.initialLoopState(project.projectId, at(0)), at(0)));
   R.createCard(db, { projectId: project.projectId, columnId: "todo", title: "run" });
   R.createCard(db, { projectId: project.projectId, columnId: "todo", title: "behind it" });
 
@@ -189,7 +189,7 @@ test("busy で見送っても at は据え置き: 5 分経過後の busy は 15 
   const at = (min) => new Date(base + min * 60_000).toISOString();
   const at_ = (min, sec) => new Date(base + min * 60_000 + sec * 1_000).toISOString();
   const project = R.createProject(db, { slug: "busy-keeps-at" });
-  R.saveLoop(db, L.startLoop(L.initialLoopState(project.projectId), at(0)));
+  R.saveLoop(db, L.startLoop(L.initialLoopState(project.projectId, at(0)), at(0)));
   R.createCard(db, { projectId: project.projectId, columnId: "todo", title: "run" });
   R.createCard(db, { projectId: project.projectId, columnId: "todo", title: "behind it" });
 
@@ -219,7 +219,7 @@ test("busy 連続の console.error は最初の 1 回だけ", async (t) => {
   const base = Date.now();
   const at = (min) => new Date(base + min * 60_000).toISOString();
   const project = R.createProject(db, { slug: "busy-log-once" });
-  R.saveLoop(db, L.startLoop(L.initialLoopState(project.projectId), at(0)));
+  R.saveLoop(db, L.startLoop(L.initialLoopState(project.projectId, at(0)), at(0)));
   R.createCard(db, { projectId: project.projectId, columnId: "todo", title: "run" });
   R.createCard(db, { projectId: project.projectId, columnId: "todo", title: "behind it" });
 
@@ -241,7 +241,7 @@ test("wake が throw したら 5 分待つ", async (t) => {
   const base = Date.now();
   const at = (min) => new Date(base + min * 60_000).toISOString();
   const project = R.createProject(db, { slug: "throw-waits" });
-  R.saveLoop(db, L.startLoop(L.initialLoopState(project.projectId), at(0)));
+  R.saveLoop(db, L.startLoop(L.initialLoopState(project.projectId, at(0)), at(0)));
   R.createCard(db, { projectId: project.projectId, columnId: "todo", title: "run" });
   R.createCard(db, { projectId: project.projectId, columnId: "todo", title: "behind it" });
 

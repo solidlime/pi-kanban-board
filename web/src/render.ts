@@ -88,6 +88,8 @@ export interface View {
   select: HTMLSelectElement;
   newName: HTMLInputElement;
   status: HTMLElement;
+  /** "fetch in flight" tell in the header; the status line itself lives in the tools drawer. */
+  spin: HTMLElement;
   errBar: HTMLElement;
   empty: HTMLElement;
   board: HTMLElement;
@@ -124,7 +126,8 @@ export interface View {
   qres: HTMLElement;
   searchAllBtn: HTMLButtonElement;
   notifBtn: HTMLButtonElement;
-  notifCounts: { danger: HTMLElement; warn: HTMLElement; info: HTMLElement };
+  /** One rolled-up count: three badges in a row read as three unrelated numbers. */
+  notifBadge: HTMLElement;
   overviewBtn: HTMLButtonElement;
   graphBtn: HTMLButtonElement;
   ganttBtn: HTMLButtonElement;
@@ -439,11 +442,14 @@ export function mount(root: HTMLElement, h: Handlers): View {
   const notifBtn = el('button', 'toggle notif', '通知');
   notifBtn.type = 'button';
   notifBtn.title = '警告・通知を開く';
-  const notifCounts = { danger: el('span', 'nb danger'), warn: el('span', 'nb warn'), info: el('span', 'nb info') };
-  notifBtn.append(notifCounts.danger, notifCounts.warn, notifCounts.info);
+  const notifBadge = el('span', 'nb');
+  notifBtn.append(notifBadge);
   notifBtn.addEventListener('click', () => h.onTogglePane('notifications'));
 
   const status = el('div', 'status');
+  // The status line moved into the tools drawer, so a slow fetch needs its own tell up here.
+  const spin = el('span', 'spin', '…');
+  spin.hidden = true;
   // Theme and density live on <html> as attributes, not in the store: they are presentation only,
   // so a change must not go through a render pass. The keys are v1's on purpose — the two
   // dashboards share an origin, and someone who picks light in one means it in the other.
@@ -476,7 +482,33 @@ export function mount(root: HTMLElement, h: Handlers): View {
     applyDensity(localStorage.getItem('kb-density') === 'compact');
   } catch { applyTheme(false); applyDensity(false); }
 
-  top.append(brand, pick, newForm, searchWrap, focusBtn, staleWrap, panelBtns.deliverables, panelBtns.timeline, overviewBtn, graphBtn, ganttBtn, viewsBtn, templatesBtn, notifBtn, themeBtn, densityBtn, el('div', 'grow'), status);
+  // Rarely-used controls live behind その他. The disclosure is a plain button rather than a menu:
+  // no focus trap, no outside-click wiring, and the header height stays measurable.
+  const tools = el('div', 'tools');
+  tools.id = 'kb-tools';
+  tools.hidden = true;
+  tools.append(newForm, focusBtn, staleWrap, panelBtns.deliverables, panelBtns.timeline,
+    overviewBtn, graphBtn, ganttBtn, viewsBtn, templatesBtn, themeBtn, densityBtn, status);
+  const toolsBtn = el('button', 'toggle', 'その他 ▾');
+  toolsBtn.type = 'button';
+  toolsBtn.title = 'テンプレート・ビュー・表示設定を開く';
+  toolsBtn.setAttribute('aria-expanded', 'false');
+  toolsBtn.setAttribute('aria-controls', 'kb-tools');
+  toolsBtn.addEventListener('click', () => {
+    const open = tools.hidden;
+    tools.hidden = !open;
+    toolsBtn.textContent = open ? 'その他 ▴' : 'その他 ▾';
+    toolsBtn.classList.toggle('on', open);
+    toolsBtn.setAttribute('aria-expanded', String(open));
+  });
+
+  top.append(brand, pick, searchWrap, el('div', 'grow'), spin, notifBtn, toolsBtn, tools);
+
+  // The drawers are parked below the header by --top-h. The header wraps (and now grows when
+  // その他 opens), so its height is observed instead of measured once per render pass.
+  const parkPanels = (): void => { root.style.setProperty('--top-h', `${top.offsetHeight}px`); };
+  parkPanels();
+  new ResizeObserver(parkPanels).observe(top);
 
   const errBar = el('div', 'err');
   errBar.hidden = true;
@@ -597,12 +629,12 @@ export function mount(root: HTMLElement, h: Handlers): View {
   root.append(top, errBar, loopBar, locksBar, empty, board, overview, graph, gantt, focus, panelWrap,
     tplPane.aside, viewPane.aside, notifPane.aside, toast);
   return {
-    root, top, h, select, newName, status, errBar, empty, board, selbar,
+    root, top, h, select, newName, status, spin, errBar, empty, board, selbar,
     focus, focusCount, focusList, focusEmpty, focusBtn, stale, panelBtns, toast, toastMsg, toastUndo,
     panelWrap,
     panelDeliv: delivPanel.aside, panelDelivHead: delivPanel.head, panelDelivBody: delivPanel.body, panelDelivSig: '',
     panelHist: histPanel.aside, panelHistHead: histPanel.head, panelHistBody: histPanel.body, panelHistSig: '',
-    q, qres, searchAllBtn, notifBtn, notifCounts, overviewBtn, graphBtn, ganttBtn, viewsBtn, templatesBtn,
+    q, qres, searchAllBtn, notifBtn, notifBadge, overviewBtn, graphBtn, ganttBtn, viewsBtn, templatesBtn,
     loopBar, loopStatus, loopText, loopNext, loopStart, loopStop, loopTick,
     overview, overviewSig: '', graph, graphSig: '', gantt, locks: locksBar, locksText, locksSig: '',
     paneTemplates: tplPane.aside, paneViews: viewPane.aside, paneNotif: notifPane.aside,
@@ -1197,14 +1229,17 @@ const LEVELS: NotificationLevel[] = ['danger', 'warn', 'info'];
 
 // The toolbar button carries the per-level counts, so the numbers are readable without opening it.
 function renderNotifBadges(view: View, s: Store): void {
-  const counts = LEVELS.map(level => s.notifications.filter(n => n.level === level).length);
-  LEVELS.forEach((level, i) => {
-    const badge = view.notifCounts[level];
-    badge.textContent = counts[i] ? String(counts[i]) : '';
-    badge.hidden = counts[i] === 0;
-    badge.title = `${LEVEL_LABEL[level]} ${counts[i]} 件`;
-  });
-  view.notifBtn.setAttribute('aria-label', `通知 危険 ${counts[0]} 警告 ${counts[1]} 情報 ${counts[2]}`);
+  const counts: Record<NotificationLevel, number> = { danger: 0, warn: 0, info: 0 };
+  for (const n of s.notifications) counts[n.level] += 1;
+  const total = s.notifications.length;
+  // The badge takes the colour of the worst level present; the breakdown stays in the title.
+  const worst = LEVELS.find(level => counts[level] > 0);
+  view.notifBadge.className = `nb${worst ? ` ${worst}` : ''}`;
+  view.notifBadge.textContent = total ? String(total) : '';
+  view.notifBadge.hidden = total === 0;
+  const label = `通知 ${total} 件（危険 ${counts.danger} / 警告 ${counts.warn} / 情報 ${counts.info}）`;
+  view.notifBtn.title = total ? label : '通知はない';
+  view.notifBtn.setAttribute('aria-label', label);
 }
 
 /** `tick 3 · 次 12s` — the countdown is redrawn every second, so the text lives in one function. */
@@ -1665,9 +1700,6 @@ export function renderView(view: View, s: Store): void {
   if (view.panelHist.hidden) view.panelHistSig = '';
   else renderHistPanel(view, s);
 
-  // The panels are fixed; park them below the header instead of under it.
-  view.root.style.setProperty('--top-h', `${view.top.offsetHeight}px`);
-
   view.status.textContent = [
     `build ${s.buildHash ?? '–'}`,
     s.version ? `v${s.version}` : null,
@@ -1675,6 +1707,7 @@ export function renderView(view: View, s: Store): void {
     s.generation ? `gen ${s.generation.slice(0, 12)}` : null,
     s.loading ? '…' : null,
   ].filter(Boolean).join(' · ');
+  view.spin.hidden = !s.loading;
 
   view.errBar.hidden = !s.error;
   if (s.error) view.errBar.textContent = s.error;
@@ -1786,14 +1819,4 @@ export function renderView(view: View, s: Store): void {
   toggle(view.templatesBtn, s.pane === 'templates');
   toggle(view.notifBtn, s.pane === 'notifications');
   if (view.q.value !== s.q) view.q.value = s.q;
-  const levels: Record<NotificationLevel, number> = { danger: 0, warn: 0, info: 0 };
-  for (const n of s.notifications) levels[n.level] += 1;
-  for (const level of LEVELS) {
-    const node = view.notifCounts[level];
-    node.textContent = levels[level] ? String(levels[level]) : '';
-    node.hidden = levels[level] === 0;
-  }
-  view.notifBtn.title = s.notifications.length
-    ? `通知 ${s.notifications.length} 件（危険 ${levels.danger} / 警告 ${levels.warn} / 情報 ${levels.info}）`
-    : '通知はない';
 }

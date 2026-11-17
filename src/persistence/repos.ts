@@ -832,13 +832,14 @@ const toLoop = (r: LoopRow): LoopState => ({
   lastTickAt: r.last_tick_at, ticks: Number(r.ticks), nextCardId: r.next_card_id === null ? null : Number(r.next_card_id)
 });
 
-/** Absent row means idle: the loop is not created until someone starts it. */
+/** Absent row means running: a board is born started, and only someone stopping it halts it.
+ *  startedAt stays null until a start or stop writes it — nothing reads it as "how long has it run". */
 export function getLoop(db: Db, projectId: ProjectId): LoopState {
   const row = one<LoopRow>(db, "SELECT * FROM loop_state WHERE project_id = ?", projectId);
-  return row ? toLoop(row) : { projectId, status: "idle", mode: "suggest", startedAt: null, haltedAt: null, haltReason: null, lastTickAt: null, ticks: 0, nextCardId: null };
+  return row ? toLoop(row) : { projectId, status: "running", mode: "suggest", startedAt: null, haltedAt: null, haltReason: null, lastTickAt: null, ticks: 0, nextCardId: null };
 }
 
-export function saveLoop(db: Db, state: LoopState, actor = "system", kind: EventKind = "loop.tick"): LoopState {
+export function saveLoop(db: Db, state: LoopState, actor = "system", kind: EventKind | null = "loop.tick"): LoopState {
   return withTx(db, () => {
     run(db,
       `INSERT INTO loop_state (project_id, status, mode, started_at, halted_at, halt_reason, last_tick_at, ticks, next_card_id)
@@ -849,10 +850,14 @@ export function saveLoop(db: Db, state: LoopState, actor = "system", kind: Event
          last_tick_at = excluded.last_tick_at, ticks = excluded.ticks, next_card_id = excluded.next_card_id`,
       state.projectId, state.status, state.mode, state.startedAt, state.haltedAt, state.haltReason,
       state.lastTickAt, Math.trunc(state.ticks), state.nextCardId);
-    appendTimeline(db, {
-      projectId: state.projectId, entityType: "loop", entityId: state.projectId, kind, actor,
-      payload: { status: state.status, ticks: state.ticks, nextCardId: state.nextCardId, haltReason: state.haltReason }
-    });
+    // A quiet tick is state, not an event: an empty board re-saves the clock every 15s, and a
+    // timeline row per tick would grow without bound. The loop_state row still moves.
+    if (kind !== null) {
+      appendTimeline(db, {
+        projectId: state.projectId, entityType: "loop", entityId: state.projectId, kind, actor,
+        payload: { status: state.status, ticks: state.ticks, nextCardId: state.nextCardId, haltReason: state.haltReason }
+      });
+    }
     return getLoop(db, state.projectId);
   });
 }

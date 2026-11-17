@@ -26,10 +26,16 @@ html[data-density="compact"] .thumbs{display:none}
 body{margin:0;font:14px/1.45 system-ui,"Segoe UI",sans-serif;background:var(--bg);color:var(--fg)}
 
 /* top bar */
-.top{display:flex;gap:12px;align-items:center;flex-wrap:wrap;padding:10px 16px;border-bottom:1px solid var(--line);position:sticky;top:0;z-index:6;background:var(--top);backdrop-filter:blur(6px)}
+.top{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:7px 14px;border-bottom:1px solid var(--line);position:sticky;top:0;z-index:6;background:var(--top);backdrop-filter:blur(6px)}
+/* Header hierarchy: the row on screen holds only what a working session touches (project ·
+   search · 通知). Everything else is one disclosure away in .tools — an always-present second
+   row costs ~40px of board on every render. */
+.tools{flex:1 0 100%;display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:8px 0 2px;border-top:1px solid var(--hr)}
+.tools .status{margin-left:auto}
 .brand{font-weight:700;letter-spacing:.02em}
 .grow{flex:1}
 .status{color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums}
+.spin{color:var(--accent);font-size:14px;line-height:1;padding:0 2px}
 .pick{display:flex;gap:6px;align-items:center;color:var(--muted);font-size:12px}
 .newproj{display:flex;gap:6px;align-items:center}
 
@@ -49,8 +55,10 @@ button:disabled{opacity:.5;cursor:default}
 .toast-undo:hover{background:var(--danger-line)}
 
 /* board */
-.board{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(260px,1fr);gap:var(--gap);padding:16px;align-items:start;overflow-x:auto;min-height:calc(100vh - 120px)}
-.col{background:var(--card);border:1px solid var(--line);border-radius:10px;display:flex;flex-direction:column;max-height:calc(100vh - 130px);min-height:140px}
+/* Board heights read the measured header height, so a wrapped header no longer pushes the page
+   into a scrollbar it does not need. */
+.board{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(260px,1fr);gap:var(--gap);padding:16px;align-items:start;overflow-x:auto;min-height:calc(100vh - var(--top-h,45px) - 62px)}
+.col{background:var(--card);border:1px solid var(--line);border-radius:10px;display:flex;flex-direction:column;max-height:calc(100vh - var(--top-h,45px) - 84px);min-height:140px}
 .col-h{display:flex;align-items:baseline;gap:8px;padding:10px 12px;border-bottom:1px solid var(--line)}
 .col-name{margin:0;font-size:12px;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);font-weight:600}
 .col-count{margin-left:auto;font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums}
@@ -140,8 +148,11 @@ a.chip:hover{color:var(--accent);border-color:var(--accent-line)}
 .fr-h .grow{flex:1}
 
 /* side panels: one <aside> per surface, side by side when both are open */
-.panels{position:fixed;top:var(--top-h,45px);right:0;bottom:0;z-index:4;display:flex;gap:8px;pointer-events:none}
-.panel{position:fixed;top:0;right:0;bottom:0;width:min(420px,92vw);z-index:4;background:var(--panel);border-left:1px solid var(--line);display:flex;flex-direction:column;box-shadow:-12px 0 28px rgba(0,0,0,.45)}
+/* .panels and .panel both start below the sticky header. --top-h is the measured header height
+   (a ResizeObserver in render.ts keeps it current), so the panel title and its × are never
+   parked under it. Raising z-index instead would hide the header's own row behind the drawer. */
+.panels{position:fixed;top:var(--top-h,45px);right:0;bottom:0;z-index:5;display:flex;gap:8px;pointer-events:none}
+.panel{position:fixed;top:var(--top-h,45px);right:0;bottom:0;width:min(420px,92vw);z-index:5;background:var(--panel);border-left:1px solid var(--line);display:flex;flex-direction:column;box-shadow:-8px 0 22px rgba(0,0,0,.26)}
 .panels>.panel{position:static;width:min(420px,92vw);min-width:0;pointer-events:auto}
 .panels.both>.panel{width:min(320px,45vw)}
 .panel-h{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--line)}
@@ -255,11 +266,13 @@ div.gantt-row:hover,div.gantt-row:focus-visible{background:var(--card);border-co
 .ce-focus{display:flex;gap:6px;align-items:center;font-size:12px;color:var(--muted);margin-bottom:8px}
 
 /* loop strip */
-.loop{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:12px 16px 0;padding:8px 12px;border:1px solid var(--line);border-radius:10px;background:var(--panel);font-size:12px}
+/* loop strip: a quiet status line, not a card. It used to share the drawer's panel colour and
+   card shape, which made two surfaces fight for the same corner. */
+.loop{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:0;padding:5px 16px;border:0;border-bottom:1px solid var(--line);border-radius:0;background:transparent;font-size:12px}
 .loop-st{font-weight:700;letter-spacing:.04em;border-radius:999px;padding:1px 9px;border:1px solid var(--line);color:var(--muted)}
 .loop-st.running{color:var(--ink);background:var(--ok);border-color:var(--ok)}
 .loop-st.halted{color:var(--danger);border-color:var(--danger-line);background:var(--danger-bg)}
-.loop-txt{color:var(--muted);font-variant-numeric:tabular-nums;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.loop-txt{flex:1 1 auto;min-width:0;color:var(--muted);font-variant-numeric:tabular-nums;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .loop button{padding:3px 10px}
 
 /* overview (総合管理) */
@@ -367,7 +380,8 @@ button.chip{font:inherit;line-height:1.7} /* the deliverable ref is a button now
   .search{gap:4px}
   .board{padding:10px}
   .ov,.graph,.gantt,.focus{padding:12px}
-  .loop,.locks{margin:8px 10px 0}
+  .loop{padding:5px 10px}
+  .locks{margin:8px 10px 0}
   .card-h{font-size:12px}
   .meta,.chip{font-size:12px}
   .gantt-row{grid-template-columns:minmax(0,1fr);gap:2px}

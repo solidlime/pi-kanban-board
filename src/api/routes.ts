@@ -1040,8 +1040,8 @@ async function patchLoopSettings(ctx: Ctx): Promise<void> {
 
 /**
  * Start marks the loop running; a tick names the next TODO card and moves it into DOING
- * (WIP=1, `moved` in the response) without waking a model. When nothing is ready the loop
- * halts itself with a reason, which is the whole point of keeping this state observable.
+ * (WIP=1, `moved` in the response) without waking a model. A board with nothing ready keeps
+ * running with `nextCardId: null`: only a stop, the budget or a stuck card halts it.
  */
 async function postLoop(ctx: Ctx, action: string): Promise<void> {
   const db = requireDb(ctx);
@@ -1051,7 +1051,7 @@ async function postLoop(ctx: Ctx, action: string): Promise<void> {
   const current = getLoop(db, project.projectId);
 
   if (action === "start") {
-    const loop = saveLoop(db, startLoop(current.status === "running" ? current : { ...initialLoopState(project.projectId), ticks: current.ticks }, now), ACTOR, "loop.resumed");
+    const loop = saveLoop(db, startLoop(current.status === "running" ? current : { ...initialLoopState(project.projectId, now), ticks: current.ticks }, now), ACTOR, "loop.resumed");
     sendJson(ctx, 200, ok({ loop }));
     return;
   }

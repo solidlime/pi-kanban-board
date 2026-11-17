@@ -196,10 +196,23 @@ CREATE TABLE card_lock (
 CREATE INDEX idx_lock_expiry ON card_lock (project_id, expires_at);
 `;
 
+// v4 makes running the default: a board is born started, and the two reasons the loop used to
+// halt itself are undone. An explicit stop (or any other reason someone typed) is left alone:
+// the row is the record of who stopped it and why. A budget halt comes back running with its
+// ticks still at the cap, so raising maxLoops is what restarts it — the halt was not a lie.
+const V4 = `
+UPDATE loop_state SET status = 'running', halted_at = NULL, halt_reason = NULL
+WHERE status = 'halted' AND halt_reason IN ('ready なカードが無い', 'maxLoops に達した');
+
+UPDATE loop_state SET status = 'running', halted_at = NULL, halt_reason = NULL
+WHERE status = 'idle';
+`;
+
 export const MIGRATIONS: Migration[] = [
   { version: 1, name: "v1-schema", up: (db) => { db.exec(V1); } },
   { version: 2, name: "v2-extras", up: (db) => { db.exec(V2); } },
   { version: 3, name: "v3-locks", up: (db) => { db.exec(V3); } },
+  { version: 4, name: "v4-running-default", up: (db) => { db.exec(V4); } },
 ];
 
 export const SCHEMA_VERSION_KEY = "schema_version";

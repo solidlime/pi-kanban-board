@@ -29,18 +29,18 @@ const domainCode = (fn) => {
   return "NO_THROW";
 };
 
-test("open+migrate: WAL, foreign_keys on, schema v3, idempotent", (t) => {
+test("open+migrate: WAL, foreign_keys on, schema v4, idempotent", (t) => {
   const { db, migrated } = freshDb(t);
 
   assert.equal(P.journalMode(db), "wal");
   const fk = db.prepare("PRAGMA foreign_keys").get();
   assert.equal(Number(fk.foreign_keys), 1);
-  assert.deepEqual(migrated.applied, [1, 2, 3]);
-  assert.equal(P.schemaVersion(db), 3);
+  assert.deepEqual(migrated.applied, [1, 2, 3, 4]);
+  assert.equal(P.schemaVersion(db), 4);
 
   // second run is a no-op, not a duplicate-table error
   assert.deepEqual(P.migrate(db).applied, []);
-  assert.equal(P.schemaVersion(db), 3);
+  assert.equal(P.schemaVersion(db), 4);
 
   for (const table of ["kv_meta", "project", "column_def", "card", "dependency", "deliverable", "attachment", "timeline_event", "saved_view", "counters", "card_template", "loop_state", "card_lock"]) {
     assert.equal(P.tableExists(db, table), true, `missing table ${table}`);

@@ -1,6 +1,7 @@
 // Doing-loop state machine. Each tick names the next TODO card, which the caller moves into
 // DOING (WIP=1: only when DOING is empty) — that is v1's autoPick, without waking a model.
-// The loop halts itself, with a reason, when no TODO is ready.
+// A tick with no ready TODO names nothing and just counts: an empty board is not a reason to stop.
+// Only an explicit stop, the tick budget, or a stuck DOING card halts the loop.
 import type { Card, ColumnDef, LoopState } from "../shared/dto.js";
 import type { EntityId } from "../shared/ids.js";
 import { DomainError } from "../shared/errors.js";
@@ -8,10 +9,12 @@ import type { Dependency } from "./dependency.js";
 import { closedLookup, openBlockersOf } from "./dependency.js";
 import { sortCards } from "./card.js";
 
-export function initialLoopState(projectId: string): LoopState {
+/** A board is born started: halting is something someone does, not the default. `now` is passed
+ *  in — no clock in core; the caller owns time. */
+export function initialLoopState(projectId: string, now: string): LoopState {
   return {
-    projectId, status: "idle", mode: "suggest",
-    startedAt: null, haltedAt: null, haltReason: null,
+    projectId, status: "running", mode: "suggest",
+    startedAt: now, haltedAt: null, haltReason: null,
     lastTickAt: null, ticks: 0, nextCardId: null,
   };
 }
@@ -54,14 +57,16 @@ export function tickLoop(state: LoopState, input: TickInput): TickResult {
     throw new DomainError("CONFLICT", `loop is ${state.status}: start it before ticking`, { status: state.status });
   }
   const cap = input.maxLoops ?? 0;
+  // `ticks` is the heartbeat, not "cards picked": an empty tick counts too, so a budgeted board
+  // stops maxLoops heartbeats in, not maxLoops cards later. Pinned in tests/unit/core-loop.test.mjs.
   if (cap > 0 && state.ticks >= cap) {
     return { state: stopLoop({ ...state, nextCardId: null }, input.now, "maxLoops に達した"), nextCardId: null, reason: "halted" };
   }
   const next = readyCards(input);
   if (next.length === 0) {
     return {
-      state: stopLoop({ ...state, ticks: state.ticks + 1, lastTickAt: input.now, nextCardId: null }, input.now, "ready なカードが無い"),
-      nextCardId: null, reason: "halted",
+      state: { ...state, ticks: state.ticks + 1, lastTickAt: input.now, nextCardId: null },
+      nextCardId: null, reason: null,
     };
   }
   const card = next[0];

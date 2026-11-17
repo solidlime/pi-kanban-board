@@ -21,7 +21,7 @@ function tempDb(t, opts = {}) {
   return db;
 }
 
-test("migration 3: a v2 database with rows upgrades in place, and re-running is a no-op", (t) => {
+test("migrations 3+4: a v2 database with rows upgrades in place, and re-running is a no-op", (t) => {
   const db = tempDb(t, { unmigrated: true });
   // Stop at v2, fill it, then let the normal path carry 2 → 3.
   assert.deepEqual(P.migrate(db, 2).applied, [1, 2]);
@@ -29,11 +29,11 @@ test("migration 3: a v2 database with rows upgrades in place, and re-running is 
   const project = P.createProject(db, { slug: "legacy" });
   const card = P.createCard(db, { projectId: project.projectId, columnId: "todo", title: "kept" });
 
-  assert.deepEqual(P.migrate(db).applied, [3], "only the new version runs");
-  assert.equal(P.schemaVersion(db), 3);
+  assert.deepEqual(P.migrate(db).applied, [3, 4], "only the new versions run");
+  assert.equal(P.schemaVersion(db), 4);
   assert.equal(P.tableExists(db, "card_lock"), true);
   assert.deepEqual(P.migrate(db).applied, []);
-  assert.equal(P.schemaVersion(db), 3);
+  assert.equal(P.schemaVersion(db), 4);
   assert.equal(P.getCard(db, project.projectId, card.id).title, "kept", "existing rows survive");
   assert.deepEqual(L.listLocks(db, project.projectId), []);
 });

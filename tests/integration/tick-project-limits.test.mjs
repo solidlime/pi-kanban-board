@@ -25,7 +25,7 @@ function board(t, n) {
   const db = freshDb(t);
   R.createProject(db, { slug: "p" });
   for (let i = 1; i <= n; i++) R.createCard(db, { projectId: "p", columnId: "todo", title: `c${i}` });
-  R.saveLoop(db, L.startLoop(L.initialLoopState("p"), new Date().toISOString()));
+  R.saveLoop(db, L.startLoop(L.initialLoopState("p", at(0)), new Date().toISOString()));
   return db;
 }
 
@@ -60,7 +60,7 @@ test("stuckDays: a DOING card nobody touched halts the loop and names it", (t) =
   R.createProject(db, { slug: "p" });
   R.createCard(db, { projectId: "p", columnId: "doing", title: "stuck one" });
   R.createCard(db, { projectId: "p", columnId: "todo", title: "waiting" });
-  R.saveLoop(db, L.startLoop(L.initialLoopState("p"), at(0)));
+  R.saveLoop(db, L.startLoop(L.initialLoopState("p", at(0)), at(0)));
   const old = new Date(Date.now() - 10 * 86_400_000).toISOString();
   db.prepare("UPDATE card SET updated_at = ?, moved_at = ? WHERE project_id = 'p' AND id = 1").run(old, old);
   R.saveLoopSettings(db, { stuckDays: 7 });
@@ -77,7 +77,7 @@ test("stuckDays: the default 7 days already halts a 10-day-old card", (t) => {
   R.createProject(db, { slug: "p" });
   R.createCard(db, { projectId: "p", columnId: "doing", title: "busy" });
   R.createCard(db, { projectId: "p", columnId: "todo", title: "waiting" });
-  R.saveLoop(db, L.startLoop(L.initialLoopState("p"), at(0)));
+  R.saveLoop(db, L.startLoop(L.initialLoopState("p", at(0)), at(0)));
   const old = new Date(Date.now() - 10 * 86_400_000).toISOString();
   db.prepare("UPDATE card SET updated_at = ?, moved_at = ? WHERE project_id = 'p' AND id = 1").run(old, old);
   assert.equal(tickProject(db, "p", at(0)).loop.status, "halted", "no saved settings means 7 days");
@@ -88,11 +88,23 @@ test("stuckDays 0 turns the check off", (t) => {
   R.createProject(db, { slug: "p" });
   R.createCard(db, { projectId: "p", columnId: "doing", title: "old but not stuck" });
   R.createCard(db, { projectId: "p", columnId: "todo", title: "waiting" });
-  R.saveLoop(db, L.startLoop(L.initialLoopState("p"), at(0)));
+  R.saveLoop(db, L.startLoop(L.initialLoopState("p", at(0)), at(0)));
   const old = new Date(Date.now() - 10 * 86_400_000).toISOString();
   db.prepare("UPDATE card SET updated_at = ?, moved_at = ? WHERE project_id = 'p' AND id = 1").run(old, old);
   R.saveLoopSettings(db, { stuckDays: 0 });
   const off = tickProject(db, "p", at(1));
   assert.equal(off.loop.status, "running", "0 disables the stuck halt");
   assert.equal(off.nextCardId, 2, "the TODO card was named while DOING stayed occupied");
+});
+
+test("a quiet tick is state, not an event: an empty board writes no loop.tick row", (t) => {
+  const db = board(t, 0);
+  const ticks = () => db.prepare("SELECT COUNT(*) AS n FROM timeline_event WHERE project_id = 'p' AND kind = 'loop.tick'").get().n;
+  const before = ticks(); // board() seeds the loop, which is one real event
+  for (const m of [1, 2, 3]) assert.equal(tickProject(db, "p", at(m)).loop.status, "running");
+  assert.equal(ticks(), before, "three empty ticks saved three clocks but wrote no timeline rows");
+  R.createCard(db, { projectId: "p", columnId: "todo", title: "now ready" });
+  const moved = tickProject(db, "p", at(4));
+  assert.equal(moved.moved?.title, "now ready");
+  assert.equal(ticks(), before + 1, "a tick that moved a card is still an event");
 });

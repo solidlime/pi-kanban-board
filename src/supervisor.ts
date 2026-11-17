@@ -1,6 +1,7 @@
 // Cross-board doing-loop supervisor.
 //
-// Each board's loop is its own row, so a board that drains (halts) must not stop the others:
+// Each board's loop is its own row, so a board that runs dry (it keeps ticking, names nothing)
+// must not stop the others:
 // this walks every project and ticks only the ones that are running. Each tick moves the
 // board's next TODO into DOING (WIP=1) and then wakes the card that is in DOING — level, not
 // edge: a card left in DOING with no writer (a refused wake, a dead process, a restart) is

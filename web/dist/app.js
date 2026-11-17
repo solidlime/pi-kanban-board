@@ -896,10 +896,12 @@ function mount(root2, h) {
   const notifBtn = el3("button", "toggle notif", "\u901A\u77E5");
   notifBtn.type = "button";
   notifBtn.title = "\u8B66\u544A\u30FB\u901A\u77E5\u3092\u958B\u304F";
-  const notifCounts = { danger: el3("span", "nb danger"), warn: el3("span", "nb warn"), info: el3("span", "nb info") };
-  notifBtn.append(notifCounts.danger, notifCounts.warn, notifCounts.info);
+  const notifBadge = el3("span", "nb");
+  notifBtn.append(notifBadge);
   notifBtn.addEventListener("click", () => h.onTogglePane("notifications"));
   const status = el3("div", "status");
+  const spin = el3("span", "spin", "\u2026");
+  spin.hidden = true;
   const themeBtn = el3("button", "toggle theme");
   const densityBtn = el3("button", "toggle density");
   themeBtn.type = "button";
@@ -937,7 +939,42 @@ function mount(root2, h) {
     applyTheme(false);
     applyDensity(false);
   }
-  top.append(brand, pick2, newForm, searchWrap, focusBtn, staleWrap, panelBtns.deliverables, panelBtns.timeline, overviewBtn, graphBtn, ganttBtn, viewsBtn, templatesBtn, notifBtn, themeBtn, densityBtn, el3("div", "grow"), status);
+  const tools = el3("div", "tools");
+  tools.id = "kb-tools";
+  tools.hidden = true;
+  tools.append(
+    newForm,
+    focusBtn,
+    staleWrap,
+    panelBtns.deliverables,
+    panelBtns.timeline,
+    overviewBtn,
+    graphBtn,
+    ganttBtn,
+    viewsBtn,
+    templatesBtn,
+    themeBtn,
+    densityBtn,
+    status
+  );
+  const toolsBtn = el3("button", "toggle", "\u305D\u306E\u4ED6 \u25BE");
+  toolsBtn.type = "button";
+  toolsBtn.title = "\u30C6\u30F3\u30D7\u30EC\u30FC\u30C8\u30FB\u30D3\u30E5\u30FC\u30FB\u8868\u793A\u8A2D\u5B9A\u3092\u958B\u304F";
+  toolsBtn.setAttribute("aria-expanded", "false");
+  toolsBtn.setAttribute("aria-controls", "kb-tools");
+  toolsBtn.addEventListener("click", () => {
+    const open = tools.hidden;
+    tools.hidden = !open;
+    toolsBtn.textContent = open ? "\u305D\u306E\u4ED6 \u25B4" : "\u305D\u306E\u4ED6 \u25BE";
+    toolsBtn.classList.toggle("on", open);
+    toolsBtn.setAttribute("aria-expanded", String(open));
+  });
+  top.append(brand, pick2, searchWrap, el3("div", "grow"), spin, notifBtn, toolsBtn, tools);
+  const parkPanels = () => {
+    root2.style.setProperty("--top-h", `${top.offsetHeight}px`);
+  };
+  parkPanels();
+  new ResizeObserver(parkPanels).observe(top);
   const errBar = el3("div", "err");
   errBar.hidden = true;
   const loopBar = el3("section", "loop");
@@ -1065,6 +1102,7 @@ function mount(root2, h) {
     select,
     newName,
     status,
+    spin,
     errBar,
     empty,
     board,
@@ -1092,7 +1130,7 @@ function mount(root2, h) {
     qres,
     searchAllBtn,
     notifBtn,
-    notifCounts,
+    notifBadge,
     overviewBtn,
     graphBtn,
     ganttBtn,
@@ -1670,14 +1708,16 @@ function renderSearch(view2, s) {
 var LEVEL_LABEL = { danger: "\u5371\u967A", warn: "\u8B66\u544A", info: "\u60C5\u5831" };
 var LEVELS = ["danger", "warn", "info"];
 function renderNotifBadges(view2, s) {
-  const counts = LEVELS.map((level) => s.notifications.filter((n) => n.level === level).length);
-  LEVELS.forEach((level, i) => {
-    const badge = view2.notifCounts[level];
-    badge.textContent = counts[i] ? String(counts[i]) : "";
-    badge.hidden = counts[i] === 0;
-    badge.title = `${LEVEL_LABEL[level]} ${counts[i]} \u4EF6`;
-  });
-  view2.notifBtn.setAttribute("aria-label", `\u901A\u77E5 \u5371\u967A ${counts[0]} \u8B66\u544A ${counts[1]} \u60C5\u5831 ${counts[2]}`);
+  const counts = { danger: 0, warn: 0, info: 0 };
+  for (const n of s.notifications) counts[n.level] += 1;
+  const total = s.notifications.length;
+  const worst = LEVELS.find((level) => counts[level] > 0);
+  view2.notifBadge.className = `nb${worst ? ` ${worst}` : ""}`;
+  view2.notifBadge.textContent = total ? String(total) : "";
+  view2.notifBadge.hidden = total === 0;
+  const label = `\u901A\u77E5 ${total} \u4EF6\uFF08\u5371\u967A ${counts.danger} / \u8B66\u544A ${counts.warn} / \u60C5\u5831 ${counts.info}\uFF09`;
+  view2.notifBtn.title = total ? label : "\u901A\u77E5\u306F\u306A\u3044";
+  view2.notifBtn.setAttribute("aria-label", label);
 }
 function loopBarText(loop, now = Date.now()) {
   const bits = [`tick ${loop.ticks}`];
@@ -2116,7 +2156,6 @@ function renderView(view2, s) {
   else renderDelivPanel(view2, s);
   if (view2.panelHist.hidden) view2.panelHistSig = "";
   else renderHistPanel(view2, s);
-  view2.root.style.setProperty("--top-h", `${view2.top.offsetHeight}px`);
   view2.status.textContent = [
     `build ${s.buildHash ?? "\u2013"}`,
     s.version ? `v${s.version}` : null,
@@ -2124,6 +2163,7 @@ function renderView(view2, s) {
     s.generation ? `gen ${s.generation.slice(0, 12)}` : null,
     s.loading ? "\u2026" : null
   ].filter(Boolean).join(" \xB7 ");
+  view2.spin.hidden = !s.loading;
   view2.errBar.hidden = !s.error;
   if (s.error) view2.errBar.textContent = s.error;
   const colEls = [];
@@ -2228,14 +2268,6 @@ function renderView(view2, s) {
   toggle(view2.templatesBtn, s.pane === "templates");
   toggle(view2.notifBtn, s.pane === "notifications");
   if (view2.q.value !== s.q) view2.q.value = s.q;
-  const levels = { danger: 0, warn: 0, info: 0 };
-  for (const n of s.notifications) levels[n.level] += 1;
-  for (const level of LEVELS) {
-    const node = view2.notifCounts[level];
-    node.textContent = levels[level] ? String(levels[level]) : "";
-    node.hidden = levels[level] === 0;
-  }
-  view2.notifBtn.title = s.notifications.length ? `\u901A\u77E5 ${s.notifications.length} \u4EF6\uFF08\u5371\u967A ${levels.danger} / \u8B66\u544A ${levels.warn} / \u60C5\u5831 ${levels.info}\uFF09` : "\u901A\u77E5\u306F\u306A\u3044";
 }
 
 // web/src/keys.ts

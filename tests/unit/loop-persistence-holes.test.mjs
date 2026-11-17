@@ -123,10 +123,11 @@ test("readBoard({ withActors: false }) never runs the actor GROUP BY", (t) => {
   assert.equal(loud.cards[0].lastActor, "tester");
 });
 
-test("tickLoop: a halting tick says so in its result", () => {
-  const running = L.startLoop(L.initialLoopState("p"), NOW);
+test("tickLoop: a tick with nothing ready says nothing halted", () => {
+  const running = L.startLoop(L.initialLoopState("p", NOW), NOW);
   const result = L.tickLoop(running, { columns: [], cards: [], deps: [], now: NOW });
   assert.equal(result.nextCardId, null);
-  assert.equal(result.reason, "halted");
-  assert.equal(result.state.haltedAt, NOW);
+  assert.equal(result.reason, null);
+  assert.equal(result.state.status, "running");
+  assert.equal(result.state.haltedAt, null);
 });

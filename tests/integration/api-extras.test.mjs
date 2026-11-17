@@ -56,10 +56,10 @@ async function server(t, startOpts = {}) {
   return { run, base, home, call, upload, getBytes, getText };
 }
 
-test("meta advertises the new capabilities and schema v3", async (t) => {
+test("meta advertises the new capabilities and schema v4", async (t) => {
   const { call } = await server(t);
   const meta = (await call("GET", "/api/meta")).data;
-  assert.equal(meta.schemaVersion, 3);
+  assert.equal(meta.schemaVersion, 4);
   for (const cap of ["columns.update", "views", "templates", "attachments", "search", "notifications", "graph", "overview", "loop"]) {
     assert.ok(meta.capabilities.includes(cap), `missing capability ${cap}`);
   }
@@ -382,13 +382,15 @@ test("overview: one row per board with ready/blocked/wip/overdue counts", async 
   assert.equal(o2.counts.ready, 0);
 });
 
-test("loop: tick moves the next TODO into DOING (WIP=1) and halts when the TODOs run out", async (t) => {
+test("loop: tick moves the next TODO into DOING (WIP=1) and keeps running when the TODOs run out", async (t) => {
   const { call } = await server(t);
   await call("POST", "/api/projects", { slug: "lp" });
-  const idle = (await call("GET", "/api/loop?project=lp")).data.loop;
-  assert.equal(idle.status, "idle");
-  assert.equal(idle.nextCardId, null);
-  assert.equal(idle.ticks, 0);
+  const fresh = (await call("GET", "/api/loop?project=lp")).data.loop;
+  assert.equal(fresh.status, "running", "a board is born started");
+  assert.equal(fresh.nextCardId, null);
+  assert.equal(fresh.ticks, 0);
+  // An explicit stop is the only thing that halts the loop, and a halted loop refuses to tick.
+  await call("POST", "/api/loop/stop", { project: "lp" });
   assert.equal((await call("POST", "/api/loop/tick", { project: "lp" })).status, 409, "tick needs a running loop");
 
   const started = (await call("POST", "/api/loop/start", { project: "lp" })).data.loop;
@@ -422,22 +424,24 @@ test("loop: tick moves the next TODO into DOING (WIP=1) and halts when the TODOs
   assert.equal(picked.moved.id, second.id);
   assert.equal(picked.moved.columnId, "doing");
 
-  // Nothing left in TODO -> the loop halts itself and says why.
+  // Nothing left in TODO -> the tick names nothing and the loop stays up: an empty board is
+  // not a reason to stop, and it must not raise a 停止 notification either.
   assert.equal((await call("POST", `/api/cards/lp/${second.id}/move`, { columnId: "done", version: picked.moved.version })).status, 200);
   const empty = (await call("POST", "/api/loop/tick", { project: "lp" })).data;
-  assert.equal(empty.loop.status, "halted");
+  assert.equal(empty.loop.status, "running");
   assert.equal(empty.loop.nextCardId, null);
-  assert.match(empty.loop.haltReason, /ready/);
+  assert.equal(empty.loop.haltReason, null);
   assert.equal(empty.nextCard, null);
   assert.equal(empty.moved, null);
+  const quiet = (await call("GET", "/api/notifications?project=lp")).data.notifications;
+  assert.equal(quiet.some((i) => i.kind === "loop"), false, "nothing to notify: the loop never stopped");
 
-  // a halted loop is visible in the notification feed
-  const items = (await call("GET", "/api/notifications?project=lp")).data.notifications;
-  assert.ok(items.some((i) => i.kind === "loop"));
-
+  // A stop someone asked for is still news.
   const stopped = (await call("POST", "/api/loop/stop", { project: "lp", reason: "done for today" })).data.loop;
   assert.equal(stopped.status, "halted");
   assert.equal(stopped.haltReason, "done for today");
+  const items = (await call("GET", "/api/notifications?project=lp")).data.notifications;
+  assert.ok(items.some((i) => i.kind === "loop"), "the manual stop is in the feed");
 
   // the timeline keeps the story
   const events = (await call("GET", "/api/timeline?project=lp")).data.events.map((e) => e.kind);

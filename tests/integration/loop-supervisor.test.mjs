@@ -30,16 +30,17 @@ async function boot(t, opts = {}) {
   return { run, base, home, call };
 }
 
-test("one pass ticks every running board and leaves idle ones alone", async (t) => {
+test("one pass ticks every running board and leaves stopped ones alone", async (t) => {
   const { run, call } = await boot(t);
   for (const slug of ["alpha", "beta", "gamma"]) await call("POST", "/api/projects", { slug });
   await call("POST", "/api/cards", { project: "alpha", title: "a1" });
   await call("POST", "/api/cards", { project: "beta", title: "b1" });
   await call("POST", "/api/loop/start", { project: "alpha" });
   await call("POST", "/api/loop/start", { project: "beta" });
+  await call("POST", "/api/loop/stop", { project: "gamma" });
 
   const reports = await tickAllLoops(run.db, undefined, () => null);
-  assert.deepEqual(reports.map(r => r.slug).sort(), ["alpha", "beta"], "gamma was never started, so it is not ticked");
+  assert.deepEqual(reports.map(r => r.slug).sort(), ["alpha", "beta"], "gamma was stopped, so it is not ticked");
   for (const r of reports) {
     assert.equal(r.status, "running");
     assert.equal(r.ticks, 1);
@@ -53,7 +54,7 @@ test("one pass ticks every running board and leaves idle ones alone", async (t) 
   }
 });
 
-test("a board that drains halts, and the other board keeps ticking", async (t) => {
+test("a board that drains keeps ticking, and does not stop the other board", async (t) => {
   const { run, call } = await boot(t);
   await call("POST", "/api/projects", { slug: "busy" });
   await call("POST", "/api/projects", { slug: "drained" });
@@ -69,13 +70,14 @@ test("a board that drains halts, and the other board keeps ticking", async (t) =
   const first = await tickAllLoops(run.db, undefined, () => null);
   const drained = first.find(r => r.slug === "drained");
   const busy = first.find(r => r.slug === "busy");
-  assert.equal(drained.status, "halted");
-  assert.match(drained.haltReason, /ready/);
+  assert.equal(drained.status, "running", "an empty board is not a reason to stop");
+  assert.equal(drained.haltReason, null);
+  assert.equal(drained.nextCardId, null);
   assert.equal(busy.status, "running");
 
   const second = await tickAllLoops(run.db, undefined, () => null);
-  assert.equal(second.some(r => r.slug === "drained"), false, "a halted loop is not ticked again");
-  assert.equal(second.find(r => r.slug === "busy").ticks, 2, "the halted board did not stop this one");
+  assert.equal(second.find(r => r.slug === "drained").ticks, 2, "a drained board keeps counting");
+  assert.equal(second.find(r => r.slug === "busy").ticks, 2, "the drained board did not stop this one");
 });
 
 test("the timer runs the pass, and stop() ends it", async (t) => {
@@ -112,10 +114,10 @@ test("no supervisor unless asked, and none without a database", async (t) => {
 test("overview rows carry each board's loop status", async (t) => {
   const { call } = await boot(t);
   await call("POST", "/api/projects", { slug: "looping" });
-  await call("POST", "/api/projects", { slug: "sleeping" });
+  await call("POST", "/api/projects", { slug: "untouched" });
   await call("POST", "/api/cards", { project: "looping", title: "work" });
   await call("POST", "/api/loop/start", { project: "looping" });
   const rows = (await call("GET", "/api/overview")).data.projects;
   assert.equal(rows.find(r => r.projectId === "looping").loop, "running");
-  assert.equal(rows.find(r => r.projectId === "sleeping").loop, "idle");
+  assert.equal(rows.find(r => r.projectId === "untouched").loop, "running", "a board is born started");
 });

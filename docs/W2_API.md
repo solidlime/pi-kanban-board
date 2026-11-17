@@ -125,8 +125,8 @@ of the same bytes reuses it). Prune `<home>/media/att` by hand if the directory 
 ## Loop
 
 `loop_state` is one row per project (`PRIMARY KEY (project_id)`), so a halt on one board cannot
-stop another. `POST /api/loop/tick` names the next ready card, or halts the board with
-`ready なカードが無い`.
+stop another. `POST /api/loop/tick` names the next ready card; with nothing ready it counts the
+tick and names nothing — an empty board is not a reason to halt.
 
 The **supervisor** (`src/supervisor.ts`) is the cross-board heartbeat: every
 `SUPERVISOR_INTERVAL_MS` (15s) it ticks each project whose loop is `running` and leaves the rest
@@ -164,8 +164,8 @@ led by a `[kanban <slug>#<id>]` line. It rides in the user message, not a system
 that changes every turn would miss the prompt cache each time. The tag is what lets the session
 tell a card — which any session or the UI can write — from the human speaking now.
 
-`tests/integration/loop-supervisor.test.mjs` pins the part that matters: a drained board halts
-without stopping its neighbour, and `stop()` really stops the timer.
+`tests/integration/loop-supervisor.test.mjs` pins the part that matters: a drained board keeps
+running without stopping its neighbour, and `stop()` really stops the timer.
 
 ## Digest, sink, locks (tier A)
 

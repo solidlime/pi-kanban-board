@@ -12,7 +12,8 @@ export interface TickProjectResult {
   nextCardId: EntityId | null;
   /** The card this tick actually moved into DOING, if any. */
   moved: Card | null;
-  /** "halted" when this tick stopped the loop (stuck card, no ready card, budget spent). */
+  /** "halted" when this tick stopped the loop (stuck card, budget spent). An empty board does
+   *  not halt: it keeps counting. */
   reason: "halted" | null;
   /** Who is in DOING when this tick ends — moved now, or left over from an earlier tick. The
    *  supervisor wakes this card: a card can sit here with no writer (a wake that refused, a
@@ -50,7 +51,11 @@ export function tickProject(db: Db, projectId: ProjectId, now = new Date().toISO
       if ((err as { code?: string }).code !== "WIP_LIMIT") throw err;
     }
   }
-  const saved = saveLoop(db, result.state, actor, "loop.tick");
+  const quiet = moved === null && result.reason === null;
+  // A tick that moved nothing and halted nothing is the steady state of an empty board: it saves
+  // the clock but is not an event. Recording it every 15s would grow the timeline forever.
+  const kind = quiet ? null : result.reason === "halted" ? "loop.halted" : "loop.tick";
+  const saved = saveLoop(db, result.state, actor, kind);
   const standing = doing === undefined ? undefined : snapshot.cards.find(c => c.columnId === doing.id);
   return { loop: saved, nextCardId: result.nextCardId, moved, reason: result.reason, doingCardId: moved?.id ?? standing?.id ?? null };
 }
