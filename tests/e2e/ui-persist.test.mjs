@@ -51,3 +51,11 @@ test("a broken or denied store falls back to closed instead of throwing", () => 
   assert.match(app, /catch \{ return none; \}/, "unparseable JSON must not take the board down on load");
   assert.match(app, /catch \{ \/\* private mode: the toggles just won't persist \*\/ \}/);
 });
+
+test("成果物の並びも同じキーに乗り、壊れた値は既定に戻る", () => {
+  assert.match(store, /delSort: 'new' \| 'old';/);
+  assert.match(store, /delSort: 'new',/, "既定は新→旧");
+  assert.match(app, /staleDays: s\.staleDays, delSort: s\.delSort,/, "saveUi writes it");
+  assert.match(app, /delSort: o\.delSort === 'old' \? 'old' : 'new'/, "an unknown value is the default, not the last one");
+  assert.match(app, /store\.delSort = savedUi\.delSort;/, "restored at module scope, before the first render");
+});

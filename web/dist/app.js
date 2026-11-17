@@ -145,6 +145,7 @@ function createStore() {
     graphLayout: null,
     doneOpen: false,
     staleDays: STALE_DAYS_DEFAULT,
+    delSort: "new",
     gantt: false,
     ganttScale: "week",
     q: "",
@@ -245,6 +246,12 @@ function cardsInColumn(s, columnId) {
     if (c.columnId === columnId && c.projectId === s.projectId) out.push(c);
   }
   return out.sort((a, b) => b.priority - a.priority || a.id - b.id);
+}
+function panelDeliverables(s) {
+  const q = s.q.trim().toLowerCase();
+  const list = q ? s.deliverables.filter((d) => d.title.toLowerCase().includes(q)) : s.deliverables;
+  const dir = s.delSort === "old" ? 1 : -1;
+  return [...list].sort((a, b) => (a.id - b.id) * dir);
 }
 var DONE_PREVIEW = 2;
 function isClosed(card) {
@@ -1257,6 +1264,8 @@ function focusRow(key, h) {
 function delivPanelSig(s) {
   return [
     s.projectId,
+    s.delSort,
+    s.q,
     ...s.deliverables.map((d) => `${d.id}:${d.title}:${d.kind}:${d.cardId ?? ""}`)
   ].join("");
 }
@@ -1286,7 +1295,16 @@ function renderDelivPanel(view2, s) {
   const sig = delivPanelSig(s);
   if (view2.panelDelivSig === sig) return;
   view2.panelDelivSig = sig;
-  view2.panelDelivHead.textContent = `\u6210\u679C\u7269 (${s.deliverables.length})`;
+  view2.panelDelivHead.textContent = "";
+  const shown = panelDeliverables(s);
+  const total = s.deliverables.length;
+  const sortBtn = el2("button", "ic del-sort", s.delSort === "old" ? "\u65E7\u2192\u65B0" : "\u65B0\u2192\u65E7");
+  sortBtn.type = "button";
+  sortBtn.title = s.delSort === "old" ? "\u53E4\u3044\u9806\uFF08\u30AF\u30EA\u30C3\u30AF\u3067\u65B0\u3057\u3044\u9806\uFF09" : "\u65B0\u3057\u3044\u9806\uFF08\u30AF\u30EA\u30C3\u30AF\u3067\u53E4\u3044\u9806\uFF09";
+  sortBtn.setAttribute("aria-pressed", String(s.delSort === "old"));
+  sortBtn.addEventListener("click", () => view2.h.onToggleDelSort());
+  const headText = shown.length === total ? `\u6210\u679C\u7269 ($total)` : `\u7D5E\u8FBC\u4E2D ${shown.length} / \u5168 ${total} \u679A`;
+  view2.panelDelivHead.append(el2("span", void 0, headText), sortBtn);
   view2.panelDelivBody.textContent = "";
   const delSec = el2("section", "p-sec");
   const addForm = el2("form", "p-add");
@@ -1306,8 +1324,9 @@ function renderDelivPanel(view2, s) {
   });
   delSec.append(addForm);
   const list = el2("div", "p-list");
-  if (!s.deliverables.length) list.append(el2("div", "p-empty", "\u6210\u679C\u7269\u306F\u307E\u3060\u306A\u3044"));
-  for (const d of s.deliverables) {
+  if (!total) list.append(el2("div", "p-empty", "\u6210\u679C\u7269\u306F\u307E\u3060\u306A\u3044"));
+  else if (!shown.length) list.append(el2("div", "p-empty", "\u4E00\u81F4\u3059\u308B\u6210\u679C\u7269\u304C\u7121\u3044"));
+  for (const d of shown) {
     const row = el2("div", "p-row");
     const main = el2("div", "p-main");
     const t = el2("div", "p-title", d.title);
@@ -2782,6 +2801,7 @@ store.panels.deliverables = savedUi.deliverables;
 store.panels.timeline = savedUi.timeline;
 store.doneOpen = savedUi.doneOpen;
 store.staleDays = savedUi.staleDays;
+store.delSort = savedUi.delSort;
 var root = document.getElementById("app");
 if (!root) throw new Error("#app not found");
 root.textContent = "";
@@ -2807,7 +2827,7 @@ function saveProject(slug) {
   }
 }
 function readSavedUi() {
-  const none = { deliverables: false, timeline: false, doneOpen: false, staleDays: STALE_DAYS_DEFAULT };
+  const none = { deliverables: false, timeline: false, doneOpen: false, staleDays: STALE_DAYS_DEFAULT, delSort: "new" };
   try {
     const raw = JSON.parse(localStorage.getItem(UI_KEY) ?? "{}");
     if (!raw || typeof raw !== "object") return none;
@@ -2816,7 +2836,9 @@ function readSavedUi() {
       deliverables: o.deliverables === true,
       timeline: o.timeline === true,
       doneOpen: o.doneOpen === true,
-      staleDays: typeof o.staleDays === "number" ? clampStale(o.staleDays) : STALE_DAYS_DEFAULT
+      staleDays: typeof o.staleDays === "number" ? clampStale(o.staleDays) : STALE_DAYS_DEFAULT,
+      // An unknown or missing value means the default, not the last of whatever was written.
+      delSort: o.delSort === "old" ? "old" : "new"
     };
   } catch {
     return none;
@@ -2828,7 +2850,8 @@ function saveUi(s) {
       deliverables: s.panels.deliverables,
       timeline: s.panels.timeline,
       doneOpen: s.doneOpen,
-      staleDays: s.staleDays
+      staleDays: s.staleDays,
+      delSort: s.delSort
     }));
   } catch {
   }
@@ -3566,6 +3589,11 @@ var view = mount(root, {
     render();
   },
   onAddDeliverable: (title) => doAddDeliverable(title, null),
+  onToggleDelSort: () => {
+    store.delSort = store.delSort === "old" ? "new" : "old";
+    saveUi(store);
+    render();
+  },
   onDeleteDeliverable: (projectId, id) => {
     void doDeleteDeliverable(projectId, id);
   },

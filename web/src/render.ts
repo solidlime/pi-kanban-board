@@ -7,7 +7,7 @@ import type {
 import { attachmentSrc, attachmentViewSrc, deliverableFileSrc, deliverableViewSrc, type LoopInfo } from './api.js';
 import {
   acceptanceProgress, blocksCards, cardKey, cardMatches, cardsInColumn, daysSinceMoved, isBlocked, isClosed,
-  isDoneColumn, isStalled, lastActorOf, openBlockers, readyCards, DONE_PREVIEW, type CardKey, type Store,
+  isDoneColumn, isStalled, lastActorOf, openBlockers, panelDeliverables, readyCards, DONE_PREVIEW, type CardKey, type Store,
 } from './store.js';
 import { renderGantt, type GanttScale } from './gantt.js';
 
@@ -33,6 +33,8 @@ export interface Handlers {
   /** How many days in DOING count as stalled; 0 turns the flag off. */
   onStaleDays(days: number): void;
   onAddDeliverable(title: string): Promise<boolean>;
+  /** 成果物パネルの並びを新↔旧で反転する（保存も呼び出し側で行う）。 */
+  onToggleDelSort(): void;
   onDeleteDeliverable(projectId: string, id: number): void;
   /** Search box text (the caller debounces) and closing the results overlay. */
   onSearch(q: string): void;
@@ -906,6 +908,8 @@ function focusRow(key: CardKey, h: Handlers): HTMLElement {
 function delivPanelSig(s: Store): string {
   return [
     s.projectId,
+    s.delSort,
+    s.q,
     ...s.deliverables.map(d => `${d.id}:${d.title}:${d.kind}:${d.cardId ?? ''}`),
   ].join('\u0001');
 }
@@ -932,7 +936,16 @@ function renderDelivPanel(view: View, s: Store): void {
   const sig = delivPanelSig(s);
   if (view.panelDelivSig === sig) return;
   view.panelDelivSig = sig;
-  view.panelDelivHead.textContent = `成果物 (${s.deliverables.length})`;
+  view.panelDelivHead.textContent = '';
+  const shown = panelDeliverables(s);
+  const total = s.deliverables.length;
+  const sortBtn = el('button', 'ic del-sort', s.delSort === 'old' ? '旧→新' : '新→旧');
+  sortBtn.type = 'button';
+  sortBtn.title = s.delSort === 'old' ? '古い順（クリックで新しい順）' : '新しい順（クリックで古い順）';
+  sortBtn.setAttribute('aria-pressed', String(s.delSort === 'old'));
+  sortBtn.addEventListener('click', () => view.h.onToggleDelSort());
+  const headText = shown.length === total ? `成果物 ($total)` : `絞込中 ${shown.length} / 全 ${total} 枚`;
+  view.panelDelivHead.append(el('span', undefined, headText), sortBtn);
   view.panelDelivBody.textContent = '';
 
   const delSec = el('section', 'p-sec');
@@ -952,8 +965,10 @@ function renderDelivPanel(view: View, s: Store): void {
   delSec.append(addForm);
 
   const list = el('div', 'p-list');
-  if (!s.deliverables.length) list.append(el('div', 'p-empty', '成果物はまだない'));
-  for (const d of s.deliverables) {
+  if (!total) list.append(el('div', 'p-empty', '成果物はまだない'));
+  // 絞込で0件なのと、そもそも0件なのは別のこと。同じ文言だと何をすればいいか分からない。
+  else if (!shown.length) list.append(el('div', 'p-empty', '一致する成果物が無い'));
+  for (const d of shown) {
     const row = el('div', 'p-row');
     const main = el('div', 'p-main');
     const t = el('div', 'p-title', d.title);

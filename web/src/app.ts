@@ -28,6 +28,7 @@ store.panels.deliverables = savedUi.deliverables;
 store.panels.timeline = savedUi.timeline;
 store.doneOpen = savedUi.doneOpen;
 store.staleDays = savedUi.staleDays;
+store.delSort = savedUi.delSort;
 const root = document.getElementById('app');
 if (!root) throw new Error('#app not found');
 root.textContent = '';
@@ -51,8 +52,8 @@ function saveProject(slug: string | null): void {
 }
 
 /** Panel toggles and the done fold survive a reload; a missing or broken value means the default (closed). */
-function readSavedUi(): { deliverables: boolean; timeline: boolean; doneOpen: boolean; staleDays: number } {
-  const none = { deliverables: false, timeline: false, doneOpen: false, staleDays: STALE_DAYS_DEFAULT };
+function readSavedUi(): { deliverables: boolean; timeline: boolean; doneOpen: boolean; staleDays: number; delSort: 'new' | 'old' } {
+  const none = { deliverables: false, timeline: false, doneOpen: false, staleDays: STALE_DAYS_DEFAULT, delSort: 'new' as const };
   try {
     const raw: unknown = JSON.parse(localStorage.getItem(UI_KEY) ?? '{}');
     if (!raw || typeof raw !== 'object') return none;
@@ -60,6 +61,8 @@ function readSavedUi(): { deliverables: boolean; timeline: boolean; doneOpen: bo
     return {
       deliverables: o.deliverables === true, timeline: o.timeline === true, doneOpen: o.doneOpen === true,
       staleDays: typeof o.staleDays === 'number' ? clampStale(o.staleDays) : STALE_DAYS_DEFAULT,
+      // An unknown or missing value means the default, not the last of whatever was written.
+      delSort: o.delSort === 'old' ? 'old' : 'new',
     };
   } catch { return none; }
 }
@@ -67,7 +70,7 @@ function saveUi(s: Store): void {
   try {
     localStorage.setItem(UI_KEY, JSON.stringify({
       deliverables: s.panels.deliverables, timeline: s.panels.timeline, doneOpen: s.doneOpen,
-      staleDays: s.staleDays,
+      staleDays: s.staleDays, delSort: s.delSort,
     }));
   } catch { /* private mode: the toggles just won't persist */ }
 }
@@ -775,6 +778,12 @@ const view: View = mount(root, {
     render();
   },
   onAddDeliverable: title => doAddDeliverable(title, null),
+  onToggleDelSort: () => {
+    // v1 と同じく保存してから描く: 次のリロードで戻らないように
+    store.delSort = store.delSort === 'old' ? 'new' : 'old';
+    saveUi(store);
+    render();
+  },
   onDeleteDeliverable: (projectId, id) => { void doDeleteDeliverable(projectId, id); },
   onSearch: q => onSearchInput(q),
   onCloseSearch,

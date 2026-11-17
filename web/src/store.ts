@@ -49,6 +49,8 @@ export interface Store {
   doneOpen: boolean;
   /** Days in DOING before a card is flagged as stalled; 0 turns the flag off. Persisted. */
   staleDays: number;
+  /** 成果物パネルの並び: `new` = id 降順（新しいのが上）, `old` = 昇順。Persisted. */
+  delSort: 'new' | 'old';
   /** Overview (総合管理) replaces the board while true. */
   overview: boolean;
   overviewRows: OverviewRow[];
@@ -101,6 +103,7 @@ export function createStore(): Store {
     pane: 'none', overview: false, overviewRows: [], graph: false, graphLayout: null,
     doneOpen: false,
     staleDays: STALE_DAYS_DEFAULT,
+    delSort: 'new',
     gantt: false, ganttScale: 'week',
     q: '', hits: null, searchAll: false, qFocus: false, notifications: [], attachments: [], locks: [], loop: null,
     templates: [], views: [],
@@ -217,6 +220,17 @@ export function cardsInColumn(s: Store, columnId: string): Card[] {
     if (c.columnId === columnId && c.projectId === s.projectId) out.push(c);
   }
   return out.sort((a, b) => b.priority - a.priority || a.id - b.id);
+}
+
+/**
+ * 成果物パネルに並べるもの: 検索語（`s.q`）があれば title の部分一致だけ、並びは `delSort` の向き。
+ * API の返す順には頼らず id で決める（並び順が変わっても同じ答えになるように）。
+ */
+export function panelDeliverables(s: Store): Deliverable[] {
+  const q = s.q.trim().toLowerCase();
+  const list = q ? s.deliverables.filter(d => d.title.toLowerCase().includes(q)) : s.deliverables;
+  const dir = s.delSort === 'old' ? 1 : -1;
+  return [...list].sort((a, b) => (a.id - b.id) * dir);
 }
 
 /** How many done cards show while the column is folded. */
