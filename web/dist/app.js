@@ -2378,24 +2378,29 @@ function field(label, input) {
   return wrap;
 }
 var SESSION_LIST_ID = "kb-session-names";
+function sessionLabelOf(s) {
+  return `${s.name}\uFF08id:${s.id.slice(0, 8)}\uFF09`;
+}
 function sessionLabel(card, list) {
   const id = card?.sessionId ?? null;
   if (!id) return "";
   const hit = list.find((s) => s.id === id);
-  return hit ? hit.name : id.slice(0, 8);
+  return hit ? sessionLabelOf(hit) : id.slice(0, 8);
 }
 function sessionIdOfInput(value, card, list, unknown) {
   const wanted = value.trim();
   if (wanted === "") return null;
-  const hit = list.find((s) => s.name === wanted);
+  const prefix = card?.sessionId?.slice(0, 8) ?? null;
+  if (wanted === sessionLabel(card, list) || prefix !== null && wanted === prefix) return card?.sessionId ?? null;
+  const hit = list.find((s) => sessionLabelOf(s) === wanted) ?? list.find((s) => s.name === wanted);
   if (hit) return hit.id;
-  if (wanted === sessionLabel(card, list)) return card?.sessionId ?? null;
   unknown();
   return null;
 }
 function mountDetail(root2, h) {
   let key = null;
   let snapshot = null;
+  let picker = 0;
   let sessions = [];
   const dlg = el4("dialog", "detail");
   const head = el4("div", "d-h");
@@ -2531,6 +2536,7 @@ function mountDetail(root2, h) {
   const close = () => {
     key = null;
     snapshot = null;
+    picker++;
     if (dlg.open) dlg.close();
   };
   closeBtn.addEventListener("click", close);
@@ -2597,18 +2603,23 @@ function mountDetail(root2, h) {
     due.value = card.due ?? "";
     blocked.value = card.blockedReason ?? "";
     body.value = card.body ?? "";
-    sessionPick.value = sessionLabel(card, sessions);
     sessions = [];
+    sessionOpts.replaceChildren();
+    sessionPick.value = card.sessionId?.slice(0, 8) ?? "";
     const openedAs = k;
+    const req2 = ++picker;
     void h.onSessions(parsed.projectId).then((list) => {
+      if (req2 !== picker) return;
       sessions = list;
       sessionOpts.replaceChildren(...list.map((s) => {
         const o = el4("option");
-        o.value = s.name;
+        o.value = sessionLabelOf(s);
         return o;
       }));
-      if (key === openedAs) sessionPick.value = sessionLabel(currentCard(openedAs), list);
+      const c = currentCard(openedAs);
+      if (sessionPick.value === (c?.sessionId?.slice(0, 8) ?? "")) sessionPick.value = sessionLabel(c, list);
     }).catch(() => {
+      if (req2 === picker) h.notify("\u30BB\u30C3\u30B7\u30E7\u30F3\u4E00\u89A7\u3092\u53D6\u308C\u306A\u304B\u3063\u305F\u3002id \u306E 8 \u6841\u3067\u5165\u529B\u3067\u304D\u308B");
     });
     if (store2) paint(store2, card);
     if (!dlg.open) dlg.showModal();
@@ -2797,7 +2808,7 @@ function mountDetail(root2, h) {
         return;
       }
       if (snapshot && snapshot.version !== card.version) {
-        const dirty = title.value !== snapshot.title || body.value !== (snapshot.body ?? "") || prio.value !== String(snapshot.priority) || owner.value !== (snapshot.owner ?? "") || due.value !== (snapshot.due ?? "") || blocked.value !== (snapshot.blockedReason ?? "");
+        const dirty = title.value !== snapshot.title || body.value !== (snapshot.body ?? "") || prio.value !== String(snapshot.priority) || owner.value !== (snapshot.owner ?? "") || due.value !== (snapshot.due ?? "") || blocked.value !== (snapshot.blockedReason ?? "") || sessionPick.value !== sessionLabel(snapshot, sessions);
         if (!dirty) {
           title.value = card.title;
           prio.value = String(card.priority);
@@ -2805,6 +2816,7 @@ function mountDetail(root2, h) {
           due.value = card.due ?? "";
           blocked.value = card.blockedReason ?? "";
           body.value = card.body ?? "";
+          sessionPick.value = sessionLabel(card, sessions);
         }
         snapshot = card;
         heading.textContent = `#${card.id} ${card.title}`;

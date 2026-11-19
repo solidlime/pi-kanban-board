@@ -39,18 +39,46 @@ export function sessionNameOf(chunk: string): string | null {
   return name;
 }
 
-/** Newest first. A session pi never named is not something a card can pick, so it is dropped. */
-export function formatSessions(entries: { file: string; name: string | null; updatedAt: string }[]): SessionRef[] {
+/**
+ * Did pi-web write this file for a session it spawned (a doll / side pane)? The parent only gets a
+ * `custom_message` notification whose customType merely starts the same way, so the marker has to
+ * be parsed and compared whole. A cut line is not a record.
+ */
+export function isChildChunk(chunk: string): boolean {
+  for (const line of chunk.split("\n")) {
+    if (!line.includes('"pi-web:')) continue;
+    try {
+      const rec = JSON.parse(line) as { type?: unknown; customType?: unknown };
+      if (rec.type === "custom" && (rec.customType === "pi-web:subagent" || rec.customType === "pi-web:side")) {
+        return true;
+      }
+    } catch {
+      // a cut line is not a record
+    }
+  }
+  return false;
+}
+
+/** Newest first. A session pi never named is not something a card can pick, so it is dropped; neither
+ * is a session pi-web made for a doll, which the board would otherwise list instead of its own.
+ * `child` has no default on purpose: a caller that forgets to say would silently list the dolls. */
+export function formatSessions(
+  entries: { file: string; name: string | null; updatedAt: string; child: boolean }[],
+): SessionRef[] {
   const out: SessionRef[] = [];
   for (const e of entries) {
     const id = sessionIdOfFile(e.file);
-    if (id === null || e.name === null) continue;
+    if (id === null || e.name === null || e.child) continue;
     out.push({ id, name: e.name, updatedAt: e.updatedAt });
   }
   return out.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
+// A doll's session is named like any other and is usually the newest, so the window that fills up
+// first is the pile of them: the budget is on files read, not on what the picker ends up showing.
 const SCAN_MAX = 50;
+const SCAN_FILES_MAX = 200;
+const READ_BATCH = 16;
 const CHUNK = 32 * 1024;
 
 /** Head and tail of a session file: a whole JSONL is tens of MB, and a chunk costs one read. */
@@ -70,24 +98,45 @@ async function headAndTail(path: string, size: number): Promise<string> {
 
 /**
  * The named sessions of one session folder, newest first. A missing folder is an empty list
- * (a board nobody has woken yet). Only the newest SCAN_MAX files are read.
- * shortcut: a rename buried between the head and tail chunks of a file is not seen.
+ * (a board nobody has woken yet). At most SCAN_MAX come back, from at most SCAN_FILES_MAX files.
+ * shortcut: a rename buried between the head and tail chunks of a file is not seen; past
+ * SCAN_FILES_MAX the oldest session drops out of the picker — switch to pi-web's own listing then.
  */
 export async function readSessions(dir: string): Promise<SessionRef[]> {
-  const found: { file: string; updatedAt: string; size: number }[] = [];
+  let names: string[];
   try {
-    for (const name of await readdir(dir)) {
-      if (!name.endsWith(".jsonl")) continue;
+    names = await readdir(dir);
+  } catch {
+    return []; // a board nobody has woken yet
+  }
+  const found: { file: string; updatedAt: string; size: number }[] = [];
+  for (const name of names) {
+    if (!name.endsWith(".jsonl")) continue;
+    try {
       const st = await stat(join(dir, name));
       if (!st.isFile()) continue;
       found.push({ file: name, size: st.size, updatedAt: st.mtime.toISOString() });
+    } catch {
+      // A session rotated away between the listing and the stat is not a reason to hide the rest.
+      continue;
     }
-  } catch {
-    return [];
   }
   found.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-  const entries = await Promise.all(found.slice(0, SCAN_MAX).map(async f => ({
-    file: f.file, updatedAt: f.updatedAt, name: sessionNameOf(await headAndTail(join(dir, f.file), f.size)),
-  })));
-  return formatSessions(entries);
+  // In batches: 200 files opened at once spikes the fd count, and one unreadable file (EACCES, or a
+  // session rotated away between the stat and the read) must not turn the whole picker into a 500.
+  const entries: { file: string; updatedAt: string; name: string | null; child: boolean }[] = [];
+  const limit = Math.min(found.length, SCAN_FILES_MAX);
+  for (let i = 0; i < limit; i += READ_BATCH) {
+    const batch = found.slice(i, Math.min(i + READ_BATCH, limit));
+    const got = await Promise.all(batch.map(async f => {
+      try {
+        const chunk = await headAndTail(join(dir, f.file), f.size);
+        return { file: f.file, updatedAt: f.updatedAt, name: sessionNameOf(chunk), child: isChildChunk(chunk) };
+      } catch {
+        return null;
+      }
+    }));
+    for (const e of got) if (e) entries.push(e);
+  }
+  return formatSessions(entries).slice(0, SCAN_MAX);
 }

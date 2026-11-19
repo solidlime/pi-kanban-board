@@ -55,7 +55,7 @@ Writes additionally require a same-origin `Origin` when one is present (or `Sec-
 | GET | `/api/board?project=` | `BoardSnapshot` (slug or id), 404 when unknown |
 | GET | `/api/timeline?project=&limit=&since=` | `{events}` |
 | POST | `/api/cards` | `{project,title,body?,columnId?,priority?,labels?,owner?,due?,estimate?,blockedReason?,ref?}` → 201 `{card}` |
-| PATCH | `/api/cards/:project/:id` | `{version,...patch}` — stale version → 409 `STALE_VERSION`. Patches: `title,body,priority,labels,owner,due,estimate,blockedReason,ref,commit`. `lastActor` is read-only and is rejected as 422. |
+| PATCH | `/api/cards/:project/:id` | `{version,...patch}` — stale version → 409 `STALE_VERSION`. Patches: `title,body,priority,labels,owner,due,estimate,blockedReason,ref,commit,sessionId`. `lastActor` is read-only and is rejected as 422. |
 | POST | `/api/cards/:project/:id/move` | `{columnId,version}` → `{card}` |
 | DELETE | `/api/cards/:project/:id` | `{version?}` (or `?version=`) → `{deleted:{projectId,id}}` |
 | PATCH | `/api/columns/:project/:id` | `{name?,wipLimit?,ord?}` → `{column}`. Lowering a limit under existing cards is allowed — over-WIP is an alert, not a delete. |
@@ -78,6 +78,7 @@ Writes additionally require a same-origin `Origin` when one is present (or `Sec-
 | POST | `/api/locks` | `{project,resource,ttlSeconds?,owner?}` → 201 `{lock}`; held → 409 `CONFLICT` with `details.code = "LOCK_HELD"` (+ holder and expiry). `resource` is `[A-Za-z0-9._:-]` 1–64 chars, `ttlSeconds` 1..86400 (default 120), `owner` defaults to `ui`. |
 | DELETE | `/api/locks/:resource?project=` | → `{released:boolean}`. Idempotent on purpose: a holder that retries release must not hit a 404 wall. |
 | GET | `/api/graph?project=` | `{nodes,layer,edges}` — longest-path layering over the blocker chain |
+| GET | `/api/sessions?project=` | `{sessions:[{id,name,updatedAt}]}` — そのボードの cwd の pi セッション、新しい順。名前の無いセッションと、pi-web が親のために作った子セッション（人形・side）は返さない |
 | GET | `/api/overview` | `{projects:[{projectId,name,loop,columns:[{id,name,kind,count,wipLimit}],counts:{total,open,done,ready,blocked,overdue,wipOver}}]}` for every board |
 | GET | `/api/loop?project=` | `{loop:{status:'idle'\|'running'\|'halted',haltReason,lastTickAt,ticks}}` |
 | POST | `/api/loop/start` | `/stop` | `/tick` | `tick` → `{loop,ready?,card?}`; `start` resumes, `stop` halts. Timeline: `loop.resumed` / `loop.tick` / `loop.halted`. |

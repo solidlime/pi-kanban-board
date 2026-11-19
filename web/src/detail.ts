@@ -56,24 +56,34 @@ function field(label: string, input: HTMLElement): HTMLElement {
 
 const SESSION_LIST_ID = 'kb-session-names';
 
-/** What the picker shows: the session's own name when the id matches one, else the id's head. */
+/** What a candidate looks like: its own name plus the id's head, so same-named sessions stay apart. */
+export function sessionLabelOf(s: SessionRef): string {
+  return `${s.name}（id:${s.id.slice(0, 8)}）`;
+}
+
+/** What the picker shows: the session's own label when the id matches one, else the id's head. */
 function sessionLabel(card: Card | null, list: SessionRef[]): string {
   const id = card?.sessionId ?? null;
   if (!id) return '';
   const hit = list.find(s => s.id === id);
-  return hit ? hit.name : id.slice(0, 8);
+  return hit ? sessionLabelOf(hit) : id.slice(0, 8);
 }
 
 /**
- * A known name maps to its id, an empty field clears the session, and an unknown name is a new
- * session: pi mints that id at wake, so the card keeps none (and the user is told).
+ * A known label (or a bare name, typed before labels carried the id) maps to its id, an empty field
+ * clears the session, and an unknown name is a new session: pi mints that id at wake, so the card
+ * keeps none (and the user is told).
  */
-function sessionIdOfInput(value: string, card: Card | null, list: SessionRef[], unknown: () => void): string | null {
+export function sessionIdOfInput(value: string, card: Card | null, list: SessionRef[], unknown: () => void): string | null {
   const wanted = value.trim();
   if (wanted === '') return null;
-  const hit = list.find(s => s.name === wanted);
+  // The card's own label first: it is the string this dialog put in the field, and a session named
+  // like an 8-char id must not take it. A card whose session is not in the list (it is a doll, or
+  // past the scan window) shows — and keeps — its bare prefix here.
+  const prefix = card?.sessionId?.slice(0, 8) ?? null;
+  if (wanted === sessionLabel(card, list) || (prefix !== null && wanted === prefix)) return card?.sessionId ?? null;
+  const hit = list.find(s => sessionLabelOf(s) === wanted) ?? list.find(s => s.name === wanted);
   if (hit) return hit.id;
-  if (wanted === sessionLabel(card, list)) return card?.sessionId ?? null;
   unknown();
   return null;
 }
@@ -81,6 +91,8 @@ function sessionIdOfInput(value: string, card: Card | null, list: SessionRef[], 
 export function mountDetail(root: HTMLElement, h: DetailHandlers): DetailView {
   let key: CardKey | null = null;
   let snapshot: Card | null = null;
+  // Bumped by open() and close(): a list that answers an older request must not repaint the picker.
+  let picker = 0;
   // The card stores a session id; the picker shows names, so this is what a name resolves against.
   let sessions: SessionRef[] = [];
 
@@ -228,6 +240,7 @@ export function mountDetail(root: HTMLElement, h: DetailHandlers): DetailView {
   const close = () => {
     key = null;
     snapshot = null;
+    picker++;
     if (dlg.open) dlg.close();
   };
   closeBtn.addEventListener('click', close);
@@ -279,20 +292,28 @@ export function mountDetail(root: HTMLElement, h: DetailHandlers): DetailView {
     due.value = card.due ?? '';
     blocked.value = card.blockedReason ?? '';
     body.value = card.body ?? '';
-    // Until the list lands, an id with no name of its own shows as its 8-char prefix.
-    sessionPick.value = sessionLabel(card, sessions);
+    // The field starts as the id's 8-char prefix — the same string this dialog resolves back to the
+    // card's id — so a save made before the list arrives keeps the session instead of clearing it.
     sessions = [];
+    sessionOpts.replaceChildren();
+    sessionPick.value = card.sessionId?.slice(0, 8) ?? '';
     const openedAs = k;
+    const req = ++picker;
     void h.onSessions(parsed.projectId).then(list => {
+      // Only the newest request may paint: reopening the same card twice would otherwise let the
+      // first answer win the picker while the field already shows the second one's label.
+      if (req !== picker) return;
       sessions = list;
       sessionOpts.replaceChildren(...list.map(s => {
         const o = el('option');
-        o.value = s.name;
+        o.value = sessionLabelOf(s);
         return o;
       }));
-      // A slower response must not overwrite a card the user opened meanwhile.
-      if (key === openedAs) sessionPick.value = sessionLabel(currentCard(openedAs), list);
-    }).catch(() => { /* no list: the field stays free text */ });
+      // A field the user has already typed in keeps their text; only an untouched prefix becomes
+      // the full label. (Typing the prefix by hand lands on the same id, so this is idempotent.)
+      const c = currentCard(openedAs);
+      if (sessionPick.value === (c?.sessionId?.slice(0, 8) ?? '')) sessionPick.value = sessionLabel(c, list);
+    }).catch(() => { if (req === picker) h.notify('セッション一覧を取れなかった。id の 8 桁で入力できる'); });
     if (store) paint(store, card);
     if (!dlg.open) dlg.showModal();
     title.focus();
@@ -497,7 +518,8 @@ export function mountDetail(root: HTMLElement, h: DetailHandlers): DetailView {
         // otherwise the user's typing would be silently overwritten.
         const dirty = title.value !== snapshot.title || body.value !== (snapshot.body ?? '')
           || prio.value !== String(snapshot.priority) || owner.value !== (snapshot.owner ?? '')
-          || due.value !== (snapshot.due ?? '') || blocked.value !== (snapshot.blockedReason ?? '');
+          || due.value !== (snapshot.due ?? '') || blocked.value !== (snapshot.blockedReason ?? '')
+          || sessionPick.value !== sessionLabel(snapshot, sessions);
         if (!dirty) {
           title.value = card.title;
           prio.value = String(card.priority);
@@ -505,6 +527,7 @@ export function mountDetail(root: HTMLElement, h: DetailHandlers): DetailView {
           due.value = card.due ?? '';
           blocked.value = card.blockedReason ?? '';
           body.value = card.body ?? '';
+          sessionPick.value = sessionLabel(card, sessions);
         }
         snapshot = card;
         heading.textContent = `#${card.id} ${card.title}`;
