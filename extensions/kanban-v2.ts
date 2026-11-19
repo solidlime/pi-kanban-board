@@ -268,7 +268,7 @@ export default function kanbanV2Extension(pi: ExtensionAPI): void {
 			id: Type.Optional(Type.Number({ description: "Deliverable id (deliverable space — not a card id; the same number can exist as a card). Required by edit/remove/ref/img." })),
 			text: Type.Optional(Type.String({ description: "What the deliverable is. Required by add; edit replaces it (empty is an error)." })),
 			title: Type.Optional(Type.String({ description: "Alias of text (v2 tool-contract spelling)." })),
-			ref: Type.Optional(Type.String({ description: "Local path stored on the row in place (not copied). Used by add and ref." })),
+			ref: Type.Optional(Type.String({ description: "Local path stored on the row in place (not copied). Relative paths are resolved against the session cwd. Used by add and ref." })),
 			image: Type.Optional(Type.String({ description: "Local path for img (v1 alias of ref). img copies it into the media store." })),
 			cardId: Type.Optional(Type.Number({ description: "Card this deliverable came from (same board). Optional." })),
 			project: Type.Optional(Type.String({ description: "Board slug to act on instead of the cwd's." })),

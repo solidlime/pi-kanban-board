@@ -117,7 +117,11 @@ sniffs the magic bytes, and refuses anything that is not an image — an HTML fi
 origin as the app would be stored XSS. `GET` answers with `X-Content-Type-Options: nosniff`.
 
 The agent adapter (`kanban img` / `deliverable img`) goes through the same store. Paths are resolved
-against the project cwd, not the server's.
+against the session cwd, not the server's. Deliverable refs (`deliverable add` / `deliverable ref`)
+resolve the same way since #27: a relative path is absolutized against the session cwd before it
+is stored (`~` is not expanded), because the server (a separate process) reads it later — a ref
+that is not absolute would be read against the kanban home and 404. The adapter also refuses
+a ref that is not an existing file, so directory paths and not-yet-created files stay out of the db.
 
 Attachment blobs live at `<home>/media/att/<sha256>.<ext>` and are **never garbage
 collected**: deleting an attachment row leaves the blob behind (content-addressed, so a re-upload

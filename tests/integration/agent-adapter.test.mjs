@@ -66,8 +66,7 @@ test("kanban add: #slug retargets the board and seeds nextId from it", async () 
   assert.equal((await A.executeKanban({ action: "add", text: "#side 二枚目" }, env)).ok, true);
   const listed = await A.executeKanban({ action: "list", project: "side" }, env);
   assert.match(listed.text, /#2 二枚目/);
-  assert.equal((await A.executeKanban({ action: "add", text: "#Bad_Slug x" }, env)).ok, false);
-});
+  assert.equal((await A.executeKanban({ action: "add", text: "#Bad_Slug x" }, env)).ok, false);});
 
 test("kanban: a first write creates the board, add -> list -> move -> edit", async () => {
   const add = await A.executeKanban({ action: "add", text: "first card" }, env);
@@ -237,17 +236,17 @@ test("kanban: resume starts the doing-loop; check self-tests; url carries the to
 });
 
 test("deliverable: its own id space, and the card space is untouched", async () => {
-  const add = await A.executeDeliverable({ action: "add", text: "shot.png", ref: "/tmp/shot.png" }, env);
+  const add = await A.executeDeliverable({ action: "add", text: "shot.png", ref: pngPathForTest }, env);
   assert.equal(add.ok, true, add.text);
   assert.match(add.text, /added deliverable #1/); // card #1 exists on this board too
 
   const list = await A.executeDeliverable({ action: "list" }, env);
   assert.match(list.text, /#1 shot\.png/);
-  assert.match(list.text, /ref:\/tmp\/shot\.png/);
+  assert.match(list.text, new RegExp(`ref:${pngPathForTest.replaceAll("/", "\\/")}`));
 
-  const ref = await A.executeDeliverable({ action: "ref", id: 1, ref: "/tmp/other.png" }, env);
-  assert.equal(ref.ok, true, ref.text);
-  assert.match(ref.text, /other\.png/);
+  const ref = await A.executeDeliverable({ action: "ref", id: 1, ref: pngPathForTest }, env);
+  assert.equal(ref.ok, true, ref);
+  assert.match(ref.text, /deliverable\.png/);
 
   assert.equal((await A.executeDeliverable({ action: "edit", id: 1, text: "shot v2" }, env)).ok, true);
   assert.match((await A.executeDeliverable({ action: "list" }, env)).text, /shot v2/);
@@ -263,7 +262,41 @@ test("deliverable: its own id space, and the card space is untouched", async () 
   const global = await A.executeDeliverable({ action: "list", scope: "global" }, env);
   assert.equal(global.ok, true);
   assert.match(global.text, /no deliverables|\[global\]/);
-  assert.equal((await A.executeDeliverable({ action: "add", scope: "global", text: "x" }, env)).ok, false);
+  assert.equal((await A.executeDeliverable({ action: "add", scope: "global", text: "x" }, env)).ok, false);});
+
+test("deliverable ref: a relative path lands in the db absolute, a missing file is refused on the spot, and a directory is not a file", async () => {
+  // #27: nous passed cwd-relative refs; the server read them against the kanban home and 404'd.
+  // `..` included on purpose: resolve normalizes it, so the stored path stays absolute and clean.
+  const add = await A.executeDeliverable({ action: "add", text: "chat flow", ref: "../assets/deliverable.png" }, env);
+  assert.equal(add.ok, true, add.text);
+  const stored = (await A.executeDeliverable({ action: "list" }, env)).details.deliverables?.find((d) => d.title === "chat flow");
+  assert.equal(stored?.ref, pngPathForTest);
+
+  // a ref-less add is legitimate (text-only deliverable): the empty branch must stay ok
+  const bare = await A.executeDeliverable({ action: "add", text: "note only" }, env);
+  assert.equal(bare.ok, true, bare.text);
+  const bareRow = bare.details.deliverables?.find((d) => d.title === "note only");
+  assert.ok(bareRow, "the ref-less add must have landed");
+  assert.ok(!bareRow.ref, "an empty ref must store empty, not be rejected");
+  assert.equal((await A.executeDeliverable({ action: "remove", id: bareRow.id }, env)).ok, true);
+
+  const missing = await A.executeDeliverable({ action: "add", text: "ghost", ref: "assets/no-such.png" }, env);
+  assert.equal(missing.ok, false);
+  assert.match(missing.text, /ref is not an existing file/);
+
+  // existsSync alone would pass a directory — the server's statSync().isFile() would 404 later
+  const before = (await A.executeDeliverable({ action: "list" }, env)).details.deliverables?.length ?? 0;
+  const dir = await A.executeDeliverable({ action: "add", text: "dir", ref: "." }, env);
+  assert.equal(dir.ok, false);
+  assert.match(dir.text, /ref is not an existing file/);
+  const after = (await A.executeDeliverable({ action: "list" }, env)).details.deliverables?.length ?? 0;
+  assert.equal(after, before, "a refused add must not leave a row behind");
+
+  const repoint = await A.executeDeliverable({ action: "ref", id: stored.id, ref: "assets/no-such.png" }, env);
+  assert.equal(repoint.ok, false);
+  assert.match(repoint.text, /ref is not an existing file/);
+
+  assert.equal((await A.executeDeliverable({ action: "remove", id: stored.id }, env)).ok, true);
 });
 
 test("injection: bounded, board-scoped, and it never carries the token", async () => {

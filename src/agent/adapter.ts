@@ -3,7 +3,7 @@
 // extensions/kanban-v2.ts; everything here is DB + text, so it is testable without a pi
 // host. Composites are always (projectId, id): no call below resolves a bare id.
 import { execFileSync, spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { PORT_DEFAULT } from "../shared/constants.js";
 import type { Card, ColumnDef, Deliverable } from "../shared/dto.js";
@@ -593,6 +593,21 @@ function requireId(scope: Scope, args: { id?: number }, action: string): number 
 
 // ---------------------------------------------------------------- deliverable tool
 
+/** A deliverable ref is served by the kanban server, not this process: it must land in the db
+ *  absolute, and point at a file that exists — serving a missing file is a silent failure.
+ *  Relative input is resolved against the session's cwd, same as img. */
+function refAbsolutized(env: Env, raw: string): { ok: true; path: string } | { ok: false; text: string } {
+  const trimmed = raw.trim();
+  if (trimmed === "") return { ok: true, path: "" };
+  const abs = resolve(env.cwd, trimmed);
+  // existsSync is true for a directory too, and the server serves isFile() paths only.
+  // `~` is deliberately not expanded — resolve() would treat it as a literal name.
+  let isFile = false;
+  try { isFile = statSync(abs).isFile(); } catch { /* missing paths land here */ }
+  if (!isFile) return { ok: false, text: `ref is not an existing file: ${abs} (~ is not expanded)` };
+  return { ok: true, path: abs };
+}
+
 export async function executeDeliverable(args: DeliverableArgs, env: Env): Promise<Result> {
   const scope: Scope = args.scope ?? "project";
   const actor = env.actor ?? "agent";
@@ -628,9 +643,12 @@ export async function executeDeliverable(args: DeliverableArgs, env: Env): Promi
   switch (args.action) {
     case "add": {
       if (text === "") return { ok: false, text: "add requires a non-empty text", details: listed() };
-      const ref = (args.ref ?? args.image ?? "").trim();
+      // A ref is served by the kanban server, another process with no idea of this session's cwd —
+      // so it must be stored absolute. Relative means "relative to env.cwd", like img.
+      const ref = refAbsolutized(env, args.ref ?? args.image ?? "");
+      if (!ref.ok) return { ok: false, text: ref.text, details: listed() };
       const d = createDeliverable(db, {
-        projectId, title: text, ref,
+        projectId, title: text, ref: ref.path,
         cardId: args.cardId === undefined ? null : args.cardId,
       }, actor);
       return { ok: true, text: `added deliverable #${d.id} (project ${projectId})`, details: listed() };
@@ -650,8 +668,10 @@ export async function executeDeliverable(args: DeliverableArgs, env: Env): Promi
       if (args.id === undefined) return { ok: false, text: "ref requires id", details: listed() };
       const path = (args.ref ?? args.image ?? "").trim();
       if (path === "") return { ok: false, text: "ref requires ref (a local file path)", details: listed() };
-      const d = updateDeliverable(db, projectId, args.id, { ref: path }, actor);
-      return { ok: true, text: `referenced ${path} on deliverable #${d.id} (project ${projectId})`, details: listed() };
+      const ref = refAbsolutized(env, path);
+      if (!ref.ok) return { ok: false, text: ref.text, details: listed() };
+      const d = updateDeliverable(db, projectId, args.id, { ref: ref.path }, actor);
+      return { ok: true, text: `referenced ${ref.path} on deliverable #${d.id} (project ${projectId})`, details: listed() };
     }
     case "img": {
       if (args.id === undefined) return { ok: false, text: "img requires id", details: listed() };
