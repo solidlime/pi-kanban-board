@@ -625,7 +625,18 @@ function sendFileBytes(ctx: Ctx, f: FileSource): void {
 const VIEW_CSS = "html,body{margin:0;height:100%;background:#16161a;color:#e8e8ea;" +
   "font:15px/1.7 system-ui,-apple-system,sans-serif}.md{padding:24px 28px;max-width:56rem;margin:0 auto}" +
   ".md code{background:#26262e;padding:1px 4px;border-radius:3px}img.media{display:block;margin:auto;max-width:100%;" +
-  "max-height:100vh}video.media{display:block;width:100%;height:100vh}.dl{padding:24px 28px}a{color:#8ab4f8}";
+  "max-height:100vh}video.media{display:block;width:100%;height:100vh}.dl{padding:24px 28px}a{color:#8ab4f8}" +
+  ".md h1,.md h2,.md h3,.md h4,.md h5,.md h6{margin:1.6em 0 .6em;line-height:1.3;font-weight:600}" +
+  ".md h1{font-size:1.7em;border-bottom:1px solid #2e2e38;padding-bottom:.3em}" +
+  ".md h2{font-size:1.4em;border-bottom:1px solid #2e2e38;padding-bottom:.25em}" +
+  ".md h3{font-size:1.2em}.md h4,.md h5,.md h6{font-size:1.05em}.md>:first-child{margin-top:0}" +
+  ".md pre{background:#1e1e24;padding:12px 14px;border-radius:6px;overflow-x:auto;margin:1em 0}" +
+  ".md pre code{background:none;padding:0;font-size:.92em}" +
+  ".md table{border-collapse:collapse;display:block;overflow-x:auto;margin:1em 0}" +
+  ".md th,.md td{border:1px solid #33333d;padding:6px 10px}.md th{background:#26262e;font-weight:600}" +
+  ".md blockquote{margin:1em 0;padding:2px 0 2px 14px;border-left:3px solid #3a3a46;color:#b9b9c2}" +
+  ".md hr{height:0;margin:1.6em 0;border:0;border-top:1px solid #2e2e38}" +
+  ".md img{max-width:100%}.md ul,.md ol{padding-left:1.5em;margin:.6em 0}.md del{color:#9a9aa4}";
 // md() backtracks quadratically on pathological input, and attachments are user uploads now.
 const VIEW_TEXT_MAX = 256 * 1024;
 
