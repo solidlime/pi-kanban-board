@@ -587,9 +587,9 @@ export async function executeKanban(args: KanbanArgs, env: Env): Promise<Result>
       if (!resolved.ok) return fail(scope, resolved.text);
       const session = resolved.value;
       if (session !== undefined) {
-        // A card with no session, or one already ours, is not a claim: skip the probe.
+        // Only a steal is worth a request: no owner or no card is claimGuard's call, not ours.
         const cur = getCard(db, projectId, id);
-        const mine = session === null || cur === null || cur.sessionId === null || cur.sessionId === session;
+        const mine = session === null || cur === null || cur.sessionId === null;
         const guard = mine ? { ok: true as const, note: "" } : await claimGuard(env, cur, session);
         if (!guard.ok) return fail(scope, guard.text);
         patch.sessionId = session;

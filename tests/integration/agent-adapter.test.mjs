@@ -481,6 +481,21 @@ test("kanban: edit session:self fills an unclaimed card with the host's id", asy
   assert.doesNotMatch(out.text, /claimed anyway/);
 });
 
+test("kanban: edit session:self on a card we already own probes nothing", async () => {
+  // The every-turn case: an agent re-stamping its own card must not depend on pi-web at all.
+  // A busy fetch is passed so that a stray probe would be refused, not merely counted.
+  const own = { ...env, sessionId: "self-0005" };
+  const added = await A.executeKanban({ action: "add", text: "mine", session: "self" }, own);
+  const id = added.details.nextId - 1;
+  const piweb = busyPiWeb();
+  const out = await A.executeKanban({ action: "edit", id, text: "mine again", session: "self" }, { ...own, fetch: piweb.fetch });
+  assert.equal(out.ok, true, out.text);
+  assert.equal(piweb.calls.length, 0, "editing our own card must not reach the network");
+  const card = (await A.executeKanban({ action: "list" }, env)).details.cards.find((c) => c.id === id);
+  assert.equal(card.title, "mine again");
+  assert.equal(card.sessionId, "self-0005");
+});
+
 test("kanban: edit session:self may take a card whose owner is idle", async () => {
   const added = await A.executeKanban({ action: "add", text: "idle owner" }, env);
   const id = added.details.nextId - 1;

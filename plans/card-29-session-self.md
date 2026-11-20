@@ -95,3 +95,11 @@ npm run build:v2
 
 新規テスト5本 + 既存 404本が緑であること。実機確認は pi-web 経由の `edit session:self` が
 `env.sessionId` を受け取れるか（§1 の前提）を、実セッションで1回試す。
+
+## §6 残る窓（REVIEW 指摘・許容済み）
+
+- probe が `idle` を返してから `updateCard` まで最大 1 秒。相手がその間に起きれば奪える。
+  塞ぐには claim の原子性が要るが、DB トランザクション内で外部 I/O はできない（`src/persistence/repos.ts:355` の `withTx`）。
+  この差分は**窓を狭めただけ**で閉じていない。今日より悪くはない（旧 `edit session:<他人>` は無防備に乗っ取れた）。
+- `KANBAN_PIWEB_URL` が別マシンを指す構成では probe が常に `unknown` になり、`unknown` 採用により乗っ取りが素通りする。
+  `src/agent/session-lock.ts:34-35` は同じ構成で警告を出すが、claim 側は無警告。その構成を使うなら別カードで塞ぐこと。
