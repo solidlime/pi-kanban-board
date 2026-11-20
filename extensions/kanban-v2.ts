@@ -218,7 +218,7 @@ export default function kanbanV2Extension(pi: ExtensionAPI): void {
 			project: Type.Optional(
 				Type.String({ description: "Board slug to act on instead of the cwd's (a-z 0-9 . _ -, lowercased). Not a tag on the card: in v2 the project IS the board." }),
 			),
-			session: Type.Optional(Type.String({ description: "Conversation tag on a card ([A-Za-z0-9._:@-]). \"\" clears it." })),
+			session: Type.Optional(Type.String({ description: "Conversation tag on a card ([A-Za-z0-9._:@-]). \"self\" = this host session, \"\" clears it." })),
 			commit: Type.Optional(Type.String({ description: "Commit sha, 7-40 hex, stored lowercase. \"\" clears it." })),
 			labels: Type.Optional(
 				Type.Union([Type.String(), Type.Array(Type.String())], { description: "Comma-separated string or an array. \"\" clears them." }),

@@ -14,11 +14,12 @@ import { detectState, initHomeIfNeeded, kanbanHome, openHomeDatabase, readToken,
 import { schemaVersion } from "../persistence/migrations.js";
 import {
   createAttachment, createCard, createDeliverable, createProject, deleteCard, deleteDeliverable, digestInput,
-  getLoop, getProject, getProjectBySlug, listCards, listColumns, listDeliverables, listProjects, moveCard, peekNextId,
+  getCard, getLoop, getProject, getProjectBySlug, listCards, listColumns, listDeliverables, listProjects, moveCard, peekNextId,
   saveLoop, updateCard, updateDeliverable, type UpdateCardPatch,
 } from "../persistence/repos.js";
 import type { RunningServer } from "../api/start.js";
-import { wakeCardSession } from "./driver.js";
+import { probeSession, wakeCardSession } from "./driver.js";
+import { piWebUrl } from "./session-lock.js";
 import { columnsByOrd } from "../core/project.js";
 import { sortCards } from "../core/card.js";
 import { assertBlockedReason, assertLabels, assertPriority, assertTitle, invalid, TITLE_MAX } from "../core/validation.js";
@@ -35,6 +36,8 @@ export interface Env {
   actor?: string;
   /** The host's own session id: a card added from a pi session links back to it. */
   sessionId?: string;
+  /** Test seam: never probe a live pi-web from a test. */
+  fetch?: typeof globalThis.fetch;
 }
 
 export interface KanbanArgs {
@@ -243,6 +246,39 @@ function sessionOf(v: string | undefined): string | null | undefined {
   if (s === "") return null;
   if (!/^[A-Za-z0-9._:@-]{1,128}$/.test(s)) throw invalid(`session may only contain A-Za-z0-9._:@- (max 128): ${v}`);
   return s;
+}
+
+/**
+ * `self` names the host's own session, so an agent can take a card it did not add or drop.
+ * undefined = leave the card's session alone; null = clear it; "self" without a host id is a
+ * failure, not a silent null ("I meant my session" answered with `unlinked` is the worst answer).
+ */
+function resolveSession(spec: string | undefined, env: Env): { ok: true; value: string | null | undefined } | { ok: false; text: string } {
+  if (spec === undefined) return { ok: true, value: undefined };
+  if (spec.trim() === "self") {
+    const own = env.sessionId?.trim();
+    if (!own) return { ok: false, text: "session: self needs the host's session id (none in this context)" };
+    // A host id that sessionOf would reject is a bad answer, not a crash: this function
+    // answers failures, so it must not throw the one time it is asked about an id we did
+    // not invent.
+    if (!/^[A-Za-z0-9._:@-]{1,128}$/.test(own)) return { ok: false, text: `session: self - the host's session id is not a usable tag: ${own}` };
+    return { ok: true, value: own };
+  }
+  return { ok: true, value: sessionOf(spec) };
+}
+
+/**
+ * Taking a card from another session is a quiet steal unless that owner is asked first. Only a
+ * positive `busy` refuses; a probe that cannot answer adopts and says so (same asymmetry as the
+ * wake probe: refusing on unknown leaves the card where nobody can take it). No override, no
+ * probe — the normal edit must not cost a request.
+ */
+async function claimGuard(env: Env, card: Card, own: string): Promise<{ ok: true; note: string } | { ok: false; text: string }> {
+  const oldId = card.sessionId ?? null;
+  if (oldId === null || oldId === own) return { ok: true, note: "" };
+  const probe = await probeSession(piWebUrl(), oldId, env.fetch ?? fetch);
+  if (probe === "busy") return { ok: false, text: `card #${card.id} is in ${oldId}'s turn; claim it only when it is idle` };
+  return { ok: true, note: probe === "unknown" ? " (owner could not be probed; claimed anyway)" : "" };
 }
 
 function blockedOf(v: string | boolean | undefined): string | null | undefined {
@@ -495,6 +531,8 @@ export async function executeKanban(args: KanbanArgs, env: Env): Promise<Result>
       }
       const column = args.col === undefined ? firstTodoColumn(db, target) : resolveColumn(db, target, args.col);
       const { title, body } = titleAndBody(qa.value.title);
+      const own = resolveSession(args.session, env);
+      if (!own.ok) return fail(scope, own.text);
       const card = createCard(db, {
         projectId: target,
         columnId: column.id,
@@ -502,7 +540,7 @@ export async function executeKanban(args: KanbanArgs, env: Env): Promise<Result>
         body,
         priority: args.priority === undefined ? 0 : assertPriority(args.priority),
         labels: labelsOf(args.labels),
-        sessionId: sessionOf(args.session) ?? env.sessionId ?? null,
+        sessionId: own.value ?? env.sessionId ?? null,
         commit: commitOf(args.commit) ?? null,
         blockedReason: blockedOf(args.blocked) ?? null,
         estimate: qa.value.estimate,
@@ -534,6 +572,7 @@ export async function executeKanban(args: KanbanArgs, env: Env): Promise<Result>
       const id = requireId(scope, args, "edit");
       if (id === null) return fail(scope, "edit requires id");
       const patch: UpdateCardPatch = {};
+      let claimNote = "";
       if (args.text !== undefined) {
         const text = args.text.trim();
         if (text === "") return fail(scope, "edit requires a non-empty text (omit text to change only the other fields)");
@@ -544,8 +583,18 @@ export async function executeKanban(args: KanbanArgs, env: Env): Promise<Result>
       if (args.priority !== undefined) patch.priority = assertPriority(args.priority);
       const labels = labelsOf(args.labels);
       if (labels !== undefined) patch.labels = labels;
-      const session = sessionOf(args.session);
-      if (session !== undefined) patch.sessionId = session;
+      const resolved = resolveSession(args.session, env);
+      if (!resolved.ok) return fail(scope, resolved.text);
+      const session = resolved.value;
+      if (session !== undefined) {
+        // A card with no session, or one already ours, is not a claim: skip the probe.
+        const cur = getCard(db, projectId, id);
+        const mine = session === null || cur === null || cur.sessionId === null || cur.sessionId === session;
+        const guard = mine ? { ok: true as const, note: "" } : await claimGuard(env, cur, session);
+        if (!guard.ok) return fail(scope, guard.text);
+        patch.sessionId = session;
+        claimNote = guard.note;
+      }
       const commit = commitOf(args.commit);
       if (commit !== undefined) patch.commit = commit;
       const blocked = blockedOf(args.blocked);
@@ -554,7 +603,7 @@ export async function executeKanban(args: KanbanArgs, env: Env): Promise<Result>
       if (due !== undefined) patch.due = due;
       if (Object.keys(patch).length === 0) return fail(scope, "edit requires at least one of text, priority, labels, session, commit, blocked, nextFireAt");
       const card = updateCard(db, projectId, id, patch, { actor });
-      return { ok: true, text: `edited #${card.id} (${Object.keys(patch).join(", ")}) (project ${projectId})`, details: details(listCards(db, projectId)) };
+      return { ok: true, text: `edited #${card.id} (${Object.keys(patch).join(", ")})${claimNote} (project ${projectId})`, details: details(listCards(db, projectId)) };
     }
     case "img": {
       const id = requireId(scope, args, "img");

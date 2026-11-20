@@ -427,3 +427,93 @@ test("footer: two sessions in one cwd each get their own widget", async () => {
     await A.closeRuntime();
   }
 });
+
+/** A pi-web holding one session in a given state: only the probe is answered here. */
+function fakeProbe(state) {
+  const calls = [];
+  const fetch = async (url) => {
+    calls.push(String(url));
+    return { ok: true, status: 200, json: async () => state };
+  };
+  return { calls, fetch };
+}
+const idlePiWeb = () => fakeProbe({ running: false });
+const busyPiWeb = () => fakeProbe({ running: true, state: { isPromptRunning: true } });
+
+test("kanban: add session:self links the card to the host's own session", async () => {
+  const own = { ...env, sessionId: "self-0001" };
+  const out = await A.executeKanban({ action: "add", text: "self-add", session: "self" }, own);
+  assert.equal(out.ok, true, out.text);
+  const id = out.details.nextId - 1;
+  assert.equal(out.details.cards.find((c) => c.id === id).sessionId, "self-0001");
+});
+
+test("kanban: add session:self without a host session id fails and creates no card", async () => {
+  const before = (await A.executeKanban({ action: "list" }, env)).details.cards.length;
+  const out = await A.executeKanban({ action: "add", text: "self-add-none", session: "self" }, env);
+  assert.equal(out.ok, false, out.text);
+  assert.match(out.text, /self needs the host's session id/);
+  const after = (await A.executeKanban({ action: "list" }, env)).details.cards;
+  assert.equal(after.length, before, "a refused add must not touch the board");
+  assert.equal(after.some((c) => c.title === "self-add-none"), false);
+});
+
+test("kanban: a host session id sessionOf would reject is a refusal, not a throw", async () => {
+  // self names whatever the host told us; if that is not a usable tag the caller gets the
+  // same {ok:false} shape as "no id at all", because executeKanban never throws at a tool.
+  const bad = { ...env, sessionId: "not a tag!" };
+  const before = (await A.executeKanban({ action: "list" }, env)).details.cards.length;
+  const out = await A.executeKanban({ action: "add", text: "self-add-bad", session: "self" }, bad);
+  assert.equal(out.ok, false, out.text);
+  assert.match(out.text, /not a usable tag/);
+  assert.equal((await A.executeKanban({ action: "list" }, env)).details.cards.length, before);
+});
+
+test("kanban: edit session:self fills an unclaimed card with the host's id", async () => {
+  const added = await A.executeKanban({ action: "add", text: "unclaimed" }, env);
+  const id = added.details.nextId - 1;
+  assert.equal(added.details.cards.find((c) => c.id === id).sessionId, null);
+  const own = { ...env, sessionId: "self-0002" };
+  const out = await A.executeKanban({ action: "edit", id, session: "self" }, own);
+  assert.equal(out.ok, true, out.text);
+  assert.equal(out.details.cards.find((c) => c.id === id).sessionId, "self-0002");
+  assert.match(out.text, /edited #/);
+  assert.doesNotMatch(out.text, /claimed anyway/);
+});
+
+test("kanban: edit session:self may take a card whose owner is idle", async () => {
+  const added = await A.executeKanban({ action: "add", text: "idle owner" }, env);
+  const id = added.details.nextId - 1;
+  await A.executeKanban({ action: "edit", id, session: "other-idle" }, env);
+  const piweb = idlePiWeb();
+  const own = { ...env, sessionId: "self-0003", fetch: piweb.fetch };
+  const out = await A.executeKanban({ action: "edit", id, session: "self" }, own);
+  assert.equal(out.ok, true, out.text);
+  assert.equal(out.details.cards.find((c) => c.id === id).sessionId, "self-0003");
+  assert.match(piweb.calls[0], /\/api\/agent\/other-idle\?systemPrompt=0$/);
+});
+
+test("kanban: edit session:self refuses a busy owner and leaves the card alone", async () => {
+  const added = await A.executeKanban({ action: "add", text: "busy owner" }, env);
+  const id = added.details.nextId - 1;
+  await A.executeKanban({ action: "edit", id, session: "other-busy" }, env);
+  const piweb = busyPiWeb();
+  const own = { ...env, sessionId: "self-0004", fetch: piweb.fetch };
+  const out = await A.executeKanban({ action: "edit", id, session: "self" }, own);
+  assert.equal(out.ok, false, out.text);
+  assert.match(out.text, /card #\d+ is in other-busy's turn; claim it only when it is idle/);
+  const card = (await A.executeKanban({ action: "list" }, env)).details.cards.find((c) => c.id === id);
+  assert.equal(card.sessionId, "other-busy", "a refused claim must not rewrite the session");
+});
+
+test("kanban: edit session:self takes an unprobeable card and says so", async () => {
+  const added = await A.executeKanban({ action: "add", text: "unprobeable owner" }, env);
+  const id = added.details.nextId - 1;
+  await A.executeKanban({ action: "edit", id, session: "other-gone" }, env);
+  const down = async () => { throw new Error("ECONNREFUSED"); };
+  const own = { ...env, sessionId: "self-0005", fetch: down };
+  const out = await A.executeKanban({ action: "edit", id, session: "self" }, own);
+  assert.equal(out.ok, true, out.text);
+  assert.match(out.text, /\(owner could not be probed; claimed anyway\)/);
+  assert.equal(out.details.cards.find((c) => c.id === id).sessionId, "self-0005");
+});

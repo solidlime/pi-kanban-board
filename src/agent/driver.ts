@@ -119,7 +119,7 @@ export interface WakeResult {
 /** Why a wake delivered nothing. The caller decides what to retry from the reason alone. */
 export type WakeRefusal = { refused: "busy" | "in-flight" | "unclear" | "not-doing" | "locked" | "spawn-failed" };
 
-type BusyProbe = "busy" | "idle" | "unknown";
+export type BusyProbe = "busy" | "idle" | "unknown";
 
 const BUSY_PROBE_TIMEOUT_MS = 1000;
 
@@ -129,7 +129,7 @@ const BUSY_PROBE_TIMEOUT_MS = 1000;
  * refuses a prompt on a running session. Reading unknown as busy leaves a card in DOING forever;
  * the opposite costs one refusal. The two are not symmetric.
  */
-async function probeSession(base: string, sessionId: string, doFetch: typeof fetch): Promise<BusyProbe> {
+export async function probeSession(base: string, sessionId: string, doFetch: typeof fetch): Promise<BusyProbe> {
   try {
     // `?systemPrompt=0` drops the system prompt from the answer (5.8KB -> 1.1KB).
     const res = await doFetch(`${base}/api/agent/${sessionId}?systemPrompt=0`, {
